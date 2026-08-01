@@ -1,0 +1,29 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          if [ -f pyproject.toml ]; then
+            pip install -e ".[dev]"
+          else
+            echo "No pyproject.toml yet, nothing to install."
+          fi
+      - name: Run tests
+        run: |
+          if [ -f pyproject.toml ] && [ -d tests ]; then
+            pytest
+          else
+            echo "No pyproject.toml/tests yet, nothing to run."
+          fi
