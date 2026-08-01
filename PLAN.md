@@ -60,7 +60,7 @@ aiform/
 │   ├── __main__.py                 # `python -m aiform` entry point
 │   ├── cli.py                      # plan / apply / destroy / init / refresh / show
 │   ├── config.py                   # env var + credentials-file resolution (§7)
-│   ├── parser.py                   # aiform.md -> DesiredResourceSpec
+│   ├── parser.py                   # aiform.md -> ResourceSpec
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
