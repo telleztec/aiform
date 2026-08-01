@@ -325,12 +325,16 @@ MODULE_LIKELY_REPLACE_FIELDS: list[str] = ["image", "region"]
 2. **Parse each file**:
    - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls.
    - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose.
-3. **Ensure a module exists** for `(provider, resource)`:
-   - If `modules/<provider>/<resource>.py` is missing, **or** its on-disk sha256 no longer matches the sha256 recorded against any state entry that trusts it: trigger generation.
-   - **Generation + Opus gate #1**:
+3. **Ensure a module is usable** for `(provider, resource)`, distinguishing two cases — this distinction matters because it determines whether a hand-edited module gets *reviewed* or silently *overwritten*:
+   - **Module file missing** → full generation (below), ending at Opus gate #1.
+   - **Module file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to Opus gate #1c, skipping generation entirely. This is what makes hand-editing a module ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not regenerate or overwrite** — fail `aiform plan` with an explicit error naming the concerns; a hand-edit failing review means the human's edit needs fixing, not the AI's.
+
+   **Generation** (missing-file case only):
      a. Sonnet (`claude-sonnet-5`, plain-text output — Python source isn't a good fit for `output_config.format`) drafts the module against `prompts/generate_module.md`, which embeds the exact interface contract from §4 plus the desired `params` shape as a hint for `MODULE_PARAM_SCHEMA`.
      b. Static validation: `ast.parse()` for syntax, then AST inspection (not import — untrusted code isn't executed pre-review) to confirm `create`, `read`, `update`, `delete` exist with the right argument names, and no `import anthropic` / `os.environ.get("ANTHROPIC` pattern is present.
-     c. Opus (`claude-opus-5`) reviews the full source against `prompts/review_module.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
+
+   **Opus gate #1** (shared endpoint for both cases above):
+     c. Opus (`claude-opus-5`) reviews the full source — freshly generated, or the existing on-disk file in the re-review case — against `prompts/review_module.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
         ```python
         MODULE_REVIEW_SCHEMA = {
             "type": "object",
@@ -350,7 +354,7 @@ MODULE_LIKELY_REPLACE_FIELDS: list[str] = ["image", "region"]
             messages=[{"role": "user", "content": module_source_text}],
         )
         ```
-     d. **Approval rule**: a `blocking_issues`-free result is written to disk and used; non-empty `concerns` are printed as advisory warnings but do not block. `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail `aiform plan` with an explicit error if still blocked, asking the user to hand-fix or hand-author the module.
+     d. **Approval rule**: a `blocking_issues`-free result is written to disk (generation case) or trusted in place (re-review case); non-empty `concerns` are printed as advisory warnings but do not block. For the **generation** path specifically, `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail `aiform plan` with an explicit error if still blocked, asking the user to hand-fix or hand-author the module. The **re-review** path never retries automatically — see above.
 4. **Refresh state** for any resource in the plan that already exists in state.
 5. **Diff, deterministically first**: compute a plain dict-diff between refreshed `attributes` and the desired `params`. If the diff is empty **and** `aiform_md_sha256` matches the current file **and** no `drifted_missing` flag is set → the action is `no-op`, decided with **zero LLM calls**. This is what makes the second-and-later `plan` runs cheap.
 6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a missing/drifted resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the module's `MODULE_PARAM_SCHEMA` / `MODULE_LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `destroy` / `no-op`), a natural-language rationale, and a `likely_replace: bool` hint.
