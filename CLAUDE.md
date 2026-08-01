@@ -48,9 +48,14 @@ to make something easier to build.
 - `DIGITALOCEAN_TOKEN` — env var first, else `.aiform/credentials.env`
   (dotenv-style). `aiform init` prints instructions for creating this file
   but **never** writes a value into it or prompts for the token
-  interactively — the user creates it by hand with a text editor. This
-  mirrors the proven pattern from `~/src/telleztec-infra`'s
-  `terraform.tfvars` handling; don't reinvent it differently here.
+  interactively — the user creates it by hand with a text editor. Why:
+  a value typed directly into a file by the user never passes through
+  terminal echo, shell history, or the output of any command — including
+  one an AI agent is driving. This pattern was proven on a separate local
+  project (`~/src/telleztec-infra`, using Terraform's equivalent
+  `terraform.tfvars`) before being adopted here; don't reinvent it
+  differently, but don't treat that other repo as required reading either
+  — the reasoning above is the actual rule.
 - A module (`modules/<provider>/<resource>.py`) that imports `anthropic` or
   reads `ANTHROPIC_API_KEY` is a hard failure at Opus review time — this is
   explicitly one of the review checklist items in `prompts/review_module.md`.
