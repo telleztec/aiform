@@ -89,9 +89,10 @@ bundle more than one module:
 1. `aiform/models.py` (+ `exceptions.py`) → `state.py` → `config.py` —
    likely 2–3 specs/PRs, not one.
 2. `aiform/llm.py` — 1 spec/PR.
-3. `aiform/module_gen.py` — 1 spec/PR (check whether `parser.py` is a
-   dependency that needs to land first; if so, split it out).
-4. `modules/digitalocean/droplet.py` — 1 spec/PR.
+3. `aiform/driver.py` (the `ResourceDriver` ABC) → `aiform/driver_gen.py` —
+   likely 2 specs/PRs (check whether `parser.py` is a dependency that
+   needs to land first; if so, split it out too).
+4. `drivers/digitalocean/compute.py` — 1 spec/PR.
 5. `aiform/planner.py` → `orchestrator.py` → `cli.py` — likely 3 specs/PRs.
 
 Exact splitting is decided when each step is actually started, not locked
