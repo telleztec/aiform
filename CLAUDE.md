@@ -22,7 +22,7 @@ whenever starting or resuming work on a module. Per-module specs live in
 `specs/`, one file per module — see `specs/README.md` for the format.
 
 Current status: **no implementation exists yet.** `pyproject.toml`,
-`aiform/*.py`, and `modules/digitalocean/droplet.py` all still need to be
+`aiform/*.py`, and `drivers/digitalocean/compute.py` all still need to be
 written from `PLAN.md` §1–§4.
 
 ## Non-negotiable design rules
@@ -33,16 +33,16 @@ to make something easier to build.
 
 ### Model tiering
 - **Claude Sonnet 5** (`claude-sonnet-5`) for everything routine and repeated:
-  parsing prose intent, diffing, plan categorization, drafting new modules.
+  parsing prose intent, diffing, plan categorization, drafting new drivers.
 - **Claude Opus 5** (`claude-opus-5`) *only* at the two review gates: (1)
-  approving a newly-generated resource module before it's trusted for reuse,
+  approving a newly-generated resource driver before it's trusted for reuse,
   (2) reviewing a plan before `apply` executes anything destructive.
 - Do not swap either tier for cost reasons without asking first. This split
   was chosen deliberately after an explicit cost/capability tradeoff
   discussion — it's not a default that happened to be picked.
 - On repeat `apply`/`plan` runs against unchanged input, the execution path
   must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §8 step 4).
-  If you find yourself adding an LLM call inside the module-execution path,
+  If you find yourself adding an LLM call inside the driver-execution path,
   stop — that call belongs in the planning phase, not here.
 
 ### Credentials
@@ -50,7 +50,7 @@ to make something easier to build.
   parameter, local variable, or import anywhere in it. This is meant to be
   literally grep-verifiable: `grep -n credentials aiform/llm.py` should
   return nothing, ever. All credential-bearing code lives in
-  `orchestrator.py`'s module-execution path.
+  `orchestrator.py`'s driver-execution path.
 - `ANTHROPIC_API_KEY` — env var only, never a CLI flag.
 - `DIGITALOCEAN_TOKEN` — env var first, else `.aiform/credentials.env`
   (dotenv-style). `aiform init` prints instructions for creating this file
@@ -63,14 +63,14 @@ to make something easier to build.
   `terraform.tfvars`) before being adopted here; don't reinvent it
   differently, but don't treat that other repo as required reading either
   — the reasoning above is the actual rule.
-- A module (`modules/<provider>/<resource>.py`) that imports `anthropic` or
+- A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
   reads `ANTHROPIC_API_KEY` is a hard failure at Opus review time — this is
-  explicitly one of the review checklist items in `prompts/review_module.md`.
+  explicitly one of the review checklist items in `prompts/review_driver.md`.
 
 ### State handling
 - Write `.aiform/state.json.backup` before every overwrite of
   `.aiform/state.json`.
-- Refresh before diff: call `module.read()` for tracked resources before
+- Refresh before diff: call `driver.read()` for tracked resources before
   computing a diff, every time, even on a plain `plan` with no changes
   expected. State is a cache of live reality, not a source of truth in
   itself.
@@ -85,18 +85,18 @@ to make something easier to build.
   workaround, an invariant that isn't visible from the code itself). Don't
   narrate what the code does — identifiers should do that.
 - Don't add abstractions, config knobs, or error handling for scenarios
-  that can't happen yet. The MVP is single-provider, single-resource-type,
+  that can't happen yet. The MVP is single-provider, single-resource-kind,
   no dependency graph — build for that, not for a hypothetical future
   multi-cloud graph engine. `PLAN.md` §9 already names what's deferred and
   why; don't quietly start building toward it early.
-- Follow the module interface in `PLAN.md` §4 exactly — function names,
-  argument order, exception type and its two fields (`reason`,
-  `unsupported_fields`), the two schema constants. Every future generated
-  module depends on this contract being stable.
+- Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
+  names, argument order, exception type and its two fields (`reason`,
+  `unsupported_fields`), the two schema class attributes. Every future
+  generated driver depends on this contract being stable.
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
-  the full layout, including `tests/modules/test_droplet_do.py` for the
-  first generated module.
+  the full layout, including `tests/drivers/test_digitalocean_compute.py`
+  for the first generated driver.
 
 ## Suggested implementation order
 
@@ -106,14 +106,15 @@ parts to exist yet:
 1. `aiform/models.py`, `aiform/state.py`, `aiform/config.py` — no LLM
    involvement, pure data/IO, easiest to get right and test first.
 2. `aiform/llm.py` — the three wrapper functions
-   (`sonnet_call`/`opus_review_module`/`opus_review_plan`), with the
+   (`sonnet_call`/`opus_review_driver`/`opus_review_plan`), with the
    structured-output schemas from `PLAN.md` §2/§5. Verify the
    credentials-never-touch-this-file property from day one.
-3. `aiform/module_gen.py` — module generation + AST validation + Opus review
-   gate #1.
-4. `modules/digitalocean/droplet.py` — the first generated module. Even
+3. `aiform/driver.py` — the `ResourceDriver` ABC + `DriverUpdateNotSupported`,
+   then `aiform/driver_gen.py` — driver generation + AST validation + Opus
+   review gate #1.
+4. `drivers/digitalocean/compute.py` — the first generated driver. Even
    though Opus reviews it automatically, read it yourself the first time;
-   it establishes the pattern every future module follows.
+   it establishes the pattern every future driver follows.
 5. `aiform/planner.py`, `aiform/orchestrator.py`, `aiform/cli.py` — wire
    everything into the `plan`/`apply` commands and validate against the full
    MVP walkthrough in `PLAN.md` §8, including the "second plan run makes

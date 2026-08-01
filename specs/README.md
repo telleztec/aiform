@@ -38,9 +38,9 @@ contract), point at the section instead of restating it.
 ## Naming
 
 `specs/<module>.md` mirrors the path of the file it specs, flattened —
-`aiform/state.py` → `specs/state.md`, `modules/digitalocean/droplet.py` →
-`specs/droplet_do.md` (matching the existing `tests/modules/test_droplet_do.py`
-naming from `PLAN.md` §1).
+`aiform/state.py` → `specs/state.md`, `drivers/digitalocean/compute.py` →
+`specs/digitalocean_compute.md` (matching the existing
+`tests/drivers/test_digitalocean_compute.py` naming from `PLAN.md` §1).
 
 ## Lifecycle
 

@@ -1,6 +1,6 @@
 ---
 name: tdd-workflow
-description: The spec-first, test-first, Opus-reviewed loop this project builds every module with. Use whenever you're about to start work on a new aiform module (models.py, state.py, llm.py, the droplet module, etc.) or resume mid-module.
+description: The spec-first, test-first, Opus-reviewed loop this project builds every module with. Use whenever you're about to start work on a new aiform module (models.py, state.py, llm.py, the digitalocean compute driver, etc.) or resume mid-module.
 ---
 
 # tdd-workflow
