@@ -1,0 +1,6 @@
+.aiform/credentials.env
+.aiform/state.json
+.aiform/state.json.backup
+__pycache__/
+*.pyc
+.env
