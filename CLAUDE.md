@@ -14,6 +14,13 @@ it, that's expected (it's a design doc, not a spec written by staring at the
 finished system) — flag the discrepancy and propose the change explicitly
 rather than silently diverging from it.
 
+**`PROCESS.md` is the development workflow spec** — the how, as opposed to
+`PLAN.md`'s what. Every module gets built spec-first, test-first (red
+before green), then reviewed by Opus via `/code-review` before it's a PR.
+`.claude/skills/tdd-workflow/SKILL.md` operationalizes this loop; use it
+whenever starting or resuming work on a module. Per-module specs live in
+`specs/`, one file per module — see `specs/README.md` for the format.
+
 Current status: **no implementation exists yet.** `pyproject.toml`,
 `aiform/*.py`, and `modules/digitalocean/droplet.py` all still need to be
 written from `PLAN.md` §1–§4.
