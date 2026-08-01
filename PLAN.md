@@ -1,0 +1,457 @@
+# aiform — Implementation Architecture
+
+## Context
+
+Terraform's plan/apply engine uses rigid, hardcoded heuristics — most notably its provider schema system, where every resource attribute is flagged by the provider author as either updatable-in-place or `ForceNew` (destroy+recreate), with no nuance for "sometimes updatable" cases (e.g. AWS security-group descriptions, Azure `zone_redundant`). Other real pain points identified in research: `count`/`for_each` index-shift bugs that cause unrelated resources to be destroyed, and state drift/corruption with no built-in versioning unless the backend provides it.
+
+aiform's idea: replace the *planning/diffing* logic with an LLM making those decisions per-actual-diff (not a static per-attribute flag), while the mechanical CSP API calls (create/read/update/delete a resource) are delegated to plain, deterministic Python modules — generated once per resource type by the LLM, then reused/executed directly with **zero further LLM calls** on repeat applies. This is deliberately scoped as a real standalone CLI tool (not a Claude-Code-only workflow) to genuinely test how much of this an AI can drive outside an interactive coding session.
+
+**Prior art**: nothing found puts an LLM directly in the runtime plan/diff/sequencing loop against live provider APIs in production today. Closest is an arXiv paper on AI-driven IaC *drift reconciliation* — reconciliation-focused, not full lifecycle CRUD. Worth holding in tension: Martin Fowler has argued DSLs are valuable specifically because they shrink the LLM's solution space and enable deterministic validation. aiform's generated-module interface (§4) partially serves that same "shrink the solution space" role Terraform's schema does, while the AI supplies the plan/diff/sequencing nuance Terraform's schema has none of.
+
+**Model tiering** (cost-conscious, deliberate): Claude **Sonnet 5** (`claude-sonnet-5`) handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions, drafting new modules. Claude **Opus 5** (`claude-opus-5`) is used only as a review/approval gate at two checkpoints: (1) reviewing a newly-generated Python module before it's trusted for reuse, and (2) reviewing the final plan before `apply` executes anything destructive. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Do not swap either model tier for cost reasons without asking — this split was chosen deliberately, not by default.
+
+## MVP scope (locked)
+
+Single CSP (DigitalOcean), single resource type (a droplet). No cross-resource dependency graph yet — deferred explicitly (see Known Limitations).
+
+## 1. Repo layout
+
+```
+aiform/
+├── pyproject.toml
+├── README.md
+├── .gitignore                      # .aiform/credentials.env, .aiform/state.json, __pycache__/, *.pyc
+├── aiform/
+│   ├── __init__.py
+│   ├── __main__.py                 # `python -m aiform` entry point
+│   ├── cli.py                      # plan / apply / destroy / init / refresh / show
+│   ├── config.py                   # env var + credentials-file resolution (§7)
+│   ├── parser.py                   # aiform.md -> DesiredResourceSpec
+│   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
+│   ├── planner.py                  # diff desired vs actual -> Plan
+│   ├── orchestrator.py             # drives plan/apply, dynamic module import, credential wiring
+│   ├── llm.py                      # anthropic SDK wrapper: sonnet_call(), opus_review_module(), opus_review_plan()
+│   ├── module_gen.py               # Sonnet drafts a module; static validation; Opus review
+│   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, ModuleReview
+│   └── exceptions.py               # ModuleUpdateNotSupported, ResourceNotFoundError, ModuleExecutionError, PlanBlockedError
+├── modules/
+│   ├── __init__.py
+│   └── digitalocean/
+│       ├── __init__.py
+│       └── droplet.py              # LLM-generated once, Opus-reviewed, then reused deterministically forever
+├── prompts/
+│   ├── parse_intent.md             # Sonnet system prompt: prose Intent -> intent_notes[]
+│   ├── diff_plan.md                # Sonnet system prompt: raw diff + intent_notes -> PlanAction + rationale
+│   ├── generate_module.md          # Sonnet system prompt: interface spec + CSP context -> module source
+│   ├── review_module.md            # Opus system prompt: gate #1 checklist
+│   └── review_plan.md              # Opus system prompt: gate #2 checklist
+├── .aiform/                        # gitignored; created by `aiform init`
+│   ├── credentials.env             # DIGITALOCEAN_TOKEN=... (hand-edited, never scaffolded with a value)
+│   ├── state.json                  # default state file location
+│   └── state.json.backup           # written before every overwrite
+├── examples/
+│   └── droplet.aiform.md           # MVP example
+└── tests/
+    ├── test_state.py
+    ├── test_planner.py
+    └── modules/test_droplet_do.py
+```
+
+**Module convention**: `modules/<provider>/<resource_type>.py`, where `<provider>` and `<resource_type>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `modules/digitalocean/droplet.py`. This is the *only* per-resource-type file the system ever generates, reviews, and reuses — everything else in `aiform/` is hand-written, static orchestration code.
+
+**State file location**: `.aiform/state.json`, overridable with `--state-file`.
+
+## 2. `aiform.md` format spec
+
+### Frontmatter schema (exact fields, MVP droplet case)
+
+```yaml
+---
+resource: droplet          # required — maps to modules/<provider>/<resource>.py
+name: telleztec-app-01     # required — primary key in state: "<provider>.<resource>.<name>"
+provider: digitalocean     # required — MVP: only "digitalocean" is supported
+params:                    # required — structured, resource-specific
+  region: sfo3
+  size: s-1vcpu-2gb
+  image: ubuntu-24-04-x64
+  ssh_keys:
+    - "juan-macbook-ed25519"   # DO SSH key name or fingerprint
+  backups: false
+  monitoring: true
+  tags:
+    - aiform
+    - production
+---
+```
+
+`params` is intentionally an open, resource-specific object — its expected shape is not fixed at the aiform.md-format level. It is validated instead against the target module's `MODULE_PARAM_SCHEMA` (§4) once a module exists for `(provider, resource)`. Before a module exists, `params` is accepted as-is and handed to the module-generation prompt as ground truth for what the module needs to accept.
+
+### Prose "Intent" section
+
+```markdown
+## Intent
+
+This droplet runs the primary application server. It should always have
+monitoring enabled. If I change the `size` to something bigger, prefer an
+in-place resize over destroying and recreating — this droplet holds local
+state in /var/lib/app that I don't want to lose to a fresh boot disk.
+However, if I ever change the `image`, that always requires a full recreate
+since you can't swap a running droplet's base OS image in place.
+
+If backups get turned on, that's a mutable account-level toggle — apply it
+without hesitation, no need to flag it as risky.
+```
+
+**How it's used**: `aiform/parser.py` sends only this prose block (not the frontmatter) to Sonnet with `output_config.format` constrained to:
+
+```python
+INTENT_NOTES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent_notes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "concerns_field": {"type": "string", "description": "params.* key this note applies to, or 'general'"},
+                    "guidance": {"type": "string", "description": "One atomic, diff/plan-relevant instruction extracted from the prose."},
+                },
+                "required": ["concerns_field", "guidance"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["intent_notes"],
+    "additionalProperties": False,
+}
+```
+
+```python
+response = client.messages.create(
+    model="claude-sonnet-5",
+    max_tokens=2048,
+    output_config={"format": {"type": "json_schema", "schema": INTENT_NOTES_SCHEMA}},
+    system=open("prompts/parse_intent.md").read(),
+    messages=[{"role": "user", "content": prose_intent_text}],
+)
+intent_notes = json.loads(response.content[0].text)["intent_notes"]
+```
+
+`intent_notes` is passed into the **diff/plan step** (§5) as context for Sonnet's create/update/destroy/no-op categorization and rationale — it is *not* passed to the generated Python module. Modules stay dumb and deterministic; only the plan step interprets nuance.
+
+One `.aiform.md` file describes exactly one resource in the MVP (no dependency graph). Multiple resources = multiple files, planned/applied independently in sequence. This is the natural extension point for a future graph, deliberately not built now.
+
+## 3. State file schema
+
+`.aiform/state.json`:
+
+```json
+{
+  "aiform_state_version": 1,
+  "resources": {
+    "digitalocean.droplet.telleztec-app-01": {
+      "provider": "digitalocean",
+      "resource_type": "droplet",
+      "name": "telleztec-app-01",
+      "id": "123456789",
+      "attributes": {
+        "region": "sfo3",
+        "size": "s-1vcpu-2gb",
+        "image": "ubuntu-24-04-x64",
+        "ssh_keys": ["juan-macbook-ed25519"],
+        "backups": false,
+        "monitoring": true,
+        "tags": ["aiform", "production"],
+        "ipv4_address": "203.0.113.10",
+        "status": "active"
+      },
+      "module": {
+        "path": "modules/digitalocean/droplet.py",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
+        "generated_at": "2026-07-30T18:22:11Z",
+        "opus_review": {
+          "approved": true,
+          "blocking_issues": [],
+          "concerns": ["update() resizes on any diff, not just size/region — should scope the resize action"],
+          "reviewed_at": "2026-07-30T18:22:40Z",
+          "model": "claude-opus-5"
+        }
+      },
+      "last_applied_at": "2026-07-30T18:23:05Z",
+      "last_refreshed_at": "2026-07-31T09:10:00Z",
+      "aiform_md_path": "examples/droplet.aiform.md",
+      "aiform_md_sha256": "5f4dcc3b5aa765d61d8327deb882cf99..."
+    }
+  }
+}
+```
+
+**Key**: `"<provider>.<resource_type>.<name>"` — mirrors Terraform's `<type>.<name>` addressing.
+
+**Fields**:
+- `id` — the CSP's resource identifier, opaque string (DO droplet IDs are numeric-as-string).
+- `attributes` — the last-known **actual** attributes as returned by `module.read()` or `module.create()`. This is the cache Terraform-style state provides.
+- `module.sha256` — hash of the module source on disk at the moment its Opus review was recorded. On every `plan`, the orchestrator recomputes the on-disk hash and compares; a mismatch (hand-edit, or a newer generation) invalidates the "trusted, reviewed" status and forces re-review before the module is used again. This is the drift-detection mechanism for the module itself, not just the resource.
+- `module.opus_review` — audit trail of gate #1.
+- `aiform_md_sha256` — hash of the source file at last successful apply. Used by the planner as a cheap short-circuit: if this matches the current file's hash *and* a refresh shows no live drift, the diff step can skip its Sonnet call entirely and report `no-op` deterministically.
+
+**Refresh mechanism** (`module.read()` before diffing):
+
+1. For every resource already present in state matching a requested aiform.md file (or all tracked resources, for `aiform refresh`), dynamically import `modules/<provider>/<resource_type>.py`.
+2. Call `module.read(id=state_entry.id, credentials=...)`.
+   - On success: overwrite `state_entry.attributes` with the fresh values.
+   - On `ResourceNotFoundError`: the resource was deleted out-of-band — leave `attributes` from the last known state but mark the entry `drifted_missing: true` in the in-memory plan context, so the diff step proposes a `create` (recreate) rather than treating it as unchanged.
+3. The refreshed attributes are **written back to `.aiform/state.json` immediately**, even during a bare `plan` with no changes — matching `terraform plan`'s default `-refresh=true` behavior.
+4. A `.aiform/state.json.backup` copy of the previous file is written before every overwrite.
+
+## 4. Resource module interface
+
+Every generated module is a plain Python file (no class) implementing four functions plus two schema constants. Exact signatures:
+
+```python
+# modules/digitalocean/droplet.py
+
+from typing import Any
+
+
+class ModuleUpdateNotSupported(Exception):
+    """Raised by update() when this SPECIFIC diff cannot be applied
+    in-place against the live API. The orchestrator catches this and
+    falls back to delete() + create() — this is the deliberate
+    replacement for Terraform's static, per-attribute ForceNew flag:
+    the decision is made per-call against the real diff, not declared
+    once and for all up front."""
+    def __init__(self, reason: str, unsupported_fields: list[str] | None = None):
+        self.reason = reason
+        self.unsupported_fields = unsupported_fields or []
+        super().__init__(reason)
+
+
+def create(params: dict[str, Any], credentials: dict[str, str]) -> dict[str, Any]:
+    """
+    Create the resource via the CSP API.
+
+    params: the resource's `params` block from aiform.md, already
+        validated by the orchestrator against MODULE_PARAM_SCHEMA
+        below before this is ever called.
+    credentials: e.g. {"DIGITALOCEAN_TOKEN": "..."}. Resolved by
+        aiform/config.py. Never logged, never passed through any
+        Anthropic API call.
+
+    Returns: dict with at least {"id": str, **attributes} reflecting
+        the resource as actually created. Becomes the state entry's
+        initial `attributes`.
+    """
+    ...
+
+
+def read(id: str, credentials: dict[str, str]) -> dict[str, Any]:
+    """
+    Fetch current live attributes for `id`.
+
+    Returns: dict, same attribute shape as create()'s return.
+    Raises: aiform.exceptions.ResourceNotFoundError if the resource
+        no longer exists on the CSP side (signals drift).
+    """
+    ...
+
+
+def update(id: str, current: dict[str, Any], desired: dict[str, Any],
+           credentials: dict[str, str]) -> dict[str, Any]:
+    """
+    Attempt to reconcile `current` -> `desired` in place.
+
+    Inspects the ACTUAL diff (not a static per-field flag) and decides
+    per-call whether an in-place update is possible. E.g. for a
+    droplet: resizing UP is a live resize action; resizing DOWN
+    requires powering off first (the module may do this automatically
+    within the call); changing `image` is never in-place-updatable.
+
+    Returns: dict of attributes after the update (same shape as create()).
+    Raises: ModuleUpdateNotSupported when THIS diff can't be applied
+        in place. The orchestrator catches this, treats the operation
+        as a "replace" (delete() then create()), and — if this wasn't
+        already flagged as a likely replace during planning — pauses
+        for the single-resource Opus safety gate before proceeding.
+    """
+    ...
+
+
+def delete(id: str, credentials: dict[str, str]) -> None:
+    """
+    Destroy the resource. MUST be idempotent: a 404 from the CSP
+    (resource already gone) is treated as success, not an error.
+    """
+    ...
+
+
+# Declares the params shape this module accepts. Used by the
+# orchestrator to validate a parsed aiform.md spec before ever calling
+# create()/update(), and shown to Opus at generation-review time as
+# ground truth for what the module claims to handle.
+MODULE_PARAM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "region": {"type": "string"},
+        "size": {"type": "string"},
+        "image": {"type": "string"},
+        "ssh_keys": {"type": "array", "items": {"type": "string"}},
+        "backups": {"type": "boolean"},
+        "monitoring": {"type": "boolean"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["region", "size", "image"],
+    "additionalProperties": True,
+}
+
+# Optional, advisory only (never authoritative — update() is the real
+# arbiter). Populated at generation time so `aiform plan` can WARN that
+# a change is likely to force a replace, purely for UX, without
+# pretending to know for certain the way Terraform's ForceNew does.
+MODULE_LIKELY_REPLACE_FIELDS: list[str] = ["image", "region"]
+```
+
+**Orchestrator invocation contract** (`aiform/orchestrator.py`):
+- Modules are imported dynamically via `importlib.util.spec_from_file_location`, resolved from `(provider, resource)` in the parsed spec.
+- `credentials` is assembled once by `aiform/config.py` and passed as a plain dict into `orchestrator.py`'s execution path only — `aiform/llm.py` (all Sonnet/Opus calls) never has a `credentials` parameter anywhere in its call signatures. This is a structural property of the codebase, not just a convention: there is no function that has both an LLM client and a credentials dict in scope.
+- All four functions are required to be synchronous and side-effect-free of any LLM calls. Gate #1's review checklist explicitly checks for "does this module import `anthropic`, call any Anthropic endpoint, or read `ANTHROPIC_API_KEY`?" and blocks approval if so.
+- Raw CSP API errors raised inside module functions are caught by the orchestrator, logged with full detail, and re-raised as `aiform.exceptions.ModuleExecutionError` for uniform CLI error formatting. The orchestrator does **not** attempt LLM-driven error recovery on this path — a failed mechanical call fails the apply and stops, matching the design goal of the execution being the boring, deterministic part.
+
+## 5. Plan / apply algorithm
+
+### `aiform plan`
+
+1. **Locate `.aiform.md` files** — default: all `*.aiform.md` in cwd, or explicit paths from argv.
+2. **Parse each file**:
+   - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls.
+   - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose.
+3. **Ensure a module exists** for `(provider, resource)`:
+   - If `modules/<provider>/<resource>.py` is missing, **or** its on-disk sha256 no longer matches the sha256 recorded against any state entry that trusts it: trigger generation.
+   - **Generation + Opus gate #1**:
+     a. Sonnet (`claude-sonnet-5`, plain-text output — Python source isn't a good fit for `output_config.format`) drafts the module against `prompts/generate_module.md`, which embeds the exact interface contract from §4 plus the desired `params` shape as a hint for `MODULE_PARAM_SCHEMA`.
+     b. Static validation: `ast.parse()` for syntax, then AST inspection (not import — untrusted code isn't executed pre-review) to confirm `create`, `read`, `update`, `delete` exist with the right argument names, and no `import anthropic` / `os.environ.get("ANTHROPIC` pattern is present.
+     c. Opus (`claude-opus-5`) reviews the full source against `prompts/review_module.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
+        ```python
+        MODULE_REVIEW_SCHEMA = {
+            "type": "object",
+            "properties": {
+                "approved": {"type": "boolean"},
+                "concerns": {"type": "array", "items": {"type": "string"}},
+                "blocking_issues": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["approved", "concerns", "blocking_issues"],
+            "additionalProperties": False,
+        }
+        response = client.messages.create(
+            model="claude-opus-5",
+            max_tokens=4096,
+            output_config={"format": {"type": "json_schema", "schema": MODULE_REVIEW_SCHEMA}},
+            system=open("prompts/review_module.md").read(),
+            messages=[{"role": "user", "content": module_source_text}],
+        )
+        ```
+     d. **Approval rule**: a `blocking_issues`-free result is written to disk and used; non-empty `concerns` are printed as advisory warnings but do not block. `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail `aiform plan` with an explicit error if still blocked, asking the user to hand-fix or hand-author the module.
+4. **Refresh state** for any resource in the plan that already exists in state.
+5. **Diff, deterministically first**: compute a plain dict-diff between refreshed `attributes` and the desired `params`. If the diff is empty **and** `aiform_md_sha256` matches the current file **and** no `drifted_missing` flag is set → the action is `no-op`, decided with **zero LLM calls**. This is what makes the second-and-later `plan` runs cheap.
+6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a missing/drifted resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the module's `MODULE_PARAM_SCHEMA` / `MODULE_LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `destroy` / `no-op`), a natural-language rationale, and a `likely_replace: bool` hint.
+7. **Print the plan** and persist refreshed state.
+
+### `aiform apply`
+
+1. Re-run `plan` in full immediately before executing (no separate saved-plan-file flow in the MVP).
+2. **Gate #2, batch pass**: if the plan contains any `destroy` actions or any `update` actions flagged `likely_replace: true`, call Opus once with the *entire* plan (all actions, for context) against `prompts/review_plan.md`:
+   ```python
+   PLAN_REVIEW_SCHEMA = {
+       "type": "object",
+       "properties": {
+           "safe_to_proceed": {"type": "boolean"},
+           "flags": {
+               "type": "array",
+               "items": {
+                   "type": "object",
+                   "properties": {
+                       "resource_key": {"type": "string"},
+                       "concern": {"type": "string"},
+                       "severity": {"type": "string", "enum": ["info", "warning", "block"]},
+                   },
+                   "required": ["resource_key", "concern", "severity"],
+                   "additionalProperties": False,
+               },
+           },
+       },
+       "required": ["safe_to_proceed", "flags"],
+       "additionalProperties": False,
+   }
+   ```
+   Any `severity: "block"` flag halts `apply` unconditionally — this cannot be bypassed by `--yes`. Non-blocking flags are printed, then the user is asked for final `y/N` confirmation (`--yes` skips only this prompt, never a `block`).
+3. **Execute**, in file order (trivial for MVP's single-resource-per-file model; multi-resource sequencing is explicitly deferred):
+   - `create` → `module.create(params, credentials)`, write state.
+   - `update` → `module.update(id, current, desired, credentials)`.
+     - If it raises `ModuleUpdateNotSupported` **and this resource was not already covered by the batch review in step 2**: pause, run a single-resource Opus review with the same schema, require fresh confirmation, then `module.delete()` + `module.create()`.
+     - If it was already covered in step 2 as `likely_replace: true`, proceed directly to `delete()` + `create()` — it already passed the gate.
+   - `destroy` → `module.delete(id, credentials)`, remove from state.
+   - `no-op` → skip.
+4. **State is written after each resource completes**, not batched at the end — a crash mid-apply doesn't lose successfully-applied resources' state.
+5. Step 3 makes **zero Anthropic API calls** per resource beyond what steps 1–2 already spent.
+
+## 6. CLI command surface
+
+```
+aiform init [--provider digitalocean]
+    Scaffolds .aiform/, .gitignore entries, an examples/*.aiform.md
+    starter file. Never creates or prompts for credential VALUES —
+    prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN.
+
+aiform plan [FILE.aiform.md ...] [--state-file PATH] [--json]
+    Parse, refresh, generate/review modules as needed, diff, print plan.
+    Persists refreshed state even with no changes. --json emits the
+    Plan as machine-readable output for scripting.
+
+aiform apply [FILE.aiform.md ...] [--yes] [--state-file PATH]
+    Re-plans, runs Opus gate #2 for any destructive step, executes.
+    --yes skips the interactive confirmation only — never a `block` flag.
+
+aiform destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]
+    Plans a destroy of every resource matching the given file(s) (or
+    all tracked resources if none given), then applies it. 100% subject
+    to Opus gate #2 by definition.
+
+aiform refresh [--state-file PATH]
+    module.read() for every tracked resource, updates state to match
+    live reality. No aiform.md parsing, no plan, no LLM calls at all —
+    purely mechanical drift detection.
+
+aiform show [--state-file PATH]
+    Prints current state contents (id, attributes, module version,
+    last-applied) in readable form.
+```
+
+Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `--no-color`.
+
+## 7. Credentials handling
+
+- **`ANTHROPIC_API_KEY`** — environment variable only, resolved automatically by `anthropic.Anthropic()`. Never accepted as a CLI flag (keeps it out of shell history / `ps`).
+- **`DIGITALOCEAN_TOKEN`** — resolution order in `aiform/config.py`:
+  1. `DIGITALOCEAN_TOKEN` environment variable, checked first.
+  2. Fallback: `.aiform/credentials.env` (dotenv-style, `DIGITALOCEAN_TOKEN=dop_v1_...`), a local gitignored file the user creates directly with a text editor. `aiform init` prints the instructions and the expected filename but never scaffolds it with a value or prompts for the token interactively.
+  3. Neither present → clear error naming both options.
+- **`.gitignore`**: `.aiform/credentials.env`, `.aiform/state.json` (state can carry sensitive-adjacent data like IPs and resource IDs — treated as sensitive by default), `.env`, `__pycache__/`, `*.pyc`.
+- **Structural enforcement that credentials never reach an LLM prompt**: `aiform/llm.py` — every function that talks to the Anthropic API — has no parameter, local, or import that carries a `credentials` dict. All credential-bearing code lives in `orchestrator.py`'s module-execution path, which never imports or calls into `llm.py`. This is verifiable by grep (no `credentials` symbol appears in `llm.py`), not just a documented convention.
+- **Logging**: `config.py`'s credential resolver never logs the resolved value. Any `--verbose` output that would dump request/response payloads passes through a `_redact(d)` helper that blanks known-sensitive keys (`credentials`, `*_TOKEN`, `*_KEY`) before printing.
+
+## 8. MVP walkthrough
+
+1. Author `examples/droplet.aiform.md`, set `ANTHROPIC_API_KEY` + `DIGITALOCEAN_TOKEN`.
+2. **`aiform plan`** — no module exists yet → Sonnet drafts `modules/digitalocean/droplet.py` against DO's REST API (`POST/GET/DELETE /v2/droplets`, resize via `/actions`) → Opus reviews (e.g. flags a non-blocking concern that `update()` resizes on *any* diff instead of scoping to `size`/`region`) → approved with a printed warning. Diff shows `create`.
+3. **`aiform apply`** — no destroy/likely-replace actions present → gate #2 is skipped entirely, straight to y/N prompt (or `--yes`). Executes `module.create(params, credentials)` — one real DO API call. `.aiform/state.json` written with the resource entry, including `module.sha256` and the Opus review.
+4. **Second `aiform plan`** — `module.read(id, credentials)` refreshes attributes (one DO call), `aiform_md_sha256` matches the unchanged file, dict-diff empty → `no-op` reported with **zero Anthropic API calls**. This is the concrete proof of the "no LLM tokens for the mechanical/repeat path" goal.
+
+## 9. Known limitations (flagged, not solved in MVP)
+
+- **Generated-module correctness drifts as CSP APIs change.** No mechanism auto-detects "this module is stale" — a DO API deprecation just fails loudly at apply time, requiring the user (or a future `aiform module regenerate` command) to delete/regenerate. No module versioning or migration story exists yet.
+- **No dependency graph.** MVP supports only independent resources planned/applied one file at a time (e.g. a droplet followed by a DNS record referencing its IP is out of scope — a real system eventually needs this).
+- **Opus review cost is bounded but nonzero**, unlike Terraform's zero-cost static plan. It's amortized: once per new resource-type module (reused forever after) and once per `apply` run that contains a destructive step. At current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok, `claude-opus-5` ≈ $5/$25 per MTok) this is a real, ongoing operating cost, traded deliberately for the flexibility Terraform's static ForceNew flag can't offer.
+- **Single local state file, no locking, no multi-user story.** Two concurrent `aiform apply` runs against the same `state.json` can race or corrupt it. Deliberately deferred, mirroring Terraform's own early single-operator local-state era.
+- **No state versioning/corruption recovery beyond a single `.aiform/state.json.backup`** written before every overwrite. Cheapest possible mitigation, not a real history/rollback mechanism.
+- **LLM plan/diff decisions are non-deterministic by nature.** Even with `output_config.format` constraining the *shape* of Sonnet's/Opus's answers, two `plan` runs against byte-identical input could produce differently-worded rationale or, rarely, a materially different categorization — something `terraform plan` on unchanged input structurally cannot do. This is inherent to the project's premise, not a bug to eliminate.
+- **The two Opus gates are a second opinion, not a proof.** A subtle bug in a generated module could pass static validation and Opus review and only manifest on an untested attribute combination during a live apply. The real backstop remains the human confirmation prompt. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
