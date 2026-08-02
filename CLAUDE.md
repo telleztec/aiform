@@ -81,6 +81,9 @@ to make something easier to build.
 
 ## Coding conventions
 
+- Formatting and lint are `ruff format`/`ruff check`, enforced by a local
+  `pre-commit` hook and again in CI — don't hand-format against a
+  different style, the tooling is the source of truth here.
 - No comments unless they explain a non-obvious *why* (a CSP API quirk, a
   workaround, an invariant that isn't visible from the code itself). Don't
   narrate what the code does — identifiers should do that.

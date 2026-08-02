@@ -19,9 +19,7 @@ class State(BaseModel):
         for key, entry in self.resources.items():
             expected = f"{entry.provider}.{entry.resource_type}.{entry.name}"
             if key != expected:
-                raise ValueError(
-                    f"state key {key!r} does not match entry address {expected!r}"
-                )
+                raise ValueError(f"state key {key!r} does not match entry address {expected!r}")
         return self
 
 

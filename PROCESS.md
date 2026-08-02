@@ -107,6 +107,13 @@ in here.
   `pytest` on every PR. This turns "tests pass" from something someone
   remembers to check into something that blocks merge. It's a no-op
   until `pyproject.toml` and `tests/` exist, then activates automatically.
+- **Lint/format**: `ruff check` and `ruff format` (config in
+  `pyproject.toml`'s `[tool.ruff]`), enforced two ways — a local
+  `pre-commit` hook (`.pre-commit-config.yaml`, installed via
+  `pre-commit install` once per clone) so the feedback loop is
+  immediate, and the same two checks in CI so a `--no-verify`d commit
+  still gets caught before merge. Run `ruff format .` before committing
+  if you ever bypass the hook.
 - **Definition of done**, per module: spec exists and is accurate; tests
   exist and were actually observed failing; implementation makes them
   pass; `/code-review` ran and findings were addressed or explicitly
