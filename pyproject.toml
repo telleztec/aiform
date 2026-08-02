@@ -10,6 +10,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.16",
+    "pre-commit>=4.0",
 ]
 
 [build-system]
@@ -18,3 +20,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["aiform*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# UP042: str+Enum -> enum.StrEnum is a semantic base-class change (ruff
+# marks it unsafe), not a formatting one -- deliberately not applied to
+# PlanAction here; revisit as its own explicit decision if wanted.
+ignore = ["UP042"]

@@ -20,6 +20,10 @@ jobs:
           else
             echo "No pyproject.toml yet, nothing to install."
           fi
+      - name: Lint
+        run: ruff check .
+      - name: Format check
+        run: ruff format --check .
       - name: Run tests
         run: |
           if [ -f pyproject.toml ] && [ -d tests ]; then

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -217,7 +217,7 @@ class TestStateEntry:
 
     def test_parses_iso8601_datetime_strings(self):
         entry = self._make()
-        assert entry.last_applied_at == datetime(2026, 7, 30, 18, 23, 5, tzinfo=timezone.utc)
+        assert entry.last_applied_at == datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC)
 
     def test_round_trip_matches_plan_md_json_shape(self):
         entry = self._make()
