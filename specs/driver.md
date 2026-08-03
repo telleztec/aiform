@@ -71,7 +71,11 @@ in Behavior below.
 - `LIKELY_REPLACE_FIELDS` defaults to `[]` on the base class. A subclass
   that doesn't override it inherits that empty list; one that does
   (`LIKELY_REPLACE_FIELDS = ["image", "region"]`, per §4's example driver)
-  shadows it with its own class attribute.
+  shadows it with its own class attribute. This default is a **shared**
+  class attribute — a driver (or `driver_gen.py`, once built) must
+  reassign it, never mutate it in place (`.append(...)`), or it corrupts
+  the inherited empty list for every other driver that hasn't overridden
+  it yet.
 - `PARAM_SCHEMA` is a bare type annotation with no default — **not** an
   `@abstractmethod`, so Python's `abc` machinery does not enforce its
   presence at instantiation time. A subclass that omits it can still be
