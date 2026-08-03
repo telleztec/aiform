@@ -36,6 +36,37 @@ class PlanEntry(BaseModel):
         return self
 
 
+class PlanReviewSeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    BLOCK = "block"
+
+
+class PlanReviewFlag(BaseModel):
+    resource_key: str
+    concern: str
+    severity: PlanReviewSeverity
+
+
+class PlanReview(BaseModel):
+    safe_to_proceed: bool
+    flags: list[PlanReviewFlag]
+
+
+class ModelSource(str, Enum):
+    ANTHROPIC = "anthropic"
+
+
+class LLMRoleConfig(BaseModel):
+    source: ModelSource
+    model: str
+
+
+class LLMConfig(BaseModel):
+    implementation: LLMRoleConfig
+    review: LLMRoleConfig
+
+
 class DriverReview(BaseModel):
     approved: bool
     concerns: list[str]
