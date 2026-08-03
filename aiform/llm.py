@@ -7,7 +7,7 @@ from typing import Any
 import anthropic
 
 from aiform import config
-from aiform.models import DriverReview, LLMConfig, ModelSource, PlanReview
+from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, PlanReview
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -78,6 +78,15 @@ MODEL_SOURCES: dict[ModelSource, Callable[..., str]] = {
 }
 
 
+def _resolve_role(
+    llm_config: LLMConfig | None, role_name: str
+) -> tuple[LLMRoleConfig, Callable[..., str]]:
+    if llm_config is None:
+        llm_config = config.resolve_llm_config()
+    role = getattr(llm_config, role_name)
+    return role, MODEL_SOURCES[role.source]
+
+
 def implementation_call(
     system_prompt: str,
     user_content: str,
@@ -87,11 +96,7 @@ def implementation_call(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
-    if llm_config is None:
-        llm_config = config.resolve_llm_config()
-
-    role = llm_config.implementation
-    call = MODEL_SOURCES[role.source]
+    role, call = _resolve_role(llm_config, "implementation")
     return call(
         role.model,
         system_prompt,
@@ -108,11 +113,7 @@ def review_driver(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> DriverReview:
-    if llm_config is None:
-        llm_config = config.resolve_llm_config()
-
-    role = llm_config.review
-    call = MODEL_SOURCES[role.source]
+    role, call = _resolve_role(llm_config, "review")
     system_prompt = (PROMPTS_DIR / "review_driver.md").read_text(encoding="utf-8")
     response_text = call(
         role.model,
@@ -137,11 +138,7 @@ def review_plan(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> PlanReview:
-    if llm_config is None:
-        llm_config = config.resolve_llm_config()
-
-    role = llm_config.review
-    call = MODEL_SOURCES[role.source]
+    role, call = _resolve_role(llm_config, "review")
     system_prompt = (PROMPTS_DIR / "review_plan.md").read_text(encoding="utf-8")
     response_text = call(
         role.model,
