@@ -102,9 +102,17 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then start watching it for the `/merge` comment — don't
+Report the PR URL, then start watching it for the `/merge` trigger — don't
 wait for a follow-up chat message to prompt this.
 
+- The trigger can land in two different places and must be checked in
+  both: a plain issue-level PR comment (the comment box at the bottom of
+  the conversation), *or* a review body (`gh pr view`'s `reviews` array,
+  `state: COMMENTED`) — GitHub's own "Files changed" → "Review changes"
+  flow is the natural way to actually scan a diff before signing off, and
+  since "Approve" is blocked for a self-authored PR, that flow lands as a
+  `COMMENTED` review, not an issue comment. Checking only `comments` misses
+  this — confirmed the hard way on this repo's first PR under this process.
 - Start **one** background Bash job containing its own polling loop, using
   `run_in_background: true` (never manual `nohup`/`disown` — those bypass
   the harness's completion notification, which is the whole point: you
@@ -112,8 +120,13 @@ wait for a follow-up chat message to prompt this.
   to re-poll turn after turn yourself):
   ```sh
   while true; do
-    body=$(gh pr view <number> --json comments --jq '
-      ([.comments[] | select(.author.login=="juanman2")] | sort_by(.createdAt) | last | .body // "")
+    body=$(gh pr view <number> --json comments,reviews --jq '
+      ([(.comments[] | {author, body, at: .createdAt}),
+        (.reviews[] | {author, body, at: .submittedAt})]
+        | map(select(.author.login=="juanman2"))
+        | sort_by(.at)
+        | last
+        | .body // "")
       | gsub("^\\s+|\\s+$";"")
       | ascii_downcase
     ')
@@ -121,14 +134,14 @@ wait for a follow-up chat message to prompt this.
       echo "MERGE_APPROVED"
       exit 0
     fi
-    sleep 180
+    sleep 30
   done
   ```
 - On exit — merge immediately (`gh pr merge`), no further chat
   confirmation needed; that `/merge` comment *is* the explicit human
   approval the hard rule requires. Report that it merged.
-- Don't poll faster than every couple of minutes — a human review pass is
-  a human-timescale event, not something to busy-loop on.
+- Poll every 30s (per explicit instruction) — fast enough that the merge
+  feels immediate after leaving `/merge`, without being a true busy-loop.
 - If the wait is going to span a very long time (the human is away for
   hours), that's fine — this is a background-job-friendly wait, not
   something that needs to resolve before the turn ends.
