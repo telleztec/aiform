@@ -30,11 +30,16 @@ a visual scan of the diff before it merges. A "merge it" said in chat is
 no longer the trigger by itself; check for the `/merge` comment before
 merging regardless of what was said in chat. (If juanman2 explicitly says
 to skip the wait for a specific PR in that specific conversation, that's
-still a valid override — it just isn't the default path anymore.) Any
-other PR comment (feedback, questions, discussion) is not surfaced
-automatically by the watch loop below — it only recognizes the literal
-`/merge` trigger. Feedback instead of approval should go through chat, as
-before.
+still a valid override — it just isn't the default path anymore.)
+
+Symmetric rejection trigger: a comment or review body that's exactly
+`/reject` stops the watch loop without merging — go read the PR's actual
+comments/review for what needs fixing, rather than continuing to poll
+indefinitely. Any *other* comment (general feedback, a question, a
+mid-review remark that isn't one of the two triggers) is not surfaced
+automatically by the watch loop — it only recognizes the literal `/merge`
+and `/reject` triggers. Substantive feedback that isn't a clear
+accept/reject should go through chat instead, as before.
 
 ## Branching
 
@@ -102,10 +107,10 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then start watching it for the `/merge` trigger — don't
-wait for a follow-up chat message to prompt this.
+Report the PR URL, then start watching it for `/merge` or `/reject` —
+don't wait for a follow-up chat message to prompt this.
 
-- The trigger can land in two different places and must be checked in
+- Both triggers can land in two different places and must be checked in
   both: a plain issue-level PR comment (the comment box at the bottom of
   the conversation), *or* a review body (`gh pr view`'s `reviews` array,
   `state: COMMENTED`) — GitHub's own "Files changed" → "Review changes"
@@ -134,12 +139,18 @@ wait for a follow-up chat message to prompt this.
       echo "MERGE_APPROVED"
       exit 0
     fi
+    if [ "$body" = "/reject" ]; then
+      echo "REJECTED"
+      exit 1
+    fi
     sleep 30
   done
   ```
-- On exit — merge immediately (`gh pr merge`), no further chat
+- On `MERGE_APPROVED` — merge immediately (`gh pr merge`), no further chat
   confirmation needed; that `/merge` comment *is* the explicit human
   approval the hard rule requires. Report that it merged.
+- On `REJECTED` — do not merge. Read the PR's comments/reviews for what
+  was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
   feels immediate after leaving `/merge`, without being a true busy-loop.
 - If the wait is going to span a very long time (the human is away for
