@@ -18,13 +18,23 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-03**: an accepted GitHub PR review
-from `github.com/juanman2` on that PR — not a chat message. A "merge it"
-said in conversation is no longer the trigger by itself; check the PR's
-actual review state before merging regardless of what was said in chat.
-(If juanman2 explicitly says to skip the review-wait for a specific PR in
-that specific conversation, that's still a valid override — it just isn't
-the default path anymore.)
+**What counts as approval, as of 2026-08-03**: a PR comment from
+`github.com/juanman2` whose body, trimmed and lowercased, is exactly
+`/merge` — not a chat message, and not a formal GitHub "Approve" review.
+GitHub hard-blocks PR authors from approving their own pull requests (a
+platform rule, not a repo setting), and every PR here is authored by
+juanman2, so a real "Approve" review is never obtainable on this repo —
+a plain comment isn't restricted that way and still requires opening the
+PR's "Files changed" tab to leave it, which is the actual point: forcing
+a visual scan of the diff before it merges. A "merge it" said in chat is
+no longer the trigger by itself; check for the `/merge` comment before
+merging regardless of what was said in chat. (If juanman2 explicitly says
+to skip the wait for a specific PR in that specific conversation, that's
+still a valid override — it just isn't the default path anymore.) Any
+other PR comment (feedback, questions, discussion) is not surfaced
+automatically by the watch loop below — it only recognizes the literal
+`/merge` trigger. Feedback instead of approval should go through chat, as
+before.
 
 ## Branching
 
@@ -92,30 +102,33 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then start watching it for review approval — don't wait
-for a follow-up chat message to prompt this.
+Report the PR URL, then start watching it for the `/merge` comment — don't
+wait for a follow-up chat message to prompt this.
 
-- Start **one** background Bash job containing its own polling loop, so a
-  single `run_in_background` completion notification is what wakes you up
-  again, rather than manually re-polling turn after turn:
+- Start **one** background Bash job containing its own polling loop, using
+  `run_in_background: true` (never manual `nohup`/`disown` — those bypass
+  the harness's completion notification, which is the whole point: you
+  only get woken up once, when the loop actually exits, instead of having
+  to re-poll turn after turn yourself):
   ```sh
   while true; do
-    state=$(gh pr view <number> --json reviews \
-      --jq '[.reviews[] | select(.author.login=="juanman2")] | sort_by(.submittedAt) | last | .state // "PENDING"')
-    if [ "$state" = "APPROVED" ] || [ "$state" = "CHANGES_REQUESTED" ]; then
-      echo "$state"
+    body=$(gh pr view <number> --json comments --jq '
+      ([.comments[] | select(.author.login=="juanman2")] | sort_by(.createdAt) | last | .body // "")
+      | gsub("^\\s+|\\s+$";"")
+      | ascii_downcase
+    ')
+    if [ "$body" = "/merge" ]; then
+      echo "MERGE_APPROVED"
       exit 0
     fi
     sleep 180
   done
   ```
-- On `APPROVED` — merge immediately (`gh pr merge`), no further chat
-  confirmation needed; that GitHub approval *is* the explicit human
+- On exit — merge immediately (`gh pr merge`), no further chat
+  confirmation needed; that `/merge` comment *is* the explicit human
   approval the hard rule requires. Report that it merged.
-- On `CHANGES_REQUESTED` — stop, do not merge, and report what was
-  requested so it can be addressed.
-- Don't poll faster than every couple of minutes — a PR review is a
-  human-timescale event, not something to busy-loop on.
+- Don't poll faster than every couple of minutes — a human review pass is
+  a human-timescale event, not something to busy-loop on.
 - If the wait is going to span a very long time (the human is away for
   hours), that's fine — this is a background-job-friendly wait, not
   something that needs to resolve before the turn ends.
