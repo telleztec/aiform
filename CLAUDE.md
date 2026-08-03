@@ -32,26 +32,41 @@ whole "AI-driven but bounded-cost" premise hold together. Don't relax them
 to make something easier to build.
 
 ### Model tiering
-- **Claude Sonnet 5** (`claude-sonnet-5`) for everything routine and repeated:
-  parsing prose intent, diffing, plan categorization, drafting new drivers.
-- **Claude Opus 5** (`claude-opus-5`) *only* at the two review gates: (1)
-  approving a newly-generated resource driver before it's trusted for reuse,
-  (2) reviewing a plan before `apply` executes anything destructive.
-- Do not swap either tier for cost reasons without asking first. This split
-  was chosen deliberately after an explicit cost/capability tradeoff
-  discussion — it's not a default that happened to be picked.
+- Two roles, each independently configurable via `.aiform/config.yaml`
+  (`resolve_llm_config()` in `aiform/config.py`, `LLMConfig` in
+  `aiform/models.py`) rather than hardcoded constants — see `specs/llm.md`
+  and `specs/config.md`. The MVP default — and the only model source
+  implemented right now — is Anthropic (`ModelSource.ANTHROPIC`) for both.
+- **Implementation role**, default **Claude Sonnet 5** (`claude-sonnet-5`):
+  everything routine and repeated — parsing prose intent, diffing, plan
+  categorization, drafting new drivers.
+- **Review role**, default **Claude Opus 5** (`claude-opus-5`): *only* at the
+  two review gates: (1) approving a newly-generated resource driver before
+  it's trusted for reuse, (2) reviewing a plan before `apply` executes
+  anything destructive.
+- Do not change either *default* for cost reasons without asking first. This
+  split was chosen deliberately after an explicit cost/capability tradeoff
+  discussion — it's not a default that happened to be picked. A user
+  overriding their own `.aiform/config.yaml` is an intentional escape hatch,
+  not a violation of this rule — don't add a second, uninstructed override
+  of your own.
+- Adding a new model source (e.g. Bedrock) is a `MODEL_SOURCES` dispatch-table
+  entry in `aiform/llm.py`, not a reason to introduce a plugin system or ABC
+  hierarchy — keep it to that one seam.
 - On repeat `apply`/`plan` runs against unchanged input, the execution path
   must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §8 step 4).
   If you find yourself adding an LLM call inside the driver-execution path,
   stop — that call belongs in the planning phase, not here.
 
 ### Credentials
-- `aiform/llm.py` (all Sonnet/Opus calls) must **never** have a `credentials`
-  parameter, local variable, or import anywhere in it. This is meant to be
-  literally grep-verifiable: `grep -n credentials aiform/llm.py` should
-  return nothing, ever. All credential-bearing code lives in
-  `orchestrator.py`'s driver-execution path.
-- `ANTHROPIC_API_KEY` — env var only, never a CLI flag.
+- `aiform/llm.py` (every model call, regardless of configured source) must
+  **never** have a `credentials` parameter, local variable, or import
+  anywhere in it. This is meant to be literally grep-verifiable:
+  `grep -n credentials aiform/llm.py` should return nothing, ever. All
+  credential-bearing code lives in `orchestrator.py`'s driver-execution path.
+- `ANTHROPIC_API_KEY` — env var only, never a CLI flag. Which *model* to call
+  is separate from this and lives in `.aiform/config.yaml` — a model name
+  isn't a secret, don't conflate the two files.
 - `DIGITALOCEAN_TOKEN` — env var first, else `.aiform/credentials.env`
   (dotenv-style). `aiform init` prints instructions for creating this file
   but **never** writes a value into it or prompts for the token
@@ -108,10 +123,11 @@ parts to exist yet:
 
 1. `aiform/models.py`, `aiform/state.py`, `aiform/config.py` — no LLM
    involvement, pure data/IO, easiest to get right and test first.
-2. `aiform/llm.py` — the three wrapper functions
-   (`sonnet_call`/`opus_review_driver`/`opus_review_plan`), with the
-   structured-output schemas from `PLAN.md` §2/§5. Verify the
-   credentials-never-touch-this-file property from day one.
+2. `aiform/llm.py` — the three role-based functions
+   (`implementation_call`/`review_driver`/`review_plan`), dispatching on
+   configured model source via `MODEL_SOURCES`, with the structured-output
+   schemas from `PLAN.md` §2/§5. Verify the credentials-never-touch-this-file
+   property from day one.
 3. `aiform/driver.py` — the `ResourceDriver` ABC + `DriverUpdateNotSupported`,
    then `aiform/driver_gen.py` — driver generation + AST validation + Opus
    review gate #1.

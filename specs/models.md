@@ -4,11 +4,13 @@
 
 Pydantic v2 models for the data shapes that cross module boundaries in
 aiform: the parsed `.aiform.md` frontmatter, one row of a printed plan,
-one resource's entry in `.aiform/state.json`, and the record of an Opus
-driver review. Pure data definitions — no file I/O, no LLM calls, no
-filesystem path construction. Everything here is exactly what `PLAN.md`
-§1's repo-layout comment calls out for `models.py`, plus one addition
-noted below.
+one resource's entry in `.aiform/state.json`, and the records of the
+two Opus review gates. Also the shared shape for *which* model backs each of `aiform/llm.py`'s
+two roles, resolved from configuration rather than hardcoded (see
+`ModelSource`/`LLMRoleConfig`/`LLMConfig` below). Pure data definitions
+— no file I/O, no LLM calls, no filesystem path construction.
+Everything here is exactly what `PLAN.md` §1's repo-layout comment calls
+out for `models.py`, plus the additions noted below.
 
 ## Interface
 
@@ -71,6 +73,76 @@ class PlanEntry(BaseModel):
   a caller can't construct an inconsistent `PlanEntry` (e.g. a `destroy`
   flagged `likely_replace: true`, which isn't a meaningful state per
   §5 step 6's description).
+
+### `PlanReviewSeverity`, `PlanReviewFlag`, `PlanReview`
+
+Added alongside `specs/llm.md`'s `opus_review_plan()` — the Opus gate
+#2 verdict shape (`PLAN.md` §5 apply step 2's `PLAN_REVIEW_SCHEMA`).
+Not part of the original repo-layout comment's model list, same
+situation as `DriverInfo`: `llm.py` produces this, `orchestrator.py`
+branches on it (`severity: "block"` halts `apply` unconditionally), so
+it crosses a module boundary the same way `DriverReview` does.
+
+```python
+class PlanReviewSeverity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    BLOCK = "block"
+
+
+class PlanReviewFlag(BaseModel):
+    resource_key: str
+    concern: str
+    severity: PlanReviewSeverity
+
+
+class PlanReview(BaseModel):
+    safe_to_proceed: bool
+    flags: list[PlanReviewFlag]
+```
+
+Unlike `DriverReview`, no `reviewed_at`/`model` stamping — a plan
+review is never persisted to `state.json` (it's used once per `apply`
+run, then discarded), so there's no audit trail to keep and `PLAN.md`
+doesn't call for one.
+
+### `ModelSource`, `LLMRoleConfig`, `LLMConfig`
+
+Added alongside `specs/llm.md`'s config-driven model selection and
+`specs/config.md`'s `resolve_llm_config()`. Same reasoning as
+`DriverReview`/`PlanReview`: produced by `config.py`, consumed by
+`llm.py`, so the shared shape lives here rather than in either.
+
+```python
+class ModelSource(str, Enum):
+    ANTHROPIC = "anthropic"
+
+
+class LLMRoleConfig(BaseModel):
+    source: ModelSource
+    model: str
+
+
+class LLMConfig(BaseModel):
+    implementation: LLMRoleConfig
+    review: LLMRoleConfig
+```
+
+- `ModelSource` is the literal "table that specifies Anthropic as the
+  only model source at this time" — a one-member enum today, mirroring
+  `config.py`'s `PROVIDER_TOKEN_ENV_VARS` in spirit (a real, if
+  single-entry, table rather than a hardcoded string). Extended by
+  adding a member (e.g. `BEDROCK = "bedrock"`) the day a second source
+  is actually built.
+- `LLMRoleConfig.model` is a plain `str`, not its own enum — model
+  *names* change far more often than model *sources*, and there's no
+  fixed set to validate against.
+- `LLMConfig` has exactly two roles, `implementation` and `review`,
+  matching `PLAN.md`'s model-tiering design — global to the whole tool,
+  not per-resource-kind (see `specs/llm.md`'s Out of scope).
+- No cross-field validation between `implementation`/`review` — either
+  role can independently use any `ModelSource`/model combination; there's
+  no invariant linking the two.
 
 ### `DriverReview`
 
@@ -165,6 +237,16 @@ implementation pass, not a deliberate asymmetry.
   `model_dump(mode="json")` → re-parse without loss, matching the
   literal JSON shape in `PLAN.md` §3 field-for-field (this is what
   `state.py`'s load/save will depend on).
+- `PlanReview(safe_to_proceed=False, flags=[{"resource_key": ...,
+  "concern": ..., "severity": "block"}])` parses `flags` into real
+  `PlanReviewFlag` objects with `severity` as a `PlanReviewSeverity`
+  member, not a raw string.
+- `LLMConfig(implementation={"source": "anthropic", "model":
+  "claude-sonnet-5"}, review={"source": "anthropic", "model":
+  "claude-opus-5"})` parses both roles into `LLMRoleConfig` objects with
+  `source` as a `ModelSource` member, not a raw string.
+- `LLMRoleConfig(source="bedrock", model="...")` raises a validation
+  error today — `ModelSource` has exactly one member.
 
 ## Edge cases / errors
 

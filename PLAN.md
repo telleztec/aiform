@@ -8,7 +8,7 @@ aiform's idea: replace the *planning/diffing* logic with an LLM making those dec
 
 **Prior art**: nothing found puts an LLM directly in the runtime plan/diff/sequencing loop against live provider APIs in production today. Closest is an arXiv paper on AI-driven IaC *drift reconciliation* — reconciliation-focused, not full lifecycle CRUD. Worth holding in tension: Martin Fowler has argued DSLs are valuable specifically because they shrink the LLM's solution space and enable deterministic validation. aiform's generated-driver interface (§4) partially serves that same "shrink the solution space" role Terraform's schema does, while the AI supplies the plan/diff/sequencing nuance Terraform's schema has none of.
 
-**Model tiering** (cost-conscious, deliberate): Claude **Sonnet 5** (`claude-sonnet-5`) handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions, drafting new drivers. Claude **Opus 5** (`claude-opus-5`) is used only as a review/approval gate at two checkpoints: (1) reviewing a newly-generated Python driver before it's trusted for reuse, and (2) reviewing the final plan before `apply` executes anything destructive. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Do not swap either model tier for cost reasons without asking — this split was chosen deliberately, not by default.
+**Model tiering** (cost-conscious, deliberate): one *role* handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions, drafting new drivers — and a second, stronger *role* is used only as a review/approval gate at two checkpoints: (1) reviewing a newly-generated Python driver before it's trusted for reuse, and (2) reviewing the final plan before `apply` executes anything destructive. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Which model (and which model source/vendor) fills each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for the implementation role and Claude **Opus 5** (`claude-opus-5`) for the review role, both via the Anthropic API. Do not change either *default* for cost reasons without asking — this split was chosen deliberately, not by default. Users may override the configured model/source per role; that's an intentional escape hatch, not a violation of this rule.
 
 ## MVP scope (locked)
 
@@ -64,7 +64,7 @@ aiform/
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
-│   ├── llm.py                      # anthropic SDK wrapper: sonnet_call(), opus_review_driver(), opus_review_plan()
+│   ├── llm.py                      # model-source dispatch: implementation_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
 │   ├── driver_gen.py                # Sonnet drafts a driver; static validation; Opus review
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -148,8 +148,14 @@ INTENT_NOTES_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "concerns_field": {"type": "string", "description": "params.* key this note applies to, or 'general'"},
-                    "guidance": {"type": "string", "description": "One atomic, diff/plan-relevant instruction extracted from the prose."},
+                    "concerns_field": {
+                        "type": "string",
+                        "description": "params.* key this note applies to, or 'general'",
+                    },
+                    "guidance": {
+                        "type": "string",
+                        "description": "One atomic, diff/plan-relevant instruction extracted from the prose.",
+                    },
                 },
                 "required": ["concerns_field", "guidance"],
                 "additionalProperties": False,
@@ -258,6 +264,7 @@ class DriverUpdateNotSupported(Exception):
     replacement for Terraform's static, per-attribute ForceNew flag:
     the decision is made per-call against the real diff, not declared
     once and for all up front."""
+
     def __init__(self, reason: str, unsupported_fields: list[str] | None = None):
         self.reason = reason
         self.unsupported_fields = unsupported_fields or []
@@ -314,8 +321,9 @@ class ResourceDriver(ABC):
         """
 
     @abstractmethod
-    def update(self, id: str, current: dict[str, Any], desired: dict[str, Any],
-               credentials: dict[str, str]) -> dict[str, Any]:
+    def update(
+        self, id: str, current: dict[str, Any], desired: dict[str, Any], credentials: dict[str, str]
+    ) -> dict[str, Any]:
         """
         Attempt to reconcile `current` -> `desired` in place.
 
@@ -369,22 +377,18 @@ class Driver(ResourceDriver):
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
 
-    def create(self, params, credentials):
-        ...
+    def create(self, params, credentials): ...
 
-    def read(self, id, credentials):
-        ...
+    def read(self, id, credentials): ...
 
-    def update(self, id, current, desired, credentials):
-        ...
+    def update(self, id, current, desired, credentials): ...
 
-    def delete(self, id, credentials):
-        ...
+    def delete(self, id, credentials): ...
 ```
 
 **Orchestrator invocation contract** (`aiform/orchestrator.py`):
 - Drivers are imported dynamically via `importlib.util.spec_from_file_location`, resolved from `(provider, resource)` in the parsed spec, then instantiated: `driver = module.Driver()`. The class name is always exactly `Driver` — the orchestrator never searches a module's namespace for it.
-- `credentials` is assembled once by `aiform/config.py` and passed as a plain dict into `orchestrator.py`'s execution path only — `aiform/llm.py` (all Sonnet/Opus calls) never has a `credentials` parameter anywhere in its call signatures. This is a structural property of the codebase, not just a convention: there is no function that has both an LLM client and a credentials dict in scope.
+- `credentials` is assembled once by `aiform/config.py` and passed as a plain dict into `orchestrator.py`'s execution path only — `aiform/llm.py` (every model call, regardless of configured source) never has a `credentials` parameter anywhere in its call signatures. This is a structural property of the codebase, not just a convention: there is no function that has both an LLM client and a credentials dict in scope.
 - All four methods are required to be synchronous and side-effect-free of any LLM calls. Gate #1's review checklist explicitly checks for "does this driver import `anthropic`, call any Anthropic endpoint, or read `ANTHROPIC_API_KEY`?" and blocks approval if so.
 - Raw CSP API errors raised inside driver methods are caught by the orchestrator, logged with full detail, and re-raised as `aiform.exceptions.DriverExecutionError` for uniform CLI error formatting. The orchestrator does **not** attempt LLM-driven error recovery on this path — a failed mechanical call fails the apply and stops, matching the design goal of the execution being the boring, deterministic part.
 
@@ -511,7 +515,7 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
   2. Fallback: `.aiform/credentials.env` (dotenv-style, `DIGITALOCEAN_TOKEN=dop_v1_...`), a local gitignored file the user creates directly with a text editor. `aiform init` prints the instructions and the expected filename but never scaffolds it with a value or prompts for the token interactively.
   3. Neither present → clear error naming both options.
 - **`.gitignore`**: `.aiform/credentials.env`, `.aiform/state.json` (state can carry sensitive-adjacent data like IPs and resource IDs — treated as sensitive by default), `.env`, `__pycache__/`, `*.pyc`.
-- **Structural enforcement that credentials never reach an LLM prompt**: `aiform/llm.py` — every function that talks to the Anthropic API — has no parameter, local, or import that carries a `credentials` dict. All credential-bearing code lives in `orchestrator.py`'s driver-execution path, which never imports or calls into `llm.py`. This is verifiable by grep (no `credentials` symbol appears in `llm.py`), not just a documented convention.
+- **Structural enforcement that credentials never reach an LLM prompt**: `aiform/llm.py` — every function that talks to a model source — has no parameter, local, or import that carries a `credentials` dict. All credential-bearing code lives in `orchestrator.py`'s driver-execution path, which never imports or calls into `llm.py`. This is verifiable by grep (no `credentials` symbol appears in `llm.py`), not just a documented convention.
 - **Logging**: `config.py`'s credential resolver never logs the resolved value. Any `--verbose` output that would dump request/response payloads passes through a `_redact(d)` helper that blanks known-sensitive keys (`credentials`, `*_TOKEN`, `*_KEY`) before printing.
 
 ## 8. MVP walkthrough

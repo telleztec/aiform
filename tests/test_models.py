@@ -6,8 +6,14 @@ from pydantic import ValidationError
 from aiform.models import (
     DriverInfo,
     DriverReview,
+    LLMConfig,
+    LLMRoleConfig,
+    ModelSource,
     PlanAction,
     PlanEntry,
+    PlanReview,
+    PlanReviewFlag,
+    PlanReviewSeverity,
     ResourceSpec,
     StateEntry,
 )
@@ -120,6 +126,69 @@ class TestPlanEntry:
             likely_replace=True,
         )
         assert entry.likely_replace is False
+
+
+class TestPlanReview:
+    def test_severity_values(self):
+        assert PlanReviewSeverity.INFO == "info"
+        assert PlanReviewSeverity.WARNING == "warning"
+        assert PlanReviewSeverity.BLOCK == "block"
+
+    def test_flag_rejects_unknown_severity(self):
+        with pytest.raises(ValidationError):
+            PlanReviewFlag(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                concern="unexpected destroy",
+                severity="urgent",
+            )
+
+    def test_parses_flags_into_objects(self):
+        review = PlanReview(
+            safe_to_proceed=False,
+            flags=[
+                {
+                    "resource_key": "digitalocean.compute.telleztec-app-01",
+                    "concern": "this destroy wasn't mentioned in the Intent section",
+                    "severity": "block",
+                }
+            ],
+        )
+        assert len(review.flags) == 1
+        flag = review.flags[0]
+        assert isinstance(flag, PlanReviewFlag)
+        assert flag.severity is PlanReviewSeverity.BLOCK
+        assert flag.resource_key == "digitalocean.compute.telleztec-app-01"
+
+    def test_safe_to_proceed_with_no_flags(self):
+        review = PlanReview(safe_to_proceed=True, flags=[])
+        assert review.safe_to_proceed is True
+        assert review.flags == []
+
+
+class TestLLMConfig:
+    def test_only_anthropic_source_today(self):
+        assert ModelSource.ANTHROPIC == "anthropic"
+
+    def test_rejects_unknown_source(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source="bedrock", model="some-model")
+
+    def test_parses_roles_into_objects(self):
+        config = LLMConfig(
+            implementation={"source": "anthropic", "model": "claude-sonnet-5"},
+            review={"source": "anthropic", "model": "claude-opus-5"},
+        )
+        assert isinstance(config.implementation, LLMRoleConfig)
+        assert config.implementation.source is ModelSource.ANTHROPIC
+        assert config.implementation.model == "claude-sonnet-5"
+        assert config.review.model == "claude-opus-5"
+
+    def test_roles_are_independent(self):
+        config = LLMConfig(
+            implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
+            review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+        )
+        assert config.implementation.model != config.review.model
 
 
 class TestDriverReview:
