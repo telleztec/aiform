@@ -1,11 +1,23 @@
 import os
 from pathlib import Path
+from typing import Any
+
+import yaml
+
+from aiform.models import LLMConfig, LLMRoleConfig, ModelSource
 
 DEFAULT_CREDENTIALS_PATH = Path(".aiform/credentials.env")
 
 PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
     "digitalocean": "DIGITALOCEAN_TOKEN",
 }
+
+DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
+
+DEFAULT_LLM_CONFIG = LLMConfig(
+    implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
+    review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+)
 
 
 def _parse_dotenv(text: str) -> dict[str, str]:
@@ -48,3 +60,41 @@ def resolve_credentials(
         )
 
     return {env_var: value}
+
+
+def _merge_role(default: LLMRoleConfig, override: dict) -> LLMRoleConfig:
+    return LLMRoleConfig(
+        source=override.get("source", default.source),
+        model=override.get("model", default.model),
+    )
+
+
+def _require_mapping(value: Any, key: str, config_path: Path) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{config_path}: {key!r} must be a mapping, got {type(value).__name__}")
+    return value
+
+
+def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig:
+    try:
+        content = config_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return DEFAULT_LLM_CONFIG
+
+    data = yaml.safe_load(content)
+    if data is None:
+        data = {}
+    data = _require_mapping(data, "<top level>", config_path)
+
+    llm_data = data.get("llm") or {}
+    llm_data = _require_mapping(llm_data, "llm", config_path)
+
+    implementation_override = _require_mapping(
+        llm_data.get("implementation") or {}, "llm.implementation", config_path
+    )
+    review_override = _require_mapping(llm_data.get("review") or {}, "llm.review", config_path)
+
+    return LLMConfig(
+        implementation=_merge_role(DEFAULT_LLM_CONFIG.implementation, implementation_override),
+        review=_merge_role(DEFAULT_LLM_CONFIG.review, review_override),
+    )
