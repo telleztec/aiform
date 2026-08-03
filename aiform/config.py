@@ -63,9 +63,11 @@ def resolve_credentials(
 
 
 def _merge_role(default: LLMRoleConfig, override: dict) -> LLMRoleConfig:
+    source = override.get("source")
+    model = override.get("model")
     return LLMRoleConfig(
-        source=override.get("source", default.source),
-        model=override.get("model", default.model),
+        source=source if source is not None else default.source,
+        model=model if model is not None else default.model,
     )
 
 
@@ -86,13 +88,22 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
         data = {}
     data = _require_mapping(data, "<top level>", config_path)
 
-    llm_data = data.get("llm") or {}
+    llm_data = data.get("llm")
+    if llm_data is None:
+        llm_data = {}
     llm_data = _require_mapping(llm_data, "llm", config_path)
 
+    implementation_value = llm_data.get("implementation")
+    if implementation_value is None:
+        implementation_value = {}
     implementation_override = _require_mapping(
-        llm_data.get("implementation") or {}, "llm.implementation", config_path
+        implementation_value, "llm.implementation", config_path
     )
-    review_override = _require_mapping(llm_data.get("review") or {}, "llm.review", config_path)
+
+    review_value = llm_data.get("review")
+    if review_value is None:
+        review_value = {}
+    review_override = _require_mapping(review_value, "llm.review", config_path)
 
     return LLMConfig(
         implementation=_merge_role(DEFAULT_LLM_CONFIG.implementation, implementation_override),
