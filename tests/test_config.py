@@ -200,6 +200,29 @@ class TestResolveLLMConfig:
         with pytest.raises(ValueError):
             resolve_llm_config(config_path)
 
+    def test_explicit_null_llm_key_uses_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n")
+
+        assert resolve_llm_config(config_path) == DEFAULT_LLM_CONFIG
+
+    @pytest.mark.parametrize("falsy_value", ["false", "0", "''", "[]"])
+    def test_falsy_non_mapping_llm_key_raises(self, tmp_path: Path, falsy_value: str):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"llm: {falsy_value}\n")
+
+        with pytest.raises(ValueError):
+            resolve_llm_config(config_path)
+
+    def test_explicit_null_role_field_falls_back_to_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  review:\n    source:\n    model: claude-opus-5-override\n")
+
+        config = resolve_llm_config(config_path)
+
+        assert config.review.source == ModelSource.ANTHROPIC
+        assert config.review.model == "claude-opus-5-override"
+
     def test_strips_leading_utf8_bom(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
         config_path.write_bytes(

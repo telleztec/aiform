@@ -76,7 +76,7 @@ class PlanEntry(BaseModel):
 
 ### `PlanReviewSeverity`, `PlanReviewFlag`, `PlanReview`
 
-Added alongside `specs/llm.md`'s `opus_review_plan()` — the Opus gate
+Added alongside `specs/llm.md`'s `review_plan()` — the Opus gate
 #2 verdict shape (`PLAN.md` §5 apply step 2's `PLAN_REVIEW_SCHEMA`).
 Not part of the original repo-layout comment's model list, same
 situation as `DriverInfo`: `llm.py` produces this, `orchestrator.py`
