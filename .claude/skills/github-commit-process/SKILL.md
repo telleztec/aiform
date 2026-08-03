@@ -13,10 +13,18 @@ here.
 
 **Never merge a PR in this repo without explicit human approval.** Opening
 a PR, pushing to it, even fixing CI on it — all fine to do autonomously.
-Clicking merge (or running `gh pr merge`) is not, ever, unless the user
-says so in that specific instance. This applies even if the PR looks done,
-even if you're confident it's correct, even if the user previously approved
-a similar PR — approval is per-PR, not standing.
+Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
+*that specific PR* exists. This applies even if the PR looks done, even if
+you're confident it's correct, even if a similar PR was approved before —
+approval is per-PR, not standing.
+
+**What counts as approval, as of 2026-08-03**: an accepted GitHub PR review
+from `github.com/juanman2` on that PR — not a chat message. A "merge it"
+said in conversation is no longer the trigger by itself; check the PR's
+actual review state before merging regardless of what was said in chat.
+(If juanman2 explicitly says to skip the review-wait for a specific PR in
+that specific conversation, that's still a valid override — it just isn't
+the default path anymore.)
 
 ## Branching
 
@@ -84,6 +92,30 @@ EOF
 
 ## After the PR is open
 
-Stop and report the PR URL. Wait for the human to review and decide on
-merge — do not poll for approval, do not merge preemptively, do not assume
-silence means approval.
+Report the PR URL, then start watching it for review approval — don't wait
+for a follow-up chat message to prompt this.
+
+- Start **one** background Bash job containing its own polling loop, so a
+  single `run_in_background` completion notification is what wakes you up
+  again, rather than manually re-polling turn after turn:
+  ```sh
+  while true; do
+    state=$(gh pr view <number> --json reviews \
+      --jq '[.reviews[] | select(.author.login=="juanman2")] | sort_by(.submittedAt) | last | .state // "PENDING"')
+    if [ "$state" = "APPROVED" ] || [ "$state" = "CHANGES_REQUESTED" ]; then
+      echo "$state"
+      exit 0
+    fi
+    sleep 180
+  done
+  ```
+- On `APPROVED` — merge immediately (`gh pr merge`), no further chat
+  confirmation needed; that GitHub approval *is* the explicit human
+  approval the hard rule requires. Report that it merged.
+- On `CHANGES_REQUESTED` — stop, do not merge, and report what was
+  requested so it can be addressed.
+- Don't poll faster than every couple of minutes — a PR review is a
+  human-timescale event, not something to busy-loop on.
+- If the wait is going to span a very long time (the human is away for
+  hours), that's fine — this is a background-job-friendly wait, not
+  something that needs to resolve before the turn ends.
