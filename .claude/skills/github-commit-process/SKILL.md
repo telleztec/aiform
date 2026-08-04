@@ -18,19 +18,24 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-03**: a PR comment from
-`github.com/juanman2` whose body, trimmed and lowercased, is exactly
-`/merge` — not a chat message, and not a formal GitHub "Approve" review.
-GitHub hard-blocks PR authors from approving their own pull requests (a
-platform rule, not a repo setting), and every PR here is authored by
-juanman2, so a real "Approve" review is never obtainable on this repo —
-a plain comment isn't restricted that way and still requires opening the
-PR's "Files changed" tab to leave it, which is the actual point: forcing
-a visual scan of the diff before it merges. A "merge it" said in chat is
-no longer the trigger by itself; check for the `/merge` comment before
-merging regardless of what was said in chat. (If juanman2 explicitly says
-to skip the wait for a specific PR in that specific conversation, that's
-still a valid override — it just isn't the default path anymore.)
+**What counts as approval, as of 2026-08-04**: **two** things, both
+required — a PR comment from `github.com/juanman2` whose body, trimmed
+and lowercased, is exactly `/merge`, **and** a passing `opus-review`
+commit status on the PR's current head SHA (see "After the PR is open"
+below for how that status gets there). Neither alone is sufficient
+anymore. The `/merge` comment is not a chat message, and not a formal
+GitHub "Approve" review — GitHub hard-blocks PR authors from approving
+their own pull requests (a platform rule, not a repo setting), and every
+PR here is authored by juanman2, so a real "Approve" review is never
+obtainable on this repo; a plain comment isn't restricted that way and
+still requires opening the PR's "Files changed" tab to leave it, which
+is the actual point: forcing a visual scan of the diff before it merges.
+A "merge it" said in chat is no longer the trigger by itself; check for
+the `/merge` comment before merging regardless of what was said in chat.
+(If juanman2 explicitly says to skip the wait — for `/code-review`, for
+the `/merge` comment, or both — for a specific PR in that specific
+conversation, that's still a valid override for whichever part was
+named; it just isn't the default path anymore.)
 
 Symmetric rejection trigger: a comment or review body that's exactly
 `/reject` stops the watch loop without merging — go read the PR's actual
@@ -118,11 +123,16 @@ commits, or explain why something's out of scope).
 **Once `/code-review`'s findings (if any) are actually addressed**, post
 a commit status on the PR's current head SHA marking that:
 ```sh
-gh api repos/juanman2/aiform/statuses/<head-sha> \
+gh api repos/{owner}/{repo}/statuses/<head-sha> \
   -f state=success \
   -f context=opus-review \
   -f description="findings addressed" # or "nothing to fix"
 ```
+Use the literal `{owner}/{repo}` placeholders — `gh api` fills them in
+from the current directory's git remote automatically, so this keeps
+working after the planned org transfer (below) without needing anyone
+to remember to edit this file. Don't hardcode `juanman2/aiform`.
+
 This is a **self-enforced** check, not a GitHub-blocked one — this repo
 is private and branch protection / required status checks need GitHub
 Pro on a private repo (confirmed 2026-08-04: both the classic protection
@@ -136,6 +146,12 @@ merging (see below), rather than something living only in my
 conversational memory — which is what actually failed on this repo's
 PR #18 (the watch loop started before `/code-review` had even been
 requested).
+
+If the human explicitly says to skip `/code-review` for a specific PR
+(e.g. a docs-only change), that's a valid override — same as the
+"skip the wait" override in the hard rule above — and the merge-time
+check below should be treated as satisfied without a posted status,
+not as a block to route around silently.
 
 Once `/code-review` is handled (status posted, or the human explicitly
 says to skip it for this PR), start watching:
@@ -180,18 +196,21 @@ says to skip it for this PR), start watching:
   PR's *current* head SHA (not whatever it was when the watch loop
   started — new commits may have landed) and check:
   ```sh
-  gh api repos/juanman2/aiform/commits/<current-head-sha>/status \
+  gh api repos/{owner}/{repo}/commits/<current-head-sha>/status \
     --jq '.statuses[] | select(.context=="opus-review") | .state'
   ```
   If the latest `opus-review` status for that exact SHA isn't
-  `success`, **do not merge** — tell the human `/code-review` hasn't
-  been confirmed for the current commit (common cause: fix commits
-  landed after the status was posted, or the status was never posted at
-  all) and either post it now if it's genuinely been addressed, or ask
-  for `/code-review` to actually run. Only once `state == "success"` on
-  the current SHA, merge (`gh pr merge`) — that `/merge` comment *is*
-  the explicit human approval the hard rule requires, but it's not
-  sufficient by itself anymore. Report that it merged.
+  `success`, **and** the human hasn't explicitly authorized skipping
+  `/code-review` for this specific PR (the override noted above — check
+  the conversation, don't assume), **do not merge**: tell the human
+  `/code-review` hasn't been confirmed for the current commit (common
+  cause: fix commits landed after the status was posted, or the status
+  was never posted at all) and either post it now if it's genuinely been
+  addressed, or ask for `/code-review` to actually run. Otherwise (a
+  fresh `success` status, or an explicit skip already on record), merge
+  (`gh pr merge`) — the `/merge` comment plus this status (or its
+  explicit override) together *are* the explicit human approval the hard
+  rule requires. Report that it merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
