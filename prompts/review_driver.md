@@ -39,6 +39,11 @@ Check specifically for:
 7. **No obvious correctness bugs**: wrong HTTP methods/endpoints, response
    fields read with the wrong key, missing handling for a paginated or
    async-provisioning API, etc.
+8. **HTTP calls use `urllib.request`, not `requests`/`httpx`/any other
+   third-party HTTP library.** This is a hard requirement the generation
+   prompt states explicitly — nothing else mechanically checks it before
+   this driver is trusted, so an import of a different HTTP library is a
+   blocking issue here, not a style nitpick.
 
 Respond with your structured verdict only. Use `blocking_issues` for
 anything from the list above that's actually violated — these block

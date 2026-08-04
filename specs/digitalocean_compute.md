@@ -61,9 +61,22 @@ specifically so tests can mock one well-known stdlib seam
 library a generation run happened to reach for. DigitalOcean's API
 returns non-2xx responses as `urllib.error.HTTPError` (a subclass of
 `OSError` with `.code` and `.read()`), not a normal return value — the
-driver must catch this explicitly wherever a non-2xx status is a
+driver must catch this explicitly wherever a non-2xx status is an
 expected, handled case (404 on `read()`/`delete()`), not let it
 propagate as an unhandled exception.
+
+Stating this as a "hard requirement" in the prompt doesn't mechanically
+enforce it on its own — `driver_gen.py`'s `validate_driver_source()` only
+checks class/method structure and anthropic-related patterns, nothing
+HTTP-library-specific, so a violation could otherwise pass gate #1
+undetected and only surface when this driver's own test suite fails.
+Closed by adding an explicit checklist item to
+`prompts/review_driver.md` (Opus gate #1 itself now checks for it) rather
+than extending `validate_driver_source()` — that function is generic
+across all future providers/drivers, and this urllib convention, while
+also generic, doesn't yet warrant a second enforcement point beyond
+Opus's review; revisit if a future driver's generation run actually
+slips a third-party HTTP library past review.
 
 ## Behavior
 
@@ -86,16 +99,39 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   project's "state is a cache of live reality, refreshed via `read()`"
   design — `create()` is not responsible for waiting out DO's own
   asynchronous provisioning.
-- Returns `{"id": str(droplet["id"]), **droplet}` (or an equivalent
-  flattening) — at minimum `id` plus whatever attributes DO returned.
+- Returns a **flattened** dict whose keys mirror `PARAM_SCHEMA`'s flat
+  shape (plus `id`/`status`/`ip_address`), **not** DO's raw nested
+  response verbatim — this matters because `update()` diffs this return
+  value (as `current`) against `desired` (the flat `params` dict), and
+  DO's raw droplet object nests `region`/`image` as objects
+  (`{"slug": ..., "name": ...}`) and reports size under a *different*
+  key entirely (`size_slug`, not `size`). Comparing the raw shapes
+  directly would see `region`/`image`/`size` as "changed" on literally
+  every call — including when nothing changed — permanently disabling
+  the in-place resize path this whole `update()` section describes. At
+  minimum:
+  ```python
+  {
+      "id": str(droplet["id"]),
+      "region": droplet["region"]["slug"],
+      "size": droplet["size_slug"],
+      "image": droplet["image"]["slug"],
+      "status": droplet["status"],
+      "tags": droplet.get("tags", []),
+      "ip_address": <first networks.v4 entry where type == "public", or None>,
+  }
+  ```
+  `ssh_keys`/`backups`/`monitoring` are **not** included in this
+  flattening — see Edge cases below for why, and what that means for
+  `update()`.
 
 ### `read(id, credentials)`
 
 - `GET /v2/droplets/{id}`. **Exactly one API call.**
-- `404` → `aiform.exceptions.ResourceNotFoundError` (not yet built —
-  see Out of scope; a plain exception is acceptable for now, same
-  established stance as `config.py`/`state.py`/`driver_gen.py`).
-- Returns the same attribute shape as `create()`.
+- `404` → a plain `LookupError` naming the `id` (not
+  `aiform.exceptions.ResourceNotFoundError` — that module doesn't exist
+  yet; see Out of scope).
+- Returns the same flattened attribute shape as `create()`.
 
 ### `delete(id, credentials)`
 
@@ -120,8 +156,7 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   endpoints for some of them — out of scope for this MVP driver, see
   below.
 - If the diff is `size` alone: DigitalOcean resize
-  (`POST /v2/droplets/{id}/actions` with
-  `{"type": "resize", "disk": true, "size": desired["size"]}`) —
+  (`POST /v2/droplets/{id}/actions`) —
   **low-medium confidence, verify against DO's docs if this fails**:
   requires the droplet to be powered off first. The expected sequence:
   1. `POST .../actions {"type": "power_off"}` (skip if `current`
@@ -130,12 +165,29 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      attempts (a fixed small number, e.g. via a `time.sleep()` between
      checks — must be mockable: `time.sleep`, not a hardcoded blocking
      wait with no seam).
-  3. `POST .../actions {"type": "resize", "disk": true, "size": ...}`.
-  4. Poll until the resize action (or the droplet's `size_slug`) shows
-     the new size.
-  5. `POST .../actions {"type": "power_on"}`, poll until `status ==
+  3. `POST .../actions {"type": "resize", "disk": false, "size": ...}`
+     — **`disk: false`, not `true`.** A disk-inclusive resize
+     (`disk: true`) can only *grow* a droplet's disk, never shrink it;
+     hardcoding `true` risks DO rejecting a downsize outright with no
+     recovery path. `disk: false` (compute-only resize) is the safe
+     default — it works between sizes that share the same underlying
+     disk allotment, which is the common case for a same-family
+     up/down move.
+  4. If DO rejects the `disk: false` resize (the target size requires a
+     disk-size change DO can't perform live — moving between families
+     with different bundled disk sizes), catch that specific failure
+     and raise `DriverUpdateNotSupported` naming `size` in
+     `unsupported_fields`, falling back to the normal destroy+recreate
+     path — don't retry with `disk: true` and risk an irreversible or
+     still-rejected disk operation. (The droplet was already powered
+     off in step 1; leave it powered off — `create()`/`delete()` handle
+     the replace from there, they don't require the old droplet to be
+     running.)
+  5. On success, poll until the resize action (or the droplet's
+     `size_slug`) shows the new size.
+  6. `POST .../actions {"type": "power_on"}`, poll until `status ==
      "active"`.
-  6. Return the final attributes (equivalent to a `read()`).
+  7. Return the final attributes (equivalent to a `read()`).
   This is the one path in this driver allowed more than one API call —
   unlike `create`/`read`/`delete`, an in-place resize is a genuinely
   multi-step DO operation, not a single request.
@@ -168,6 +220,25 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *actions* (not instant) is why `update()`'s resize path needs polling
   at all, unlike the other three methods — this is a genuine DO API
   constraint, not a design choice made for its own sake.
+- **`ssh_keys`/`backups`/`monitoring` can't be round-tripped through
+  `read()`.** DO's droplet GET response doesn't return the SSH keys used
+  at creation at all (they're write-only), and `backups`/`monitoring`
+  don't map onto a clean boolean field the way `PARAM_SCHEMA` expects
+  (low confidence, same "verify docs on failure" stance). Since these
+  three keys are absent from `create()`/`read()`'s flattened return but
+  may be present in `desired` (they're optional in `PARAM_SCHEMA`, but
+  commonly set), `update()`'s plain key-comparison sees them as
+  "changed" on every `plan` after the first, correctly raises
+  `DriverUpdateNotSupported` per the "anything other than size alone"
+  rule (not silently ignored), but that means these three params are
+  effectively **write-once**: settable at `create()` time, any
+  subsequent value forces a destroy+recreate even when nothing
+  incompatible with an in-place update is actually happening. A real
+  MVP limitation surfaced while fixing the region/image/size shape
+  mismatch above, not a new design choice — documented here rather than
+  solved, since solving it needs DO API knowledge (exact `features`
+  array shape, whether there's a per-droplet SSH-key-list endpoint)
+  this spec doesn't have high confidence in.
 
 ## Out of scope
 
@@ -180,9 +251,13 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   them raises `DriverUpdateNotSupported` and falls back to
   destroy+recreate, same as a genuinely non-updatable field.
 - **`aiform.exceptions.ResourceNotFoundError`** — doesn't exist yet
-  (`PLAN.md` §1); a plain exception is acceptable here for now, same
-  stance already established for `DriverGenerationFailed` in
-  `driver_gen.py`.
+  (`PLAN.md` §1). `prompts/generate_driver.md`'s own generic guidance
+  used to name this exact class before this pass — fixed (see below) to
+  instruct a plain `LookupError` instead, since an import of a
+  nonexistent module would break every method at load time, not just
+  the 404-on-read path. Same stance already established for
+  `DriverGenerationFailed` in `driver_gen.py`: don't invent
+  `exceptions.py`'s types ahead of it existing.
 - **Verifying the DigitalOcean API details against current docs** — per
   explicit instruction, build against training-data knowledge first;
   only check DO's actual reference docs if something fails on first

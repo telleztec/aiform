@@ -38,9 +38,11 @@ Requirements, all non-negotiable:
    the resource and returns a dict with at least `{"id": str, **attributes}`
    reflecting what was actually created.
 2. **`read`** fetches current live attributes for `id`, same shape as
-   `create`'s return. Raise `aiform.exceptions.ResourceNotFoundError` if
-   the resource no longer exists on the provider's side — don't invent a
-   different exception or return `None`.
+   `create`'s return. Raise a plain `LookupError` naming the `id` if the
+   resource no longer exists on the provider's side — don't import
+   `aiform.exceptions` (that module doesn't exist in this codebase yet;
+   importing it would break every method at load time, not just this
+   one), don't invent a different exception, and don't return `None`.
 3. **`update`** inspects the actual diff between `current` and `desired`
    and decides, for *this specific diff*, whether an in-place API call
    can apply it. If any part of the diff can't be applied in place, raise
