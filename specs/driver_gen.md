@@ -138,13 +138,25 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      review=None, reasons=e.reasons)`; otherwise format `e.reasons` into
      `feedback` and continue to the next attempt (no Opus call this
      round — an invalid draft is never sent for review).
-  3. `review = llm.review_driver(source, ...)` — on non-empty
-     `review.blocking_issues`: if this was the last attempt, raise
-     `DriverGenerationFailed(source, review, reasons=review.blocking_issues)`;
-     otherwise format `review.blocking_issues` into `feedback` and
-     continue.
-  4. Otherwise (validated and approved): return `(source, review)`
+  3. `review = llm.review_driver(source, ...)` — the branch condition is
+     `not review.approved`, **not** "`review.blocking_issues` is
+     non-empty." `DriverReview`'s own validator only forbids
+     `approved=True` with non-empty `blocking_issues`; it does *not*
+     forbid `approved=False` with *empty* `blocking_issues` — a
+     schema-valid response Opus can legitimately return. Checking
+     `blocking_issues` truthiness alone would silently treat that as a
+     pass. On `not review.approved`: reasons are
+     `review.blocking_issues or review.concerns or ["review did not
+     approve the driver"]` (falling back through whatever the review
+     actually said, down to a generic message if it said nothing
+     specific in either field). If this was the last attempt, raise
+     `DriverGenerationFailed(source, review, reasons)`; otherwise format
+     `reasons` into `feedback` and continue.
+  4. Otherwise (`review.approved is True`): return `(source, review)`
      immediately — no second attempt is spent if the first succeeds.
+     (`DriverReview`'s validator guarantees `blocking_issues == []`
+     whenever `approved is True`, so this branch never needs to
+     re-check it.)
 - The retry budget is **shared** across both failure modes: one static
   failure followed by one Opus block still exhausts `MAX_DRAFT_ATTEMPTS`
   and raises — there is no scenario with more than 2 total calls to
@@ -167,8 +179,11 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
   backstop for anything cleverer than a direct import or literal string.
 - `DriverGenerationFailed.review` is `None` when the failure was a static
   validation failure on the final attempt (never reached Opus), and a
-  real `DriverReview` (with non-empty `blocking_issues`) when the failure
-  was an Opus block on the final attempt.
+  real `DriverReview` with `approved is False` when the failure was an
+  Opus non-approval on the final attempt — `.blocking_issues` on that
+  review may be empty (see the `not review.approved` note above);
+  `.reasons` on the exception is never empty even then, since it falls
+  back to `.concerns` and then a generic message.
 - Once `exceptions.py` exists (`PLAN.md` §1), `DriverGenerationFailed`
   should presumably become `aiform.exceptions.PlanBlockedError` per
   `PLAN.md` §5 step 3d — kept as a plain module-local exception for now,
