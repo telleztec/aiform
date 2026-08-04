@@ -107,8 +107,19 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then start watching it for `/merge` or `/reject` —
-don't wait for a follow-up chat message to prompt this.
+Report the PR URL. **Do not start the `/merge`/`/reject` watch loop yet.**
+`/code-review` (Opus) is user-triggered and I cannot launch it myself —
+but the human review must come *after* it, not concurrently or before,
+since Opus routinely catches real bugs that need fixing before there's
+anything worth reviewing by eye. Tell the human explicitly: run
+`/code-review` first; I'll act on whatever it finds (fix, push follow-up
+commits, or explain why something's out of scope), and only start
+watching for `/merge`/`/reject` once that's done — either after I see
+the `/code-review` completion notification with nothing left to fix, or
+because the human says to start watching now (an explicit override,
+same as skipping the wait entirely).
+
+Once it's actually time to watch:
 
 - Both triggers can land in two different places and must be checked in
   both: a plain issue-level PR comment (the comment box at the bottom of
