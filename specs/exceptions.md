@@ -49,12 +49,7 @@ via the plain `Exception.__init__(message)` args, same as any exception.
 - Not a subclass of any built-in exception type with pre-existing
   semantics (e.g. not `LookupError`) — deliberately its own type, so
   catching it can never accidentally also catch an unrelated `KeyError`/
-  `IndexError` a driver's own response-parsing code might raise. This
-  was a real bug in an earlier draft of `drivers/digitalocean/compute.py`'s
-  spec, caught by `/code-review`: it substituted a plain `LookupError`
-  to avoid depending on this not-yet-built module, which both broke the
-  already-merged `driver.py`/`PLAN.md` contract by name and created a
-  real collision risk with genuine `KeyError`s from response parsing.
+  `IndexError` a driver's own response-parsing code might raise.
 
 ## Out of scope
 
