@@ -20,9 +20,11 @@ authoritative, not just illustrative, since it's explicitly labeled
 **Knowledge-confidence note**: the DigitalOcean API details below come
 from training-data knowledge, not a freshly-fetched doc check. Per
 explicit instruction, the plan is to build against this and check DO's
-actual API reference only if something fails on first pass — the one
-place confidence is genuinely low is `update()`'s power-off requirement
-for resizing (flagged inline below).
+actual API reference only if something fails on first pass. Confidence
+is genuinely low on two points, both flagged inline where they matter:
+`update()`'s power-off requirement for resizing, and whether
+`"monitoring" in droplet["features"]` is really how DO reports
+monitoring status on a `GET`.
 
 ## Interface
 
@@ -51,32 +53,32 @@ LIKELY_REPLACE_FIELDS = ["image", "region"]
 `Authorization: Bearer <token>` on every request.
 
 **HTTP client convention** (added here, not in `PLAN.md`, for
-testability): the driver must use `urllib.request` — a single
-`urllib.request.Request(url, data=..., headers=..., method=...)` /
-`urllib.request.urlopen(request)` call per API request, no third-party
-HTTP library. This is a deliberate, minimal addition to
-`prompts/generate_driver.md`'s existing generic HTTP guidance, made
+testability): `urllib.request` only, no third-party HTTP library — see
+`prompts/generate_driver.md` items 8–9 for the exact wording (single
+source of truth; not restated in full here to avoid the three-file
+drift risk `/code-review` flagged when this was fully duplicated across
+this spec, the generation prompt, and the review prompt). Made
 specifically so tests can mock one well-known stdlib seam
 (`urllib.request.urlopen`) rather than guessing which third-party
-library a generation run happened to reach for. DigitalOcean's API
-returns non-2xx responses as `urllib.error.HTTPError` (a subclass of
-`OSError` with `.code` and `.read()`), not a normal return value — the
-driver must catch this explicitly wherever a non-2xx status is an
-expected, handled case (404 on `read()`/`delete()`), not let it
-propagate as an unhandled exception.
+library a generation run happened to reach for.
 
 Stating this as a "hard requirement" in the prompt doesn't mechanically
 enforce it on its own — `driver_gen.py`'s `validate_driver_source()` only
 checks class/method structure and anthropic-related patterns, nothing
 HTTP-library-specific, so a violation could otherwise pass gate #1
 undetected and only surface when this driver's own test suite fails.
-Closed by adding an explicit checklist item to
-`prompts/review_driver.md` (Opus gate #1 itself now checks for it) rather
-than extending `validate_driver_source()` — that function is generic
-across all future providers/drivers, and this urllib convention, while
-also generic, doesn't yet warrant a second enforcement point beyond
-Opus's review; revisit if a future driver's generation run actually
-slips a third-party HTTP library past review.
+Closed *for now* by an explicit checklist item in
+`prompts/review_driver.md` (Opus gate #1 checks for it) rather than
+extending `validate_driver_source()`. **Flagged, not silently deferred**:
+`/code-review` correctly pointed out this is inconsistent with this
+project's stated preference for deterministic checks over probabilistic
+LLM review wherever cheap to do so (`CLAUDE.md`/`PLAN.md`'s "deterministic
+dict-diff first" framing) — a static `ast`-based check here would be a
+few lines, mirroring the existing `_imports_anthropic` pattern in
+`driver_gen.py`. Not done in this same pass because `driver_gen.py` is a
+separate, already-merged, already-reviewed module — extending it belongs
+in its own follow-up PR, not stacked onto this one. Recommended next
+step, not abandoned.
 
 ## Behavior
 
@@ -84,10 +86,11 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
 ### `create(params, credentials)`
 
-- `POST /v2/droplets` with a JSON body built from `params`
-  (`name` comes from the resource's `name` in `aiform.md`, not from
-  `params` itself — `ResourceSpec.name` is a separate field the
-  orchestrator must pass through some other means; see Edge cases).
+- `POST /v2/droplets` with a JSON body built from `params`, including
+  `name` — per the Edge cases note below, this spec assumes `params`
+  contains `name` in practice (the orchestrator, once built, merges
+  `ResourceSpec.name` into `params` before calling `create()`), so
+  `create()` reads `params["name"]` directly, not from some other source.
 - **Exactly one API call** — per `PLAN.md` §8 step 3 ("Executes
   `driver.create(params, credentials)` — one real DO API call"), this
   method does **not** poll until the droplet reaches `status: "active"`.
@@ -121,17 +124,25 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       "ip_address": <first networks.v4 entry where type == "public", or None>,
   }
   ```
-  `ssh_keys`/`backups`/`monitoring` are **not** included in this
-  flattening — see Edge cases below for why, and what that means for
-  `update()`.
+  `ssh_keys`/`backups`/`monitoring`: `create()` additionally echoes
+  back whatever was in `params` for these three keys verbatim
+  (`"ssh_keys": params.get("ssh_keys", [])`, etc.) — DO's response
+  doesn't confirm them, but `create()` *knows* what it just requested,
+  so echoing is accurate immediately after creation. This matters for
+  the no-op short-circuit — see Edge cases below for why `read()` can't
+  do the same on a later refresh, and what that means.
 
 ### `read(id, credentials)`
 
 - `GET /v2/droplets/{id}`. **Exactly one API call.**
-- `404` → a plain `LookupError` naming the `id` (not
-  `aiform.exceptions.ResourceNotFoundError` — that module doesn't exist
-  yet; see Out of scope).
-- Returns the same flattened attribute shape as `create()`.
+- `404` → `aiform.exceptions.ResourceNotFoundError`, naming the `id` in
+  the message.
+- Returns the same flattened attribute shape as `create()`, with one
+  partial exception: `monitoring` can be recovered from DO's response
+  (`"monitoring" in droplet.get("features", [])`, medium confidence,
+  same "verify docs on failure" stance) so `read()` *does* include it.
+  `ssh_keys`/`backups` genuinely cannot be recovered from a `GET` — see
+  Edge cases.
 
 ### `delete(id, credentials)`
 
@@ -154,7 +165,11 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `ssh_keys`/`backups`/`monitoring`/`tags` are deliberately *not*
   attempted in place either, even though DO likely exposes narrower
   endpoints for some of them — out of scope for this MVP driver, see
-  below.
+  below. Note the asymmetry in how reliably this diff reflects reality:
+  `monitoring` is correctly diffable (see Behavior's `read()` note — it
+  only shows as "changed" when it genuinely was), but `ssh_keys`/
+  `backups` are not — see Edge cases for why that's a real gap, not
+  just a scoping choice.
 - If the diff is `size` alone: DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —
   **low-medium confidence, verify against DO's docs if this fails**:
@@ -191,6 +206,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   This is the one path in this driver allowed more than one API call —
   unlike `create`/`read`/`delete`, an in-place resize is a genuinely
   multi-step DO operation, not a single request.
+  **If any polling step (2, 5, or 6) exhausts its bounded attempt
+  budget without reaching the target state**, raise a plain
+  `TimeoutError` naming which step and the droplet `id` — don't retry
+  indefinitely, don't silently return stale attributes, and don't leave
+  the failure mode unspecified. This is a real, bounded operational
+  failure (DO provisioning slower than expected), distinct from the
+  step-4 disk-mismatch case: that one is a *known, expected* rejection
+  with a defined recovery (fall back to destroy+recreate); a timeout is
+  *unexpected* and should surface as a loud error for a human to
+  investigate, not trigger an automatic destroy+recreate against a
+  droplet that might still complete the resize a moment later.
 - `PLAN.md` §8 step 2 itself anticipates a first-generation `update()`
   might be cruder than this (e.g. "resizes on *any* diff instead of
   scoping to `size`/`region`") and treats that as an Opus-flagged
@@ -220,25 +246,42 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *actions* (not instant) is why `update()`'s resize path needs polling
   at all, unlike the other three methods — this is a genuine DO API
   constraint, not a design choice made for its own sake.
-- **`ssh_keys`/`backups`/`monitoring` can't be round-tripped through
-  `read()`.** DO's droplet GET response doesn't return the SSH keys used
-  at creation at all (they're write-only), and `backups`/`monitoring`
-  don't map onto a clean boolean field the way `PARAM_SCHEMA` expects
-  (low confidence, same "verify docs on failure" stance). Since these
-  three keys are absent from `create()`/`read()`'s flattened return but
-  may be present in `desired` (they're optional in `PARAM_SCHEMA`, but
-  commonly set), `update()`'s plain key-comparison sees them as
-  "changed" on every `plan` after the first, correctly raises
-  `DriverUpdateNotSupported` per the "anything other than size alone"
-  rule (not silently ignored), but that means these three params are
-  effectively **write-once**: settable at `create()` time, any
-  subsequent value forces a destroy+recreate even when nothing
-  incompatible with an in-place update is actually happening. A real
-  MVP limitation surfaced while fixing the region/image/size shape
-  mismatch above, not a new design choice — documented here rather than
-  solved, since solving it needs DO API knowledge (exact `features`
-  array shape, whether there's a per-droplet SSH-key-list endpoint)
-  this spec doesn't have high confidence in.
+- **`ssh_keys`/`backups` can't be fully round-tripped through `read()`,
+  and this is a real, only-partially-mitigated gap in the non-negotiable
+  zero-Anthropic-API-call guarantee, not a minor cosmetic limitation —
+  flagged prominently per `/code-review`'s finding, not left as an
+  understated aside.** DO's droplet `GET` response doesn't return the
+  SSH keys used at creation at all (they're write-only), and `backups`
+  doesn't map onto a clean boolean the way `monitoring` does via
+  `features` (low confidence on this specific point, same "verify docs
+  on failure" stance). `PLAN.md` §5 step 5's no-op short-circuit is a
+  plain dict-diff between refreshed `attributes` (i.e. `read()`'s
+  return) and `desired` `params`, computed *before* `update()` is ever
+  called — so this isn't just an `update()`-scoping question, it's
+  whether the diff is empty at all:
+  - **Immediately after `create()`, before any refresh**: fine.
+    `create()` echoes `ssh_keys`/`backups`/`monitoring` from `params`
+    (see Behavior above), so the diff against unchanged `desired` is
+    empty and the no-op guarantee holds — this covers `PLAN.md` §8
+    step 4's exact walkthrough scenario.
+  - **After any `read()`-driven refresh** (a later `plan`/`refresh`
+    call): `read()` recovers `monitoring` (via `features`) but not
+    `ssh_keys`/`backups` — for any resource with `ssh_keys` configured
+    (the common case), the diff is non-empty on *every* subsequent
+    `plan`, forcing a real Sonnet categorization call and very likely a
+    spurious `DriverUpdateNotSupported` → destroy+recreate proposal,
+    each time. This genuinely violates the zero-API-call guarantee for
+    that case — not hidden here, but also not something this driver
+    alone can fully fix: `read()`'s contract (`id`, `credentials` only,
+    no access to prior state) gives it no way to know what `ssh_keys`
+    was previously set to, and DO's API gives it no way to ask. A real
+    fix needs a `planner.py`-level design decision (e.g. treating a key
+    absent from a driver's `read()` response as "unknown, don't diff"
+    rather than "removed, therefore changed," or state.json preserving
+    a driver's previously-known value for keys its `read()` doesn't
+    return) — out of scope for this driver spec, but a concrete,
+    named follow-up for whoever specs `planner.py`, not an
+    open-ended "solve it later."
 
 ## Out of scope
 
@@ -250,14 +293,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   real future work, not required for this MVP driver; any diff touching
   them raises `DriverUpdateNotSupported` and falls back to
   destroy+recreate, same as a genuinely non-updatable field.
-- **`aiform.exceptions.ResourceNotFoundError`** — doesn't exist yet
-  (`PLAN.md` §1). `prompts/generate_driver.md`'s own generic guidance
-  used to name this exact class before this pass — fixed (see below) to
-  instruct a plain `LookupError` instead, since an import of a
-  nonexistent module would break every method at load time, not just
-  the 404-on-read path. Same stance already established for
-  `DriverGenerationFailed` in `driver_gen.py`: don't invent
-  `exceptions.py`'s types ahead of it existing.
+- ~~`aiform.exceptions.ResourceNotFoundError` doesn't exist yet~~ — it
+  does now. An earlier draft of this spec substituted a plain
+  `LookupError` to avoid depending on a not-yet-built module, but that
+  broke the already-merged `driver.py`/`PLAN.md` contract by name (both
+  explicitly reference `ResourceNotFoundError`) and risked colliding
+  with real `KeyError`/`IndexError` from this driver's own response
+  parsing — a real bug caught by `/code-review`. Fixed properly by
+  building the minimal `aiform/exceptions.py` this driver's contract
+  actually needs (`specs/exceptions.md`, deliberately partial — see
+  that spec's own Out of scope), rather than working around a real gap
+  with the wrong exception type.
 - **Verifying the DigitalOcean API details against current docs** — per
   explicit instruction, build against training-data knowledge first;
   only check DO's actual reference docs if something fails on first
