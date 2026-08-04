@@ -113,13 +113,32 @@ but the human review must come *after* it, not concurrently or before,
 since Opus routinely catches real bugs that need fixing before there's
 anything worth reviewing by eye. Tell the human explicitly: run
 `/code-review` first; I'll act on whatever it finds (fix, push follow-up
-commits, or explain why something's out of scope), and only start
-watching for `/merge`/`/reject` once that's done — either after I see
-the `/code-review` completion notification with nothing left to fix, or
-because the human says to start watching now (an explicit override,
-same as skipping the wait entirely).
+commits, or explain why something's out of scope).
 
-Once it's actually time to watch:
+**Once `/code-review`'s findings (if any) are actually addressed**, post
+a commit status on the PR's current head SHA marking that:
+```sh
+gh api repos/juanman2/aiform/statuses/<head-sha> \
+  -f state=success \
+  -f context=opus-review \
+  -f description="findings addressed" # or "nothing to fix"
+```
+This is a **self-enforced** check, not a GitHub-blocked one — this repo
+is private and branch protection / required status checks need GitHub
+Pro on a private repo (confirmed 2026-08-04: both the classic protection
+API and the newer rulesets API return 403 "Upgrade to GitHub Pro or make
+this repository public"). The human has since upgraded to Pro but plans
+to transfer this repo to a new organization first — true GitHub-side
+branch protection requiring this status is a planned follow-up once that
+move happens, not built yet. Until then, *I* am the enforcement: the
+status is a real, external, GitHub-visible artifact I check before
+merging (see below), rather than something living only in my
+conversational memory — which is what actually failed on this repo's
+PR #18 (the watch loop started before `/code-review` had even been
+requested).
+
+Once `/code-review` is handled (status posted, or the human explicitly
+says to skip it for this PR), start watching:
 
 - Both triggers can land in two different places and must be checked in
   both: a plain issue-level PR comment (the comment box at the bottom of
@@ -157,9 +176,22 @@ Once it's actually time to watch:
     sleep 30
   done
   ```
-- On `MERGE_APPROVED` — merge immediately (`gh pr merge`), no further chat
-  confirmation needed; that `/merge` comment *is* the explicit human
-  approval the hard rule requires. Report that it merged.
+- On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
+  PR's *current* head SHA (not whatever it was when the watch loop
+  started — new commits may have landed) and check:
+  ```sh
+  gh api repos/juanman2/aiform/commits/<current-head-sha>/status \
+    --jq '.statuses[] | select(.context=="opus-review") | .state'
+  ```
+  If the latest `opus-review` status for that exact SHA isn't
+  `success`, **do not merge** — tell the human `/code-review` hasn't
+  been confirmed for the current commit (common cause: fix commits
+  landed after the status was posted, or the status was never posted at
+  all) and either post it now if it's genuinely been addressed, or ask
+  for `/code-review` to actually run. Only once `state == "success"` on
+  the current SHA, merge (`gh pr merge`) — that `/merge` comment *is*
+  the explicit human approval the hard rule requires, but it's not
+  sufficient by itself anymore. Report that it merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
