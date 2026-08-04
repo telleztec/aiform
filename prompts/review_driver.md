@@ -39,6 +39,24 @@ Check specifically for:
 7. **No obvious correctness bugs**: wrong HTTP methods/endpoints, response
    fields read with the wrong key, missing handling for a paginated or
    async-provisioning API, etc.
+8. **HTTP calls use `urllib.request`, not `requests`/`httpx`/any other
+   third-party HTTP library.** This is a hard requirement the generation
+   prompt states explicitly — nothing else mechanically checks it before
+   this driver is trusted, so an import of a different HTTP library is a
+   blocking issue here, not a style nitpick.
+9. **`read()` raises `aiform.exceptions.ResourceNotFoundError` on a
+   missing resource, not `None`, not a different exception (especially
+   not a bare `LookupError` — it collides with real `KeyError`/
+   `IndexError` from the driver's own response parsing).** Same "nothing
+   else mechanically checks this" reasoning as item 8 — a blocking issue
+   if violated, not a concern.
+10. **Non-2xx HTTP responses are caught explicitly, not left to
+    propagate as a raw `urllib.error.HTTPError`** wherever a specific
+    status is an expected, handled case (404 on `read()`/`delete()`
+    above all). An uncaught `HTTPError` surfacing where item 9's
+    `ResourceNotFoundError` (or idempotent-delete-success, item 3) was
+    supposed to be raised instead is the same class of bug as either of
+    those, not a separate lesser one.
 
 Respond with your structured verdict only. Use `blocking_issues` for
 anything from the list above that's actually violated — these block
