@@ -33,3 +33,9 @@ select = ["E", "F", "I", "UP", "B"]
 # marks it unsafe), not a formatting one -- deliberately not applied to
 # PlanAction here; revisit as its own explicit decision if wanted.
 ignore = ["UP042"]
+
+[tool.ruff.lint.isort]
+# `drivers` isn't the project's own package name (`aiform`), so ruff can't
+# auto-detect it as first-party -- without this it sorts into the
+# third-party group alongside pytest/anthropic instead of with aiform.
+known-first-party = ["aiform", "drivers"]
