@@ -62,9 +62,19 @@ Requirements, all non-negotiable:
 7. **Errors from the provider's API propagate or get re-raised with
    context** — never a bare `except: pass`, never swallow a failure and
    pretend it succeeded.
-8. Use the standard library's `urllib.request` or a widely-available
-   HTTP client already implied by context — don't assume a specific
-   third-party HTTP library is installed unless told otherwise.
+8. **Use `urllib.request` for every HTTP call — not `requests` or any
+   other third-party library.** Build each request with
+   `urllib.request.Request(url, data=..., headers=..., method=...)` and
+   send it with `urllib.request.urlopen(request)`. This is a hard
+   requirement, not a suggestion: the test suite that checks your output
+   mocks this exact stdlib call, and a driver that reaches for a
+   different HTTP library will fail every test regardless of how correct
+   its logic otherwise is.
+9. `urllib.request.urlopen` raises `urllib.error.HTTPError` (not a
+   normal return value) for any non-2xx response — catch it explicitly
+   wherever a specific non-2xx status is an expected, handled outcome
+   (e.g. a 404 on a read or delete), rather than letting it propagate
+   as an unhandled exception.
 
 Nothing outside `create`/`read`/`update`/`delete`/`PARAM_SCHEMA`/
 `LIKELY_REPLACE_FIELDS` is expected. Don't add a constructor that takes
