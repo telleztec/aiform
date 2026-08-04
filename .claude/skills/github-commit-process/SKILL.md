@@ -18,33 +18,44 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-04**: **two** things, both
-required — a PR comment from `github.com/juanman2` whose body, trimmed
-and lowercased, is exactly `/merge`, **and** a passing `opus-review`
-commit status on the PR's current head SHA (see "After the PR is open"
-below for how that status gets there). Neither alone is sufficient
-anymore. The `/merge` comment is not a chat message, and not a formal
-GitHub "Approve" review — GitHub hard-blocks PR authors from approving
-their own pull requests (a platform rule, not a repo setting), and every
-PR here is authored by juanman2, so a real "Approve" review is never
-obtainable on this repo; a plain comment isn't restricted that way and
-still requires opening the PR's "Files changed" tab to leave it, which
-is the actual point: forcing a visual scan of the diff before it merges.
-A "merge it" said in chat is no longer the trigger by itself; check for
-the `/merge` comment before merging regardless of what was said in chat.
-(If juanman2 explicitly says to skip the wait — for `/code-review`, for
-the `/merge` comment, or both — for a specific PR in that specific
-conversation, that's still a valid override for whichever part was
-named; it just isn't the default path anymore.)
+**What counts as approval, as of 2026-08-04**: **two independent things**,
+both required — a `/merge` signal, and a passing `opus-review` commit
+status on the PR's current head SHA. Neither alone is sufficient.
+Critically, **both signals are always external, GitHub-visible
+artifacts — never something inferred from conversation history alone**,
+including when either requirement is explicitly waived (see the two
+override paths below). This is deliberate: relying on "I remember the
+human said to skip it" is exactly the failure mode this whole mechanism
+exists to replace — a long conversation, a context compaction, or a
+fresh agent instance resuming the same PR can all silently lose a
+chat-only override, either wrongly blocking an authorized merge or,
+worse, wrongly proceeding on a misremembered one.
 
-Symmetric rejection trigger: a comment or review body that's exactly
-`/reject` stops the watch loop without merging — go read the PR's actual
-comments/review for what needs fixing, rather than continuing to poll
-indefinitely. Any *other* comment (general feedback, a question, a
-mid-review remark that isn't one of the two triggers) is not surfaced
-automatically by the watch loop — it only recognizes the literal `/merge`
-and `/reject` triggers. Substantive feedback that isn't a clear
-accept/reject should go through chat instead, as before.
+**The `/merge` signal**: a PR comment or review body from
+`github.com/juanman2`, trimmed and lowercased, exactly `/merge` — not a
+formal GitHub "Approve" review (GitHub hard-blocks PR authors from
+approving their own pull requests, a platform rule; every PR here is
+authored by juanman2, so a real "Approve" review is never obtainable).
+A plain comment isn't restricted that way and still requires opening the
+PR's "Files changed" tab to leave it — forcing a visual scan of the diff
+before it merges. Override: if juanman2 explicitly says in *chat* to
+merge without waiting for this GitHub signal, skip starting/polling the
+watch loop and proceed straight to the merge-time check below — but this
+override only ever waives the *polling step*, never the `opus-review`
+status requirement (that has its own, separate, GitHub-based override —
+see next).
+
+**The `opus-review` status**: how it gets posted, and its own override
+via a `/skip-review` signal, are covered in "After the PR is open" below.
+
+**Rejection**: a comment or review body that's exactly `/reject` stops
+the watch loop without merging — go read the PR's actual comments/review
+for what needs fixing, rather than continuing to poll indefinitely. Any
+*other* comment (general feedback, a question, a mid-review remark
+that isn't `/merge`/`/reject`/`/skip-review`) is not surfaced
+automatically by the watch loop — it only recognizes those three literal
+triggers. Substantive feedback that isn't a clear accept/reject should
+go through chat instead, as before.
 
 ## Branching
 
@@ -112,64 +123,76 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL. **Do not start the `/merge`/`/reject` watch loop yet.**
-`/code-review` (Opus) is user-triggered and I cannot launch it myself —
-but the human review must come *after* it, not concurrently or before,
-since Opus routinely catches real bugs that need fixing before there's
-anything worth reviewing by eye. Tell the human explicitly: run
-`/code-review` first; I'll act on whatever it finds (fix, push follow-up
-commits, or explain why something's out of scope).
+Report the PR URL. **Do not start the watch loop yet.** `/code-review`
+(Opus) is user-triggered and I cannot launch it myself — but the human
+review must come *after* it, not concurrently or before, since Opus
+routinely catches real bugs that need fixing before there's anything
+worth reviewing by eye. Tell the human explicitly: run `/code-review`
+first; I'll act on whatever it finds (fix, push follow-up commits, or
+explain why something's out of scope).
 
-**Once `/code-review`'s findings (if any) are actually addressed**, post
-a commit status on the PR's current head SHA marking that:
-```sh
-gh api repos/{owner}/{repo}/statuses/<head-sha> \
-  -f state=success \
-  -f context=opus-review \
-  -f description="findings addressed" # or "nothing to fix"
-```
-Use the literal `{owner}/{repo}` placeholders — `gh api` fills them in
-from the current directory's git remote automatically, so this keeps
-working after the planned org transfer (below) without needing anyone
-to remember to edit this file. Don't hardcode `juanman2/aiform`.
+**How the `opus-review` status gets satisfied — always one of two
+GitHub-visible events, never a chat-only decision:**
 
-This is a **self-enforced** check, not a GitHub-blocked one — this repo
-is private and branch protection / required status checks need GitHub
-Pro on a private repo (confirmed 2026-08-04: both the classic protection
-API and the newer rulesets API return 403 "Upgrade to GitHub Pro or make
-this repository public"). The human has since upgraded to Pro but plans
-to transfer this repo to a new organization first — true GitHub-side
-branch protection requiring this status is a planned follow-up once that
-move happens, not built yet. Until then, *I* am the enforcement: the
-status is a real, external, GitHub-visible artifact I check before
-merging (see below), rather than something living only in my
-conversational memory — which is what actually failed on this repo's
-PR #18 (the watch loop started before `/code-review` had even been
-requested).
+1. **A real `/code-review` pass.** Once its findings (if any) are
+   actually addressed, post a commit status on the PR's *current* head
+   SHA:
+   ```sh
+   gh api repos/{owner}/{repo}/statuses/<head-sha> \
+     -f state=success \
+     -f context=opus-review \
+     -f description="findings addressed" # or "nothing to fix"
+   ```
+2. **An explicit human skip**, via a `/skip-review` comment or review
+   body from `github.com/juanman2` on the PR (same detection mechanism
+   as `/merge`/`/reject` below) — e.g. for a docs-only change not worth
+   an Opus pass. On seeing it, immediately post the *same* status,
+   honestly:
+   ```sh
+   gh api repos/{owner}/{repo}/statuses/<head-sha> \
+     -f state=success \
+     -f context=opus-review \
+     -f description="human explicitly authorized skipping /code-review via /skip-review"
+   ```
 
-If the human explicitly says to skip `/code-review` for a specific PR
-(e.g. a docs-only change), that's a valid override — same as the
-"skip the wait" override in the hard rule above — and the merge-time
-check below should be treated as satisfied without a posted status,
-not as a block to route around silently.
+Both paths converge on the same artifact (an `opus-review: success`
+status on a specific SHA), which is the point: the merge-time check
+below only ever has to look at one thing, and "was review skipped" is
+never something to infer from earlier in the conversation — a long
+conversation, a context compaction, or a fresh agent instance resuming
+this PR could all lose a chat-only override. This status is
+**self-enforced**, not GitHub-blocked — this repo is private and branch
+protection / required status checks need GitHub Pro on a private repo
+(confirmed 2026-08-04: both the classic protection API and the newer
+rulesets API return 403 "Upgrade to GitHub Pro or make this repository
+public"). The human has since upgraded to Pro but plans to transfer this
+repo to a new organization first — true GitHub-side branch protection
+requiring this status is a planned follow-up once that move happens, not
+built yet. Use the literal `{owner}/{repo}` placeholders in both `gh
+api` calls above — they're filled in from the current directory's git
+remote automatically, so this keeps working after the org transfer
+without anyone needing to remember to edit this file.
 
-Once `/code-review` is handled (status posted, or the human explicitly
-says to skip it for this PR), start watching:
+Once `opus-review` is handled (either path above), start watching:
 
-- Both triggers can land in two different places and must be checked in
-  both: a plain issue-level PR comment (the comment box at the bottom of
-  the conversation), *or* a review body (`gh pr view`'s `reviews` array,
-  `state: COMMENTED`) — GitHub's own "Files changed" → "Review changes"
-  flow is the natural way to actually scan a diff before signing off, and
-  since "Approve" is blocked for a self-authored PR, that flow lands as a
-  `COMMENTED` review, not an issue comment. Checking only `comments` misses
-  this — confirmed the hard way on this repo's first PR under this process.
+- All three triggers (`/merge`, `/reject`, `/skip-review`) can land in
+  two different places and must be checked in both: a plain issue-level
+  PR comment (the comment box at the bottom of the conversation), *or* a
+  review body (`gh pr view`'s `reviews` array, `state: COMMENTED`) —
+  GitHub's own "Files changed" → "Review changes" flow is the natural
+  way to actually scan a diff before signing off, and since "Approve" is
+  blocked for a self-authored PR, that flow lands as a `COMMENTED`
+  review, not an issue comment. Checking only `comments` misses this —
+  confirmed the hard way on this repo's first PR under this process.
 - Start **one** background Bash job containing its own polling loop, using
   `run_in_background: true` (never manual `nohup`/`disown` — those bypass
   the harness's completion notification, which is the whole point: you
   only get woken up once, when the loop actually exits, instead of having
-  to re-poll turn after turn yourself):
+  to re-poll turn after turn yourself). The loop also handles a
+  `/skip-review` that lands *after* watching starts (posting the status
+  itself, inline, then continuing to poll for `/merge`):
   ```sh
+  posted_skip=false
   while true; do
     body=$(gh pr view <number> --json comments,reviews --jq '
       ([(.comments[] | {author, body, at: .createdAt}),
@@ -189,9 +212,20 @@ says to skip it for this PR), start watching:
       echo "REJECTED"
       exit 1
     fi
+    if [ "$body" = "/skip-review" ] && [ "$posted_skip" = false ]; then
+      sha=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+      gh api repos/{owner}/{repo}/statuses/$sha \
+        -f state=success -f context=opus-review \
+        -f description="human explicitly authorized skipping /code-review via /skip-review"
+      posted_skip=true
+    fi
     sleep 30
   done
   ```
+  (Note: only the *latest* trigger comment counts, same as `/merge` vs
+  `/reject` always did — if `/skip-review` and `/merge` are posted out
+  of order, post `/skip-review` first so its status lands before
+  `/merge` is seen as the latest comment.)
 - On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
   PR's *current* head SHA (not whatever it was when the watch loop
   started — new commits may have landed) and check:
@@ -200,17 +234,15 @@ says to skip it for this PR), start watching:
     --jq '.statuses[] | select(.context=="opus-review") | .state'
   ```
   If the latest `opus-review` status for that exact SHA isn't
-  `success`, **and** the human hasn't explicitly authorized skipping
-  `/code-review` for this specific PR (the override noted above — check
-  the conversation, don't assume), **do not merge**: tell the human
-  `/code-review` hasn't been confirmed for the current commit (common
-  cause: fix commits landed after the status was posted, or the status
-  was never posted at all) and either post it now if it's genuinely been
-  addressed, or ask for `/code-review` to actually run. Otherwise (a
-  fresh `success` status, or an explicit skip already on record), merge
-  (`gh pr merge`) — the `/merge` comment plus this status (or its
-  explicit override) together *are* the explicit human approval the hard
-  rule requires. Report that it merged.
+  `success` — this now covers *every* case, including an explicit skip,
+  since that's always posted as a status too — **do not merge**: tell
+  the human `/code-review` hasn't been confirmed for the current commit
+  (common cause: fix commits landed after the status was posted) and
+  either post it now if it's genuinely been addressed, ask for
+  `/code-review` to run, or ask for `/skip-review`. Otherwise, merge
+  (`gh pr merge`) — the `/merge` signal plus this status together *are*
+  the explicit human approval the hard rule requires. Report that it
+  merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
@@ -218,3 +250,9 @@ says to skip it for this PR), start watching:
 - If the wait is going to span a very long time (the human is away for
   hours), that's fine — this is a background-job-friendly wait, not
   something that needs to resolve before the turn ends.
+- If the human explicitly says in *chat* to merge without waiting for
+  the `/merge` GitHub signal, skip starting/polling this loop and go
+  straight to the `MERGE_APPROVED` step above — but the `opus-review`
+  status check there still applies unconditionally; a chat-only remark
+  never satisfies it by itself, only a real `/code-review` pass or a
+  `/skip-review` GitHub signal does.
