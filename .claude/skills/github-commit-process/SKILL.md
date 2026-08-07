@@ -19,7 +19,7 @@ you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
 **What counts as approval, as of 2026-08-04**: **two independent things**,
-both required — a `/merge` signal, and a passing `opus-review` commit
+both required — a `/claude-merge` signal, and a passing `opus-review` commit
 status on the PR's current head SHA. Neither alone is sufficient.
 Critically, **both signals are always external, GitHub-visible
 artifacts — never something inferred from conversation history alone**,
@@ -31,8 +31,8 @@ fresh agent instance resuming the same PR can all silently lose a
 chat-only override, either wrongly blocking an authorized merge or,
 worse, wrongly proceeding on a misremembered one.
 
-**The `/merge` signal**: a PR comment or review body from
-`github.com/juanman2`, trimmed and lowercased, exactly `/merge` — not a
+**The `/claude-merge` signal**: a PR comment or review body from
+`github.com/juanman2`, trimmed and lowercased, exactly `/claude-merge` — not a
 formal GitHub "Approve" review (GitHub hard-blocks PR authors from
 approving their own pull requests, a platform rule; every PR here is
 authored by juanman2, so a real "Approve" review is never obtainable).
@@ -46,13 +46,13 @@ status requirement (that has its own, separate, GitHub-based override —
 see next).
 
 **The `opus-review` status**: how it gets posted, and its own override
-via a `/skip-review` signal, are covered in "After the PR is open" below.
+via a `/claude-skip-review` signal, are covered in "After the PR is open" below.
 
-**Rejection**: a comment or review body that's exactly `/reject` stops
+**Rejection**: a comment or review body that's exactly `/claude-reject` stops
 the watch loop without merging — go read the PR's actual comments/review
 for what needs fixing, rather than continuing to poll indefinitely. Any
 *other* comment (general feedback, a question, a mid-review remark
-that isn't `/merge`/`/reject`/`/skip-review`) is not surfaced
+that isn't `/claude-merge`/`/claude-reject`/`/claude-skip-review`) is not surfaced
 automatically by the watch loop — it only recognizes those three literal
 triggers. Substantive feedback that isn't a clear accept/reject should
 go through chat instead, as before.
@@ -143,16 +143,16 @@ GitHub-visible events, never a chat-only decision:**
      -f context=opus-review \
      -f description="findings addressed" # or "nothing to fix"
    ```
-2. **An explicit human skip**, via a `/skip-review` comment or review
+2. **An explicit human skip**, via a `/claude-skip-review` comment or review
    body from `github.com/juanman2` on the PR (same detection mechanism
-   as `/merge`/`/reject` below) — e.g. for a docs-only change not worth
+   as `/claude-merge`/`/claude-reject` below) — e.g. for a docs-only change not worth
    an Opus pass. On seeing it, immediately post the *same* status,
    honestly:
    ```sh
    gh api repos/{owner}/{repo}/statuses/<head-sha> \
      -f state=success \
      -f context=opus-review \
-     -f description="human explicitly authorized skipping /code-review via /skip-review"
+     -f description="human explicitly authorized skipping /code-review via /claude-skip-review"
    ```
 
 Both paths converge on the same artifact (an `opus-review: success`
@@ -175,7 +175,7 @@ without anyone needing to remember to edit this file.
 
 Once `opus-review` is handled (either path above), start watching:
 
-- All three triggers (`/merge`, `/reject`, `/skip-review`) can land in
+- All three triggers (`/claude-merge`, `/claude-reject`, `/claude-skip-review`) can land in
   two different places and must be checked in both: a plain issue-level
   PR comment (the comment box at the bottom of the conversation), *or* a
   review body (`gh pr view`'s `reviews` array, `state: COMMENTED`) —
@@ -189,8 +189,8 @@ Once `opus-review` is handled (either path above), start watching:
   the harness's completion notification, which is the whole point: you
   only get woken up once, when the loop actually exits, instead of having
   to re-poll turn after turn yourself). The loop also handles a
-  `/skip-review` that lands *after* watching starts (posting the status
-  itself, inline, then continuing to poll for `/merge`):
+  `/claude-skip-review` that lands *after* watching starts (posting the status
+  itself, inline, then continuing to poll for `/claude-merge`):
   ```sh
   posted_skip=false
   while true; do
@@ -204,28 +204,28 @@ Once `opus-review` is handled (either path above), start watching:
       | gsub("^\\s+|\\s+$";"")
       | ascii_downcase
     ')
-    if [ "$body" = "/merge" ]; then
+    if [ "$body" = "/claude-merge" ]; then
       echo "MERGE_APPROVED"
       exit 0
     fi
-    if [ "$body" = "/reject" ]; then
+    if [ "$body" = "/claude-reject" ]; then
       echo "REJECTED"
       exit 1
     fi
-    if [ "$body" = "/skip-review" ] && [ "$posted_skip" = false ]; then
+    if [ "$body" = "/claude-skip-review" ] && [ "$posted_skip" = false ]; then
       sha=$(gh pr view <number> --json headRefOid --jq .headRefOid)
       gh api repos/{owner}/{repo}/statuses/$sha \
         -f state=success -f context=opus-review \
-        -f description="human explicitly authorized skipping /code-review via /skip-review"
+        -f description="human explicitly authorized skipping /code-review via /claude-skip-review"
       posted_skip=true
     fi
     sleep 30
   done
   ```
-  (Note: only the *latest* trigger comment counts, same as `/merge` vs
-  `/reject` always did — if `/skip-review` and `/merge` are posted out
-  of order, post `/skip-review` first so its status lands before
-  `/merge` is seen as the latest comment.)
+  (Note: only the *latest* trigger comment counts, same as `/claude-merge` vs
+  `/claude-reject` always did — if `/claude-skip-review` and `/claude-merge` are posted out
+  of order, post `/claude-skip-review` first so its status lands before
+  `/claude-merge` is seen as the latest comment.)
 - On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
   PR's *current* head SHA (not whatever it was when the watch loop
   started — new commits may have landed) and check:
@@ -239,20 +239,20 @@ Once `opus-review` is handled (either path above), start watching:
   the human `/code-review` hasn't been confirmed for the current commit
   (common cause: fix commits landed after the status was posted) and
   either post it now if it's genuinely been addressed, ask for
-  `/code-review` to run, or ask for `/skip-review`. Otherwise, merge
-  (`gh pr merge`) — the `/merge` signal plus this status together *are*
+  `/code-review` to run, or ask for `/claude-skip-review`. Otherwise, merge
+  (`gh pr merge`) — the `/claude-merge` signal plus this status together *are*
   the explicit human approval the hard rule requires. Report that it
   merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
-  feels immediate after leaving `/merge`, without being a true busy-loop.
+  feels immediate after leaving `/claude-merge`, without being a true busy-loop.
 - If the wait is going to span a very long time (the human is away for
   hours), that's fine — this is a background-job-friendly wait, not
   something that needs to resolve before the turn ends.
 - If the human explicitly says in *chat* to merge without waiting for
-  the `/merge` GitHub signal, skip starting/polling this loop and go
+  the `/claude-merge` GitHub signal, skip starting/polling this loop and go
   straight to the `MERGE_APPROVED` step above — but the `opus-review`
   status check there still applies unconditionally; a chat-only remark
   never satisfies it by itself, only a real `/code-review` pass or a
-  `/skip-review` GitHub signal does.
+  `/claude-skip-review` GitHub signal does.
