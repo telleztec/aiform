@@ -63,6 +63,18 @@ def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
     return directory
 
 
+@pytest.fixture(autouse=True)
+def specs_dir(tmp_path: Path, monkeypatch) -> Path:
+    # autouse: without this, draft_driver() defaults (provider="digitalocean",
+    # resource="compute" via make_spec()) resolve SPECS_DIR against the real
+    # repo, so every test would silently pull in the real, evolving
+    # specs/digitalocean_compute.md instead of a hermetic empty directory.
+    directory = tmp_path / "specs"
+    directory.mkdir()
+    monkeypatch.setattr(driver_gen, "SPECS_DIR", directory)
+    return directory
+
+
 def make_spec(**overrides) -> ResourceSpec:
     defaults = dict(
         resource="compute",
@@ -219,6 +231,77 @@ class TestDraftDriver:
         driver_gen.draft_driver(make_spec(), client=client)
         content = client.messages.calls[0]["messages"][0]["content"]
         assert "rejected" not in content.lower()
+
+    def test_includes_credentials_env_var_for_known_provider(
+        self, prompts_dir: Path, specs_dir: Path
+    ):
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider="digitalocean"), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "DIGITALOCEAN_TOKEN" in content
+
+    def test_omits_credentials_hint_for_unrecognized_provider(
+        self, prompts_dir: Path, specs_dir: Path
+    ):
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider="aws", resource="compute"), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "credentials" not in content.lower()
+
+    def test_includes_existing_spec_file_content(self, prompts_dir: Path, specs_dir: Path):
+        (specs_dir / "digitalocean_compute.md").write_text(
+            "## Behavior\n\nResize requires powering off first.\n"
+        )
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="compute"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "Resize requires powering off first." in content
+
+    def test_frames_existing_spec_as_authoritative(self, prompts_dir: Path, specs_dir: Path):
+        (specs_dir / "digitalocean_compute.md").write_text("## Behavior\n\nSome detail.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="compute"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" in content
+
+    def test_omits_spec_content_when_no_spec_file_exists(self, prompts_dir: Path, specs_dir: Path):
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="load_balancer"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" not in content
+
+    def test_spec_lookup_uses_provider_and_resource_specific_filename(
+        self, prompts_dir: Path, specs_dir: Path
+    ):
+        (specs_dir / "digitalocean_load_balancer.md").write_text(
+            "## Behavior\n\nUnrelated resource's spec.\n"
+        )
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="compute"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "Unrelated resource's spec." not in content
+
+    def test_ignores_collision_with_a_reserved_module_spec_filename(
+        self, prompts_dir: Path, specs_dir: Path
+    ):
+        # provider="driver", resource="gen" would otherwise resolve to
+        # specs/driver_gen.md -- this module's own dev-process spec, not a
+        # driver acceptance-criteria spec -- and get pasted into the
+        # generation prompt as if it were authoritative for this resource.
+        (specs_dir / "driver_gen.md").write_text("## Purpose\n\nThe generation half of PLAN.md.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider="driver", resource="gen"), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" not in content
+        assert "the generation half of plan.md" not in content
 
 
 class TestGenerateDriver:
