@@ -63,8 +63,12 @@ def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
     return directory
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def specs_dir(tmp_path: Path, monkeypatch) -> Path:
+    # autouse: without this, draft_driver() defaults (provider="digitalocean",
+    # resource="compute" via make_spec()) resolve SPECS_DIR against the real
+    # repo, so every test would silently pull in the real, evolving
+    # specs/digitalocean_compute.md instead of a hermetic empty directory.
     directory = tmp_path / "specs"
     directory.mkdir()
     monkeypatch.setattr(driver_gen, "SPECS_DIR", directory)
@@ -284,6 +288,20 @@ class TestDraftDriver:
         )
         content = client.messages.calls[0]["messages"][0]["content"]
         assert "Unrelated resource's spec." not in content
+
+    def test_ignores_collision_with_a_reserved_module_spec_filename(
+        self, prompts_dir: Path, specs_dir: Path
+    ):
+        # provider="driver", resource="gen" would otherwise resolve to
+        # specs/driver_gen.md -- this module's own dev-process spec, not a
+        # driver acceptance-criteria spec -- and get pasted into the
+        # generation prompt as if it were authoritative for this resource.
+        (specs_dir / "driver_gen.md").write_text("## Purpose\n\nThe generation half of PLAN.md.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider="driver", resource="gen"), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" not in content
+        assert "the generation half of plan.md" not in content
 
 
 class TestGenerateDriver:
