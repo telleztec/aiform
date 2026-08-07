@@ -21,7 +21,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["aiform*"]
+include = ["aiform*", "drivers*"]
 
 [tool.ruff]
 target-version = "py312"
