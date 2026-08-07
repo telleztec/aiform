@@ -1,0 +1,103 @@
+import json
+from typing import Any
+
+import anthropic
+
+from aiform import llm
+from aiform.models import LLMConfig, PlanAction, PlanEntry
+
+PLAN_CATEGORIZATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["create", "update", "destroy", "no-op"]},
+        "rationale": {"type": "string"},
+        "likely_replace": {"type": "boolean"},
+    },
+    "required": ["action", "rationale", "likely_replace"],
+    "additionalProperties": False,
+}
+
+
+def diff_attributes(current: dict[str, Any], desired: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    diff: dict[str, dict[str, Any]] = {}
+    for key, desired_value in desired.items():
+        current_value = current.get(key)
+        if current_value != desired_value:
+            diff[key] = {"current": current_value, "desired": desired_value}
+    return diff
+
+
+def categorize_diff(
+    resource_key: str,
+    diff: dict[str, Any],
+    *,
+    intent_notes: list[dict[str, str]],
+    param_schema: dict[str, Any],
+    likely_replace_fields: list[str],
+    drifted_missing: bool = False,
+    client: anthropic.Anthropic | None = None,
+    llm_config: LLMConfig | None = None,
+) -> PlanEntry:
+    system_prompt = (llm.PROMPTS_DIR / "diff_plan.md").read_text(encoding="utf-8")
+    user_content = json.dumps(
+        {
+            "diff": diff,
+            "intent_notes": intent_notes,
+            "param_schema": param_schema,
+            "likely_replace_fields": likely_replace_fields,
+            "drifted_missing": drifted_missing,
+        }
+    )
+    response_text = llm.implementation_call(
+        system_prompt,
+        user_content,
+        output_schema=PLAN_CATEGORIZATION_SCHEMA,
+        client=client,
+        llm_config=llm_config,
+    )
+    data = json.loads(response_text)
+    return PlanEntry(
+        resource_key=resource_key,
+        action=PlanAction(data["action"]),
+        rationale=data["rationale"],
+        likely_replace=data["likely_replace"],
+    )
+
+
+def plan_resource(
+    resource_key: str,
+    current_attributes: dict[str, Any],
+    desired_params: dict[str, Any],
+    *,
+    intent_notes: list[dict[str, str]],
+    param_schema: dict[str, Any],
+    likely_replace_fields: list[str],
+    state_aiform_md_sha256: str | None,
+    current_aiform_md_sha256: str,
+    drifted_missing: bool = False,
+    client: anthropic.Anthropic | None = None,
+    llm_config: LLMConfig | None = None,
+) -> PlanEntry:
+    diff = diff_attributes(current_attributes, desired_params)
+
+    if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
+        return PlanEntry(
+            resource_key=resource_key,
+            action=PlanAction.NO_OP,
+            rationale=(
+                "no changes detected: live attributes match desired params and the "
+                "aiform.md source is unchanged"
+            ),
+            likely_replace=False,
+        )
+
+    return categorize_diff(
+        resource_key,
+        diff,
+        intent_notes=intent_notes,
+        param_schema=param_schema,
+        likely_replace_fields=likely_replace_fields,
+        drifted_missing=drifted_missing,
+        client=client,
+        llm_config=llm_config,
+    )
