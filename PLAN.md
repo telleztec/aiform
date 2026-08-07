@@ -64,6 +64,99 @@ Two ways a driver gets added:
 fails with a clear, actionable error in the MVP — it does not attempt
 generation. §5 below reflects this.
 
+## Resource deletion: explicit only, two mechanisms
+
+**No implicit deletion.** A resource's `.aiform.md` file simply going
+missing from the discovered file set — deleted, moved, renamed to
+something that no longer matches `*.aiform.md` — is **never** treated as
+a deletion request, by analogy to Terraform's "remove it from config and
+it's destroyed on the next apply" or otherwise. A state-tracked resource
+whose file can't be found is left alone on both the CSP side and in
+state; §5 spells out exactly what `plan`/`apply` report in that case.
+Silently destroying real infrastructure because a file went missing (a
+typo'd path, an accidental `rm`, a file moved outside the project
+directory) is exactly the failure mode this project's model-tiering and
+review gates exist to prevent elsewhere — the same caution applies to
+this purely mechanical file-discovery step, not just the LLM-driven ones.
+
+Deletion happens through exactly two explicit, user-initiated mechanisms.
+Both converge on the same underlying behavior in `orchestrator.py` —
+produce a `destroy` `PlanEntry`, execute it, then archive the source
+file — and **neither ever goes through `planner.py`'s diff/categorize
+step** (§5 steps 5–6): a destroy is always a direct instruction, never
+inferred from a diff. `PLAN_CATEGORIZATION_SCHEMA` (`aiform/planner.py`)
+accordingly has no `destroy` value in its `action` enum at all — see §5's
+note on this.
+
+### Version 1 — `aiform destroy`
+
+The existing command (§6): `aiform destroy [FILE.aiform.md ...] [--yes]`.
+Plans and applies a destroy for every resource named by the given
+file(s) (or every resource currently tracked in state, if none are
+given), 100% subject to Opus gate #2 by definition. **New in this
+revision**: once a resource's destroy is verified (see "Verification"
+below), the `.aiform.md` file that named it is moved into
+`.aiform/trash/` (below) — this is what keeps the on-disk configuration
+coherent with reality: no leftover file still describing a resource that
+no longer exists anywhere else.
+
+### Version 2 — the `AIFORM-DELETE-` filename prefix
+
+A user marks a single resource for deletion by prepending the literal
+prefix `AIFORM-DELETE-` to its existing filename — e.g.
+`telleztec-app-01.aiform.md` → `AIFORM-DELETE-telleztec-app-01.aiform.md`.
+The frontmatter inside the file is untouched; this is a pure
+filename-level signal (`Path(f).name.startswith("AIFORM-DELETE-")`), not
+a new frontmatter field — the `.aiform.md` format itself (§2) doesn't
+change.
+
+`aiform plan`'s file-discovery step still matches this file with the
+same `*.aiform.md` glob (the prefix doesn't touch the extension), but
+classifies it as **marked for deletion** rather than parsing it toward a
+normal create/update/no-op plan. Its `PlanEntry.action` is `destroy`,
+decided the moment the prefix is detected — no diff, no Sonnet call,
+same as Version 1: this is an explicit instruction, not an inference.
+`aiform plan` prints this like any other destroy action; nothing is
+executed until `aiform apply`.
+
+`aiform apply` re-plans (per its existing step 1), sees the `destroy`
+action, runs Opus gate #2 like any other destroy (no special-case
+bypass), executes the destroy, and — once verified — moves the
+`AIFORM-DELETE-`-prefixed file into `.aiform/trash/`, exactly as Version
+1 does. If the named resource isn't currently tracked in state at all
+(e.g. the file was renamed before ever being applied), there's nothing
+to delete on the CSP side; `driver.delete()` is skipped entirely, and the
+file is moved to trash directly — the end state the user asked for (this
+resource doesn't exist, this file isn't part of the working set) is
+already satisfied without a wasted API call.
+
+### Trash directory
+
+`.aiform/trash/`, created on first use alongside `.aiform/state.json`. A
+moved file is renamed `<UTC-timestamp>-<original-filename>` (e.g.
+`20260807T190500Z-telleztec-app-01.aiform.md`) so repeated deletions of
+resources that happen to share a filename never collide. **Not
+gitignored** — unlike `credentials.env`/`state.json`, a trashed
+`.aiform.md` file carries no secrets and is a plain, useful record of
+what used to be managed and when it was torn down; a team may want that
+history in version control (§7's `.gitignore` list is unchanged by this).
+
+`.aiform/trash/` is a file-recovery convenience, not an undo of the
+destroy itself: restoring a file from trash back into the working
+directory and re-applying it creates a **brand-new** CSP resource (new
+`id`, possibly a new IP) — it does not reverse the destroy or restore
+the original resource's identity. This asymmetry (easy to get the file's
+contents back, no way to get the exact same resource back) is called out
+again in §9. Nothing prunes `.aiform/trash/` automatically.
+
+**Verification, both versions**: "verified" means `driver.delete()`
+returned without raising (idempotent by contract, §4 — a 404/already-gone
+response is success) and the resource's entry was removed from
+`.aiform/state.json`. The trash-move happens strictly after both of
+those, never before — if `driver.delete()` raises, the file is left
+exactly where it was, so a failed destroy stays visibly retryable on the
+next `apply` rather than silently vanishing from the working set.
+
 ## Terminology
 
 Three distinct concepts, previously conflated under the single overloaded
@@ -131,10 +224,11 @@ aiform/
 │   ├── generate_driver.md          # Sonnet system prompt: interface spec + CSP context -> driver source
 │   ├── review_driver.md            # Opus system prompt: gate #1 checklist
 │   └── review_plan.md              # Opus system prompt: gate #2 checklist
-├── .aiform/                        # gitignored; created by `aiform init`
+├── .aiform/                        # created by `aiform init`; credentials.env/state.json* gitignored (§7), trash/ is not
 │   ├── credentials.env             # DIGITALOCEAN_TOKEN=... (hand-edited, never scaffolded with a value)
 │   ├── state.json                  # default state file location
-│   └── state.json.backup           # written before every overwrite
+│   ├── state.json.backup           # written before every overwrite
+│   └── trash/                      # destroyed resources' .aiform.md files, moved (not deleted) here — see "Resource deletion"
 ├── examples/
 │   └── compute.aiform.md           # MVP example
 └── tests/
@@ -229,9 +323,11 @@ response = client.messages.create(
 intent_notes = json.loads(response.content[0].text)["intent_notes"]
 ```
 
-`intent_notes` is passed into the **diff/plan step** (§5) as context for Sonnet's create/update/destroy/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance.
+`intent_notes` is passed into the **diff/plan step** (§5) as context for Sonnet's create/update/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance. (Note: `destroy` is deliberately not one of the values Sonnet's categorization call can return — see "Resource deletion" above and §5's note on `PLAN_CATEGORIZATION_SCHEMA`.)
 
 One `.aiform.md` file describes exactly one resource in the MVP (no dependency graph). Multiple resources = multiple files, planned/applied independently in sequence. This is the natural extension point for a future graph, deliberately not built now.
+
+A file's *absence* from the discovered set is never itself meaningful to the parser or anything downstream of it (see "Resource deletion" above — no implicit deletion). The only filename-level convention this format recognizes at all is the `AIFORM-DELETE-` prefix marking a *present* file for destruction; nothing else about a file's name or location changes how it's parsed.
 
 ## 3. State file schema
 
@@ -449,10 +545,10 @@ class Driver(ResourceDriver):
 
 ### `aiform plan`
 
-1. **Locate `.aiform.md` files** — default: all `*.aiform.md` in cwd, or explicit paths from argv.
+1. **Locate `.aiform.md` files** — default: all `*.aiform.md` in cwd, or explicit paths from argv. Files whose name starts with `AIFORM-DELETE-` match this same glob but are classified separately (see "Resource deletion" above) — routed straight to a deterministic `destroy` `PlanEntry` in step 6, never parsed toward create/update/no-op.
 2. **Parse each file**:
-   - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls.
-   - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose.
+   - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls. Still required for an `AIFORM-DELETE-` file — the frontmatter is what identifies *which* resource to destroy.
+   - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose. Also skipped unconditionally for an `AIFORM-DELETE-` file, regardless of hash — a destroy needs no interpretive guidance.
 3. **Ensure a driver is usable** for `(provider, resource)`:
    - **Driver file missing** → `aiform plan` fails immediately with a clear, actionable error (raises `aiform.exceptions.PlanBlockedError`) naming the unsupported `(provider, resource)` pair — drivers are curated in the MVP (see "Driver curation" above), not generated at `plan` time. A future version replaces this branch with an interactive prompt offering to generate one, subject to explicit user approval before it's trusted; the **Generation** and **Opus gate #1** steps below describe the pipeline that prompt would drive (`aiform/driver_gen.py` already implements it) — not invoked by `plan` today.
    - **Driver file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to Opus gate #1c. This is what makes hand-editing a driver ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards, and it's the one driver-trust check that *does* run at `plan` time in the MVP. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not overwrite** — fail `aiform plan` with an explicit error naming the concerns (raises `aiform.exceptions.PlanBlockedError`); a hand-edit failing review means the human's edit needs fixing, not the AI's.
@@ -485,8 +581,10 @@ class Driver(ResourceDriver):
      d. **Approval rule**: a `blocking_issues`-free result is trusted in place (live re-review case) or, once generation is wired up, written to disk; non-empty `concerns` are printed as advisory warnings but do not block. The re-review path never retries automatically. (For the deferred generation path: `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail with an explicit error if still blocked, asking the user to hand-fix or hand-author the driver — this is `driver_gen.py`'s existing, tested behavior, just not reachable from `plan` yet.)
 4. **Refresh state** for any resource in the plan that already exists in state.
 5. **Diff, deterministically first**: compute a plain dict-diff between refreshed `attributes` and the desired `params`. If the diff is empty **and** `aiform_md_sha256` matches the current file **and** no `drifted_missing` flag is set → the action is `no-op`, decided with **zero LLM calls**. This is what makes the second-and-later `plan` runs cheap.
-6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a missing/drifted resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the driver's `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `destroy` / `no-op`), a natural-language rationale, and a `likely_replace: bool` hint.
+6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a `drifted_missing` resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the driver's `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `no-op` — **not** `destroy`; `PLAN_CATEGORIZATION_SCHEMA`'s `action` enum omits it entirely, since a diff has no structural basis to conclude a resource should stop existing), a natural-language rationale, and a `likely_replace: bool` hint. A resource identified via `aiform destroy`'s arguments or an `AIFORM-DELETE-`-prefixed file (see "Resource deletion" above) skips this step entirely: its `PlanEntry.action` is `destroy`, set the moment the destroy intent is identified, zero LLM calls either way.
 7. **Print the plan** and persist refreshed state.
+
+**A state-tracked resource with no corresponding file this run is left alone — this only applies to a default, no-argument invocation** (all `*.aiform.md` in cwd). Neither `plan` nor `apply` compares the full set of tracked state keys against the discovered file set looking for something to destroy; the only two ways to trigger a destroy are the ones named in "Resource deletion" above. Such a resource is reported with a warning (its last-known state is unchanged, printed as-is) rather than silently included or silently destroyed. When explicit file arguments are given instead, a tracked resource simply not named this run is expected scoping, not a warning-worthy anomaly — no message is printed for it.
 
 ### `aiform apply`
 
@@ -521,9 +619,9 @@ class Driver(ResourceDriver):
    - `update` → `driver.update(id, current, desired, credentials)`.
      - If it raises `DriverUpdateNotSupported` **and this resource was not already covered by the batch review in step 2**: pause, run a single-resource Opus review with the same schema, require fresh confirmation, then `driver.delete()` + `driver.create()`.
      - If it was already covered in step 2 as `likely_replace: true`, proceed directly to `delete()` + `create()` — it already passed the gate.
-   - `destroy` → `driver.delete(id, credentials)`, remove from state.
+   - `destroy` → `driver.delete(id, credentials)` (skipped if the resource was never actually tracked in state — see Version 2's untracked-file case in "Resource deletion" above), remove from state, then move the resource's `.aiform.md` file into `.aiform/trash/` (path taken from the tracked state entry's `aiform_md_path`, or the literal discovered path for an untracked `AIFORM-DELETE-` file). If `driver.delete()` raises, the file is left exactly where it was and the failure surfaces like any other apply error (§4) — nothing is archived until the destroy is verified.
    - `no-op` → skip.
-4. **State is written after each resource completes**, not batched at the end — a crash mid-apply doesn't lose successfully-applied resources' state.
+4. **State is written after each resource completes**, not batched at the end — a crash mid-apply doesn't lose successfully-applied resources' state. For a destroy, the trash-move happens as part of that same per-resource completion, after the state write, before moving on to the next resource in the plan.
 5. Step 3 makes **zero Anthropic API calls** per resource beyond what steps 1–2 already spent.
 
 ## 6. CLI command surface
@@ -538,16 +636,22 @@ aiform plan [FILE.aiform.md ...] [--state-file PATH] [--json]
     Parse, refresh, verify the curated driver is present (re-review on a
     hash mismatch, else fail with a clear error), diff, print plan.
     Persists refreshed state even with no changes. --json emits the
-    Plan as machine-readable output for scripting.
+    Plan as machine-readable output for scripting. Recognizes files
+    prefixed `AIFORM-DELETE-` as destroy requests (see "Resource
+    deletion") — shown in the plan, not yet executed.
 
 aiform apply [FILE.aiform.md ...] [--yes] [--state-file PATH]
     Re-plans, runs Opus gate #2 for any destructive step, executes.
     --yes skips the interactive confirmation only — never a `block` flag.
+    On a successful destroy (either "Resource deletion" mechanism), moves
+    the resource's source .aiform.md file into `.aiform/trash/`.
 
 aiform destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]
     Plans a destroy of every resource matching the given file(s) (or
     all tracked resources if none given), then applies it. 100% subject
-    to Opus gate #2 by definition.
+    to Opus gate #2 by definition. On success, moves each destroyed
+    resource's .aiform.md file into `.aiform/trash/` — see "Resource
+    deletion".
 
 aiform refresh [--state-file PATH]
     driver.read() for every tracked resource, updates state to match
@@ -589,5 +693,6 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
 - **Single local state file, no locking, no multi-user story.** Two concurrent `aiform apply` runs against the same `state.json` can race or corrupt it. Deliberately deferred, mirroring Terraform's own early single-operator local-state era.
 - **No state versioning/corruption recovery beyond a single `.aiform/state.json.backup`** written before every overwrite. Cheapest possible mitigation, not a real history/rollback mechanism.
 - **No state schema migration story.** `aiform_state_version` exists in the schema (§3) but nothing reads or acts on it yet — a future schema change has no defined upgrade path for existing `.aiform/state.json` files. Deferred until the schema actually needs to change.
+- **`.aiform/trash/` is a file-recovery convenience, not an undo.** It preserves a destroyed resource's `.aiform.md` source so the configuration isn't lost, but restoring a file from trash and re-applying it creates a brand-new CSP resource (new `id`, possibly a new IP) — it does not reverse the destroy or restore the original resource's identity. Nothing prunes it automatically either; it grows unbounded until a human cleans it up.
 - **LLM plan/diff decisions are non-deterministic by nature.** Even with `output_config.format` constraining the *shape* of Sonnet's/Opus's answers, two `plan` runs against byte-identical input could produce differently-worded rationale or, rarely, a materially different categorization — something `terraform plan` on unchanged input structurally cannot do. This is inherent to the project's premise, not a bug to eliminate.
 - **Opus review is a second opinion, not a proof — for curated drivers too.** A subtle bug in a driver could pass `/code-review` (or, for the runtime re-review/gate #2 paths, Opus review) and only manifest on an untested attribute combination during a live apply — the DigitalOcean compute driver's own build process is direct evidence review doesn't catch everything (see "Driver curation" above: Opus approved drafts with the wrong credentials key intact). The real backstop remains the human confirmation prompt and, for curated drivers, the hand-written acceptance test suite. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
