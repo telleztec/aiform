@@ -4,15 +4,65 @@
 
 Terraform's plan/apply engine uses rigid, hardcoded heuristics — most notably its provider schema system, where every resource attribute is flagged by the provider author as either updatable-in-place or `ForceNew` (destroy+recreate), with no nuance for "sometimes updatable" cases (e.g. AWS security-group descriptions, Azure `zone_redundant`). Other real pain points identified in research: `count`/`for_each` index-shift bugs that cause unrelated resources to be destroyed, and state drift/corruption with no built-in versioning unless the backend provides it.
 
-aiform's idea: replace the *planning/diffing* logic with an LLM making those decisions per-actual-diff (not a static per-attribute flag), while the mechanical CSP API calls (create/read/update/delete a resource) are delegated to plain, deterministic Python drivers — generated once per (provider, resource) pair by the LLM, then reused/executed directly with **zero further LLM calls** on repeat applies. This is deliberately scoped as a real standalone CLI tool (not a Claude-Code-only workflow) to genuinely test how much of this an AI can drive outside an interactive coding session.
+aiform's idea: replace the *planning/diffing* logic with an LLM making those decisions per-actual-diff (not a static per-attribute flag), while the mechanical CSP API calls (create/read/update/delete a resource) are delegated to plain, deterministic Python drivers, reused/executed directly with **zero further LLM calls** on repeat applies. **Revised from the original design**: drivers were originally meant to be generated once per (provider, resource) pair by the LLM at `aiform plan` runtime, unattended. Empirically (see "Driver curation" below) that didn't hold up — the MVP curates drivers instead, built ahead of time by aiform's own maintainers, with unattended runtime generation deferred to a future version. This is deliberately scoped as a real standalone CLI tool (not a Claude-Code-only workflow) to genuinely test how much of this an AI can drive outside an interactive coding session — that test is about the `plan`/`apply`/diff loop itself, which still runs entirely inside the standalone `aiform` binary against the Anthropic API directly, independent of driver curation happening via Claude Code at development time.
 
 **Prior art**: nothing found puts an LLM directly in the runtime plan/diff/sequencing loop against live provider APIs in production today. Closest is an arXiv paper on AI-driven IaC *drift reconciliation* — reconciliation-focused, not full lifecycle CRUD. Worth holding in tension: Martin Fowler has argued DSLs are valuable specifically because they shrink the LLM's solution space and enable deterministic validation. aiform's generated-driver interface (§4) partially serves that same "shrink the solution space" role Terraform's schema does, while the AI supplies the plan/diff/sequencing nuance Terraform's schema has none of.
 
-**Model tiering** (cost-conscious, deliberate): one *role* handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions, drafting new drivers — and a second, stronger *role* is used only as a review/approval gate at two checkpoints: (1) reviewing a newly-generated Python driver before it's trusted for reuse, and (2) reviewing the final plan before `apply` executes anything destructive. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Which model (and which model source/vendor) fills each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for the implementation role and Claude **Opus 5** (`claude-opus-5`) for the review role, both via the Anthropic API. Do not change either *default* for cost reasons without asking — this split was chosen deliberately, not by default. Users may override the configured model/source per role; that's an intentional escape hatch, not a violation of this rule.
+**Model tiering** (cost-conscious, deliberate): one *role* handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions — and a second, stronger *role* is used as a review/approval gate. **In the MVP this gate fires in three different places**: (1) at *development* time, reviewing a new curated driver via `/code-review` before it ships as part of the aiform package (see "Driver curation" below) — not a `plan`-time runtime call; (2) at `plan` *runtime*, but only for the hash-mismatch re-review case (§5 step 3) — a driver already on disk whose sha256 no longer matches its trusted record (a hand-edit, or an untrusted file) gets re-reviewed before being trusted again, the one driver-trust check that *does* run live in the MVP; and (3) at `apply` *runtime*, reviewing the final plan before it executes anything destructive. A future version restores driver *generation* review as a runtime checkpoint too (distinct from (2)'s re-review of existing files), for on-the-fly driver generation gated on explicit user approval. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Which model (and which model source/vendor) fills each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for the implementation role and Claude **Opus 5** (`claude-opus-5`) for the review role, both via the Anthropic API. Do not change either *default* for cost reasons without asking — this split was chosen deliberately, not by default. Users may override the configured model/source per role; that's an intentional escape hatch, not a violation of this rule.
 
 ## MVP scope (locked)
 
 Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see Known Limitations).
+
+## Driver curation (MVP) vs. future on-the-fly generation
+
+**Revised from the original design** after the first real driver-generation
+attempts. The original §5 described drivers as generated at `aiform plan`
+runtime by an LLM (Sonnet drafts, Opus reviews), unattended, the first
+time a `(provider, resource)` pair was needed. In practice, across three
+consecutive generation attempts against the DigitalOcean compute driver —
+Sonnet, Sonnet again with the prompt fixed to include the correct
+credentials key and the full acceptance-criteria spec verbatim, then Opus
+for *both* drafting and review — every attempt got the exact,
+explicitly-stated `credentials` dict key wrong (`credentials["api_token"]`,
+then `credentials["token"]`, then a five-candidate guess list that still
+didn't include the real key), and two of the three also silently dropped
+the entire resize power-cycle sequence the spec details at length. This
+wasn't a context-starvation problem — the correct answer was verified to
+be in the prompt, twice — it's a real reliability ceiling on one-shot
+generation against a spec this detailed. That matters specifically because
+the whole point of *runtime* generation is that no human is present in a
+real user's session to catch and fix a mistake like this.
+
+**MVP: drivers are curated, not generated at `plan` time.** The set of
+usable `(provider, resource)` drivers is fixed by aiform's own maintainers
+and ships as part of the aiform package itself
+(`drivers/<provider>/<resource>.py`) — not generated per end-user-project.
+Two ways a driver gets added:
+
+1. **Via Claude Code, now.** The same spec-first/test-first/Opus-reviewed
+   development loop (`PROCESS.md`) used for every other module in this
+   codebase: `specs/<provider>_<resource>.md` is the acceptance-criteria
+   spec, a hand-written test suite
+   (`tests/drivers/test_<provider>_<resource>.py`) checks a candidate
+   implementation against it, the driver itself is implemented directly
+   against both (by a human, or by Claude Code under human supervision —
+   not by an unattended `generate_driver()` call), reviewed via
+   `/code-review`, and merged through the normal PR process with human
+   approval. This is how `drivers/digitalocean/compute.py` gets built.
+2. **On-the-fly generation, deferred.** A future version where `aiform`
+   itself, at `plan` time, offers to generate a missing driver and prompts
+   the *aiform user* for explicit approval before trusting it — analogous
+   to how Claude Code prompts for tool-use permission. `aiform/driver_gen.py`
+   already implements the underlying draft/validate/review pipeline (built,
+   tested, and itself Opus-reviewed via the normal dev loop) — what's
+   deferred is wiring it into `plan`/`apply` behind that approval prompt,
+   and further work on generation reliability given the finding above
+   before it's trusted unattended.
+
+`aiform plan` against a `(provider, resource)` pair with no driver on disk
+fails with a clear, actionable error in the MVP — it does not attempt
+generation. §5 below reflects this.
 
 ## Terminology
 
@@ -35,11 +85,12 @@ design is that the orchestrator treats all three combinations uniformly:
 - **Driver** — the concrete implementation of one Resource for one
   Provider: a single Python file at `drivers/<provider>/<resource>.py`
   defining a class named `Driver` that subclasses `ResourceDriver` (§4).
-  This is the *only* per-(provider, resource) artifact the system
-  generates, reviews, and reuses. DigitalOcean's compute driver
-  (`drivers/digitalocean/compute.py`) is the one built in the MVP; it
-  happens to call DO's droplet API internally, but nothing above the
-  driver ever needs to know that.
+  This is the *only* per-(provider, resource) artifact the system curates
+  and reuses — built ahead of time by aiform's maintainers (see "Driver
+  curation" above), not generated at runtime in the MVP. DigitalOcean's
+  compute driver (`drivers/digitalocean/compute.py`) is the one built in
+  the MVP; it happens to call DO's droplet API internally, but nothing
+  above the driver ever needs to know that.
 
 The orchestrator is written entirely against the `ResourceDriver`
 contract — it dynamically imports `drivers/<provider>/<resource>.py`,
@@ -66,14 +117,14 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: implementation_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
-│   ├── driver_gen.py                # Sonnet drafts a driver; static validation; Opus review
+│   ├── driver_gen.py                # draft/validate/review pipeline; built, not yet wired into plan/apply (deferred on-the-fly generation, see "Driver curation")
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
 │   └── exceptions.py               # DriverUpdateNotSupported, ResourceNotFoundError, DriverExecutionError, PlanBlockedError
 ├── drivers/
 │   ├── __init__.py
 │   └── digitalocean/
 │       ├── __init__.py
-│       └── compute.py              # LLM-generated once, Opus-reviewed, then reused deterministically forever
+│       └── compute.py              # hand-authored via PROCESS.md's dev loop, Opus-reviewed via /code-review, then reused deterministically forever
 ├── prompts/
 │   ├── parse_intent.md             # Sonnet system prompt: prose Intent -> intent_notes[]
 │   ├── diff_plan.md                # Sonnet system prompt: raw diff + intent_notes -> PlanAction + rationale
@@ -92,7 +143,7 @@ aiform/
     └── drivers/test_digitalocean_compute.py
 ```
 
-**Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system ever generates, reviews, and reuses — everything else in `aiform/` is hand-written, static orchestration code.
+**Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system curates and reuses — everything else in `aiform/` is hand-written, static orchestration code, and in the MVP the driver itself is hand-authored too (see "Driver curation" above), not generated.
 
 **State file location**: `.aiform/state.json`, overridable with `--state-file`.
 
@@ -119,7 +170,7 @@ params:                    # required — structured, resource-specific
 ---
 ```
 
-`resource: compute` is the abstract, provider-agnostic kind (§ Terminology) — never a provider-specific product name like "droplet". `params` is intentionally an open, resource-specific object — its expected shape is not fixed at the aiform.md-format level. It is validated instead against the target driver's `PARAM_SCHEMA` (§4) once a driver exists for `(provider, resource)`. Before a driver exists, `params` is accepted as-is and handed to the driver-generation prompt as ground truth for what the driver needs to accept.
+`resource: compute` is the abstract, provider-agnostic kind (§ Terminology) — never a provider-specific product name like "droplet". `params` is intentionally an open, resource-specific object — its expected shape is not fixed at the aiform.md-format level. It is validated against the target driver's `PARAM_SCHEMA` (§4). In the MVP a driver must already exist (curated — see "Driver curation" above) for `(provider, resource)`; if none does, `aiform plan` fails with a clear error rather than accepting `params` as-is (that fallback — `params` handed to a generation prompt as ground truth for what a new driver needs to accept — is part of the deferred on-the-fly generation flow, not live today).
 
 ### Prose "Intent" section
 
@@ -248,7 +299,7 @@ One `.aiform.md` file describes exactly one resource in the MVP (no dependency g
 
 ## 4. Resource driver interface
 
-Every generated driver is a single Python file defining one class, `Driver`, subclassing the hand-written `ResourceDriver` ABC (`aiform/driver.py`). The ABC is what lets the orchestrator call any `(provider, resource)` combination identically — it never inspects a driver's internals, only calls the four contract methods below. Exact contract:
+Every driver is a single Python file defining one class, `Driver`, subclassing the hand-written `ResourceDriver` ABC (`aiform/driver.py`). The ABC is what lets the orchestrator call any `(provider, resource)` combination identically — it never inspects a driver's internals, only calls the four contract methods below. Exact contract:
 
 ```python
 # aiform/driver.py — hand-written, not generated
@@ -282,13 +333,15 @@ class ResourceDriver(ABC):
 
     # Declares the `params` shape this driver accepts. Used by the
     # orchestrator to validate a parsed aiform.md spec before ever
-    # calling create()/update(), and shown to Opus at generation-review
-    # time as ground truth for what the driver claims to handle.
+    # calling create()/update(), and shown to Opus at review time
+    # (dev-time /code-review for curated drivers in the MVP; generation
+    # review once on-the-fly generation is wired up) as ground truth for
+    # what the driver claims to handle.
     PARAM_SCHEMA: dict[str, Any]
 
     # Optional, advisory only (never authoritative — update() is the
-    # real arbiter). Populated at generation time so `aiform plan` can
-    # WARN that a change is likely to force a replace, purely for UX,
+    # real arbiter). Populated when the driver is authored so `aiform plan`
+    # can WARN that a change is likely to force a replace, purely for UX,
     # without pretending to know for certain the way Terraform's
     # ForceNew does. Subclasses that don't override it get an empty list.
     LIKELY_REPLACE_FIELDS: list[str] = []
@@ -352,10 +405,10 @@ class ResourceDriver(ABC):
         """
 ```
 
-A generated driver subclasses this and does nothing more — no shared base-class logic beyond the contract itself:
+A driver subclasses this and does nothing more — no shared base-class logic beyond the contract itself:
 
 ```python
-# drivers/digitalocean/compute.py — LLM-generated, Opus-reviewed
+# drivers/digitalocean/compute.py — hand-authored via PROCESS.md, Opus-reviewed via /code-review
 
 from aiform.driver import ResourceDriver, DriverUpdateNotSupported
 
@@ -400,16 +453,16 @@ class Driver(ResourceDriver):
 2. **Parse each file**:
    - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls.
    - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose.
-3. **Ensure a driver is usable** for `(provider, resource)`, distinguishing two cases — this distinction matters because it determines whether a hand-edited driver gets *reviewed* or silently *overwritten*:
-   - **Driver file missing** → full generation (below), ending at Opus gate #1.
-   - **Driver file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to Opus gate #1c, skipping generation entirely. This is what makes hand-editing a driver ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not regenerate or overwrite** — fail `aiform plan` with an explicit error naming the concerns (raises `aiform.exceptions.PlanBlockedError`); a hand-edit failing review means the human's edit needs fixing, not the AI's.
+3. **Ensure a driver is usable** for `(provider, resource)`:
+   - **Driver file missing** → `aiform plan` fails immediately with a clear, actionable error (raises `aiform.exceptions.PlanBlockedError`) naming the unsupported `(provider, resource)` pair — drivers are curated in the MVP (see "Driver curation" above), not generated at `plan` time. A future version replaces this branch with an interactive prompt offering to generate one, subject to explicit user approval before it's trusted; the **Generation** and **Opus gate #1** steps below describe the pipeline that prompt would drive (`aiform/driver_gen.py` already implements it) — not invoked by `plan` today.
+   - **Driver file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to Opus gate #1c. This is what makes hand-editing a driver ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards, and it's the one driver-trust check that *does* run at `plan` time in the MVP. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not overwrite** — fail `aiform plan` with an explicit error naming the concerns (raises `aiform.exceptions.PlanBlockedError`); a hand-edit failing review means the human's edit needs fixing, not the AI's.
 
-   **Generation** (missing-file case only):
+   **Generation** (deferred — not invoked by `plan` in the MVP; described here for when the future on-the-fly-generation prompt is wired up):
      a. Sonnet (`claude-sonnet-5`, plain-text output — Python source isn't a good fit for `output_config.format`) drafts the driver against `prompts/generate_driver.md`, which embeds the exact interface contract from §4 plus the desired `params` shape as a hint for `PARAM_SCHEMA`.
      b. Static validation: `ast.parse()` for syntax, then AST inspection (not import — untrusted code isn't executed pre-review) to confirm a class named `Driver` exists, subclasses `ResourceDriver`, and implements `create`, `read`, `update`, `delete` with the right argument names, and no `import anthropic` / `os.environ.get("ANTHROPIC` pattern is present.
 
-   **Opus gate #1** (shared endpoint for both cases above):
-     c. Opus (`claude-opus-5`) reviews the full source — freshly generated, or the existing on-disk file in the re-review case — against `prompts/review_driver.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
+   **Opus gate #1** (`llm.review_driver()` — used live today only by the re-review branch above; also the gate for the deferred generation path once wired up):
+     c. Opus (`claude-opus-5`) reviews the full source — the existing on-disk file in the live re-review case, or a freshly generated draft once generation is wired up — against `prompts/review_driver.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
         ```python
         DRIVER_REVIEW_SCHEMA = {
             "type": "object",
@@ -429,7 +482,7 @@ class Driver(ResourceDriver):
             messages=[{"role": "user", "content": driver_source_text}],
         )
         ```
-     d. **Approval rule**: a `blocking_issues`-free result is written to disk (generation case) or trusted in place (re-review case); non-empty `concerns` are printed as advisory warnings but do not block. For the **generation** path specifically, `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail `aiform plan` with an explicit error if still blocked (raises `aiform.exceptions.PlanBlockedError`), asking the user to hand-fix or hand-author the driver. The **re-review** path never retries automatically — see above.
+     d. **Approval rule**: a `blocking_issues`-free result is trusted in place (live re-review case) or, once generation is wired up, written to disk; non-empty `concerns` are printed as advisory warnings but do not block. The re-review path never retries automatically. (For the deferred generation path: `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail with an explicit error if still blocked, asking the user to hand-fix or hand-author the driver — this is `driver_gen.py`'s existing, tested behavior, just not reachable from `plan` yet.)
 4. **Refresh state** for any resource in the plan that already exists in state.
 5. **Diff, deterministically first**: compute a plain dict-diff between refreshed `attributes` and the desired `params`. If the diff is empty **and** `aiform_md_sha256` matches the current file **and** no `drifted_missing` flag is set → the action is `no-op`, decided with **zero LLM calls**. This is what makes the second-and-later `plan` runs cheap.
 6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a missing/drifted resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the driver's `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `destroy` / `no-op`), a natural-language rationale, and a `likely_replace: bool` hint.
@@ -482,7 +535,8 @@ aiform init [--provider digitalocean]
     prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN.
 
 aiform plan [FILE.aiform.md ...] [--state-file PATH] [--json]
-    Parse, refresh, generate/review drivers as needed, diff, print plan.
+    Parse, refresh, verify the curated driver is present (re-review on a
+    hash mismatch, else fail with a clear error), diff, print plan.
     Persists refreshed state even with no changes. --json emits the
     Plan as machine-readable output for scripting.
 
@@ -520,19 +574,20 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
 
 ## 8. MVP walkthrough
 
-1. Author `examples/compute.aiform.md`, set `ANTHROPIC_API_KEY` + `DIGITALOCEAN_TOKEN`.
-2. **`aiform plan`** — no driver exists yet → Sonnet drafts `drivers/digitalocean/compute.py` against DO's REST API (`POST/GET/DELETE /v2/droplets`, resize via `/actions`) → Opus reviews (e.g. flags a non-blocking concern that `update()` resizes on *any* diff instead of scoping to `size`/`region`) → approved with a printed warning. Diff shows `create`.
-3. **`aiform apply`** — no destroy/likely-replace actions present → gate #2 is skipped entirely, straight to y/N prompt (or `--yes`). Executes `driver.create(params, credentials)` — one real DO API call. `.aiform/state.json` written with the resource entry, including `driver.sha256` and the Opus review.
-4. **Second `aiform plan`** — `driver.read(id, credentials)` refreshes attributes (one DO call), `aiform_md_sha256` matches the unchanged file, dict-diff empty → `no-op` reported with **zero Anthropic API calls**. This is the concrete proof of the "no LLM tokens for the mechanical/repeat path" goal.
+1. Author `examples/compute.aiform.md`, set `ANTHROPIC_API_KEY` + `DIGITALOCEAN_TOKEN`. `drivers/digitalocean/compute.py` already exists — curated, built ahead of time (see "Driver curation" above) — so nothing about this walkthrough triggers driver generation.
+2. **`aiform plan`** — driver file present, on-disk sha256 matches the trusted hash recorded from its last review → no Opus gate #1 call at all. Diff shows `create`.
+3. **`aiform apply`** — no destroy/likely-replace actions present → gate #2 is skipped entirely, straight to y/N prompt (or `--yes`). Executes `driver.create(params, credentials)` — one real DO API call. `.aiform/state.json` written with the resource entry, including `driver.sha256` and the (dev-time, pre-recorded) Opus review it shipped with.
+4. **Second `aiform plan`** — `driver.read(id, credentials)` refreshes attributes (one DO call), `aiform_md_sha256` matches the unchanged file, dict-diff empty → `no-op` reported with **zero Anthropic API calls**. This is the concrete proof of the "no LLM tokens for the mechanical/repeat path" goal — and in the MVP, curated drivers mean even the *first* `plan` in step 2 makes no Opus call either, only step 6's Sonnet categorization call for the real `create` diff.
 
 ## 9. Known limitations (flagged, not solved in MVP)
 
-- **Generated-driver correctness drifts as CSP APIs change.** No mechanism auto-detects "this driver is stale" — a DO API deprecation just fails loudly at apply time, requiring the user (or a future `aiform driver regenerate` command) to delete/regenerate. No driver versioning or migration story exists yet.
+- **Driver set is curated and closed in the MVP.** Only `(provider, resource)` pairs aiform's own maintainers have hand-built via `PROCESS.md`'s dev loop are usable — `digitalocean`/`compute` is the only one. A user needing an unsupported pair has no self-service path today; they'd have to request it (or contribute it) upstream. On-the-fly generation with an explicit per-use user approval prompt is the planned fix (see "Driver curation" above), deferred specifically because three real generation attempts (documented there) showed it isn't reliable enough yet to run unattended — that's a reliability problem to solve, not just an engineering task to wire up.
+- **Driver correctness still drifts as CSP APIs change**, curated or not. No mechanism auto-detects "this driver is stale" — a DO API deprecation just fails loudly at apply time, requiring a maintainer to fix and re-release it. No driver versioning or migration story exists yet.
 - **No dependency graph.** MVP supports only independent resources planned/applied one file at a time (e.g. a compute resource followed by a DNS record referencing its IP is out of scope — a real system eventually needs this).
 - **Only one resource kind is implemented.** `network` and `load_balancer` are named in Terminology as resource kinds the vocabulary already accommodates, but no `ResourceDriver` subclass exists for either yet — `compute` (via DigitalOcean) is the only one built. Adding a second kind or a second provider is expected to require zero orchestrator changes, but that claim is untested until it actually happens.
-- **Opus review cost is bounded but nonzero**, unlike Terraform's zero-cost static plan. It's amortized: once per new `(provider, resource)` driver (reused forever after) and once per `apply` run that contains a destructive step. At current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok, `claude-opus-5` ≈ $5/$25 per MTok) this is a real, ongoing operating cost, traded deliberately for the flexibility Terraform's static ForceNew flag can't offer.
+- **Opus review cost at `plan`/`apply` runtime is now much smaller than originally designed.** With curated drivers, the only *runtime* Opus calls are the rare hash-mismatch re-review (a hand-edited driver) and gate #2 before a destructive `apply` — driver review itself moved to development time (`/code-review`, not billed per end-user run). At current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok, `claude-opus-5` ≈ $5/$25 per MTok) this is a real but now much smaller ongoing operating cost than Terraform's zero-cost static plan, traded deliberately for the flexibility Terraform's static ForceNew flag can't offer.
 - **Single local state file, no locking, no multi-user story.** Two concurrent `aiform apply` runs against the same `state.json` can race or corrupt it. Deliberately deferred, mirroring Terraform's own early single-operator local-state era.
 - **No state versioning/corruption recovery beyond a single `.aiform/state.json.backup`** written before every overwrite. Cheapest possible mitigation, not a real history/rollback mechanism.
 - **No state schema migration story.** `aiform_state_version` exists in the schema (§3) but nothing reads or acts on it yet — a future schema change has no defined upgrade path for existing `.aiform/state.json` files. Deferred until the schema actually needs to change.
 - **LLM plan/diff decisions are non-deterministic by nature.** Even with `output_config.format` constraining the *shape* of Sonnet's/Opus's answers, two `plan` runs against byte-identical input could produce differently-worded rationale or, rarely, a materially different categorization — something `terraform plan` on unchanged input structurally cannot do. This is inherent to the project's premise, not a bug to eliminate.
-- **The two Opus gates are a second opinion, not a proof.** A subtle bug in a generated driver could pass static validation and Opus review and only manifest on an untested attribute combination during a live apply. The real backstop remains the human confirmation prompt. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
+- **Opus review is a second opinion, not a proof — for curated drivers too.** A subtle bug in a driver could pass `/code-review` (or, for the runtime re-review/gate #2 paths, Opus review) and only manifest on an untested attribute combination during a live apply — the DigitalOcean compute driver's own build process is direct evidence review doesn't catch everything (see "Driver curation" above: Opus approved drafts with the wrong credentials key intact). The real backstop remains the human confirmation prompt and, for curated drivers, the hand-written acceptance test suite. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
