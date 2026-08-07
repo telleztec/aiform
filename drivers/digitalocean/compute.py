@@ -63,14 +63,19 @@ class Driver(ResourceDriver):
         self._request("POST", f"{BASE_URL}/droplets/{id}/actions", credentials, body=body)
 
     def _poll_until(self, id, credentials, predicate, step, max_attempts=20, delay_seconds=2):
-        for _ in range(max_attempts):
+        for attempt in range(max_attempts):
             droplet = self._get_droplet(id, credentials)
             if predicate(droplet):
                 return droplet
-            time.sleep(delay_seconds)
+            if attempt < max_attempts - 1:
+                time.sleep(delay_seconds)
         raise TimeoutError(
             f"timed out waiting for droplet {id} during the {step} step of an in-place resize"
         )
+
+    def _do_action_and_wait(self, id, credentials, body, predicate, step):
+        self._action(id, credentials, body)
+        return self._poll_until(id, credentials, predicate, step)
 
     def create(self, params, credentials):
         body = {
@@ -122,25 +127,44 @@ class Driver(ResourceDriver):
                 unsupported_fields=["size"],
             )
 
-        if status == "active":
-            self._action(id, credentials, {"type": "power_off"})
-            self._poll_until(id, credentials, lambda d: d["status"] == "off", "power-off")
+        target_size = desired.get("size")
+        if not target_size:
+            raise DriverUpdateNotSupported(
+                f"cannot resize droplet {id}: desired params has no size value",
+                unsupported_fields=["size"],
+            )
 
-        target_size = desired["size"]
+        we_powered_off = status == "active"
+        if we_powered_off:
+            self._do_action_and_wait(
+                id, credentials, {"type": "power_off"}, lambda d: d["status"] == "off", "power-off"
+            )
+
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
         except urllib.error.HTTPError as exc:
-            self._action(id, credentials, {"type": "power_on"})
-            self._poll_until(id, credentials, lambda d: d["status"] == "active", "power-on")
+            # Only restore power state we ourselves changed -- a droplet that
+            # started "off" (the user's own choice) stays off on a rejected
+            # resize, it doesn't get turned on as a side effect of the failure.
+            if we_powered_off:
+                self._do_action_and_wait(
+                    id,
+                    credentials,
+                    {"type": "power_on"},
+                    lambda d: d["status"] == "active",
+                    "power-on",
+                )
             raise DriverUpdateNotSupported(
                 f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}",
                 unsupported_fields=["size"],
             ) from exc
 
+        # Unlike the rejection path above, a *successful* resize always powers
+        # the droplet back on, even if it started "off" -- this driver has now
+        # changed its size, so it's expected to come back up, not stay down.
         self._poll_until(id, credentials, lambda d: d["size_slug"] == target_size, "resize")
-        self._action(id, credentials, {"type": "power_on"})
-        final_droplet = self._poll_until(
-            id, credentials, lambda d: d["status"] == "active", "power-on"
+        final_droplet = self._do_action_and_wait(
+            id, credentials, {"type": "power_on"}, lambda d: d["status"] == "active", "power-on"
         )
 
         attrs = self._flatten(final_droplet)

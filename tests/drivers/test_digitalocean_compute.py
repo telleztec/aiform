@@ -631,6 +631,38 @@ class TestUpdateResizeInPlace:
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
 
+    def test_resize_rejected_from_off_does_not_power_on(self, driver, fake_urlopen):
+        # A droplet that started "off" (the user's own choice) is left off
+        # on a rejected resize -- it isn't powered on as a side effect of a
+        # failure it never asked for, unlike the from-"active" case above.
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"}),
+        )
+
+        with pytest.raises(DriverUpdateNotSupported) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "size" in excinfo.value.unsupported_fields
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["resize"]
+        assert fake_urlopen.calls == action_calls(fake_urlopen, "123")
+
+    def test_resize_with_no_size_in_desired_raises_unsupported(self, driver, fake_urlopen):
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs()
+        del desired["size"]
+
+        with pytest.raises(DriverUpdateNotSupported) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "size" in excinfo.value.unsupported_fields
+        assert fake_urlopen.calls == []
+
     def test_power_off_poll_timeout_raises_timeout_error_naming_id(self, driver, fake_urlopen):
         current = make_attrs(status="active", size="s-1vcpu-2gb")
         desired = make_attrs(size="s-2vcpu-4gb")
