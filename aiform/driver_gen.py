@@ -159,7 +159,7 @@ def draft_driver(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
-    system_prompt = (llm.PROMPTS_DIR / "generate_driver.md").read_text(encoding="utf-8")
+    system_prompt = llm.load_prompt("generate_driver.md")
     user_content = (
         f"provider: {spec.provider}\n"
         f"resource: {spec.resource}\n"

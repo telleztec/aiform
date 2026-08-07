@@ -24,7 +24,13 @@ You will receive a JSON object with:
   the resource needs to be created again, regardless of what `diff`
   contains.
 
-Decide exactly one `action`:
+Decide exactly one `action` — your choices are `"create"`, `"update"`,
+or `"no-op"` (there is no `"destroy"` option here: a per-resource diff of
+live attributes against desired params has no way to signal "this
+resource should no longer exist" — an absent `desired_params` key just
+means that field isn't user-managed, not that the whole resource should
+go away; a resource being removed entirely is decided elsewhere, from
+comparing which `.aiform.md` files exist, not from this diff):
 
 - `"create"` — the resource doesn't exist yet, or existed and was
   deleted out-of-band (`drifted_missing: true`) and needs to be created
@@ -41,12 +47,6 @@ Decide exactly one `action`:
   this should be rare, but a diff that's cosmetically different but
   semantically identical to the desired value (respecting
   `param_schema`'s types) can still legitimately resolve to `no-op`.
-- `"destroy"` — never appropriate from this input alone: a per-resource
-  diff of live attributes against desired params has no way to signal
-  "this resource should no longer exist" (an absent `desired_params` key
-  just means that field isn't user-managed, not that the whole resource
-  should go away). If you find yourself reaching for `"destroy"`, use
-  `"update"` instead and explain the ambiguity in `rationale`.
 
 Always honor `intent_notes` over your own default judgment about a field
 when they conflict — e.g. "prefer in-place resize over recreate" should

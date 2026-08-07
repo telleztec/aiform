@@ -30,10 +30,13 @@ against unchanged input free of Anthropic API calls.
    owns iterating discovered files against state. Likewise, `aiform
    destroy`'s explicit, user-requested destroy (`PLAN.md` §6) needs no
    LLM categorization at all — the user said what they want directly.
-   `PLAN_CATEGORIZATION_SCHEMA` still declares `"destroy"` as a valid enum
-   value (matching `PlanAction` and `PLAN.md`'s literal schema) for
-   forward compatibility, but nothing in this module's call sites ever
-   exercises that branch today.
+   `PLAN_CATEGORIZATION_SCHEMA` therefore diverges from `PLAN.md`'s literal
+   4-value schema and **omits `"destroy"` from the enum entirely** — a
+   diff-based comparison has no structural basis to ever conclude a
+   resource should stop existing, so rather than declare the option and
+   rely on `prompts/diff_plan.md` telling the model not to pick it,
+   narrowing the schema makes an errant `destroy` response structurally
+   impossible instead of merely discouraged.
 
 ## Interface
 

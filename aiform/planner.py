@@ -6,10 +6,18 @@ import anthropic
 from aiform import llm
 from aiform.models import LLMConfig, PlanAction, PlanEntry
 
+# "destroy" is deliberately excluded from this enum, unlike PLAN.md §5
+# step 6's literal 4-value PlanAction list: a current-vs-desired diff has
+# no structural basis to conclude a resource should stop existing (see
+# specs/planner.md's judgment call 2) -- destroy-by-file-removal is a set
+# comparison orchestrator.py owns, and `aiform destroy`'s explicit destroy
+# needs no categorization at all. Narrowing the schema means the model
+# cannot select "destroy" here even if it disregards prompts/diff_plan.md's
+# instruction not to -- a stronger guarantee than a prompt alone.
 PLAN_CATEGORIZATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["create", "update", "destroy", "no-op"]},
+        "action": {"type": "string", "enum": ["create", "update", "no-op"]},
         "rationale": {"type": "string"},
         "likely_replace": {"type": "boolean"},
     },
@@ -38,7 +46,7 @@ def categorize_diff(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> PlanEntry:
-    system_prompt = (llm.PROMPTS_DIR / "diff_plan.md").read_text(encoding="utf-8")
+    system_prompt = llm.load_prompt("diff_plan.md")
     user_content = json.dumps(
         {
             "diff": diff,

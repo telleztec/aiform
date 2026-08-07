@@ -11,6 +11,11 @@ from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, P
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
+
+def load_prompt(name: str) -> str:
+    return (PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
 DRIVER_REVIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -114,7 +119,7 @@ def review_driver(
     llm_config: LLMConfig | None = None,
 ) -> DriverReview:
     role, call = _resolve_role(llm_config, "review")
-    system_prompt = (PROMPTS_DIR / "review_driver.md").read_text(encoding="utf-8")
+    system_prompt = load_prompt("review_driver.md")
     response_text = call(
         role.model,
         system_prompt,
@@ -139,7 +144,7 @@ def review_plan(
     llm_config: LLMConfig | None = None,
 ) -> PlanReview:
     role, call = _resolve_role(llm_config, "review")
-    system_prompt = (PROMPTS_DIR / "review_plan.md").read_text(encoding="utf-8")
+    system_prompt = load_prompt("review_plan.md")
     response_text = call(
         role.model,
         system_prompt,
