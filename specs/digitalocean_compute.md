@@ -2,15 +2,20 @@
 
 ## Purpose
 
-**This spec is different in kind from every prior one.** It does not
-describe code to be hand-written — it describes the *acceptance
-criteria* a driver produced by `aiform.driver_gen.generate_driver()`
-must satisfy. The source itself is LLM-drafted (implementation role) and
-Opus-reviewed (gate #1) inside `generate_driver()`; this document is
-what the hand-written test suite (`tests/drivers/test_digitalocean_compute.py`)
-checks the generated output against, as an independent second opinion on
-top of Opus's review — and what `prompts/generate_driver.md` is aimed at
-producing.
+**Revised after `PLAN.md`'s "Driver curation" pivot.** This spec
+originally described acceptance criteria for output from
+`aiform.driver_gen.generate_driver()` — three real generation attempts
+against it (documented in `PLAN.md`) showed that path isn't reliable
+enough yet to trust unattended, so the MVP curates this driver instead:
+hand-authored directly against this spec and the pre-existing test suite
+(`tests/drivers/test_digitalocean_compute.py`), following `PROCESS.md`'s
+normal spec-first/test-first/Opus-reviewed loop like every other module
+in this codebase — the same red-tests-first discipline, just with a
+human (or Claude Code under human supervision) writing the
+implementation instead of an unattended `draft_driver()` call. The
+acceptance criteria below are unchanged by this — they were already
+written precisely enough to serve as a hand-implementation spec, not
+just a check on generated output.
 
 `PLAN.md` §4 already gives this driver's `PARAM_SCHEMA` and
 `LIKELY_REPLACE_FIELDS` verbatim as its worked example — treated here as
@@ -321,8 +326,12 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   real future work, not required for this MVP driver; any diff touching
   them raises `DriverUpdateNotSupported` and falls back to
   destroy+recreate, same as a genuinely non-updatable field.
-- **Actually calling `generate_driver()` and running it against a real
-  `DIGITALOCEAN_TOKEN`** — this spec is the acceptance criteria for that
-  generation step and for the hand-written test suite that checks its
-  output; neither the generation call nor a live integration test
-  against DO's real API happens as part of writing this spec.
+- **A live integration test against DO's real API with a real
+  `DIGITALOCEAN_TOKEN`** — this spec and the hand-written test suite that
+  checks an implementation against it are both built and validated
+  against mocked `urllib.request.urlopen`, not a live DO account.
+- **Running this driver's implementation through `generate_driver()`** —
+  deferred along with the rest of on-the-fly generation (see `PLAN.md`'s
+  "Driver curation" section); this spec now also serves as the
+  hand-implementation guide, not only generated-output acceptance
+  criteria.
