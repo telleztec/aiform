@@ -9,7 +9,7 @@ it through Opus gate #1 (`llm.review_driver()`), retrying the whole draft
 once if either check fails before giving up. Returns the approved source
 text and its `DriverReview` — it does not write anything to disk.
 
-**Two judgment calls made explicit here** (not fully specified in
+**Three judgment calls made explicit here** (not fully specified in
 `PLAN.md`, resolved before writing this spec):
 
 1. **Static-validation failures retry, same as Opus blocking_issues.**
@@ -26,6 +26,38 @@ text and its `DriverReview` — it does not write anything to disk.
    recording it in `.aiform/state.json` are `orchestrator.py`'s job
    (`PLAN.md` §1), not built yet — this module only drafts, validates,
    and reviews.
+3. **`draft_driver()` grounds the draft with two more pieces of
+   deterministic, non-LLM context beyond `spec.params`, discovered
+   necessary empirically** — the first real `generate_driver()` run
+   against `digitalocean`/`compute` produced a driver that read
+   `credentials["api_token"]` (the real key is `DIGITALOCEAN_TOKEN`, per
+   `config.PROVIDER_TOKEN_ENV_VARS`) and skipped the entire resize
+   power-cycle sequence `specs/digitalocean_compute.md` spells out in
+   detail, because neither piece of information was ever in the prompt —
+   `PLAN.md` §5 step 3a only promised "the desired params shape as a hint
+   for `PARAM_SCHEMA`," nothing about the credentials key name or an
+   existing acceptance-criteria spec. Fixed here rather than papering
+   over it with one-off regeneration feedback each time a driver spec
+   already exists. Both additions are looked up mechanically, no
+   judgment involved in *what* to include, only *whether* it's available:
+   - The credentials env var name for `spec.provider`, from
+     `aiform.config.PROVIDER_TOKEN_ENV_VARS` — included only when the
+     provider is a recognized key in that mapping; silently omitted
+     otherwise (an unrecognized provider fails elsewhere, in
+     `config.resolve_credentials()`, not here).
+   - The full text of `specs/<provider>_<resource>.md`, when that file
+     exists on disk (mirroring the naming convention `specs/README.md`
+     already documents), framed as authoritative ground truth —
+     specifically because a document like `specs/digitalocean_compute.md`
+     exists precisely to be more trustworthy than the model's own
+     training-data recall of a CSP's API, and the whole point of writing
+     it was defeated by never showing it to the model doing the
+     generating. Silently omitted when no such file exists yet, which is
+     the common case for any `(provider, resource)` pair without a
+     hand-written spec.
+   This does not change `PLAN.md` §5 step 3a's actual generation
+   sequence (draft → validate → review, same retry budget) — only what
+   `draft_driver()` puts in the user message before the first draft.
 
 **Consistency note**: `specs/driver.md`'s Behavior section states that
 enforcing "every driver declares a `PARAM_SCHEMA`" is this module's job.
@@ -106,8 +138,21 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
 
 - `draft_driver()`'s user content includes `spec.provider`, `spec.resource`,
   and `spec.params` (JSON-serialized) as the shape hint for `PARAM_SCHEMA`,
-  per §5 step 3a. When `feedback` is given, it's appended as a distinct
-  "the previous draft was rejected for these reasons" block, so a retry's
+  per §5 step 3a. It then appends, each only when available (see judgment
+  call 3 above):
+  1. The credentials env var name for `spec.provider` from
+     `aiform.config.PROVIDER_TOKEN_ENV_VARS`, phrased as the exact dict
+     shape `credentials` will always be (e.g. `{"DIGITALOCEAN_TOKEN":
+     "<token>"}`) — omitted entirely (no placeholder text) when
+     `spec.provider` isn't a key in that mapping.
+  2. The full text of `specs/<provider>_<resource>.md` (`SPECS_DIR /
+     f"{spec.provider}_{spec.resource}.md"`, `SPECS_DIR` computed the
+     same way `llm.PROMPTS_DIR` is), introduced as authoritative ground
+     truth the draft must follow exactly, more trustworthy than general
+     training-data knowledge of the provider's API — omitted entirely
+     when no such file exists on disk yet.
+  When `feedback` is given, it's appended last, as a distinct "the
+  previous draft was rejected for these reasons" block, so a retry's
   prompt is a strict superset of the first attempt's, not a replacement.
 - `validate_driver_source()` checks, in order:
   1. `ast.parse(source)` succeeds. On `SyntaxError`, that's the *only*
