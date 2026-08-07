@@ -51,6 +51,30 @@ def categorization_response(
 RESOURCE_KEY = "digitalocean.compute.telleztec-app-01"
 
 
+class TestDestroyEntry:
+    def test_returns_destroy_plan_entry(self):
+        entry = planner.destroy_entry(RESOURCE_KEY, "explicitly requested via aiform destroy")
+
+        assert isinstance(entry, PlanEntry)
+        assert entry.resource_key == RESOURCE_KEY
+        assert entry.action == PlanAction.DESTROY
+        assert entry.rationale == "explicitly requested via aiform destroy"
+        assert entry.likely_replace is False
+
+    def test_preserves_caller_supplied_rationale_verbatim(self):
+        rationale = "marked via AIFORM-DELETE-telleztec-app-01.aiform.md"
+        entry = planner.destroy_entry(RESOURCE_KEY, rationale)
+        assert entry.rationale == rationale
+
+    def test_makes_no_llm_call(self, prompts_dir: Path):
+        # No client is passed at all -- if destroy_entry() ever fell
+        # through to an LLM call, this would blow up trying to construct
+        # a real anthropic.Anthropic() client rather than silently
+        # succeeding, same guard as plan_resource()'s no-op test.
+        entry = planner.destroy_entry(RESOURCE_KEY, "explicit destroy")
+        assert entry.action == PlanAction.DESTROY
+
+
 class TestDiffAttributes:
     def test_empty_when_all_desired_keys_match_current(self):
         current = {"region": "sfo3", "size": "s-1vcpu-2gb"}

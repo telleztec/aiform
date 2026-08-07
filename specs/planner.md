@@ -6,7 +6,12 @@
 its desired `params` into one `PlanEntry`, doing the deterministic
 dict-diff first and only spending a Sonnet call when there's something
 that actually needs interpreting. This is what makes a repeat `plan` run
-against unchanged input free of Anthropic API calls.
+against unchanged input free of Anthropic API calls. It also provides
+`destroy_entry()`, the deterministic constructor `orchestrator.py` calls
+once it's identified a resource as explicitly marked for deletion
+(`PLAN.md`'s "Resource deletion") — every `PlanEntry` in the system is
+built by this module, whether it came from a diff, a Sonnet call, or
+neither.
 
 **Two judgment calls made explicit here** (not fully specified in
 `PLAN.md`, resolved before writing this spec):
@@ -18,20 +23,22 @@ against unchanged input free of Anthropic API calls.
    in `desired` and would otherwise show up as a permanent, un-resolvable
    diff entry forever. `diff_attributes()` therefore only ever compares
    keys present in `desired`; a key present only in `current` is ignored.
-2. **`"destroy"` categorization from a removed `.aiform.md` file is out of
-   scope for this module**, despite `PLAN.md` §5 step 6 listing `destroy`
-   as one of the four values Sonnet's categorization call can return.
-   Deciding that a state entry needs destroying because its `.aiform.md`
-   file no longer exists on disk at all is a **set comparison** (state
-   keys vs. the currently-discovered file list) with no `desired_params`
-   to diff against — a different shape of input than this module's
-   `current` vs. `desired` comparison. That comparison belongs to
-   `orchestrator.py` (`PLAN.md` §1: "drives plan/apply..."), which already
-   owns iterating discovered files against state. Likewise, `aiform
-   destroy`'s explicit, user-requested destroy (`PLAN.md` §6) needs no
-   LLM categorization at all — the user said what they want directly.
-   `PLAN_CATEGORIZATION_SCHEMA` therefore diverges from `PLAN.md`'s literal
-   4-value schema and **omits `"destroy"` from the enum entirely** — a
+2. **`destroy` is never derived from a diff or a Sonnet call — it's always
+   an explicit instruction, constructed deterministically by
+   `destroy_entry()`.** `PLAN.md`'s "Resource deletion" section fixes this:
+   there is no implicit deletion at all (a resource's `.aiform.md` file
+   going missing is never a destroy signal), and destroy is triggered by
+   exactly two mechanisms — an `aiform destroy` CLI argument, or an
+   `AIFORM-DELETE-<name>.aiform.md` filename. Both are identified by
+   `orchestrator.py` (file discovery, argument parsing, the
+   `AIFORM-DELETE-` prefix check — none of which this module has any
+   involvement in), which then calls `destroy_entry(resource_key,
+   rationale)` to get the `PlanEntry` — the same division of labor
+   `plan_resource()`/`categorize_diff()` already have with their callers,
+   just without a diff or an LLM call in the mix. `diff_attributes()` and
+   `categorize_diff()` never produce a `destroy` action themselves:
+   `PLAN_CATEGORIZATION_SCHEMA`'s `action` enum omits `"destroy"` entirely
+   (diverging from `PLAN.md` §5 step 6's literal 4-value list) — a
    diff-based comparison has no structural basis to ever conclude a
    resource should stop existing, so rather than declare the option and
    rely on `prompts/diff_plan.md` telling the model not to pick it,
@@ -41,6 +48,9 @@ against unchanged input free of Anthropic API calls.
 ## Interface
 
 ```python
+def destroy_entry(resource_key: str, rationale: str) -> PlanEntry: ...
+
+
 def diff_attributes(
     current: dict[str, Any], desired: dict[str, Any]
 ) -> dict[str, dict[str, Any]]: ...
@@ -83,6 +93,18 @@ str}` dicts (§2's `INTENT_NOTES_SCHEMA` items), not a Pydantic model —
 `aiform/parser.py` (not built yet) owns that extraction and its
 eventual model, if any; this module only ever forwards whatever it's
 given straight into a Sonnet prompt.
+
+### `destroy_entry(resource_key, rationale) -> PlanEntry`
+
+Deterministic, zero-LLM, no diff involved — the constructor for the one
+`PlanEntry` shape this module doesn't derive from `current`/`desired` at
+all. Always returns `PlanEntry(resource_key=resource_key,
+action=PlanAction.DESTROY, rationale=rationale, likely_replace=False)`.
+`rationale` is required, not defaulted — the caller (`orchestrator.py`,
+not built yet) already knows *why* (an `aiform destroy` argument naming
+this resource, or the specific `AIFORM-DELETE-` file that named it) and
+is expected to say so, the same way `categorize_diff()`'s rationale
+always names the field(s) that changed.
 
 ### `diff_attributes(current, desired) -> dict[str, dict[str, Any]]`
 
@@ -142,8 +164,16 @@ without a separate "is this new" branch.
   response is a bug in the model call, not a case this module recovers
   from).
 - `plan_resource()`'s no-op rationale is a fixed, deterministic string
-  (no LLM call, so no LLM-authored rationale) — this is the one `PlanEntry`
-  in the system never carrying a model-generated explanation.
+  (no LLM call, so no LLM-authored rationale) — one of two `PlanEntry`
+  shapes in the system never carrying a model-generated explanation; the
+  other is `destroy_entry()`'s, which takes its rationale as a caller-
+  supplied argument instead of fixing one string, since the caller (not
+  this module) is the one who knows which of the two deletion mechanisms
+  triggered it.
+- `destroy_entry()` doesn't validate that `resource_key` actually
+  corresponds to a tracked resource, or that `rationale` is non-empty —
+  `PlanEntry`'s own field constraints are the only validation applied;
+  this function is a thin, trusted constructor, not a guard.
 
 ## Edge cases / errors
 
@@ -171,9 +201,16 @@ without a separate "is this new" branch.
   already-refreshed `current_attributes`.
 - **Driver existence/trust checks** (`PLAN.md` §5 step 3) —
   `orchestrator.py`, per `PLAN.md` §1's repo layout.
-- **`destroy`-by-file-removal categorization** and **`aiform destroy`'s
-  explicit destroy entries** — judgment call 2 above; both are
-  `orchestrator.py`'s job, constructed without calling into this module.
+- **Identifying *which* resources are being destroyed** — parsing
+  `aiform destroy`'s file/resource arguments, detecting the
+  `AIFORM-DELETE-` filename prefix, and file discovery generally (`PLAN.md`
+  §5 step 1) are all `orchestrator.py`'s job (judgment call 2 above).
+  This module only ever constructs the resulting `PlanEntry` once handed
+  a `resource_key` and a `rationale` — via `destroy_entry()`.
+- **Moving a destroyed resource's file into `.aiform/trash/` and calling
+  `driver.delete()`** (`PLAN.md`'s "Resource deletion" / §5 `apply` step
+  3) — `orchestrator.py`; this module produces plan-time `PlanEntry`
+  objects only, never touches the filesystem or a driver.
 - **Printing/persisting the plan** (`PLAN.md` §5 step 7) — `cli.py`/
   `orchestrator.py`.
 - **`prompts/diff_plan.md`'s exact prose** — real production content
@@ -182,6 +219,5 @@ without a separate "is this new" branch.
   document beyond what it must instruct the model to do: use `diff`,
   `intent_notes`, `param_schema`, and `likely_replace_fields` to pick one
   of `create`/`update`/`no-op` (see judgment call 2 for why `destroy`
-  is declared but never actually exercised from this module's call
-  sites), set `likely_replace` conservatively, and write a rationale
-  that names the specific field(s) that changed.
+  isn't one of its options at all), set `likely_replace` conservatively,
+  and write a rationale that names the specific field(s) that changed.

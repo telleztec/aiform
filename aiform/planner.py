@@ -9,11 +9,13 @@ from aiform.models import LLMConfig, PlanAction, PlanEntry
 # "destroy" is deliberately excluded from this enum, unlike PLAN.md §5
 # step 6's literal 4-value PlanAction list: a current-vs-desired diff has
 # no structural basis to conclude a resource should stop existing (see
-# specs/planner.md's judgment call 2) -- destroy-by-file-removal is a set
-# comparison orchestrator.py owns, and `aiform destroy`'s explicit destroy
-# needs no categorization at all. Narrowing the schema means the model
-# cannot select "destroy" here even if it disregards prompts/diff_plan.md's
-# instruction not to -- a stronger guarantee than a prompt alone.
+# specs/planner.md's judgment call 2). Every destroy PlanEntry comes from
+# destroy_entry() below instead -- explicit, zero-LLM, for an `aiform
+# destroy` argument or an AIFORM-DELETE-<name>.aiform.md file (PLAN.md's
+# "Resource deletion"), never from categorizing a diff. Narrowing the
+# schema means the model cannot select "destroy" here even if it
+# disregards prompts/diff_plan.md's instruction not to -- a stronger
+# guarantee than a prompt alone.
 PLAN_CATEGORIZATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -24,6 +26,15 @@ PLAN_CATEGORIZATION_SCHEMA: dict[str, Any] = {
     "required": ["action", "rationale", "likely_replace"],
     "additionalProperties": False,
 }
+
+
+def destroy_entry(resource_key: str, rationale: str) -> PlanEntry:
+    return PlanEntry(
+        resource_key=resource_key,
+        action=PlanAction.DESTROY,
+        rationale=rationale,
+        likely_replace=False,
+    )
 
 
 def diff_attributes(current: dict[str, Any], desired: dict[str, Any]) -> dict[str, dict[str, Any]]:
