@@ -7,6 +7,7 @@ from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 class Driver(ResourceDriver):
@@ -33,7 +34,7 @@ class Driver(ResourceDriver):
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read()
         if not raw:
             return None
@@ -108,7 +109,9 @@ class Driver(ResourceDriver):
 
     def update(self, id, current, desired, credentials):
         diff_fields = [
-            key for key in self.PARAM_SCHEMA["properties"] if current.get(key) != desired.get(key)
+            key
+            for key in self.PARAM_SCHEMA["properties"]
+            if key in desired and current.get(key) != desired.get(key)
         ]
         if not diff_fields:
             return dict(current)

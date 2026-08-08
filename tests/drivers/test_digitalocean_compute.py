@@ -478,6 +478,31 @@ class TestUpdateRejectsNonSizeDiffs:
         # it shouldn't explode if it is.
         driver.update("123", current, desired, CREDENTIALS)
 
+    def test_optional_field_omitted_from_desired_is_not_treated_as_a_diff(
+        self, driver, fake_urlopen
+    ):
+        current = make_attrs(status="off", size="s-1vcpu-2gb", tags=["aiform"])
+        desired = {k: v for k, v in make_attrs(size="s-2vcpu-4gb").items() if k != "tags"}
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        # `desired` simply doesn't mention "tags" (the user's aiform.md never
+        # set it) -- that must not be treated the same as desired wanting it
+        # changed to None, which would otherwise force an unnecessary
+        # destroy+recreate for what should be a safe in-place resize.
+        driver.update("123", current, desired, CREDENTIALS)
+
 
 class TestUpdateUnmodeledStatus:
     @pytest.mark.parametrize("status", ["new", "archive"])
