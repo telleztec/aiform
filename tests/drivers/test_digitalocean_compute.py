@@ -677,10 +677,19 @@ class TestUpdateResizeInPlace:
         assert types == ["resize"]
         assert fake_urlopen.calls == action_calls(fake_urlopen, "123")
 
-    def test_resize_with_no_size_in_desired_raises_unsupported(self, driver, fake_urlopen):
+    def test_resize_with_falsy_size_value_in_desired_raises_unsupported(self, driver, fake_urlopen):
+        # `size` present with a falsy value (e.g. an explicit `size:` with no
+        # value in aiform.md's YAML, parsed as None) is a different scenario
+        # from `size` being absent from `desired` entirely -- the latter is
+        # unreachable in production, since `size` is PARAM_SCHEMA-required
+        # and the orchestrator validates `params` against that schema before
+        # update() is ever called, and is therefore no longer diffed at all
+        # (an absent optional key is never part of the diff -- see
+        # diff_fields' scoping to desired's own keys). This scenario, by
+        # contrast, still produces a real "size" diff entry, so it still
+        # needs to hit the target_size guard below.
         current = make_attrs(status="active", size="s-1vcpu-2gb")
-        desired = make_attrs()
-        del desired["size"]
+        desired = make_attrs(size=None)
 
         with pytest.raises(DriverUpdateNotSupported) as excinfo:
             driver.update("123", current, desired, CREDENTIALS)
