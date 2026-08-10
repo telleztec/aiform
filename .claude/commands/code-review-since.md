@@ -6,22 +6,30 @@ disable-model-invocation: false
 ---
 
 Provide a code review for the given pull request, but scoped to only the
-changes introduced **since** a specific point (`$2`) on that PR's branch —
-not the PR's full cumulative diff against its base branch. This exists for
-re-review passes: `/code-review <PR#>` (the unscoped command) always diffs
-against the PR's base branch, so a second or third pass re-examines every
-line from every earlier round too; this command instead reviews only what
-changed since the checkpoint you name.
+changes introduced **since** a specific point (`<checkpoint>`, below) on
+that PR's branch — not the PR's full cumulative diff against its base
+branch. This exists for re-review passes: `/code-review <PR#>` (the
+unscoped command) always diffs against the PR's base branch, so a second
+or third pass re-examines every line from every earlier round too; this
+command instead reviews only what changed since the checkpoint you name.
 
-`$1` is the PR number.
+**Parse `$ARGUMENTS` yourself — do not rely on `$1`/`$2` substitution.**
+(Confirmed unreliable in this environment: a real invocation with
+arguments `24 last-review` expanded every literal `$1` in this file to
+`last-review` — the *second* argument — and left every `$2` completely
+unsubstituted. Treat that as a standing fact about this Claude Code
+installation, not something to re-verify each time.) `$ARGUMENTS` is the
+raw argument string. Split it on whitespace: the first token is the PR
+number, call it `<pr>` for the rest of this command. Everything after it,
+trimmed, is the checkpoint argument, call it `<checkpoint>`. If nothing
+follows the PR number, `<checkpoint>` defaults to `last-review`.
 
-## Resolving `$2` to an actual SHA
+## Resolving `<checkpoint>` to an actual SHA
 
-`$2` may be a literal git SHA, or one of these presets. If `$2` is omitted
-entirely, default to `last-review`.
+`<checkpoint>` may be a literal git SHA, or one of these presets:
 
 First, compute the PR's merge-base once and reuse it for every preset
-below: get the base branch name (`gh pr view $1 --json baseRefName --jq
+below: get the base branch name (`gh pr view <pr> --json baseRefName --jq
 .baseRefName`), then `merge_base=$(git merge-base origin/<base>
 <head-sha>)`. **Every preset that walks commit history is bounded to
 `<merge_base>..<head-sha>` — never further back into the base branch's own
@@ -35,7 +43,7 @@ PR has no review of its own yet" and falling back to `base`.
 
 - **`base`** — `merge_base` itself, computed above. Equivalent to
   reviewing the PR's full cumulative diff — same universe as the unscoped
-  `/code-review $1`, just expressed through this command.
+  `/code-review <pr>`, just expressed through this command.
 - **`last-review`** (the default) — the most recent commit *strictly
   within this PR's own range* (`git log <merge_base>..<head-sha>
   --format=%H`) that already has a successful `opus-review` GitHub commit
@@ -63,10 +71,10 @@ PR has no review of its own yet" and falling back to `base`.
   your work session, then re-run this command" — unlike `today`, there is
   no derivable fallback for a session boundary, so don't guess one.
 
-Resolve `$2` to an actual SHA using the rules above before proceeding.
-Verify it's actually an ancestor of the PR's current head with `git
-merge-base --is-ancestor <resolved-sha> <head-sha>` — if it isn't (a typo'd
-literal SHA, or a preset that resolved to something on a different
+Resolve `<checkpoint>` to an actual SHA using the rules above before
+proceeding. Verify it's actually an ancestor of the PR's current head with
+`git merge-base --is-ancestor <resolved-sha> <head-sha>` — if it isn't (a
+typo'd literal SHA, or a preset that resolved to something on a different
 branch), stop and report the problem rather than silently falling back to
 a full-PR review. State which preset (if any) was used and the resolved
 short-SHA at the top of the final review comment.
@@ -194,8 +202,8 @@ Notes:
 - You must cite and link each bug (eg. if referring to a CLAUDE.md, you
   must link it).
 - For your final comment, follow the following format precisely (assuming
-  for this example that you found 3 issues, resolved `$2` was `last-review`,
-  and it resolved to short SHA `abc1234`):
+  for this example that you found 3 issues, `<checkpoint>` was
+  `last-review`, and it resolved to short SHA `abc1234`):
 
 ---
 
