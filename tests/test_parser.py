@@ -160,8 +160,61 @@ class TestParseFrontmatter:
         with pytest.raises(ValidationError):
             parser.parse_frontmatter(content)
 
+    def test_dashes_line_inside_block_scalar_does_not_truncate_frontmatter(self):
+        # A '---' line indented inside a YAML block scalar (e.g. cloud-init
+        # user_data) is content, not a document boundary -- the naive
+        # "any line that strips to '---'" scan used to mistake it for the
+        # closing delimiter and silently drop everything after it.
+        content = (
+            "---\n"
+            "resource: compute\n"
+            "name: x\n"
+            "provider: digitalocean\n"
+            "params:\n"
+            "  user_data: |\n"
+            "    #!/bin/bash\n"
+            "    ---\n"
+            "    echo hi\n"
+            "  region: sfo3\n"
+            "---\n"
+        )
+        spec = parser.parse_frontmatter(content)
+        assert spec.params["user_data"] == "#!/bin/bash\n---\necho hi\n"
+        assert spec.params["region"] == "sfo3"
+
+    def test_bareword_boolean_key_raises_value_error_not_type_error(self):
+        # PyYAML's "Norway problem": an unquoted yes/no/on/off/true/false
+        # key resolves to a Python bool, and dict(**data) with a non-str
+        # key raises a bare TypeError -- not the documented ValueError.
+        content = (
+            "---\nresource: compute\nname: x\nprovider: digitalocean\nparams: {}\non: true\n---\n"
+        )
+        with pytest.raises(ValueError):
+            parser.parse_frontmatter(content)
+
 
 class TestExtractIntentProse:
+    def test_raises_value_error_when_no_frontmatter_delimiters(self):
+        # extract_intent_prose() assumes well-formed frontmatter, same as
+        # parse_frontmatter() -- in the real parse_file() pipeline,
+        # parse_frontmatter() always runs first and would already have
+        # raised, so this is only reachable via a direct call.
+        with pytest.raises(ValueError):
+            parser.extract_intent_prose("no frontmatter here at all\n")
+
+    def test_hash_prefixed_line_inside_fenced_code_block_does_not_truncate(self):
+        content = (
+            f"{VALID_FRONTMATTER}\n"
+            "## Intent\n\n"
+            "before fence\n\n"
+            "```\n"
+            "## not a real heading\n"
+            "```\n\n"
+            "after fence\n"
+        )
+        prose = parser.extract_intent_prose(content)
+        assert prose == "before fence\n\n```\n## not a real heading\n```\n\nafter fence"
+
     def test_extracts_prose_under_intent_heading(self):
         prose = parser.extract_intent_prose(FULL_EXAMPLE)
         assert prose == INTENT_PROSE
@@ -334,6 +387,11 @@ class TestParseFile:
         parsed = parser.parse_file(path)
 
         assert parsed.spec.name == "telleztec-app-01"
+        # The hash must be of the BOM-stripped decoded text, not the raw
+        # on-disk bytes -- parse_file()'s no-op short circuit and
+        # orchestrator.py's zero-API-call guarantee both depend on this
+        # hash being stable and reproducible from compute_sha256(content).
+        assert parsed.aiform_md_sha256 == parser.compute_sha256(VALID_FRONTMATTER)
 
     def test_frontmatter_parse_error_prevents_any_llm_call(self, tmp_path: Path, prompts_dir: Path):
         path = tmp_path / "broken.aiform.md"

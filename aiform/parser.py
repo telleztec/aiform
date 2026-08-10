@@ -42,23 +42,35 @@ def compute_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _find_delimiter_lines(lines: list[str]) -> tuple[int, int] | None:
+_MALFORMED_DELIMITERS_MESSAGE = (
+    "malformed .aiform.md: expected a frontmatter block delimited by two '---' lines"
+)
+
+
+def _closing_delimiter_index(content: str, lines: list[str]) -> int:
+    """Line index of the frontmatter's closing '---', found by asking
+    PyYAML's own document composer where the first YAML document
+    actually ends -- not by naively matching any line that strips to
+    '---'. A '---' indented inside a block scalar (e.g. a cloud-init
+    `user_data: |` value) is content, not a document boundary, and only
+    a real YAML parse correctly tells the two apart."""
     if not lines or lines[0].strip() != "---":
-        return None
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            return 0, i
-    return None
+        raise ValueError(_MALFORMED_DELIMITERS_MESSAGE)
+
+    try:
+        document = next(yaml.compose_all(content), None)
+    except yaml.YAMLError as e:
+        raise ValueError(f"malformed .aiform.md frontmatter: invalid YAML: {e}") from e
+
+    closing_index = document.end_mark.line if document is not None else len(lines)
+    if closing_index >= len(lines) or lines[closing_index].strip() != "---":
+        raise ValueError(_MALFORMED_DELIMITERS_MESSAGE)
+    return closing_index
 
 
 def parse_frontmatter(content: str) -> ResourceSpec:
     lines = content.splitlines()
-    delimiters = _find_delimiter_lines(lines)
-    if delimiters is None:
-        raise ValueError(
-            "malformed .aiform.md: expected a frontmatter block delimited by two '---' lines"
-        )
-    _, closing_index = delimiters
+    closing_index = _closing_delimiter_index(content, lines)
     frontmatter_text = "\n".join(lines[1:closing_index])
 
     try:
@@ -70,14 +82,19 @@ def parse_frontmatter(content: str) -> ResourceSpec:
         raise ValueError(
             f"malformed .aiform.md frontmatter: expected a YAML mapping, got {type(data).__name__}"
         )
+    if not all(isinstance(key, str) for key in data):
+        raise ValueError(
+            "malformed .aiform.md frontmatter: all keys must be strings -- a bare "
+            "yes/no/on/off/true/false key is resolved to a boolean by YAML; quote it"
+        )
 
     return ResourceSpec(**data)
 
 
 def extract_intent_prose(content: str) -> str:
     lines = content.splitlines()
-    delimiters = _find_delimiter_lines(lines)
-    body_lines = lines[delimiters[1] + 1 :] if delimiters is not None else lines
+    closing_index = _closing_delimiter_index(content, lines)
+    body_lines = lines[closing_index + 1 :]
 
     heading_index = None
     for i, line in enumerate(body_lines):
@@ -88,8 +105,12 @@ def extract_intent_prose(content: str) -> str:
         return ""
 
     prose_lines = []
+    in_fence = False
     for line in body_lines[heading_index + 1 :]:
-        if line.strip().startswith("##"):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+        elif not in_fence and stripped.startswith("##"):
             break
         prose_lines.append(line)
 

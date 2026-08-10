@@ -59,6 +59,25 @@ model, if any (see its Interface section) — this spec is that follow-up.
    check alone would not have skipped the call). This one loses no
    information (empty prose cannot contain guidance), unlike judgment
    call 2's tradeoff.
+5. **Locating the closing `---` delimiter uses PyYAML's own document
+   composer (`yaml.compose_all()`), not a naive "any line that strips to
+   `---`" scan.** Discovered necessary during `/code-review`: a `---` line
+   indented inside a YAML block scalar (e.g. a cloud-init
+   `params.user_data: |` value) is content, not a document boundary, and
+   the naive scan silently truncated `params` at that false delimiter —
+   `parse_frontmatter()` returned a `ResourceSpec` missing everything
+   after it, with no exception at all. `yaml.compose_all(content)`'s
+   first document's `end_mark.line` is exactly the real closing
+   delimiter's line index, correctly ignoring block-scalar content —
+   confirmed empirically (`compose_all` is a lazy generator, so pulling
+   only the first document via `next()` never touches the prose body
+   after it, even when that body isn't valid YAML on its own). Both
+   `parse_frontmatter()` and `extract_intent_prose()` now share this via
+   a private `_closing_delimiter_index(content, lines) -> int` helper
+   that **raises** `ValueError` when no valid closing delimiter is found
+   (see `extract_intent_prose()` below — this replaces the "treat the
+   whole file as body" fallback the first draft had, which turned out to
+   be unreachable through `parse_file()`'s real call graph and untested).
 
 ## Interface
 
@@ -109,25 +128,37 @@ inline — `PLAN.md` doesn't specify bytes-on-disk vs. decoded-text hashing;
 this spec fixes it as the UTF-8-encoded *decoded* text, matching how
 `parse_file()` reads the file (see Behavior).
 
+### `_closing_delimiter_index(content: str, lines: list[str]) -> int` (private)
+
+Shared by `parse_frontmatter()` and `extract_intent_prose()` (judgment
+call 5). The file must start with a line that is exactly `---`
+(surrounding whitespace ignored); if not, or if `yaml.compose_all(content)`
+finds no first document, or that document's `end_mark.line` doesn't land
+on a real `---` line, raises `ValueError` naming the problem (a plain
+`ValueError`, no new exception class — matching `aiform/config.py`'s
+`_require_mapping` style: this module has only one failure shape to
+report at a time here, unlike `driver_gen.DriverValidationError`'s
+multi-reason accumulation). A `yaml.YAMLError` from `compose_all()`
+(e.g. genuinely malformed YAML syntax) is caught and re-raised as
+`ValueError` too.
+
 ### `parse_frontmatter(content: str) -> ResourceSpec`
 
 Zero LLM calls. Takes the **full** file content (not a pre-sliced
 frontmatter block) and does its own splitting:
 
-1. The file must start with a line that is exactly `---` (surrounding
-   whitespace on that line ignored) and contain a second such line later
-   — the closing delimiter. Either condition failing raises `ValueError`
-   with a message naming the problem, matching `aiform/config.py`'s
-   `_require_mapping` style (a plain `ValueError`, no new exception class
-   — `PLAN.md` §5 step 2 fixes zero LLM calls here, but doesn't call for
-   a dedicated exception type, and this module has only one failure shape
-   to report at a time, unlike `driver_gen.DriverValidationError`'s
-   multi-reason accumulation).
+1. `closing_index = _closing_delimiter_index(content, lines)` — see above.
 2. `yaml.safe_load()` the text between the two delimiter lines. A
-   `yaml.YAMLError` is caught and re-raised as `ValueError` (same
-   reasoning as 1). A result that isn't a `dict` (`None` for an empty
-   block, or a YAML list/scalar) also raises `ValueError` — not passed
-   into `ResourceSpec` as-is.
+   `yaml.YAMLError` is caught and re-raised as `ValueError` (belt and
+   suspenders alongside `_closing_delimiter_index()`'s own catch — the
+   compose and construct phases can diverge on subtle inputs). A result
+   that isn't a `dict` (`None` for an empty block, or a YAML list/scalar)
+   also raises `ValueError` — not passed into `ResourceSpec` as-is. A
+   `dict` whose keys aren't all `str` also raises `ValueError` naming the
+   problem — PyYAML's "Norway problem" resolves an unquoted bareword key
+   like `on`/`yes`/`no`/`off` to a Python `bool`, and `ResourceSpec(**data)`
+   with a non-`str` key raises a bare, undocumented `TypeError` instead
+   of `ValueError`/`pydantic.ValidationError` if this isn't caught first.
 3. `ResourceSpec(**data)` — `pydantic.ValidationError` from a missing
    required field, wrong type, or an unexpected key (`ResourceSpec.model_config`
    already sets `extra="forbid"`) propagates **uncaught**, same
@@ -136,13 +167,24 @@ frontmatter block) and does its own splitting:
 
 ### `extract_intent_prose(content: str) -> str`
 
-Zero LLM calls. Takes the full file content. Finds the first line, in
-the text *after* the frontmatter's closing `---` delimiter, that equals
-`## Intent` exactly (surrounding whitespace ignored, case-sensitive,
-matching `PLAN.md` §2's one example literally). Returns every line after
-it up to (not including) the next line starting with `##`, or end of
-file — stripped of leading/trailing blank lines. Returns `""` if no such
-heading exists anywhere after the frontmatter.
+Zero LLM calls. Takes the full file content. `closing_index =
+_closing_delimiter_index(content, lines)` — **raises** `ValueError` when
+the content has no valid frontmatter delimiters (this function assumes
+well-formed frontmatter, same as `parse_frontmatter()`; in the real
+`parse_file()` pipeline, `parse_frontmatter()` always runs first and
+would already have raised, so this is only reachable via a direct call —
+see judgment call 5). Finds the first line, in the text after the
+closing delimiter, that equals `## Intent` exactly (surrounding
+whitespace ignored, case-sensitive, matching `PLAN.md` §2's one example
+literally). Returns every line after it up to (not including) the next
+line starting with `##`, or end of file — stripped of leading/trailing
+blank lines. Returns `""` if no such heading exists anywhere after the
+frontmatter. A line whose stripped text starts with ` ``` ` or `~~~`
+toggles "inside a fenced code block" state; while inside one, a
+`##`-prefixed line is treated as ordinary prose, not a section-ending
+heading — found necessary during `/code-review`: an Intent section
+containing a fenced example whose contents happen to include a
+`##`-prefixed line was truncating extraction at that line.
 
 ### `extract_intent_notes(prose_intent_text, *, client=None, llm_config=None) -> list[dict[str, str]]`
 
@@ -179,8 +221,9 @@ response.
 
 - `parse_frontmatter()` and `extract_intent_prose()` are independent,
   idempotent functions that each re-derive the small slice of `content`
-  they need — no shared "split into (frontmatter, body)" intermediate
-  object. Simpler than the alternative for two call sites this small.
+  they need via the shared `_closing_delimiter_index()` helper — no
+  shared "split into (frontmatter, body)" intermediate *object*, just the
+  one boundary-finding helper both call.
 - A file with no `## Intent` heading at all is not an error anywhere in
   this module — `extract_intent_prose()` returns `""`,
   `extract_intent_notes()` short-circuits on it (judgment call 4).
@@ -206,6 +249,18 @@ response.
   (e.g. a bare list) raises `ValueError`, same as an unparseable block —
   `parse_frontmatter()` treats "parsed but not a dict" and "didn't parse"
   identically, since neither can become a `ResourceSpec`.
+- `parse_frontmatter()`'s "expected a YAML mapping" `isinstance(data, dict)`
+  check duplicates the shape of `aiform/config.py`'s `_require_mapping(value,
+  key, config_path)` (isinstance check + a `ValueError` naming the actual
+  type) rather than calling it directly — flagged by `/code-review`'s
+  reuse pass. Left as its own small check rather than refactored to share
+  code: `_require_mapping` takes a `config_path: Path` for its error
+  message, which `parse_frontmatter(content: str)` doesn't have (this
+  module's functions are deliberately pure over `content`, never touching
+  the filesystem — see `parse_file()`'s "Out of scope" boundary above);
+  generalizing `_require_mapping` to work without a path, or plumbing one
+  through this module's otherwise-pure interface, is more churn than a
+  three-line duplicated check justifies right now.
 - `extract_intent_notes()` raising from `llm.implementation_call()`
   (network error, bad API key) or from `json.loads()`/a missing
   `"intent_notes"` key on a malformed response propagates uncaught — same
