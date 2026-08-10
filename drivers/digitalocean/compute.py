@@ -7,6 +7,7 @@ from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 class Driver(ResourceDriver):
@@ -33,7 +34,7 @@ class Driver(ResourceDriver):
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request) as response:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             raw = response.read()
         if not raw:
             return None
@@ -108,7 +109,9 @@ class Driver(ResourceDriver):
 
     def update(self, id, current, desired, credentials):
         diff_fields = [
-            key for key in self.PARAM_SCHEMA["properties"] if current.get(key) != desired.get(key)
+            key
+            for key in self.PARAM_SCHEMA["properties"]
+            if key in desired and current.get(key) != desired.get(key)
         ]
         if not diff_fields:
             return dict(current)
@@ -168,9 +171,14 @@ class Driver(ResourceDriver):
         )
 
         attrs = self._flatten(final_droplet)
-        attrs["ssh_keys"] = desired.get("ssh_keys", [])
-        attrs["backups"] = desired.get("backups", False)
-        attrs["monitoring"] = desired.get("monitoring", False)
+        # desired.get(key, current.get(key, ...)) -- prefer desired's value
+        # when the field is actually managed, else preserve current's rather
+        # than resetting to a bare default: desired omitting an optional
+        # field means it isn't part of this diff at all (see diff_fields
+        # above), not that it should revert to [].
+        attrs["ssh_keys"] = desired.get("ssh_keys", current.get("ssh_keys", []))
+        attrs["backups"] = desired.get("backups", current.get("backups", False))
+        attrs["monitoring"] = desired.get("monitoring", current.get("monitoring", False))
         return attrs
 
     def delete(self, id, credentials):

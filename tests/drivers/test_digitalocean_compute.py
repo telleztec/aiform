@@ -606,6 +606,38 @@ class TestUpdateResizeInPlace:
         assert result["backups"] is False
         assert result["monitoring"] is True
 
+    def test_optional_fields_omitted_from_desired_are_not_a_diff_and_are_preserved(
+        self, driver, fake_urlopen
+    ):
+        current = make_attrs(status="off", size="s-1vcpu-2gb", tags=["aiform"], backups=True)
+        desired = {
+            k: v for k, v in make_attrs(size="s-2vcpu-4gb").items() if k not in ("tags", "backups")
+        }
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        # `desired` doesn't mention "tags" or "backups" (the user's aiform.md
+        # never set them) -- that must not be treated as wanting them
+        # changed (which would force an unnecessary destroy+recreate for
+        # what should be a safe in-place resize), and once the resize
+        # succeeds, the returned attrs must preserve `current`'s value for
+        # the omitted "backups" field rather than resetting it to a bare
+        # default.
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        assert result["backups"] is True
+
     def test_resize_rejected_powers_back_on_before_raising(self, driver, fake_urlopen):
         current = make_attrs(status="active", size="s-1vcpu-2gb")
         desired = make_attrs(size="s-2vcpu-4gb")
@@ -652,10 +684,19 @@ class TestUpdateResizeInPlace:
         assert types == ["resize"]
         assert fake_urlopen.calls == action_calls(fake_urlopen, "123")
 
-    def test_resize_with_no_size_in_desired_raises_unsupported(self, driver, fake_urlopen):
+    def test_resize_with_falsy_size_value_in_desired_raises_unsupported(self, driver, fake_urlopen):
+        # `size` present with a falsy value (e.g. an explicit `size:` with no
+        # value in aiform.md's YAML, parsed as None) is a different scenario
+        # from `size` being absent from `desired` entirely -- the latter is
+        # unreachable in production, since `size` is PARAM_SCHEMA-required
+        # and the orchestrator validates `params` against that schema before
+        # update() is ever called, and is therefore no longer diffed at all
+        # (an absent optional key is never part of the diff -- see
+        # diff_fields' scoping to desired's own keys). This scenario, by
+        # contrast, still produces a real "size" diff entry, so it still
+        # needs to hit the target_size guard below.
         current = make_attrs(status="active", size="s-1vcpu-2gb")
-        desired = make_attrs()
-        del desired["size"]
+        desired = make_attrs(size=None)
 
         with pytest.raises(DriverUpdateNotSupported) as excinfo:
             driver.update("123", current, desired, CREDENTIALS)
