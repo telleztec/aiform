@@ -171,9 +171,14 @@ class Driver(ResourceDriver):
         )
 
         attrs = self._flatten(final_droplet)
-        attrs["ssh_keys"] = desired.get("ssh_keys", [])
-        attrs["backups"] = desired.get("backups", False)
-        attrs["monitoring"] = desired.get("monitoring", False)
+        # desired.get(key, current.get(key, ...)) -- prefer desired's value
+        # when the field is actually managed, else preserve current's rather
+        # than resetting to a bare default: desired omitting an optional
+        # field means it isn't part of this diff at all (see diff_fields
+        # above), not that it should revert to [].
+        attrs["ssh_keys"] = desired.get("ssh_keys", current.get("ssh_keys", []))
+        attrs["backups"] = desired.get("backups", current.get("backups", False))
+        attrs["monitoring"] = desired.get("monitoring", current.get("monitoring", False))
         return attrs
 
     def delete(self, id, credentials):

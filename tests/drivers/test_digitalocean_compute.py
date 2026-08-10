@@ -478,31 +478,6 @@ class TestUpdateRejectsNonSizeDiffs:
         # it shouldn't explode if it is.
         driver.update("123", current, desired, CREDENTIALS)
 
-    def test_optional_field_omitted_from_desired_is_not_treated_as_a_diff(
-        self, driver, fake_urlopen
-    ):
-        current = make_attrs(status="off", size="s-1vcpu-2gb", tags=["aiform"])
-        desired = {k: v for k, v in make_attrs(size="s-2vcpu-4gb").items() if k != "tags"}
-
-        fake_urlopen.script(
-            "POST",
-            actions_url("123"),
-            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
-            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
-        )
-        fake_urlopen.script(
-            "GET",
-            droplet_url("123"),
-            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
-            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
-        )
-
-        # `desired` simply doesn't mention "tags" (the user's aiform.md never
-        # set it) -- that must not be treated the same as desired wanting it
-        # changed to None, which would otherwise force an unnecessary
-        # destroy+recreate for what should be a safe in-place resize.
-        driver.update("123", current, desired, CREDENTIALS)
-
 
 class TestUpdateUnmodeledStatus:
     @pytest.mark.parametrize("status", ["new", "archive"])
@@ -630,6 +605,38 @@ class TestUpdateResizeInPlace:
         assert result["ssh_keys"] == ["key-1"]
         assert result["backups"] is False
         assert result["monitoring"] is True
+
+    def test_optional_fields_omitted_from_desired_are_not_a_diff_and_are_preserved(
+        self, driver, fake_urlopen
+    ):
+        current = make_attrs(status="off", size="s-1vcpu-2gb", tags=["aiform"], backups=True)
+        desired = {
+            k: v for k, v in make_attrs(size="s-2vcpu-4gb").items() if k not in ("tags", "backups")
+        }
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        # `desired` doesn't mention "tags" or "backups" (the user's aiform.md
+        # never set them) -- that must not be treated as wanting them
+        # changed (which would force an unnecessary destroy+recreate for
+        # what should be a safe in-place resize), and once the resize
+        # succeeds, the returned attrs must preserve `current`'s value for
+        # the omitted "backups" field rather than resetting it to a bare
+        # default.
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        assert result["backups"] is True
 
     def test_resize_rejected_powers_back_on_before_raising(self, driver, fake_urlopen):
         current = make_attrs(status="active", size="s-1vcpu-2gb")
