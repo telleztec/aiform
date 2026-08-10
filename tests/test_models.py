@@ -9,6 +9,7 @@ from aiform.models import (
     LLMConfig,
     LLMRoleConfig,
     ModelSource,
+    ParsedResource,
     PlanAction,
     PlanEntry,
     PlanReview,
@@ -327,3 +328,37 @@ class TestStateEntry:
     def test_rejects_empty_name(self):
         with pytest.raises(ValidationError):
             self._make(name="")
+
+
+class TestParsedResource:
+    def _spec(self) -> ResourceSpec:
+        return ResourceSpec(
+            resource="compute",
+            name="telleztec-app-01",
+            provider="digitalocean",
+            params={"region": "sfo3"},
+        )
+
+    def test_accepts_spec_intent_notes_and_hash(self):
+        parsed = ParsedResource(
+            spec=self._spec(),
+            intent_notes=[{"concerns_field": "size", "guidance": "prefer resize"}],
+            aiform_md_sha256="abc123",
+        )
+        assert parsed.spec.name == "telleztec-app-01"
+        assert parsed.intent_notes == [{"concerns_field": "size", "guidance": "prefer resize"}]
+        assert parsed.aiform_md_sha256 == "abc123"
+
+    def test_accepts_empty_intent_notes(self):
+        parsed = ParsedResource(spec=self._spec(), intent_notes=[], aiform_md_sha256="abc123")
+        assert parsed.intent_notes == []
+
+    def test_rejects_non_dict_intent_note_items(self):
+        with pytest.raises(ValidationError):
+            ParsedResource(
+                spec=self._spec(), intent_notes=["not-a-dict"], aiform_md_sha256="abc123"
+            )
+
+    def test_rejects_missing_spec(self):
+        with pytest.raises(ValidationError):
+            ParsedResource(intent_notes=[], aiform_md_sha256="abc123")
