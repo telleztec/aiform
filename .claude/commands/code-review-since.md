@@ -20,27 +20,41 @@ changed since the checkpoint you name.
 `$2` may be a literal git SHA, or one of these presets. If `$2` is omitted
 entirely, default to `last-review`.
 
-- **`base`** — this PR's merge-base with its base branch. Get the base
-  branch name (`gh pr view $1 --json baseRefName --jq .baseRefName`), then
-  `git merge-base origin/<base> <head-sha>`. Equivalent to reviewing the
-  PR's full cumulative diff — same universe as the unscoped `/code-review
-  $1`, just expressed through this command.
-- **`last-review`** (the default) — the most recent commit on this PR's
-  branch that already has a successful `opus-review` GitHub commit status
-  (posted either by a completed code review or an explicit human skip —
-  see this repo's `github-commit-process` skill). Walk commits from the
-  PR's current head backwards (`gh api repos/{owner}/{repo}/commits?sha=
-  <head-branch-or-sha> --paginate --jq '.[].sha'`), checking each via `gh
-  api repos/{owner}/{repo}/commits/<sha>/status --jq '.statuses[] | select
+First, compute the PR's merge-base once and reuse it for every preset
+below: get the base branch name (`gh pr view $1 --json baseRefName --jq
+.baseRefName`), then `merge_base=$(git merge-base origin/<base>
+<head-sha>)`. **Every preset that walks commit history is bounded to
+`<merge_base>..<head-sha>` — never further back into the base branch's own
+history.** This matters concretely on this repo: since PRs here routinely
+merge `main` into a feature branch (see `github-commit-process`), and
+nearly every commit on `main` already carries a passing `opus-review`
+status from its own original PR, an unbounded walk from a feature branch's
+head would immediately find one of *those* and stop — silently resolving
+to an unrelated, ancient checkpoint instead of correctly recognizing "this
+PR has no review of its own yet" and falling back to `base`.
+
+- **`base`** — `merge_base` itself, computed above. Equivalent to
+  reviewing the PR's full cumulative diff — same universe as the unscoped
+  `/code-review $1`, just expressed through this command.
+- **`last-review`** (the default) — the most recent commit *strictly
+  within this PR's own range* (`git log <merge_base>..<head-sha>
+  --format=%H`) that already has a successful `opus-review` GitHub commit
+  status (posted either by a completed code review or an explicit human
+  skip — see this repo's `github-commit-process` skill). Walk that
+  bounded list newest-first, checking each via `gh api
+  repos/{owner}/{repo}/commits/<sha>/status --jq '.statuses[] | select
   (.context=="opus-review") | .state'`, stopping at the first `success`.
   This is the most useful checkpoint for a re-review pass: "what's changed
-  since this PR last passed review." If no commit has an `opus-review`
-  status at all (this PR has never been reviewed), fall back to `base` and
-  say so explicitly in the final review comment.
-- **`today`** — the parent of the first commit made today on this branch:
-  `git log --since=midnight --format=%H <head-sha> | tail -1`, then take
-  that commit's parent (`<sha>^`). If no commit was made today, fall back
-  to `base` and say so explicitly in the final review comment.
+  since this PR last passed review." If the walk reaches `merge_base`
+  without finding one (this PR has no review of its own yet), fall back
+  to `base` and say so explicitly in the final review comment. Because the
+  walk is bounded to the PR's own commits, this is normally a short list —
+  no need for a separate batching optimization.
+- **`today`** — the parent of the first commit made today *within this
+  PR's own range*: `git log --since=midnight <merge_base>..<head-sha>
+  --format=%H | tail -1`, then take that commit's parent (`<sha>^`). If
+  that range has no commits from today, fall back to `base` and say so
+  explicitly in the final review comment.
 - **`session`** — reads `.claude/session-start-sha` at the repo root, a
   local, gitignored, one-line file holding a SHA that gets written at the
   start of a work session (`git rev-parse HEAD > .claude/session-start-sha`).
@@ -127,8 +141,14 @@ To do this, follow these steps precisely:
    e. 100: Absolutely certain. The agent double checked the issue, and
       confirmed that it is definitely a real issue, that will happen
       frequently in practice. The evidence directly confirms this.
-6. Filter out any issues with a score less than 80. If there are no issues
-   that meet this criteria, do not proceed.
+6. Filter out any issues with a score less than 75. (Not 80 — the rubric
+   above only ever produces one of the five discrete values 0/25/50/75/100,
+   so an 80 cutoff would silently discard every "75: Highly confident"
+   issue and only ever report a "100: Absolutely certain" one, defeating
+   the rubric's own stated purpose for that tier.) If there are no issues
+   that meet this criteria, **skip directly to step 8 and post the "no
+   issues found" comment** — do not skip posting entirely; the format in
+   the Notes section below covers exactly this case.
 7. Use a Haiku agent to repeat the eligibility check from #1, to make sure
    that the pull request is still eligible for code review (no new commits
    landed while this ran that would make the reviewed range stale).
