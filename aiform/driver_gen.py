@@ -18,18 +18,18 @@ SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 # pasted into a generation prompt as if it were authoritative for that
 # resource. Reserved names are excluded explicitly rather than trusted to
 # never collide with a filename match.
-RESERVED_MODULE_SPEC_NAMES = frozenset(
-    {
-        "README.md",
-        "config.md",
-        "driver.md",
-        "driver_gen.md",
-        "exceptions.md",
-        "llm.md",
-        "models.md",
-        "state.md",
-    }
-)
+#
+# Only a module spec filename containing an underscore can ever actually
+# collide: f"{provider}_{resource}.md" always inserts a literal "_"
+# between the two (ResourceSpec.provider/resource are non-empty per
+# RESOURCE_OR_PROVIDER_PATTERN, aiform/models.py), so an underscore-free
+# name -- "README.md", "config.md", "driver.md", "exceptions.md",
+# "llm.md", "models.md", "planner.md", "state.md" -- can never be
+# produced by that pattern no matter what provider/resource values
+# exist, and listing them here would be dead code giving false
+# confidence the collision surface is covered. Add a new entry only if a
+# future aiform/*.py module's own name contains an underscore.
+RESERVED_MODULE_SPEC_NAMES = frozenset({"driver_gen.md"})
 
 EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
     "create": ["self", "params", "credentials"],
