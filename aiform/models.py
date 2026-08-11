@@ -88,6 +88,12 @@ class DriverInfo(BaseModel):
     opus_review: DriverReview
 
 
+class ParsedResource(BaseModel):
+    spec: ResourceSpec
+    intent_notes: list[dict[str, str]]
+    aiform_md_sha256: str
+
+
 class StateEntry(BaseModel):
     provider: str = Field(pattern=RESOURCE_OR_PROVIDER_PATTERN)
     resource_type: str = Field(pattern=RESOURCE_OR_PROVIDER_PATTERN)
