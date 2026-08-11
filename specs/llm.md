@@ -50,8 +50,10 @@ role: "interpret this diff/prose" and "write new Python source" are not
 the same kind of work, and "review a driver's source" and "review a
 destructive plan" aren't either — yet a user could only tune them
 together. `PLAN.md`'s "Model tiering" section now names four
-independently configurable roles instead, matching one-to-one with the
-five prompt files under `prompts/`:
+independently configurable roles instead, each mapped to the prompt
+file(s) that drive it — four roles covering the five prompt files under
+`prompts/` (`intent_orchestration` is the one role that owns two
+closely-related prompts, not a one-role-per-file split):
 
 | Role | Prompt file(s) | Default model | Public function |
 | --- | --- | --- | --- |
@@ -401,3 +403,15 @@ updated to match yet — follow the same suggested order above (docs →
 `/code-review` before merge) to bring it in line, treating the
 already-implemented two-role version as the "before" state rather than
 starting from nothing.
+
+**Not just `llm.py` itself** — `aiform/parser.py`, `aiform/planner.py`,
+and `aiform/driver_gen.py` also already exist and call
+`llm.implementation_call()` directly (intent extraction and diff
+categorization in the first two, driver drafting in the third). Renaming
+`implementation_call()` out of existence without updating these three
+call sites — and the `tests/test_llm.py`/`tests/test_parser.py`/
+`tests/test_planner.py`/`tests/test_driver_gen.py` tests that exercise
+them — leaves the codebase broken at import time, not just out of sync
+with this spec. Treat all six files (the three modules named above plus
+these three call sites) as one pass, same as `models.py`/`config.py`/
+`llm.py` are treated as one pass in step 6's suggested-order note.

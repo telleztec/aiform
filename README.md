@@ -41,7 +41,10 @@ resource type (a droplet). Prove the loop end to end before expanding.
 2. `aiform plan` parses it, refreshes state against the live cloud resource,
    diffs, and — only when there's something to decide — asks the
    **intent-orchestration-model** (default **Claude Sonnet 5**) to
-   categorize the change (create/update/destroy) and explain why.
+   categorize the change (create/update/no-op) and explain why. Destroy
+   is never one of the values this call can return — deletion is always
+   an explicit user instruction, never inferred from a diff (see
+   [`PLAN.md`](./PLAN.md)'s "Resource deletion").
 3. Resource drivers (the small Python modules implementing
    `create`/`read`/`update`/`delete` against a given CSP's API) are
    **curated, not generated on the fly** in the current MVP — they're

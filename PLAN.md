@@ -33,7 +33,8 @@ needed. In practice, across three consecutive generation attempts against
 the DigitalOcean compute driver — the code-generator-model, the
 code-generator-model again with the prompt fixed to include the correct
 credentials key and the full acceptance-criteria spec verbatim, then Opus
-manually filling both the drafting and review roles for one attempt —
+manually filling both the code-generator-model and code-review-model
+roles for one attempt —
 every attempt got the exact, explicitly-stated `credentials` dict key
 wrong (`credentials["api_token"]`, then `credentials["token"]`, then a
 five-candidate guess list that still didn't include the real key), and two
