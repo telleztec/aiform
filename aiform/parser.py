@@ -132,7 +132,7 @@ def extract_intent_notes(
         return []
 
     system_prompt = llm.load_prompt("parse_intent.md")
-    response_text = llm.implementation_call(
+    response_text = llm.intent_orchestration_call(
         system_prompt,
         prose_intent_text,
         output_schema=INTENT_NOTES_SCHEMA,

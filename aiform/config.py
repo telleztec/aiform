@@ -15,8 +15,10 @@ PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
 DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(
-    implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-    review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+    intent_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
+    code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
+    code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+    review_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
 )
 
 
@@ -93,19 +95,12 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
         llm_data = {}
     llm_data = _require_mapping(llm_data, "llm", config_path)
 
-    implementation_value = llm_data.get("implementation")
-    if implementation_value is None:
-        implementation_value = {}
-    implementation_override = _require_mapping(
-        implementation_value, "llm.implementation", config_path
-    )
+    roles: dict[str, LLMRoleConfig] = {}
+    for role_name in LLMConfig.model_fields:
+        role_value = llm_data.get(role_name)
+        if role_value is None:
+            role_value = {}
+        role_override = _require_mapping(role_value, f"llm.{role_name}", config_path)
+        roles[role_name] = _merge_role(getattr(DEFAULT_LLM_CONFIG, role_name), role_override)
 
-    review_value = llm_data.get("review")
-    if review_value is None:
-        review_value = {}
-    review_override = _require_mapping(review_value, "llm.review", config_path)
-
-    return LLMConfig(
-        implementation=_merge_role(DEFAULT_LLM_CONFIG.implementation, implementation_override),
-        review=_merge_role(DEFAULT_LLM_CONFIG.review, review_override),
-    )
+    return LLMConfig(**roles)

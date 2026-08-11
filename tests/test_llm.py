@@ -58,11 +58,20 @@ def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
 
 
 def make_llm_config(
-    implementation_model: str = "claude-sonnet-5", review_model: str = "claude-opus-5"
+    intent_orchestration_model: str = "claude-sonnet-5",
+    code_generator_model: str = "claude-sonnet-5",
+    code_review_model: str = "claude-opus-5",
+    review_orchestration_model: str = "claude-opus-5",
 ) -> LLMConfig:
     return LLMConfig(
-        implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=implementation_model),
-        review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=review_model),
+        intent_orchestration=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC, model=intent_orchestration_model
+        ),
+        code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_generator_model),
+        code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_review_model),
+        review_orchestration=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC, model=review_orchestration_model
+        ),
     )
 
 
@@ -80,17 +89,17 @@ class TestModelSources:
         assert llm.MODEL_SOURCES[ModelSource.ANTHROPIC] is llm._anthropic_call
 
 
-class TestImplementationCall:
+class TestIntentOrchestrationCall:
     def test_returns_raw_response_text(self):
         client = FakeClient("hello world")
-        result = llm.implementation_call(
+        result = llm.intent_orchestration_call(
             "system prompt", "user content", client=client, llm_config=make_llm_config()
         )
         assert result == "hello world"
 
     def test_skips_leading_thinking_block(self):
         client = FakeClient("hello world", include_thinking_block=True)
-        result = llm.implementation_call(
+        result = llm.intent_orchestration_call(
             "system prompt", "user content", client=client, llm_config=make_llm_config()
         )
         assert result == "hello world"
@@ -99,28 +108,28 @@ class TestImplementationCall:
         client = FakeClient(None, include_thinking_block=True)
 
         with pytest.raises(RuntimeError):
-            llm.implementation_call(
+            llm.intent_orchestration_call(
                 "system prompt", "user content", client=client, llm_config=make_llm_config()
             )
 
-    def test_uses_configured_implementation_model(self):
+    def test_uses_configured_intent_orchestration_model(self):
         client = FakeClient("ignored")
-        config = make_llm_config(implementation_model="claude-sonnet-5-custom")
-        llm.implementation_call("system", "user", client=client, llm_config=config)
+        config = make_llm_config(intent_orchestration_model="claude-sonnet-5-custom")
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=config)
         assert client.messages.calls[0]["model"] == "claude-sonnet-5-custom"
 
     def test_defaults_to_resolve_llm_config_when_not_given(self, monkeypatch):
         client = FakeClient("ignored")
-        config = make_llm_config(implementation_model="from-resolver")
+        config = make_llm_config(intent_orchestration_model="from-resolver")
         monkeypatch.setattr(llm.config, "resolve_llm_config", lambda: config)
 
-        llm.implementation_call("system", "user", client=client)
+        llm.intent_orchestration_call("system", "user", client=client)
 
         assert client.messages.calls[0]["model"] == "from-resolver"
 
     def test_passes_system_and_user_content(self):
         client = FakeClient("ignored")
-        llm.implementation_call(
+        llm.intent_orchestration_call(
             "my system prompt", "my user content", client=client, llm_config=make_llm_config()
         )
         call = client.messages.calls[0]
@@ -129,13 +138,13 @@ class TestImplementationCall:
 
     def test_omits_output_config_when_no_schema(self):
         client = FakeClient("ignored")
-        llm.implementation_call("system", "user", client=client, llm_config=make_llm_config())
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
         assert "output_config" not in client.messages.calls[0]
 
     def test_sets_output_config_when_schema_given(self):
         client = FakeClient("ignored")
         schema = {"type": "object", "properties": {}}
-        llm.implementation_call(
+        llm.intent_orchestration_call(
             "system", "user", output_schema=schema, client=client, llm_config=make_llm_config()
         )
         assert client.messages.calls[0]["output_config"] == {
@@ -144,12 +153,12 @@ class TestImplementationCall:
 
     def test_default_max_tokens(self):
         client = FakeClient("ignored")
-        llm.implementation_call("system", "user", client=client, llm_config=make_llm_config())
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
         assert client.messages.calls[0]["max_tokens"] == 4096
 
     def test_max_tokens_override(self):
         client = FakeClient("ignored")
-        llm.implementation_call(
+        llm.intent_orchestration_call(
             "system", "user", max_tokens=2048, client=client, llm_config=make_llm_config()
         )
         assert client.messages.calls[0]["max_tokens"] == 2048
@@ -157,10 +166,95 @@ class TestImplementationCall:
     def test_unregistered_source_raises_key_error(self):
         client = FakeClient("ignored")
         config = make_llm_config()
-        config.implementation.source = "totally-unregistered"  # type: ignore[assignment]
+        config.intent_orchestration.source = "totally-unregistered"  # type: ignore[assignment]
 
         with pytest.raises(KeyError):
-            llm.implementation_call("system", "user", client=client, llm_config=config)
+            llm.intent_orchestration_call("system", "user", client=client, llm_config=config)
+
+
+class TestCodeGeneratorCall:
+    def test_returns_raw_response_text(self):
+        client = FakeClient("driver source code")
+        result = llm.code_generator_call(
+            "system prompt", "user content", client=client, llm_config=make_llm_config()
+        )
+        assert result == "driver source code"
+
+    def test_skips_leading_thinking_block(self):
+        client = FakeClient("driver source code", include_thinking_block=True)
+        result = llm.code_generator_call(
+            "system prompt", "user content", client=client, llm_config=make_llm_config()
+        )
+        assert result == "driver source code"
+
+    def test_raises_when_response_has_no_text_block(self):
+        client = FakeClient(None, include_thinking_block=True)
+
+        with pytest.raises(RuntimeError):
+            llm.code_generator_call(
+                "system prompt", "user content", client=client, llm_config=make_llm_config()
+            )
+
+    def test_uses_configured_code_generator_model(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(code_generator_model="claude-sonnet-5-custom")
+        llm.code_generator_call("system", "user", client=client, llm_config=config)
+        assert client.messages.calls[0]["model"] == "claude-sonnet-5-custom"
+
+    def test_defaults_to_resolve_llm_config_when_not_given(self, monkeypatch):
+        client = FakeClient("ignored")
+        config = make_llm_config(code_generator_model="from-resolver")
+        monkeypatch.setattr(llm.config, "resolve_llm_config", lambda: config)
+
+        llm.code_generator_call("system", "user", client=client)
+
+        assert client.messages.calls[0]["model"] == "from-resolver"
+
+    def test_passes_system_and_user_content(self):
+        client = FakeClient("ignored")
+        llm.code_generator_call(
+            "my system prompt", "my user content", client=client, llm_config=make_llm_config()
+        )
+        call = client.messages.calls[0]
+        assert call["system"] == "my system prompt"
+        assert call["messages"] == [{"role": "user", "content": "my user content"}]
+
+    def test_omits_output_config_when_no_schema(self):
+        client = FakeClient("ignored")
+        llm.code_generator_call("system", "user", client=client, llm_config=make_llm_config())
+        assert "output_config" not in client.messages.calls[0]
+
+    def test_default_max_tokens(self):
+        client = FakeClient("ignored")
+        llm.code_generator_call("system", "user", client=client, llm_config=make_llm_config())
+        assert client.messages.calls[0]["max_tokens"] == 4096
+
+    def test_max_tokens_override(self):
+        client = FakeClient("ignored")
+        llm.code_generator_call(
+            "system", "user", max_tokens=8192, client=client, llm_config=make_llm_config()
+        )
+        assert client.messages.calls[0]["max_tokens"] == 8192
+
+    def test_unregistered_source_raises_key_error(self):
+        client = FakeClient("ignored")
+        config = make_llm_config()
+        config.code_generator.source = "totally-unregistered"  # type: ignore[assignment]
+
+        with pytest.raises(KeyError):
+            llm.code_generator_call("system", "user", client=client, llm_config=config)
+
+    def test_intent_orchestration_and_code_generator_resolve_independently(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(
+            intent_orchestration_model="intent-model", code_generator_model="codegen-model"
+        )
+
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=config)
+        llm.code_generator_call("system", "user", client=client, llm_config=config)
+
+        assert client.messages.calls[0]["model"] == "intent-model"
+        assert client.messages.calls[1]["model"] == "codegen-model"
 
 
 class TestReviewDriver:
@@ -183,7 +277,7 @@ class TestReviewDriver:
     def test_stamps_configured_review_model(self, prompts_dir: Path):
         response_text = json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
         client = FakeClient(response_text)
-        config = make_llm_config(review_model="claude-opus-5-custom")
+        config = make_llm_config(code_review_model="claude-opus-5-custom")
 
         review = llm.review_driver("driver source code", client=client, llm_config=config)
 
@@ -192,7 +286,7 @@ class TestReviewDriver:
     def test_uses_configured_review_model_and_driver_review_schema(self, prompts_dir: Path):
         response_text = json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
         client = FakeClient(response_text)
-        config = make_llm_config(review_model="claude-opus-5-custom")
+        config = make_llm_config(code_review_model="claude-opus-5-custom")
 
         llm.review_driver("driver source code", client=client, llm_config=config)
 
@@ -246,7 +340,7 @@ class TestReviewPlan:
     def test_uses_configured_review_model_and_plan_review_schema(self, prompts_dir: Path):
         response_text = json.dumps({"safe_to_proceed": True, "flags": []})
         client = FakeClient(response_text)
-        config = make_llm_config(review_model="claude-opus-5-custom")
+        config = make_llm_config(review_orchestration_model="claude-opus-5-custom")
 
         llm.review_plan("plan summary text", client=client, llm_config=config)
 

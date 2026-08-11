@@ -67,7 +67,7 @@ def categorize_diff(
             "drifted_missing": drifted_missing,
         }
     )
-    response_text = llm.implementation_call(
+    response_text = llm.intent_orchestration_call(
         system_prompt,
         user_content,
         output_schema=PLAN_CATEGORIZATION_SCHEMA,

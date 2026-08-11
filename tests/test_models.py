@@ -176,20 +176,31 @@ class TestLLMConfig:
 
     def test_parses_roles_into_objects(self):
         config = LLMConfig(
-            implementation={"source": "anthropic", "model": "claude-sonnet-5"},
-            review={"source": "anthropic", "model": "claude-opus-5"},
+            intent_orchestration={"source": "anthropic", "model": "claude-sonnet-5"},
+            code_generator={"source": "anthropic", "model": "claude-sonnet-5"},
+            code_review={"source": "anthropic", "model": "claude-opus-5"},
+            review_orchestration={"source": "anthropic", "model": "claude-opus-5"},
         )
-        assert isinstance(config.implementation, LLMRoleConfig)
-        assert config.implementation.source is ModelSource.ANTHROPIC
-        assert config.implementation.model == "claude-sonnet-5"
-        assert config.review.model == "claude-opus-5"
+        assert isinstance(config.intent_orchestration, LLMRoleConfig)
+        assert config.intent_orchestration.source is ModelSource.ANTHROPIC
+        assert config.intent_orchestration.model == "claude-sonnet-5"
+        assert config.code_generator.model == "claude-sonnet-5"
+        assert config.code_review.model == "claude-opus-5"
+        assert config.review_orchestration.model == "claude-opus-5"
 
     def test_roles_are_independent(self):
         config = LLMConfig(
-            implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-            review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+            intent_orchestration=LLMRoleConfig(
+                source=ModelSource.ANTHROPIC, model="claude-sonnet-5"
+            ),
+            code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-haiku-4-5"),
+            code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+            review_orchestration=LLMRoleConfig(
+                source=ModelSource.ANTHROPIC, model="claude-opus-4-8"
+            ),
         )
-        assert config.implementation.model != config.review.model
+        assert config.intent_orchestration.model != config.code_generator.model
+        assert config.code_review.model != config.review_orchestration.model
 
 
 class TestDriverReview:
@@ -231,7 +242,7 @@ class TestDriverInfo:
             path="drivers/digitalocean/compute.py",
             sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
             generated_at=datetime(2026, 7, 30, 18, 22, 11),
-            opus_review=DriverReview(
+            code_review=DriverReview(
                 approved=True,
                 concerns=["update() resizes on any diff, not just size/region"],
                 blocking_issues=[],
@@ -241,7 +252,7 @@ class TestDriverInfo:
         )
         dumped = info.model_dump(mode="json")
         assert dumped["path"] == "drivers/digitalocean/compute.py"
-        assert dumped["opus_review"]["approved"] is True
+        assert dumped["code_review"]["approved"] is True
 
         reparsed = DriverInfo.model_validate(dumped)
         assert reparsed == info
@@ -269,7 +280,7 @@ class TestStateEntry:
                 path="drivers/digitalocean/compute.py",
                 sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
                 generated_at="2026-07-30T18:22:11Z",
-                opus_review=DriverReview(
+                code_review=DriverReview(
                     approved=True,
                     concerns=["update() resizes on any diff, not just size/region"],
                     blocking_issues=[],
@@ -305,8 +316,8 @@ class TestStateEntry:
             "aiform_md_path",
             "aiform_md_sha256",
         }
-        assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at", "opus_review"}
-        assert set(dumped["driver"]["opus_review"].keys()) == {
+        assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at", "code_review"}
+        assert set(dumped["driver"]["code_review"].keys()) == {
             "approved",
             "concerns",
             "blocking_issues",
