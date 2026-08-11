@@ -6,13 +6,16 @@ It applies for the rest of this project's implementation — don't
 improvise a different flow partway through.
 
 This is a meta-level process for building aiform itself. It is not the
-same thing as the Sonnet/Opus model-tiering described in `PLAN.md` for
-aiform's *runtime* behavior (parsing intent, reviewing generated modules,
-reviewing plans) — that's a separate concern about what the shipped tool
-does. This document happens to reuse the same author/reviewer split
-(Sonnet writes, Opus reviews) for building the tool, because it's the
-same philosophy at a different level, not because the two are the same
-mechanism.
+same thing as the four-role model-tiering described in `PLAN.md` for
+aiform's *runtime* behavior (`intent-orchestration-model`,
+`code-generator-model`, `code-review-model`, `review-orchestration-model`
+— parsing intent, drafting generated modules, reviewing them, reviewing
+plans) — that's a separate concern about what the shipped tool does, and
+those four roles are independently configurable per `.aiform/config.yaml`.
+This document happens to reuse the same author/reviewer split (Sonnet
+writes, Opus reviews, both fixed, not configurable) for building the tool
+itself, because it's the same philosophy at a different level, not
+because the two are the same mechanism.
 
 ## The loop
 

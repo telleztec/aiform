@@ -3,18 +3,19 @@
 ## Purpose
 
 The generation half of `PLAN.md` §5 step 3: draft a new `(provider,
-resource)` driver via the implementation role, statically validate its
-source against `ResourceDriver`'s contract (`aiform/driver.py`), then run
-it through Opus gate #1 (`llm.review_driver()`), retrying the whole draft
+resource)` driver via the `code-generator-model` role, statically
+validate its source against `ResourceDriver`'s contract
+(`aiform/driver.py`), then run it through gate #1
+(`code-review-model`, `llm.review_driver()`), retrying the whole draft
 once if either check fails before giving up. Returns the approved source
 text and its `DriverReview` — it does not write anything to disk.
 
 **Three judgment calls made explicit here** (not fully specified in
 `PLAN.md`, resolved before writing this spec):
 
-1. **Static-validation failures retry, same as Opus blocking_issues.**
-   `PLAN.md` §5 step 3d only describes retrying once when Opus review
-   returns `blocking_issues`. It says nothing about a static-validation
+1. **Static-validation failures retry, same as gate #1's blocking_issues.**
+   `PLAN.md` §5 step 3d only describes retrying once when gate #1's
+   review returns `blocking_issues`. It says nothing about a static-validation
    failure (bad syntax, wrong base class, missing method). This spec
    treats that case symmetrically: one retry, feeding the failure reasons
    back into the draft prompt, with a combined budget of **2 draft
@@ -121,11 +122,11 @@ check fails; returns `None` on success.
 
 ### `draft_driver(spec, *, feedback=None, client=None, llm_config=None) -> str`
 
-Calls `llm.implementation_call()` with `prompts/generate_driver.md`
+Calls `llm.code_generator_call()` with `prompts/generate_driver.md`
 (loaded from `aiform.llm.PROMPTS_DIR`) as the system prompt, no
 `output_schema` (plain-text response — Python source isn't a good fit
 for `output_config.format`, per `PLAN.md` §5 step 3a), `max_tokens=8192`
-(higher than `implementation_call`'s 4096 default — a full CRUD driver
+(higher than `code_generator_call`'s 4096 default — a full CRUD driver
 with docstrings plausibly exceeds that). Returns the raw response text
 unmodified — no parsing, no stripping markdown code fences.
 
@@ -181,14 +182,14 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
   2. `validate_driver_source(source)` — on `DriverValidationError`: if
      this was the last attempt, raise `DriverGenerationFailed(source,
      review=None, reasons=e.reasons)`; otherwise format `e.reasons` into
-     `feedback` and continue to the next attempt (no Opus call this
+     `feedback` and continue to the next attempt (no `code-review-model` call this
      round — an invalid draft is never sent for review).
   3. `review = llm.review_driver(source, ...)` — the branch condition is
      `not review.approved`, **not** "`review.blocking_issues` is
      non-empty." `DriverReview`'s own validator only forbids
      `approved=True` with non-empty `blocking_issues`; it does *not*
      forbid `approved=False` with *empty* `blocking_issues` — a
-     schema-valid response Opus can legitimately return. Checking
+     schema-valid response `code-review-model` can legitimately return. Checking
      `blocking_issues` truthiness alone would silently treat that as a
      pass. On `not review.approved`: reasons are
      `review.blocking_issues or review.concerns or ["review did not
@@ -203,7 +204,7 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      whenever `approved is True`, so this branch never needs to
      re-check it.)
 - The retry budget is **shared** across both failure modes: one static
-  failure followed by one Opus block still exhausts `MAX_DRAFT_ATTEMPTS`
+  failure followed by one gate #1 block still exhausts `MAX_DRAFT_ATTEMPTS`
   and raises — there is no scenario with more than 2 total calls to
   `draft_driver()`.
 
@@ -220,12 +221,12 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
 - Dynamic or obfuscated credential access (`importlib.import_module("anthropic")`,
   a string built up piecewise instead of a literal `"ANTHROPIC..."`) is
   not caught by checks 6–7 — those are intentionally blunt static screens,
-  not a data-flow analysis. Opus gate #1's semantic review is the actual
+  not a data-flow analysis. Gate #1's (`code-review-model`) semantic review is the actual
   backstop for anything cleverer than a direct import or literal string.
 - `DriverGenerationFailed.review` is `None` when the failure was a static
-  validation failure on the final attempt (never reached Opus), and a
-  real `DriverReview` with `approved is False` when the failure was an
-  Opus non-approval on the final attempt — `.blocking_issues` on that
+  validation failure on the final attempt (never reached gate #1), and a
+  real `DriverReview` with `approved is False` when the failure was a
+  gate #1 non-approval on the final attempt — `.blocking_issues` on that
   review may be empty (see the `not review.approved` note above);
   `.reasons` on the exception is never empty even then, since it falls
   back to `.concerns` and then a generic message.

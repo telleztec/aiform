@@ -85,7 +85,7 @@ in Behavior below.
   instantiation time. Enforcing "every driver declares a schema" is
   `driver_gen.py`'s static-validation job (not built yet), not this
   module's — matching §4's own framing ("used by the orchestrator to
-  validate... shown to Opus... as ground truth").
+  validate... shown to the code-review-model... as ground truth").
 - `DriverUpdateNotSupported(reason, unsupported_fields=None)`:
   - `.reason` is exactly the string passed in.
   - `.unsupported_fields` is `[]` when the argument is omitted (or passed

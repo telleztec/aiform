@@ -32,24 +32,44 @@ whole "AI-driven but bounded-cost" premise hold together. Don't relax them
 to make something easier to build.
 
 ### Model tiering
-- Two roles, each independently configurable via `.aiform/config.yaml`
+- Four roles, each **independently** configurable via `.aiform/config.yaml`
   (`resolve_llm_config()` in `aiform/config.py`, `LLMConfig` in
   `aiform/models.py`) rather than hardcoded constants — see `specs/llm.md`
   and `specs/config.md`. The MVP default — and the only model source
-  implemented right now — is Anthropic (`ModelSource.ANTHROPIC`) for both.
-- **Implementation role**, default **Claude Sonnet 5** (`claude-sonnet-5`):
-  everything routine and repeated — parsing prose intent, diffing, plan
-  categorization, drafting new drivers.
-- **Review role**, default **Claude Opus 5** (`claude-opus-5`): *only* at the
-  two review gates: (1) approving a newly-generated resource driver before
-  it's trusted for reuse, (2) reviewing a plan before `apply` executes
+  implemented right now — is Anthropic (`ModelSource.ANTHROPIC`) for all
+  four. This is deliberate: as model capability and pricing change over
+  time, a user (or a future default-tuning pass) adjusts `.aiform/config.yaml`
+  per role, not the code — see `PLAN.md`'s "Model tiering" section for the
+  full rationale and the mapping from each role to the prompt file(s) it
+  drives.
+- **`intent-orchestration-model`**, default **Claude Sonnet 5**
+  (`claude-sonnet-5`): parses the prose Intent section into `intent_notes[]`
+  and categorizes plan actions (create/update/no-op) against the raw diff.
+  Everything routine and repeated on the `plan` hot path runs through this
+  role — it's the one that must cost zero tokens on an unchanged second run.
+- **`code-generator-model`**, default **Claude Sonnet 5** (`claude-sonnet-5`):
+  drafts a new resource driver's Python source. Only exercised by the
+  deferred on-the-fly driver-generation pipeline (`aiform/driver_gen.py`),
+  not by a normal `plan`/`apply` — see `PLAN.md`'s "Driver curation".
+- **`code-review-model`**, default **Claude Opus 5** (`claude-opus-5`):
+  gate #1 — approving a driver (a hash-mismatched re-review today; a
+  newly-generated driver once on-the-fly generation is wired up) before
+  it's trusted for reuse.
+- **`review-orchestration-model`**, default **Claude Opus 5**
+  (`claude-opus-5`): gate #2 — reviewing a plan before `apply` executes
   anything destructive.
-- Do not change either *default* for cost reasons without asking first. This
-  split was chosen deliberately after an explicit cost/capability tradeoff
-  discussion — it's not a default that happened to be picked. A user
-  overriding their own `.aiform/config.yaml` is an intentional escape hatch,
-  not a violation of this rule — don't add a second, uninstructed override
-  of your own.
+- Do not change any of the four *defaults* for cost reasons without asking
+  first. This split was chosen deliberately after an explicit
+  cost/capability tradeoff discussion — it's not a default that happened to
+  be picked. A user overriding their own `.aiform/config.yaml` is an
+  intentional escape hatch, not a violation of this rule — don't add a
+  second, uninstructed override of your own.
+- These four roles are distinct from — and not configured the same way
+  as — the fixed Opus 5 `/code-review` gate this project's own build
+  process (`PROCESS.md`) runs against every module's PR, including a
+  curated driver's. That's a development-time tool for building `aiform`
+  itself, not one of `aiform`'s own runtime roles; `PROCESS.md` explains why
+  the two are deliberately not the same mechanism.
 - Adding a new model source (e.g. Bedrock) is a `MODEL_SOURCES` dispatch-table
   entry in `aiform/llm.py`, not a reason to introduce a plugin system or ABC
   hierarchy — keep it to that one seam.
@@ -79,8 +99,9 @@ to make something easier to build.
   differently, but don't treat that other repo as required reading either
   — the reasoning above is the actual rule.
 - A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
-  reads `ANTHROPIC_API_KEY` is a hard failure at Opus review time — this is
-  explicitly one of the review checklist items in `prompts/review_driver.md`.
+  reads `ANTHROPIC_API_KEY` is a hard failure at `code-review-model` review
+  time (gate #1) — this is explicitly one of the review checklist items in
+  `prompts/review_driver.md`.
 
 ### State handling
 - Write `.aiform/state.json.backup` before every overwrite of
@@ -90,9 +111,10 @@ to make something easier to build.
   expected. State is a cache of live reality, not a source of truth in
   itself.
 - The no-op short-circuit (`PLAN.md` §5 step 5) — deterministic dict-diff
-  first, only call Sonnet when there's something to actually interpret — is
-  what keeps `plan` cheap on unchanged input. Don't route the diff step
-  through an LLM call unconditionally "for simplicity."
+  first, only call the `intent-orchestration-model` when there's something
+  to actually interpret — is what keeps `plan` cheap on unchanged input.
+  Don't route the diff step through an LLM call unconditionally "for
+  simplicity."
 
 ## Coding conventions
 
@@ -123,17 +145,18 @@ parts to exist yet:
 
 1. `aiform/models.py`, `aiform/state.py`, `aiform/config.py` — no LLM
    involvement, pure data/IO, easiest to get right and test first.
-2. `aiform/llm.py` — the three role-based functions
-   (`implementation_call`/`review_driver`/`review_plan`), dispatching on
-   configured model source via `MODEL_SOURCES`, with the structured-output
-   schemas from `PLAN.md` §2/§5. Verify the credentials-never-touch-this-file
-   property from day one.
+2. `aiform/llm.py` — the four role-based functions
+   (`intent_orchestration_call`/`code_generator_call`/`review_driver`/
+   `review_plan`), dispatching on configured model source via
+   `MODEL_SOURCES`, with the structured-output schemas from `PLAN.md`
+   §2/§5. Verify the credentials-never-touch-this-file property from day
+   one.
 3. `aiform/driver.py` — the `ResourceDriver` ABC + `DriverUpdateNotSupported`,
-   then `aiform/driver_gen.py` — driver generation + AST validation + Opus
-   review gate #1.
+   then `aiform/driver_gen.py` — driver generation + AST validation + gate
+   #1 (`code-review-model`).
 4. `drivers/digitalocean/compute.py` — the first generated driver. Even
-   though Opus reviews it automatically, read it yourself the first time;
-   it establishes the pattern every future driver follows.
+   though `code-review-model` reviews it automatically, read it yourself
+   the first time; it establishes the pattern every future driver follows.
 5. `aiform/planner.py`, `aiform/orchestrator.py`, `aiform/cli.py` — wire
    everything into the `plan`/`apply` commands and validate against the full
    MVP walkthrough in `PLAN.md` §8, including the "second plan run makes

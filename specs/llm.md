@@ -2,18 +2,19 @@
 
 ## Purpose
 
-The only file in this codebase that talks to a model API. Three public
-functions — `implementation_call()` (generic — used for intent parsing,
-plan categorization, and driver drafting), `review_driver()`, and
-`review_plan()` (the two Opus-gate wrappers from `PLAN.md` §5) — none of
-which hardcode a specific model or vendor. *Which* model backs each of
-the two roles (`implementation`, `review`) is resolved from
-`aiform/config.py` at call time, not baked into this file as a constant.
-This is also the file `CLAUDE.md`'s single non-negotiable,
-grep-verifiable rule is about: **no `credentials` parameter, local
-variable, or import anywhere in it, ever** — model *selection* is
-configuration, not a credential, and that rule is unaffected by
-anything in this revision.
+The only file in this codebase that talks to a model API. Four public
+functions — `intent_orchestration_call()` (prose Intent parsing and plan
+categorization), `code_generator_call()` (driver drafting),
+`review_driver()`, and `review_plan()` (the two review-gate wrappers from
+`PLAN.md` §5, gate #1 and gate #2) — none of which hardcode a specific
+model or vendor. *Which* model backs each of the four roles
+(`intent_orchestration`, `code_generator`, `code_review`,
+`review_orchestration`) is resolved from `aiform/config.py` at call time,
+not baked into this file as a constant. This is also the file
+`CLAUDE.md`'s single non-negotiable, grep-verifiable rule is about: **no
+`credentials` parameter, local variable, or import anywhere in it,
+ever** — model *selection* is configuration, not a credential, and that
+rule is unaffected by anything in this revision.
 
 ## Why this changed from the first draft of this spec
 
@@ -24,18 +25,49 @@ Anthropic's Sonnet" and "there is only ever one vendor" as facts this
 file can't see past. The project's actual direction: multiple resource
 *kinds* need an LLM to help generate their driver eventually, model
 *sources* beyond Anthropic (e.g. Bedrock) are a real near-term
-possibility, and the specific model used for each of the two roles
-should be something the user sets in configuration — not something
-hardcoded here. MVP still ships with exactly one source (Anthropic) and
-two Anthropic model defaults, but the seam for a second source has to
-exist now, the same way `config.py`'s `PROVIDER_TOKEN_ENV_VARS` already
-has a real (if single-entry) table instead of a hardcoded
-`"digitalocean"` string sprinkled through the code.
+possibility, and the specific model used for each role should be
+something the user sets in configuration — not something hardcoded
+here. MVP still ships with exactly one source (Anthropic) and two
+Anthropic model defaults across the four roles, but the seam for a
+second source has to exist now, the same way `config.py`'s
+`PROVIDER_TOKEN_ENV_VARS` already has a real (if single-entry) table
+instead of a hardcoded `"digitalocean"` string sprinkled through the
+code.
 
 **Scope discipline**: this is a dispatch-table seam, not a plugin
 system. Adding a second source later means writing one new call
 function and adding one dict entry — no abstract base classes, no
 registry, no dynamic loading. Don't build more than that now.
+
+## Second revision: four roles, not two
+
+This spec originally had `implementation_call()` serve three different
+call sites (`parser.py`'s intent extraction, `planner.py`'s diff
+categorization, and `driver_gen.py`'s driver drafting) under one shared
+`implementation` role, paired with a single `review` role covering both
+review gates. That collapsed two conceptually different jobs into each
+role: "interpret this diff/prose" and "write new Python source" are not
+the same kind of work, and "review a driver's source" and "review a
+destructive plan" aren't either — yet a user could only tune them
+together. `PLAN.md`'s "Model tiering" section now names four
+independently configurable roles instead, each mapped to the prompt
+file(s) that drive it — four roles covering the five prompt files under
+`prompts/` (`intent_orchestration` is the one role that owns two
+closely-related prompts, not a one-role-per-file split):
+
+| Role | Prompt file(s) | Default model | Public function |
+| --- | --- | --- | --- |
+| `intent_orchestration` | `parse_intent.md`, `diff_plan.md` | `claude-sonnet-5` | `intent_orchestration_call()` |
+| `code_generator` | `generate_driver.md` | `claude-sonnet-5` | `code_generator_call()` |
+| `code_review` | `review_driver.md` | `claude-opus-5` | `review_driver()` |
+| `review_orchestration` | `review_plan.md` | `claude-opus-5` | `review_plan()` |
+
+`implementation_call()` is split into `intent_orchestration_call()` and
+`code_generator_call()` — same generic raw-text-return contract as
+before, just resolving a different `LLMRoleConfig` off `LLMConfig` each.
+`review_driver()`/`review_plan()` keep their names (they already read as
+role-specific, not generic) but now resolve `llm_config.code_review` /
+`llm_config.review_orchestration` instead of `llm_config.review`.
 
 ## Two new shared concepts in `aiform/models.py`
 
@@ -53,8 +85,10 @@ class LLMRoleConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    implementation: LLMRoleConfig
-    review: LLMRoleConfig
+    intent_orchestration: LLMRoleConfig
+    code_generator: LLMRoleConfig
+    code_review: LLMRoleConfig
+    review_orchestration: LLMRoleConfig
 ```
 
 `ModelSource` is the literal "table that specifies Anthropic as the
@@ -65,7 +99,8 @@ starts accepting it automatically via Pydantic. `model` stays a plain
 `str`, not its own enum — model *names* change far more often than
 model *sources*, and there's no fixed set to validate against (Anthropic
 alone will presumably ship new model names over this project's
-lifetime).
+lifetime). `LLMConfig`'s four fields are independent — see "Second
+revision" above for why they aren't collapsed back into two.
 
 ## `aiform/config.py` needs a second resolver
 
@@ -80,20 +115,31 @@ alongside this one — see the implementation order below).
 ```yaml
 # .aiform/config.yaml — optional; every field has a default
 llm:
-  implementation:
+  intent_orchestration:
     source: anthropic
     model: claude-sonnet-5
-  review:
+  code_generator:
+    source: anthropic
+    model: claude-sonnet-5
+  code_review:
+    source: anthropic
+    model: claude-opus-5
+  review_orchestration:
     source: anthropic
     model: claude-opus-5
 ```
 
 Defaults (used for any field the file omits, or for everything if the
-file doesn't exist at all) preserve today's behavior exactly:
-`claude-sonnet-5` for implementation, `claude-opus-5` for review, both
-via Anthropic. Unlike credentials, there's a safe default here, so
-requiring the user to create this file just to run the MVP would be
-pure friction — it exists purely as an override point.
+file doesn't exist at all) preserve the historical implementation/review
+split's behavior exactly: `claude-sonnet-5` for `intent_orchestration`
+and `code_generator`, `claude-opus-5` for `code_review` and
+`review_orchestration`, all via Anthropic. Unlike credentials, there's a
+safe default here, so requiring the user to create this file just to run
+the MVP would be pure friction — it exists purely as an override point.
+A user who only wants to change one role (e.g. swap `code_generator` to
+a newer/cheaper model as pricing changes) overrides just that one field;
+the other three keep their defaults — see `resolve_llm_config()`'s
+per-field-default-merge behavior below.
 
 ## Interface
 
@@ -119,7 +165,18 @@ PLAN_REVIEW_SCHEMA: dict[str, Any] = {...}  # PLAN.md §5 apply step 2, verbatim
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 
 
-def implementation_call(
+def intent_orchestration_call(
+    system_prompt: str,
+    user_content: str,
+    *,
+    output_schema: dict[str, Any] | None = None,
+    max_tokens: int = 4096,
+    client: anthropic.Anthropic | None = None,
+    llm_config: LLMConfig | None = None,
+) -> str: ...
+
+
+def code_generator_call(
     system_prompt: str,
     user_content: str,
     *,
@@ -155,8 +212,8 @@ implementation, not a generic "the-only-vendor" helper. This is the
 function a hypothetical `_bedrock_call(...)` would sit next to later.
 
 Text extraction scans `response.content` for the first block with
-`type == "text"`, not `response.content[0].text`. Both configured
-default models (`claude-sonnet-5`, `claude-opus-5`) run with adaptive
+`type == "text"`, not `response.content[0].text`. Every configured
+default model (`claude-sonnet-5`, `claude-opus-5`) runs with adaptive
 thinking on whenever the `thinking` parameter is omitted (which this
 call always does), so `response.content[0]` is a `ThinkingBlock` — no
 `.text` attribute — on a real, non-mocked call. If no block has
@@ -166,43 +223,60 @@ clear failure.
 
 ### `MODEL_SOURCES`
 
-The dispatch table. `implementation_call()`/`review_driver()`/
-`review_plan()` all resolve `(source, model)` from an `LLMConfig`, look
-up `MODEL_SOURCES[source]`, and call it with that role's `model` string.
-This one dict *is* the extensibility seam — nothing else about these
-three public functions needs to change to add a source.
+The dispatch table. `intent_orchestration_call()`/`code_generator_call()`/
+`review_driver()`/`review_plan()` all resolve `(source, model)` from an
+`LLMConfig`, look up `MODEL_SOURCES[source]`, and call it with that
+role's `model` string. This one dict *is* the extensibility seam —
+nothing else about these four public functions needs to change to add a
+source.
 
-### `implementation_call(system_prompt, user_content, *, output_schema=None, max_tokens=4096, client=None, llm_config=None) -> str`
+### `intent_orchestration_call(system_prompt, user_content, *, output_schema=None, max_tokens=4096, client=None, llm_config=None) -> str`
 
-Same generic contract as the old `sonnet_call()` (still the one
-function reused by `parser.py`'s intent extraction, `planner.py`'s diff
-categorization, and `driver_gen.py`'s driver drafting — each supplies
-its own prompt and, when it wants structured output, its own schema),
-now resolving which model/source to use from `llm_config` (or
-`config.resolve_llm_config()` if not given) instead of a hardcoded
-constant. Still always returns the raw response text as a plain `str`
-— parsing/validating it is still the caller's job, unchanged from the
-original draft.
+Backs the `intent-orchestration-model` role: the one function reused by
+`parser.py`'s intent extraction and `planner.py`'s diff categorization
+— each supplies its own prompt and, when it wants structured output,
+its own schema. Resolves which model/source to use from
+`llm_config.intent_orchestration` (or `config.resolve_llm_config()` if
+`llm_config` isn't given) instead of a hardcoded constant. Always
+returns the raw response text as a plain `str` — parsing/validating it
+is the caller's job.
+
+### `code_generator_call(system_prompt, user_content, *, output_schema=None, max_tokens=4096, client=None, llm_config=None) -> str`
+
+Backs the `code-generator-model` role: `driver_gen.py`'s driver
+drafting, the one caller of this function in the MVP (deferred, not
+invoked by `plan`/`apply` — `PLAN.md`'s "Driver curation"). Same
+contract as `intent_orchestration_call()` — raw text out, caller
+parses/validates — resolving `llm_config.code_generator` instead.
+`driver_gen.py` calls this with no `output_schema`: Python source isn't
+a good fit for `output_config.format` (`PLAN.md` §5 step 3a).
+
+Both functions above share an identical signature and differ only in
+which `LLMRoleConfig` they resolve — deliberately: a caller that needs
+to route by role at runtime can hold either as a value with the same
+type, rather than branching on a role enum. Neither is a thin wrapper
+around the other; each resolves its own field off `LLMConfig` directly.
 
 ### `review_driver(driver_source, *, client=None, llm_config=None) -> DriverReview`
 
-Same behavior as before (loads `prompts/review_driver.md` from
-`PROMPTS_DIR` internally, constrains output to `DRIVER_REVIEW_SCHEMA`,
-stamps `reviewed_at`/`model` onto the raw `{approved, concerns,
-blocking_issues}` response to build the `DriverReview`), except the
-model used for the call is `llm_config.review.model` via
-`MODEL_SOURCES[llm_config.review.source]`, and the `model` field stamped
-onto the resulting `DriverReview` is that resolved model string — not a
-hardcoded `"claude-opus-5"`. If a different model is configured for
-review, the audit trail correctly reflects what actually reviewed it.
+Backs the `code-review-model` role, gate #1. Loads
+`prompts/review_driver.md` from `PROMPTS_DIR` internally, constrains
+output to `DRIVER_REVIEW_SCHEMA`, stamps `reviewed_at`/`model` onto the
+raw `{approved, concerns, blocking_issues}` response to build the
+`DriverReview`. The model used for the call is
+`llm_config.code_review.model` via `MODEL_SOURCES[llm_config.code_review.source]`,
+and the `model` field stamped onto the resulting `DriverReview` is that
+resolved model string — not a hardcoded `"claude-opus-5"`. If a
+different model is configured for `code_review`, the audit trail
+correctly reflects what actually reviewed it.
 
 ### `review_plan(plan_summary, *, client=None, llm_config=None) -> PlanReview`
 
-Same relationship to the old `opus_review_plan()` that `review_driver()`
-has to `opus_review_driver()` — same behavior, model resolved from
-`llm_config.review` instead of hardcoded.
+Backs the `review-orchestration-model` role, gate #2. Same shape as
+`review_driver()` — model resolved from `llm_config.review_orchestration`
+instead.
 
-### `llm_config` parameter (new on all three public functions)
+### `llm_config` parameter (on all four public functions)
 
 Injectable for testing, exactly like `client` — tests construct an
 in-memory `LLMConfig` directly (no temp files, no monkeypatching
@@ -215,25 +289,31 @@ filesystem for anything that isn't the specific thing being tested.
 
 - **`"credentials"` does not appear anywhere in `aiform/llm.py`'s source
   text** — unchanged from the original draft, verified the same way.
-- `implementation_call()` dispatches to `_anthropic_call()` when
-  `llm_config.implementation.source == ModelSource.ANTHROPIC` (the only
-  case MVP can exercise), passing `llm_config.implementation.model` as
-  the model string.
-- `review_driver()`/`review_plan()` dispatch the same way using
-  `llm_config.review`.
-- With no `llm_config` argument, both roles resolve through
+- `intent_orchestration_call()` dispatches to `_anthropic_call()` when
+  `llm_config.intent_orchestration.source == ModelSource.ANTHROPIC` (the
+  only case MVP can exercise), passing
+  `llm_config.intent_orchestration.model` as the model string.
+- `code_generator_call()` dispatches the same way using
+  `llm_config.code_generator`; `review_driver()` using
+  `llm_config.code_review`; `review_plan()` using
+  `llm_config.review_orchestration`. All four roles are resolved and
+  dispatched independently — there is no shared "implementation" or
+  "review" grouping in the dispatch logic itself, only in the informal
+  implementation-tier/review-tier framing `PLAN.md` uses to describe them.
+- With no `llm_config` argument, all four roles resolve through
   `config.resolve_llm_config()` — which, with no `.aiform/config.yaml`
-  present, means `implementation_call()` acts exactly as the old
-  `sonnet_call()` did (`claude-sonnet-5`) and `review_driver()`/
-  `review_plan()` act exactly as `opus_review_driver()`/
-  `opus_review_plan()` did (`claude-opus-5`). This revision changes
-  *how* the model is chosen, not the MVP's actual default behavior.
+  present, means `intent_orchestration_call()`/`code_generator_call()`
+  act exactly as the old `sonnet_call()` did (`claude-sonnet-5`) and
+  `review_driver()`/`review_plan()` act exactly as
+  `opus_review_driver()`/`opus_review_plan()` did (`claude-opus-5`).
+  This revision changes *how* the model is chosen, not the MVP's actual
+  default behavior.
 - `review_driver()`'s returned `DriverReview.model` equals whatever
-  `llm_config.review.model` was resolved to, not a fixed string.
+  `llm_config.code_review.model` was resolved to, not a fixed string.
 - Every function still accepts an injected `client`, and when one is
   given, no real network call is made.
 - `output_schema`/no-`output_schema`, raw-text-return, and the two
-  Opus-gate schemas (`DRIVER_REVIEW_SCHEMA`, `PLAN_REVIEW_SCHEMA`) are
+  review-gate schemas (`DRIVER_REVIEW_SCHEMA`, `PLAN_REVIEW_SCHEMA`) are
   all unchanged from the original draft — this revision only touches
   *how the model/source is chosen*, not the calling contract's shape.
 
@@ -266,10 +346,10 @@ filesystem for anything that isn't the specific thing being tested.
 - **Per-resource-kind model configuration.** The user's stated direction
   is that a *future* resource kind requiring its own LLM interaction
   should eventually be configurable independently — MVP's `LLMConfig`
-  has exactly two roles (`implementation`, `review`), global to the
-  whole tool, not per-resource-kind. Extending `LLMConfig` with
-  per-resource-kind overrides is a real future step, deliberately not
-  built now.
+  has exactly four roles (`intent_orchestration`, `code_generator`,
+  `code_review`, `review_orchestration`), global to the whole tool, not
+  per-resource-kind. Extending `LLMConfig` with per-resource-kind
+  overrides is a real future step, deliberately not built now.
 - **Validating `.aiform/config.yaml`'s `source` against `MODEL_SOURCES`
   at config-resolution time.** `config.py` validates `source` is a
   known `ModelSource` *enum member* (via Pydantic); it does not import
@@ -308,3 +388,30 @@ filesystem for anything that isn't the specific thing being tested.
    without the `models.py`/`config.py` pieces it depends on) — step 1's
    docs update can either ride in the same PR or go first as its own
    tiny PR; either is fine, your call when we get there.
+
+## Third revision: implementation currently lags this spec
+
+`aiform/models.py`, `aiform/config.py`, and `aiform/llm.py` already exist
+in this repo, built against the **second** revision above (two roles:
+`implementation`/`review`). This document's "Second revision: four
+roles, not two" section is a **further** revision on top of that,
+splitting `implementation` into `intent_orchestration`/`code_generator`
+and renaming `review` to two named review roles
+(`code_review`/`review_orchestration`). The existing code has not been
+updated to match yet — follow the same suggested order above (docs →
+`models.py` → `config.py` → `llm.py`, tests red-then-green at each step,
+`/code-review` before merge) to bring it in line, treating the
+already-implemented two-role version as the "before" state rather than
+starting from nothing.
+
+**Not just `llm.py` itself** — `aiform/parser.py`, `aiform/planner.py`,
+and `aiform/driver_gen.py` also already exist and call
+`llm.implementation_call()` directly (intent extraction and diff
+categorization in the first two, driver drafting in the third). Renaming
+`implementation_call()` out of existence without updating these three
+call sites — and the `tests/test_llm.py`/`tests/test_parser.py`/
+`tests/test_planner.py`/`tests/test_driver_gen.py` tests that exercise
+them — leaves the codebase broken at import time, not just out of sync
+with this spec. Treat all six files (the three modules named above plus
+these three call sites) as one pass, same as `models.py`/`config.py`/
+`llm.py` are treated as one pass in step 6's suggested-order note.

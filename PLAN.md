@@ -8,31 +8,50 @@ aiform's idea: replace the *planning/diffing* logic with an LLM making those dec
 
 **Prior art**: nothing found puts an LLM directly in the runtime plan/diff/sequencing loop against live provider APIs in production today. Closest is an arXiv paper on AI-driven IaC *drift reconciliation* — reconciliation-focused, not full lifecycle CRUD. Worth holding in tension: Martin Fowler has argued DSLs are valuable specifically because they shrink the LLM's solution space and enable deterministic validation. aiform's generated-driver interface (§4) partially serves that same "shrink the solution space" role Terraform's schema does, while the AI supplies the plan/diff/sequencing nuance Terraform's schema has none of.
 
-**Model tiering** (cost-conscious, deliberate): one *role* handles all routine, repeated work — parsing prose intent, diffing, categorizing plan actions — and a second, stronger *role* is used as a review/approval gate. **In the MVP this gate fires in three different places**: (1) at *development* time, reviewing a new curated driver via `/code-review` before it ships as part of the aiform package (see "Driver curation" below) — not a `plan`-time runtime call; (2) at `plan` *runtime*, but only for the hash-mismatch re-review case (§5 step 3) — a driver already on disk whose sha256 no longer matches its trusted record (a hand-edit, or an untrusted file) gets re-reviewed before being trusted again, the one driver-trust check that *does* run live in the MVP; and (3) at `apply` *runtime*, reviewing the final plan before it executes anything destructive. A future version restores driver *generation* review as a runtime checkpoint too (distinct from (2)'s re-review of existing files), for on-the-fly driver generation gated on explicit user approval. This bounds ongoing cost while still getting a stronger model's judgment where mistakes are expensive. Which model (and which model source/vendor) fills each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for the implementation role and Claude **Opus 5** (`claude-opus-5`) for the review role, both via the Anthropic API. Do not change either *default* for cost reasons without asking — this split was chosen deliberately, not by default. Users may override the configured model/source per role; that's an intentional escape hatch, not a violation of this rule.
+**Model tiering** (cost-conscious, deliberate): four independently configurable *roles*, not one implementation/review split. Two "implementation-tier" roles do routine, repeated work; two "review-tier" roles act as approval gates for anything expensive to get wrong:
+
+- **`intent-orchestration-model`** — parses the prose Intent section into `intent_notes[]` and categorizes each plan action (create/update/no-op) against the raw diff (`prompts/parse_intent.md`, `prompts/diff_plan.md`, §2 and §5 step 6). This is the model behind every routine `aiform plan` call — the one that must cost zero tokens on an unchanged second run (§5 step 5, §8 step 4).
+- **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §5 step 3a). Only exercised by the deferred on-the-fly driver-generation pipeline (`aiform/driver_gen.py`) — see "Driver curation" below; not on the hot path of a normal `plan`/`apply` in the MVP.
+- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3c). In the MVP this fires live only for the `plan`-time hash-mismatch re-review case (§5 step 3) — a driver already on disk whose sha256 no longer matches its trusted record (a hand-edit, or an untrusted file) gets re-reviewed before being trusted again. It's also the gate the deferred on-the-fly generation pipeline uses once wired up.
+- **`review-orchestration-model`** — reviews the full plan before `apply` executes anything destructive: gate #2 (§5 `apply` step 2, `prompts/review_plan.md`).
+
+Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
+
+Separate from the four roles above: **this project's own build process** (`PROCESS.md`) reviews newly-authored aiform modules — including a curated driver, before it ships as part of the aiform package (see "Driver curation" below) — via Claude Code's `/code-review`, fixed to Opus 5. That's a development-time tool for building aiform itself, not one of the four runtime roles and not configured through `.aiform/config.yaml`; `PROCESS.md` explains why the two are deliberately not the same mechanism even though they reuse the same author/reviewer philosophy.
 
 ## MVP scope (locked)
 
-Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see Known Limitations).
+Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §9, "Not Yet Implemented").
 
 ## Driver curation (MVP) vs. future on-the-fly generation
 
 **Revised from the original design** after the first real driver-generation
 attempts. The original §5 described drivers as generated at `aiform plan`
-runtime by an LLM (Sonnet drafts, Opus reviews), unattended, the first
-time a `(provider, resource)` pair was needed. In practice, across three
-consecutive generation attempts against the DigitalOcean compute driver —
-Sonnet, Sonnet again with the prompt fixed to include the correct
+runtime by an LLM (the code-generator-model drafts, the code-review-model
+reviews), unattended, the first time a `(provider, resource)` pair was
+needed. In practice, across three consecutive generation attempts against
+the DigitalOcean compute driver — the code-generator-model, the
+code-generator-model again with the prompt fixed to include the correct
 credentials key and the full acceptance-criteria spec verbatim, then Opus
-for *both* drafting and review — every attempt got the exact,
-explicitly-stated `credentials` dict key wrong (`credentials["api_token"]`,
-then `credentials["token"]`, then a five-candidate guess list that still
-didn't include the real key), and two of the three also silently dropped
-the entire resize power-cycle sequence the spec details at length. This
-wasn't a context-starvation problem — the correct answer was verified to
-be in the prompt, twice — it's a real reliability ceiling on one-shot
-generation against a spec this detailed. That matters specifically because
-the whole point of *runtime* generation is that no human is present in a
-real user's session to catch and fix a mistake like this.
+manually filling both the code-generator-model and code-review-model
+roles for one attempt —
+every attempt got the exact, explicitly-stated `credentials` dict key
+wrong (`credentials["api_token"]`, then `credentials["token"]`, then a
+five-candidate guess list that still didn't include the real key), and two
+of the three also silently dropped the entire resize power-cycle sequence
+the spec details at length. This wasn't a context-starvation problem — the
+correct answer was verified to be in the prompt, twice — it's a real
+reliability ceiling on one-shot generation against a spec this detailed.
+That matters specifically because the whole point of *runtime* generation
+is that no human is present in a real user's session to catch and fix a
+mistake like this.
+
+**Driver creation is never automatic, and it is never something aiform's
+own authors do on an end user's behalf.** There are exactly two ways a
+driver becomes usable, and both require either a human in this repo's own
+development loop, or (once built) an explicit, per-instance approval from
+the *aiform user* who needs the driver — never a silent, unattended
+generate-and-trust step:
 
 **MVP: drivers are curated, not generated at `plan` time.** The set of
 usable `(provider, resource)` drivers is fixed by aiform's own maintainers
@@ -50,15 +69,26 @@ Two ways a driver gets added:
    not by an unattended `generate_driver()` call), reviewed via
    `/code-review`, and merged through the normal PR process with human
    approval. This is how `drivers/digitalocean/compute.py` gets built.
-2. **On-the-fly generation, deferred.** A future version where `aiform`
-   itself, at `plan` time, offers to generate a missing driver and prompts
-   the *aiform user* for explicit approval before trusting it — analogous
-   to how Claude Code prompts for tool-use permission. `aiform/driver_gen.py`
-   already implements the underlying draft/validate/review pipeline (built,
+2. **On-the-fly generation, deferred — a feature of `aiform` itself, not
+   of this repo's maintainers.** A future version where `aiform`, at
+   `plan` time, notices a missing `(provider, resource)` driver, offers
+   to generate it, and walks the *aiform user* through that generation
+   interactively — drafting with `code-generator-model`, reviewing with
+   `code-review-model`, and requiring the user's explicit, per-instance
+   approval before the result is trusted — analogous to how Claude Code
+   prompts for tool-use permission. This is deliberately **not** "file an
+   issue and wait for a maintainer to hand-author it": the explicit goal
+   is to make creating a new driver as easy and as automatic as possible
+   for the end user, to the point that aiform's own authors don't need to
+   be involved in most cases at all. `aiform/driver_gen.py` already
+   implements the underlying draft/validate/review pipeline (built,
    tested, and itself Opus-reviewed via the normal dev loop) — what's
    deferred is wiring it into `plan`/`apply` behind that approval prompt,
    and further work on generation reliability given the finding above
-   before it's trusted unattended.
+   before it's trusted unattended. **Sequencing**: this secondary flow is
+   deliberately built only *after* the primary orchestration flow (plan/
+   diff/apply against curated drivers) is stable and proven — see "MVP
+   scope (locked)" above. It is not yet implemented; see §9.
 
 `aiform plan` against a `(provider, resource)` pair with no driver on disk
 fails with a clear, actionable error in the MVP — it does not attempt
@@ -93,7 +123,8 @@ note on this.
 The existing command (§6): `aiform destroy [FILE.aiform.md ...] [--yes]`.
 Plans and applies a destroy for every resource named by the given
 file(s) (or every resource currently tracked in state, if none are
-given), 100% subject to Opus gate #2 by definition. **New in this
+given), 100% subject to gate #2 (review-orchestration-model) by
+definition. **New in this
 revision**: once a resource's destroy is verified (see "Verification"
 below), the `.aiform.md` file that named it is moved into
 `.aiform/trash/` (below) — this is what keeps the on-disk configuration
@@ -114,13 +145,14 @@ change.
 same `*.aiform.md` glob (the prefix doesn't touch the extension), but
 classifies it as **marked for deletion** rather than parsing it toward a
 normal create/update/no-op plan. Its `PlanEntry.action` is `destroy`,
-decided the moment the prefix is detected — no diff, no Sonnet call,
+decided the moment the prefix is detected — no diff, no
+intent-orchestration-model call,
 same as Version 1: this is an explicit instruction, not an inference.
 `aiform plan` prints this like any other destroy action; nothing is
 executed until `aiform apply`.
 
 `aiform apply` re-plans (per its existing step 1), sees the `destroy`
-action, runs Opus gate #2 like any other destroy (no special-case
+action, runs gate #2 (review-orchestration-model) like any other destroy (no special-case
 bypass), executes the destroy, and — once verified — moves the
 `AIFORM-DELETE-`-prefixed file into `.aiform/trash/`, exactly as Version
 1 does. If the named resource isn't currently tracked in state at all
@@ -208,7 +240,7 @@ aiform/
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
-│   ├── llm.py                      # model-source dispatch: implementation_call(), review_driver(), review_plan()
+│   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
 │   ├── driver_gen.py                # draft/validate/review pipeline; built, not yet wired into plan/apply (deferred on-the-fly generation, see "Driver curation")
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -219,11 +251,11 @@ aiform/
 │       ├── __init__.py
 │       └── compute.py              # hand-authored via PROCESS.md's dev loop, Opus-reviewed via /code-review, then reused deterministically forever
 ├── prompts/
-│   ├── parse_intent.md             # Sonnet system prompt: prose Intent -> intent_notes[]
-│   ├── diff_plan.md                # Sonnet system prompt: raw diff + intent_notes -> PlanAction + rationale
-│   ├── generate_driver.md          # Sonnet system prompt: interface spec + CSP context -> driver source
-│   ├── review_driver.md            # Opus system prompt: gate #1 checklist
-│   └── review_plan.md              # Opus system prompt: gate #2 checklist
+│   ├── parse_intent.md             # intent-orchestration-model system prompt: prose Intent -> intent_notes[]
+│   ├── diff_plan.md                # intent-orchestration-model system prompt: raw diff + intent_notes -> PlanAction + rationale
+│   ├── generate_driver.md          # code-generator-model system prompt: interface spec + CSP context -> driver source
+│   ├── review_driver.md            # code-review-model system prompt: gate #1 checklist
+│   └── review_plan.md              # review-orchestration-model system prompt: gate #2 checklist
 ├── .aiform/                        # created by `aiform init`; credentials.env/state.json* gitignored (§7), trash/ is not
 │   ├── credentials.env             # DIGITALOCEAN_TOKEN=... (hand-edited, never scaffolded with a value)
 │   ├── state.json                  # default state file location
@@ -282,7 +314,7 @@ If backups get turned on, that's a mutable account-level toggle — apply it
 without hesitation, no need to flag it as risky.
 ```
 
-**How it's used**: `aiform/parser.py` sends only this prose block (not the frontmatter) to Sonnet with `output_config.format` constrained to:
+**How it's used**: `aiform/parser.py` sends only this prose block (not the frontmatter) to the `intent-orchestration-model` with `output_config.format` constrained to:
 
 ```python
 INTENT_NOTES_SCHEMA = {
@@ -313,17 +345,17 @@ INTENT_NOTES_SCHEMA = {
 ```
 
 ```python
-response = client.messages.create(
-    model="claude-sonnet-5",
-    max_tokens=2048,
-    output_config={"format": {"type": "json_schema", "schema": INTENT_NOTES_SCHEMA}},
-    system=open("prompts/parse_intent.md").read(),
-    messages=[{"role": "user", "content": prose_intent_text}],
+from aiform.llm import intent_orchestration_call
+
+response_text = intent_orchestration_call(
+    system_prompt=open("prompts/parse_intent.md").read(),
+    user_content=prose_intent_text,
+    output_schema=INTENT_NOTES_SCHEMA,
 )
-intent_notes = json.loads(response.content[0].text)["intent_notes"]
+intent_notes = json.loads(response_text)["intent_notes"]
 ```
 
-`intent_notes` is passed into the **diff/plan step** (§5) as context for Sonnet's create/update/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance. (Note: `destroy` is deliberately not one of the values Sonnet's categorization call can return — see "Resource deletion" above and §5's note on `PLAN_CATEGORIZATION_SCHEMA`.)
+`intent_orchestration_call()` (`aiform/llm.py`, `specs/llm.md`) is what actually talks to the model — which model, and which model source/vendor, is resolved at call time from `.aiform/config.yaml`'s `llm.intent_orchestration` entry (default `claude-sonnet-5` via Anthropic), not hardcoded here. `intent_notes` is passed into the **diff/plan step** (§5) as context for the `intent-orchestration-model`'s create/update/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance. (Note: `destroy` is deliberately not one of the values the `intent-orchestration-model`'s categorization call can return — see "Resource deletion" above and §5's note on `PLAN_CATEGORIZATION_SCHEMA`.)
 
 One `.aiform.md` file describes exactly one resource in the MVP (no dependency graph). Multiple resources = multiple files, planned/applied independently in sequence. This is the natural extension point for a future graph, deliberately not built now.
 
@@ -357,7 +389,7 @@ A file's *absence* from the discovered set is never itself meaningful to the par
         "path": "drivers/digitalocean/compute.py",
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
         "generated_at": "2026-07-30T18:22:11Z",
-        "opus_review": {
+        "code_review": {
           "approved": true,
           "blocking_issues": [],
           "concerns": ["update() resizes on any diff, not just size/region — should scope the resize action"],
@@ -380,9 +412,9 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 - `resource_type` — the abstract resource kind (e.g. `compute`), never a provider-specific product name. Deliberately named `resource_type` here, not `resource`, to stay unambiguous next to `name` (the specific instance) — this is the same value as the aiform.md frontmatter's `resource:` key (§2), just named more precisely once it's sitting next to other fields in state. Also what fills `<resource>` in the driver path convention (§1).
 - `id` — the CSP's resource identifier, opaque string (DO droplet IDs are numeric-as-string).
 - `attributes` — the last-known **actual** attributes as returned by `driver.read()` or `driver.create()`. This is the cache Terraform-style state provides.
-- `driver.sha256` — hash of the driver source on disk at the moment its Opus review was recorded. On every `plan`, the orchestrator recomputes the on-disk hash and compares; a mismatch (hand-edit, or a newer generation) invalidates the "trusted, reviewed" status and forces re-review before the driver is used again. This is the drift-detection mechanism for the driver itself, not just the resource.
-- `driver.opus_review` — audit trail of gate #1.
-- `aiform_md_sha256` — hash of the source file at last successful apply. Used by the planner as a cheap short-circuit: if this matches the current file's hash *and* a refresh shows no live drift, the diff step can skip its Sonnet call entirely and report `no-op` deterministically.
+- `driver.sha256` — hash of the driver source on disk at the moment its `code-review-model` review was recorded. On every `plan`, the orchestrator recomputes the on-disk hash and compares; a mismatch (hand-edit, or a newer generation) invalidates the "trusted, reviewed" status and forces re-review before the driver is used again. This is the drift-detection mechanism for the driver itself, not just the resource.
+- `driver.code_review` — audit trail of gate #1 (`DriverReview`, `specs/models.md`). Named after the role that produced it, not the specific model — the persisted `model` field inside it records whichever model was actually configured for `code-review-model` at review time.
+- `aiform_md_sha256` — hash of the source file at last successful apply. Used by the planner as a cheap short-circuit: if this matches the current file's hash *and* a refresh shows no live drift, the diff step can skip its `intent-orchestration-model` call entirely and report `no-op` deterministically.
 
 **Refresh mechanism** (`driver.read()` before diffing):
 
@@ -429,10 +461,10 @@ class ResourceDriver(ABC):
 
     # Declares the `params` shape this driver accepts. Used by the
     # orchestrator to validate a parsed aiform.md spec before ever
-    # calling create()/update(), and shown to Opus at review time
-    # (dev-time /code-review for curated drivers in the MVP; generation
-    # review once on-the-fly generation is wired up) as ground truth for
-    # what the driver claims to handle.
+    # calling create()/update(), and shown to the code-review-model at
+    # review time (dev-time /code-review for curated drivers in the
+    # MVP; generation review once on-the-fly generation is wired up)
+    # as ground truth for what the driver claims to handle.
     PARAM_SCHEMA: dict[str, Any]
 
     # Optional, advisory only (never authoritative — update() is the
@@ -489,8 +521,8 @@ class ResourceDriver(ABC):
             applied in place. The orchestrator catches this, treats
             the operation as a "replace" (delete() then create()), and
             — if this wasn't already flagged as a likely replace
-            during planning — pauses for the single-resource Opus
-            safety gate before proceeding.
+            during planning — pauses for the single-resource
+            review-orchestration-model safety gate before proceeding.
         """
 
     @abstractmethod
@@ -548,17 +580,17 @@ class Driver(ResourceDriver):
 1. **Locate `.aiform.md` files** — default: all `*.aiform.md` in cwd, or explicit paths from argv. Files whose name starts with `AIFORM-DELETE-` match this same glob but are classified separately (see "Resource deletion" above) — routed straight to a deterministic `destroy` `PlanEntry` in step 6, never parsed toward create/update/no-op.
 2. **Parse each file**:
    - Frontmatter: `yaml.safe_load()`, validated against a Pydantic `ResourceSpec` model (`resource`, `name`, `provider`, `params: dict`). Zero LLM calls. Still required for an `AIFORM-DELETE-` file — the frontmatter is what identifies *which* resource to destroy.
-   - Prose Intent section → one Sonnet call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose. Also skipped unconditionally for an `AIFORM-DELETE-` file, regardless of hash — a destroy needs no interpretive guidance.
+   - Prose Intent section → one `intent-orchestration-model` call → `intent_notes[]` (§2). This call is skipped entirely if `aiform_md_sha256` in state matches the file's current hash — no reason to re-extract intent from unchanged prose. Also skipped unconditionally for an `AIFORM-DELETE-` file, regardless of hash — a destroy needs no interpretive guidance.
 3. **Ensure a driver is usable** for `(provider, resource)`:
-   - **Driver file missing** → `aiform plan` fails immediately with a clear, actionable error (raises `aiform.exceptions.PlanBlockedError`) naming the unsupported `(provider, resource)` pair — drivers are curated in the MVP (see "Driver curation" above), not generated at `plan` time. A future version replaces this branch with an interactive prompt offering to generate one, subject to explicit user approval before it's trusted; the **Generation** and **Opus gate #1** steps below describe the pipeline that prompt would drive (`aiform/driver_gen.py` already implements it) — not invoked by `plan` today.
-   - **Driver file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to Opus gate #1c. This is what makes hand-editing a driver ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards, and it's the one driver-trust check that *does* run at `plan` time in the MVP. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not overwrite** — fail `aiform plan` with an explicit error naming the concerns (raises `aiform.exceptions.PlanBlockedError`); a hand-edit failing review means the human's edit needs fixing, not the AI's.
+   - **Driver file missing** → `aiform plan` fails immediately with a clear, actionable error (raises `aiform.exceptions.PlanBlockedError`) naming the unsupported `(provider, resource)` pair — drivers are curated in the MVP (see "Driver curation" above), not generated at `plan` time. A future version replaces this branch with an interactive prompt offering to generate one, subject to explicit user approval before it's trusted; the **Generation** and **gate #1** steps below describe the pipeline that prompt would drive (`aiform/driver_gen.py` already implements it) — not invoked by `plan` today.
+   - **Driver file present, but its on-disk sha256 doesn't match the sha256 recorded against any state entry that trusts it** (hand-edit, or an untrusted file dropped in from elsewhere) → **re-review the existing content as-is** — send it straight to gate #1c. This is what makes hand-editing a driver ("you can read/edit/vendor the exact code that runs") an actual supported workflow rather than something the next `plan` quietly discards, and it's the one driver-trust check that *does* run at `plan` time in the MVP. If approved, the new hash is recorded as trusted. If `blocking_issues` comes back non-empty, **do not overwrite** — fail `aiform plan` with an explicit error naming the concerns (raises `aiform.exceptions.PlanBlockedError`); a hand-edit failing review means the human's edit needs fixing, not the AI's.
 
    **Generation** (deferred — not invoked by `plan` in the MVP; described here for when the future on-the-fly-generation prompt is wired up):
-     a. Sonnet (`claude-sonnet-5`, plain-text output — Python source isn't a good fit for `output_config.format`) drafts the driver against `prompts/generate_driver.md`, which embeds the exact interface contract from §4 plus the desired `params` shape as a hint for `PARAM_SCHEMA`.
+     a. The `code-generator-model` (default `claude-sonnet-5`, plain-text output — Python source isn't a good fit for `output_config.format`) drafts the driver against `prompts/generate_driver.md`, which embeds the exact interface contract from §4 plus the desired `params` shape as a hint for `PARAM_SCHEMA`.
      b. Static validation: `ast.parse()` for syntax, then AST inspection (not import — untrusted code isn't executed pre-review) to confirm a class named `Driver` exists, subclasses `ResourceDriver`, and implements `create`, `read`, `update`, `delete` with the right argument names, and no `import anthropic` / `os.environ.get("ANTHROPIC` pattern is present.
 
-   **Opus gate #1** (`llm.review_driver()` — used live today only by the re-review branch above; also the gate for the deferred generation path once wired up):
-     c. Opus (`claude-opus-5`) reviews the full source — the existing on-disk file in the live re-review case, or a freshly generated draft once generation is wired up — against `prompts/review_driver.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict:
+   **Gate #1 — `code-review-model`** (`llm.review_driver()` — used live today only by the re-review branch above; also the gate for the deferred generation path once wired up):
+     c. The `code-review-model` (default `claude-opus-5`) reviews the full source — the existing on-disk file in the live re-review case, or a freshly generated draft once generation is wired up — against `prompts/review_driver.md`'s checklist (idempotent `delete`, correct credential sourcing, no LLM calls, sane in-place-vs-replace logic in `update`, error handling that raises rather than swallows). Structured verdict, via `llm.review_driver(driver_source_text)`:
         ```python
         DRIVER_REVIEW_SCHEMA = {
             "type": "object",
@@ -570,18 +602,15 @@ class Driver(ResourceDriver):
             "required": ["approved", "concerns", "blocking_issues"],
             "additionalProperties": False,
         }
-        response = client.messages.create(
-            model="claude-opus-5",
-            max_tokens=4096,
-            output_config={"format": {"type": "json_schema", "schema": DRIVER_REVIEW_SCHEMA}},
-            system=open("prompts/review_driver.md").read(),
-            messages=[{"role": "user", "content": driver_source_text}],
-        )
+        from aiform.llm import review_driver
+
+        review = review_driver(driver_source_text)  # model resolved from llm_config.code_review
         ```
-     d. **Approval rule**: a `blocking_issues`-free result is trusted in place (live re-review case) or, once generation is wired up, written to disk; non-empty `concerns` are printed as advisory warnings but do not block. The re-review path never retries automatically. (For the deferred generation path: `blocking_issues` non-empty → retry generation once with the concerns fed back to Sonnet (max 2 attempts total), then fail with an explicit error if still blocked, asking the user to hand-fix or hand-author the driver — this is `driver_gen.py`'s existing, tested behavior, just not reachable from `plan` yet.)
+        `review_driver()` (`aiform/llm.py`) is the only place this schema is sent to a model — which model backs `code-review-model` is resolved from `.aiform/config.yaml`'s `llm.code_review` entry (default `claude-opus-5` via Anthropic).
+     d. **Approval rule**: a `blocking_issues`-free result is trusted in place (live re-review case) or, once generation is wired up, written to disk; non-empty `concerns` are printed as advisory warnings but do not block. The re-review path never retries automatically. (For the deferred generation path: `blocking_issues` non-empty → retry generation once with the concerns fed back to the `code-generator-model` (max 2 attempts total), then fail with an explicit error if still blocked, asking the user to hand-fix or hand-author the driver — this is `driver_gen.py`'s existing, tested behavior, just not reachable from `plan` yet.)
 4. **Refresh state** for any resource in the plan that already exists in state.
 5. **Diff, deterministically first**: compute a plain dict-diff between refreshed `attributes` and the desired `params`. If the diff is empty **and** `aiform_md_sha256` matches the current file **and** no `drifted_missing` flag is set → the action is `no-op`, decided with **zero LLM calls**. This is what makes the second-and-later `plan` runs cheap.
-6. **Categorize with Sonnet, only when there's something to interpret** (a real diff, a `drifted_missing` resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the driver's `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. Sonnet returns a `PlanAction` (`create` / `update` / `no-op` — **not** `destroy`; `PLAN_CATEGORIZATION_SCHEMA`'s `action` enum omits it entirely, since a diff has no structural basis to conclude a resource should stop existing), a natural-language rationale, and a `likely_replace: bool` hint. A resource identified via `aiform destroy`'s arguments or an `AIFORM-DELETE-`-prefixed file (see "Resource deletion" above) skips this step entirely: its `PlanEntry.action` is `destroy`, set the moment the destroy intent is identified, zero LLM calls either way.
+6. **Categorize with the `intent-orchestration-model`, only when there's something to interpret** (a real diff, a `drifted_missing` resource, or a changed aiform.md file): one call passing the raw diff, `intent_notes`, and the driver's `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. It returns a `PlanAction` (`create` / `update` / `no-op` — **not** `destroy`; `PLAN_CATEGORIZATION_SCHEMA`'s `action` enum omits it entirely, since a diff has no structural basis to conclude a resource should stop existing), a natural-language rationale, and a `likely_replace: bool` hint. A resource identified via `aiform destroy`'s arguments or an `AIFORM-DELETE-`-prefixed file (see "Resource deletion" above) skips this step entirely: its `PlanEntry.action` is `destroy`, set the moment the destroy intent is identified, zero LLM calls either way.
 7. **Print the plan** and persist refreshed state.
 
 **A state-tracked resource with no corresponding file this run is left alone — this only applies to a default, no-argument invocation** (all `*.aiform.md` in cwd). Neither `plan` nor `apply` compares the full set of tracked state keys against the discovered file set looking for something to destroy; the only two ways to trigger a destroy are the ones named in "Resource deletion" above. Such a resource is reported with a warning (its last-known state is unchanged, printed as-is) rather than silently included or silently destroyed. When explicit file arguments are given instead, a tracked resource simply not named this run is expected scoping, not a warning-worthy anomaly — no message is printed for it.
@@ -589,7 +618,7 @@ class Driver(ResourceDriver):
 ### `aiform apply`
 
 1. Re-run `plan` in full immediately before executing (no separate saved-plan-file flow in the MVP).
-2. **Gate #2, batch pass**: if the plan contains any `destroy` actions or any `update` actions flagged `likely_replace: true`, call Opus once with the *entire* plan (all actions, for context) against `prompts/review_plan.md`:
+2. **Gate #2 — `review-orchestration-model`, batch pass**: if the plan contains any `destroy` actions or any `update` actions flagged `likely_replace: true`, call the `review-orchestration-model` (default `claude-opus-5`) once with the *entire* plan (all actions, for context) against `prompts/review_plan.md`, via `llm.review_plan(plan_summary)`:
    ```python
    PLAN_REVIEW_SCHEMA = {
        "type": "object",
@@ -617,7 +646,7 @@ class Driver(ResourceDriver):
 3. **Execute**, in file order (trivial for MVP's single-resource-per-file model; multi-resource sequencing is explicitly deferred):
    - `create` → `driver.create(params, credentials)`, write state.
    - `update` → `driver.update(id, current, desired, credentials)`.
-     - If it raises `DriverUpdateNotSupported` **and this resource was not already covered by the batch review in step 2**: pause, run a single-resource Opus review with the same schema, require fresh confirmation, then `driver.delete()` + `driver.create()`.
+     - If it raises `DriverUpdateNotSupported` **and this resource was not already covered by the batch review in step 2**: pause, run a single-resource `review-orchestration-model` review with the same schema, require fresh confirmation, then `driver.delete()` + `driver.create()`.
      - If it was already covered in step 2 as `likely_replace: true`, proceed directly to `delete()` + `create()` — it already passed the gate.
    - `destroy` → `driver.delete(id, credentials)` (skipped if the resource was never actually tracked in state — see Version 2's untracked-file case in "Resource deletion" above), remove from state, then move the resource's `.aiform.md` file into `.aiform/trash/` (path taken from the tracked state entry's `aiform_md_path`, or the literal discovered path for an untracked `AIFORM-DELETE-` file). If `driver.delete()` raises, the file is left exactly where it was and the failure surfaces like any other apply error (§4) — nothing is archived until the destroy is verified.
    - `no-op` → skip.
@@ -641,7 +670,7 @@ aiform plan [FILE.aiform.md ...] [--state-file PATH] [--json]
     deletion") — shown in the plan, not yet executed.
 
 aiform apply [FILE.aiform.md ...] [--yes] [--state-file PATH]
-    Re-plans, runs Opus gate #2 for any destructive step, executes.
+    Re-plans, runs gate #2 (review-orchestration-model) for any destructive step, executes.
     --yes skips the interactive confirmation only — never a `block` flag.
     On a successful destroy (either "Resource deletion" mechanism), moves
     the resource's source .aiform.md file into `.aiform/trash/`.
@@ -649,7 +678,7 @@ aiform apply [FILE.aiform.md ...] [--yes] [--state-file PATH]
 aiform destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]
     Plans a destroy of every resource matching the given file(s) (or
     all tracked resources if none given), then applies it. 100% subject
-    to Opus gate #2 by definition. On success, moves each destroyed
+    to gate #2 (review-orchestration-model) by definition. On success, moves each destroyed
     resource's .aiform.md file into `.aiform/trash/` — see "Resource
     deletion".
 
@@ -679,20 +708,53 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
 ## 8. MVP walkthrough
 
 1. Author `examples/compute.aiform.md`, set `ANTHROPIC_API_KEY` + `DIGITALOCEAN_TOKEN`. `drivers/digitalocean/compute.py` already exists — curated, built ahead of time (see "Driver curation" above) — so nothing about this walkthrough triggers driver generation.
-2. **`aiform plan`** — this is the very first `plan` run against a brand-new project: `.aiform/state.json` doesn't exist yet, so no state entry anywhere trusts *any* driver's hash yet. Per §5 step 3, that's the same condition a hand-edited driver hits ("doesn't match the sha256 recorded against any state entry that trusts it") — here it's because nothing has been recorded at all yet, not because the file changed. One Opus gate #1 re-review call approves the curated driver's on-disk content as-is and records its hash as trusted, from this point forward. Diff shows `create` (step 6's Sonnet categorization call).
-3. **`aiform apply`** — no destroy/likely-replace actions present → gate #2 is skipped entirely, straight to y/N prompt (or `--yes`). Executes `driver.create(params, credentials)` — one real DO API call. `.aiform/state.json` written with the resource entry, including `driver.sha256` and the `opus_review` recorded by step 2's re-review call.
-4. **Second `aiform plan`** — `driver.read(id, credentials)` refreshes attributes (one DO call), `aiform_md_sha256` matches the unchanged file, dict-diff empty → `no-op` reported with **zero Anthropic API calls**. This is the concrete proof of the "no LLM tokens for the mechanical/repeat path" goal: the driver's hash is now trusted from step 2's one-time re-review, so this run — and every one after it against the same `state.json`, including for other resources using the same driver file — spends zero Opus calls; only a driver's first-ever use in a given project's state pays that one-time cost.
+2. **`aiform plan`** — this is the very first `plan` run against a brand-new project: `.aiform/state.json` doesn't exist yet, so no state entry anywhere trusts *any* driver's hash yet. Per §5 step 3, that's the same condition a hand-edited driver hits ("doesn't match the sha256 recorded against any state entry that trusts it") — here it's because nothing has been recorded at all yet, not because the file changed. One gate #1 (`code-review-model`) re-review call approves the curated driver's on-disk content as-is and records its hash as trusted, from this point forward. Diff shows `create` (step 6's `intent-orchestration-model` categorization call).
+3. **`aiform apply`** — no destroy/likely-replace actions present → gate #2 is skipped entirely, straight to y/N prompt (or `--yes`). Executes `driver.create(params, credentials)` — one real DO API call. `.aiform/state.json` written with the resource entry, including `driver.sha256` and the `code_review` record recorded by step 2's re-review call.
+4. **Second `aiform plan`** — `driver.read(id, credentials)` refreshes attributes (one DO call), `aiform_md_sha256` matches the unchanged file, dict-diff empty → `no-op` reported with **zero Anthropic API calls**. This is the concrete proof of the "no LLM tokens for the mechanical/repeat path" goal: the driver's hash is now trusted from step 2's one-time re-review, so this run — and every one after it against the same `state.json`, including for other resources using the same driver file — spends zero `code-review-model` calls; only a driver's first-ever use in a given project's state pays that one-time cost.
 
-## 9. Known limitations (flagged, not solved in MVP)
+## 9. Not Yet Implemented
+
+Functionality that is intentionally deferred beyond the MVP, or that the
+MVP has an explicit design position on but hasn't built — not gaps
+discovered after the fact. Each item below is either a scoping decision
+made in this doc (§ "MVP scope (locked)") or a piece of net-new
+functionality this project is committing to build later.
 
 - **Driver set is curated and closed in the MVP.** Only `(provider, resource)` pairs aiform's own maintainers have hand-built via `PROCESS.md`'s dev loop are usable — `digitalocean`/`compute` is the only one. A user needing an unsupported pair has no self-service path today; they'd have to request it (or contribute it) upstream. On-the-fly generation with an explicit per-use user approval prompt is the planned fix (see "Driver curation" above), deferred specifically because three real generation attempts (documented there) showed it isn't reliable enough yet to run unattended — that's a reliability problem to solve, not just an engineering task to wire up.
+- **Self-service driver creation is not implemented.** "Driver curation" above already names the design (`aiform` itself walks the user through generating and approving a new driver at `plan` time, drafted by `code-generator-model` and reviewed by `code-review-model`), and `aiform/driver_gen.py` already implements the draft/validate/review pipeline — what's missing is wiring it into `plan`/`apply` behind an explicit approval prompt, plus the generation-reliability work called out above. Until then, a new `(provider, resource)` pair is added exactly one way: a human (in this repo, via `PROCESS.md`'s loop) hand-authors it.
+- **Driver submission and publishing is not implemented.** There is currently no way for someone outside this repo to contribute a driver and have other aiform users install and trust it. A methodology for accepting, reviewing, and publishing community-contributed drivers — so a driver built by one user can be reused by others without going through this repo's own maintainers — is planned but not designed yet. At minimum it needs: a submission format (a driver file plus its `specs/<provider>_<resource>.md` and test suite, mirroring how curated drivers are built today), a trust/review step before publication (presumably `code-review-model` plus human sign-off, not review skipped just because the author isn't a maintainer), and a distribution mechanism (a registry or index `aiform` can fetch from) distinct from vendoring every driver into this repo forever.
 - **Driver correctness still drifts as CSP APIs change**, curated or not. No mechanism auto-detects "this driver is stale" — a DO API deprecation just fails loudly at apply time, requiring a maintainer to fix and re-release it. No driver versioning or migration story exists yet.
 - **No dependency graph.** MVP supports only independent resources planned/applied one file at a time (e.g. a compute resource followed by a DNS record referencing its IP is out of scope — a real system eventually needs this).
 - **Only one resource kind is implemented.** `network` and `load_balancer` are named in Terminology as resource kinds the vocabulary already accommodates, but no `ResourceDriver` subclass exists for either yet — `compute` (via DigitalOcean) is the only one built. Adding a second kind or a second provider is expected to require zero orchestrator changes, but that claim is untested until it actually happens.
-- **Opus review cost at `plan`/`apply` runtime is now much smaller than originally designed.** With curated drivers, the only *runtime* Opus calls are the rare hash-mismatch re-review (a hand-edited driver) and gate #2 before a destructive `apply` — driver review itself moved to development time (`/code-review`, not billed per end-user run). At current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok, `claude-opus-5` ≈ $5/$25 per MTok) this is a real but now much smaller ongoing operating cost than Terraform's zero-cost static plan, traded deliberately for the flexibility Terraform's static ForceNew flag can't offer.
+- **Review-tier cost at `plan`/`apply` runtime is now much smaller than originally designed.** With curated drivers, the only *runtime* `code-review-model`/`review-orchestration-model` calls are the rare hash-mismatch re-review (a hand-edited driver) and gate #2 before a destructive `apply` — driver review itself moved to development time (`/code-review`, not billed per end-user run). At current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok for `intent-orchestration-model`/`code-generator-model`, `claude-opus-5` ≈ $5/$25 per MTok for `code-review-model`/`review-orchestration-model`) this is a real but now much smaller ongoing operating cost than Terraform's zero-cost static plan, traded deliberately for the flexibility Terraform's static ForceNew flag can't offer. Per-role configurability (`specs/llm.md`/`specs/config.md`) exists precisely so this cost/capability tradeoff can be revisited as model pricing and capability change, without a code change.
 - **Single local state file, no locking, no multi-user story.** Two concurrent `aiform apply` runs against the same `state.json` can race or corrupt it. Deliberately deferred, mirroring Terraform's own early single-operator local-state era.
 - **No state versioning/corruption recovery beyond a single `.aiform/state.json.backup`** written before every overwrite. Cheapest possible mitigation, not a real history/rollback mechanism.
 - **No state schema migration story.** `aiform_state_version` exists in the schema (§3) but nothing reads or acts on it yet — a future schema change has no defined upgrade path for existing `.aiform/state.json` files. Deferred until the schema actually needs to change.
 - **`.aiform/trash/` is a file-recovery convenience, not an undo.** It preserves a destroyed resource's `.aiform.md` source so the configuration isn't lost, but restoring a file from trash and re-applying it creates a brand-new CSP resource (new `id`, possibly a new IP) — it does not reverse the destroy or restore the original resource's identity. Nothing prunes it automatically either; it grows unbounded until a human cleans it up.
-- **LLM plan/diff decisions are non-deterministic by nature.** Even with `output_config.format` constraining the *shape* of Sonnet's/Opus's answers, two `plan` runs against byte-identical input could produce differently-worded rationale or, rarely, a materially different categorization — something `terraform plan` on unchanged input structurally cannot do. This is inherent to the project's premise, not a bug to eliminate.
-- **Opus review is a second opinion, not a proof — for curated drivers too.** A subtle bug in a driver could pass `/code-review` (or, for the runtime re-review/gate #2 paths, Opus review) and only manifest on an untested attribute combination during a live apply — the DigitalOcean compute driver's own build process is direct evidence review doesn't catch everything (see "Driver curation" above: Opus approved drafts with the wrong credentials key intact). The real backstop remains the human confirmation prompt and, for curated drivers, the hand-written acceptance test suite. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
+- **LLM plan/diff decisions are non-deterministic by nature.** Even with `output_config.format` constraining the *shape* of the `intent-orchestration-model`'s/`review-orchestration-model`'s answers, two `plan` runs against byte-identical input could produce differently-worded rationale or, rarely, a materially different categorization — something `terraform plan` on unchanged input structurally cannot do. This is inherent to the project's premise, not a bug to eliminate.
+- **Review-tier review is a second opinion, not a proof — for curated drivers too.** A subtle bug in a driver could pass `/code-review` (or, for the runtime re-review/gate #2 paths, `code-review-model`/`review-orchestration-model` review) and only manifest on an untested attribute combination during a live apply — the DigitalOcean compute driver's own build process is direct evidence review doesn't catch everything (see "Driver curation" above: Opus approved drafts with the wrong credentials key intact, back when this project used a single two-role split rather than the four named roles described above). The real backstop remains the human confirmation prompt and, for curated drivers, the hand-written acceptance test suite. There's currently no mechanical equivalent of Terraform's `lifecycle { prevent_destroy = true }` — a user's prose "don't destroy this" in the Intent section is advisory to the LLM, not enforced. A structured `lifecycle: {prevent_destroy: true}` frontmatter field is a strong candidate for a near-term follow-up, not the MVP.
+
+### Planned, not yet designed in detail
+
+The following are functionality this project is committing to build, beyond the deferred items above — named here so they aren't lost, even though none has a full design yet:
+
+- **Observability.** `aiform` will publish a URL that can be visited to see the live status of a formation (what's planned, what's applying, what succeeded/failed, when) — analogous to a CI run's status page. Not yet designed: what serves it (a local web server `aiform apply` starts, vs. a hosted service), how a formation maps to a URL, and how this interacts with the "single local state file, no server" model above — this item and "centralized servers" below are related but not the same thing; a status URL doesn't by itself require the centralized multi-source server described there.
+- **Logging.** All aiform operations will emit clear, consistent log lines suitable for debugging — one predictable format across `plan`/`apply`/`destroy`/`refresh`, covering both the mechanical driver calls and the LLM-driven steps (which role was called, with what resolved model, and what it decided), not ad hoc `print()`s. Not yet designed: the exact log line schema, log level conventions, and where output goes by default vs. under `--verbose`.
+- **Integrity / locking.** A locking mechanism so that concurrent `aiform apply` runs against the same state can coexist safely — enabling real parallelism in building infrastructure — instead of today's "two concurrent runs can race or corrupt `state.json`" limitation (above). Not yet designed: lock granularity (whole-state-file vs. per-resource), lock storage (local lockfile vs. something a future centralized server would own), and behavior on a stale/abandoned lock.
+- **Centralized server support.** aiform may eventually support a centralized server that can manage requests originating from more than one source (e.g. more than one operator or CI job acting against the same managed infrastructure), rather than every `aiform` invocation being a fully local, single-operator process. This is a larger architectural shift from the MVP's local-state, single-operator model (see "Single local state file" above) and is explicitly not designed yet — named here as a direction, not a commitment to a specific architecture.
+- **Resource tagging convention.** Every resource aiform creates will be tagged (using each CSP's native tagging mechanism, e.g. DigitalOcean droplet tags) with a convention of the form `aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>` — where `<short-uuid>` identifies the aiform state/formation that owns the resource, `<state-incarnation-no>` is a generation counter for that state (bumped on some as-yet-undefined "incarnation" event, e.g. a state-file reset or migration), `intended-state` is a literal marker distinguishing aiform-managed resources from anything else in the account, and `<owner-id>` identifies who owns the resource — the exact identifier scheme for `<owner-id>` is still to be determined, but an email address is the leading candidate. This makes an aiform-managed resource identifiable and traceable directly from the CSP console, independent of `.aiform/state.json` being available at all — useful for orphan detection, auditing, and (eventually) the centralized-server and multi-source scenarios above.
+
+## 10. Documentation publishing methodology
+
+Not yet implemented; this section is the plan for it, not a description of something built.
+
+**Single source of truth, no separate doc-authoring format.** All project documentation is already plain Markdown living in this repo — `README.md` (pitch, status, quickstart pointer), `PLAN.md` (this file — architecture), `PROCESS.md` (how modules get built), `specs/*.md` (per-module contracts), and `CLAUDE.md` (agent-facing development guidelines). Publishing methodology means taking these as-is and making them browsable outside a git checkout — it does not mean introducing a second, hand-maintained copy of the same content in a docs site's own format. A doc that only exists in the published site and not in the repo (or vice versa) is treated as a bug.
+
+**Publishing plan**:
+1. **Static site generation from the existing Markdown**, not a rewrite into a CMS or wiki. A static-site generator that consumes Markdown directly (e.g. MkDocs or a comparable tool) builds a browsable site from `README.md` + `PLAN.md` + `PROCESS.md` + `specs/*.md` with minimal reformatting — cross-references between these files (the `§4`, `specs/config.md`-style links used throughout this doc) should resolve as in-site links, not dead text.
+2. **Built and published in CI on merge to `main`**, not by hand. Every merged PR that touches a documented module keeps the published site in sync automatically, the same way `PROCESS.md`'s "specs are living docs" rule already expects specs to stay accurate in the repo.
+3. **Hosted for free, next to the code** — GitHub Pages from this repo, rather than standing up separate hosting, matching this project's otherwise-minimal infrastructure footprint (single local state file, no server — §9).
+4. **Versioned by release, once releases exist.** MVP has no version/release process yet (§9's "no state schema migration story" is one symptom of that), so for now the published site simply tracks `main`. Once aiform has tagged releases, the doc site should let a reader pin to the docs for the version they're actually running, not just the latest `main` — deferred until there's a release to version against.
+5. **User-facing driver-authoring and driver-submission guides** (once the "Driver submission and publishing" item above is designed) get written as new Markdown files under the same publishing pipeline — not a separate microsite — since a self-service driver author is exactly the audience this publishing effort is for.
+
+**Explicitly not part of this methodology**: a documentation format independent of Markdown, a doc-only repo separate from the code, or hand-copying content between the repo and a hosted site. Whatever tool renders the site is a rendering step over the files that already exist here, and stays replaceable without touching the underlying docs.

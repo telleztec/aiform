@@ -4,13 +4,13 @@
 
 `PLAN.md` §5 steps 5–6: turn a resource's refreshed live `attributes` and
 its desired `params` into one `PlanEntry`, doing the deterministic
-dict-diff first and only spending a Sonnet call when there's something
+dict-diff first and only spending an `intent-orchestration-model` call when there's something
 that actually needs interpreting. This is what makes a repeat `plan` run
 against unchanged input free of Anthropic API calls. It also provides
 `destroy_entry()`, the deterministic constructor `orchestrator.py` calls
 once it's identified a resource as explicitly marked for deletion
 (`PLAN.md`'s "Resource deletion") — every `PlanEntry` in the system is
-built by this module, whether it came from a diff, a Sonnet call, or
+built by this module, whether it came from a diff, an `intent-orchestration-model` call, or
 neither.
 
 **Two judgment calls made explicit here** (not fully specified in
@@ -23,7 +23,7 @@ neither.
    in `desired` and would otherwise show up as a permanent, un-resolvable
    diff entry forever. `diff_attributes()` therefore only ever compares
    keys present in `desired`; a key present only in `current` is ignored.
-2. **`destroy` is never derived from a diff or a Sonnet call — it's always
+2. **`destroy` is never derived from a diff or an `intent-orchestration-model` call — it's always
    an explicit instruction, constructed deterministically by
    `destroy_entry()`.** `PLAN.md`'s "Resource deletion" section fixes this:
    there is no implicit deletion at all (a resource's `.aiform.md` file
@@ -92,7 +92,7 @@ def plan_resource(
 str}` dicts (§2's `INTENT_NOTES_SCHEMA` items), not a Pydantic model —
 `aiform/parser.py` (not built yet) owns that extraction and its
 eventual model, if any; this module only ever forwards whatever it's
-given straight into a Sonnet prompt.
+given straight into an `intent-orchestration-model` prompt.
 
 ### `destroy_entry(resource_key, rationale) -> PlanEntry`
 
@@ -116,7 +116,8 @@ are never included (judgment call 1 above). An empty result means every
 
 ### `categorize_diff(...) -> PlanEntry`
 
-Always makes exactly one Sonnet call via `llm.implementation_call()`,
+Always makes exactly one `intent-orchestration-model` call via
+`llm.intent_orchestration_call()`,
 system prompt `prompts/diff_plan.md` (loaded from `aiform.llm.PROMPTS_DIR`,
 same convention as `driver_gen.draft_driver()`), `output_schema=
 PLAN_CATEGORIZATION_SCHEMA`. User content is a JSON object:
@@ -188,7 +189,7 @@ without a separate "is this new" branch.
   unconditionally, regardless of `current_attributes` — this module does
   **not** treat an empty `desired` as "the user wants this destroyed";
   see judgment call 2 above for why that path lives elsewhere.
-- `categorize_diff()` raising from `llm.implementation_call()` (network
+- `categorize_diff()` raising from `llm.intent_orchestration_call()` (network
   error, bad API key, etc.) or from `json.loads()`/`PlanEntry` validation
   on a malformed response propagates uncaught — same "let it fail loudly"
   stance as `llm.review_driver()`/`llm.review_plan()` take on their own
