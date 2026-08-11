@@ -4,9 +4,12 @@
 
 Pydantic v2 models for the data shapes that cross module boundaries in
 aiform: the parsed `.aiform.md` frontmatter, one row of a printed plan,
-one resource's entry in `.aiform/state.json`, and the records of the
-two Opus review gates. Also the shared shape for *which* model backs each of `aiform/llm.py`'s
-two roles, resolved from configuration rather than hardcoded (see
+one resource's entry in `.aiform/state.json`, and the records of the two
+review-gate calls (gate #1, gate #2). Also the shared shape for *which*
+model backs each of `aiform/llm.py`'s four roles
+(`intent-orchestration-model`, `code-generator-model`,
+`code-review-model`, `review-orchestration-model` — `PLAN.md`'s "Model
+tiering"), resolved from configuration rather than hardcoded (see
 `ModelSource`/`LLMRoleConfig`/`LLMConfig` below). Pure data definitions
 — no file I/O, no LLM calls, no filesystem path construction.
 Everything here is exactly what `PLAN.md` §1's repo-layout comment calls
@@ -66,8 +69,8 @@ class PlanEntry(BaseModel):
 - `resource_key` — the `"<provider>.<resource>.<name>"` address (`PLAN.md` §3).
 - `rationale` — always populated. For the deterministic no-op short-circuit
   (§5 step 5, zero LLM calls), this is a fixed string (e.g. `"no changes
-  detected"`), not Sonnet output — `PlanEntry` doesn't distinguish the two
-  sources, and doesn't need to.
+  detected"`), not `intent-orchestration-model` output — `PlanEntry`
+  doesn't distinguish the two sources, and doesn't need to.
 - `likely_replace` — only meaningful when `action == PlanAction.UPDATE`.
   A model validator forces it back to `False` for every other action, so
   a caller can't construct an inconsistent `PlanEntry` (e.g. a `destroy`
@@ -76,8 +79,9 @@ class PlanEntry(BaseModel):
 
 ### `PlanReviewSeverity`, `PlanReviewFlag`, `PlanReview`
 
-Added alongside `specs/llm.md`'s `review_plan()` — the Opus gate
-#2 verdict shape (`PLAN.md` §5 apply step 2's `PLAN_REVIEW_SCHEMA`).
+Added alongside `specs/llm.md`'s `review_plan()` — the gate #2
+(`review-orchestration-model`) verdict shape (`PLAN.md` §5 apply step
+2's `PLAN_REVIEW_SCHEMA`).
 Not part of the original repo-layout comment's model list, same
 situation as `DriverInfo`: `llm.py` produces this, `orchestrator.py`
 branches on it (`severity: "block"` halts `apply` unconditionally), so
@@ -124,8 +128,10 @@ class LLMRoleConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    implementation: LLMRoleConfig
-    review: LLMRoleConfig
+    intent_orchestration: LLMRoleConfig
+    code_generator: LLMRoleConfig
+    code_review: LLMRoleConfig
+    review_orchestration: LLMRoleConfig
 ```
 
 - `ModelSource` is the literal "table that specifies Anthropic as the
@@ -137,17 +143,25 @@ class LLMConfig(BaseModel):
 - `LLMRoleConfig.model` is a plain `str`, not its own enum — model
   *names* change far more often than model *sources*, and there's no
   fixed set to validate against.
-- `LLMConfig` has exactly two roles, `implementation` and `review`,
-  matching `PLAN.md`'s model-tiering design — global to the whole tool,
-  not per-resource-kind (see `specs/llm.md`'s Out of scope).
-- No cross-field validation between `implementation`/`review` — either
-  role can independently use any `ModelSource`/model combination; there's
-  no invariant linking the two.
+- `LLMConfig` has exactly four roles — `intent_orchestration`,
+  `code_generator`, `code_review`, `review_orchestration` — matching
+  `PLAN.md`'s "Model tiering" design one-to-one: `intent_orchestration`
+  and `code_generator` are the two implementation-tier roles (default
+  `claude-sonnet-5`), `code_review` and `review_orchestration` are the
+  two review-tier gates (default `claude-opus-5`, gate #1 and gate #2
+  respectively). Global to the whole tool, not per-resource-kind (see
+  `specs/llm.md`'s Out of scope).
+- No cross-field validation between the four roles — each can
+  independently use any `ModelSource`/model combination; there's no
+  invariant linking any pair of them. This is deliberate: it's exactly
+  what lets a user move, say, `code_generator` to a different model
+  without touching the other three as model capability and pricing
+  change over time.
 
 ### `DriverReview`
 
-The persisted record of an Opus gate #1 review (`PLAN.md` §3's nested
-`opus_review` object, §5 step 3c's `DRIVER_REVIEW_SCHEMA`).
+The persisted record of a gate #1 (`code-review-model`) review (`PLAN.md`
+§3's nested `code_review` object, §5 step 3c's `DRIVER_REVIEW_SCHEMA`).
 
 ```python
 class DriverReview(BaseModel):
@@ -162,17 +176,19 @@ class DriverReview(BaseModel):
   with a non-empty `blocking_issues` is rejected. This is the approval
   rule from §5 step 3d stated as a structural invariant instead of
   something every caller has to remember to check.
-- `reviewed_at` / `model` are stamped by the code calling Opus (`llm.py`),
+- `reviewed_at` / `model` are stamped by the code calling `llm.review_driver()`,
   not part of `DRIVER_REVIEW_SCHEMA`'s raw structured-output shape —
   `DriverReview` is the *persisted* record, one step downstream of the
-  raw API response.
+  raw API response. `model` is whatever `.aiform/config.yaml`'s
+  `llm.code_review` entry resolved to at review time (default
+  `claude-opus-5`), not a hardcoded string.
 
 ### `DriverInfo`
 
 Not explicitly named in `PLAN.md` §1's repo-layout comment — that
 comment lists `ResourceSpec, PlanAction, PlanEntry, StateEntry,
 DriverReview` as the file's contents, but §3's state schema shows a
-nested `"driver": {"path", "sha256", "generated_at", "opus_review"}`
+nested `"driver": {"path", "sha256", "generated_at", "code_review"}`
 object that `DriverReview` alone doesn't cover (no `path`/`sha256`/
 `generated_at`). Confirmed as a genuine gap, not a duplicate — this is
 a sixth model, added to hold that nesting:
@@ -182,8 +198,12 @@ class DriverInfo(BaseModel):
     path: str
     sha256: str
     generated_at: datetime
-    opus_review: DriverReview
+    code_review: DriverReview
 ```
+
+`code_review` (not `opus_review`) — named after the role that produces
+it, not a specific model, since which model actually reviewed a given
+driver is configurable and recorded in `DriverReview.model` instead.
 
 ### `StateEntry`
 
@@ -241,10 +261,12 @@ implementation pass, not a deliberate asymmetry.
   "concern": ..., "severity": "block"}])` parses `flags` into real
   `PlanReviewFlag` objects with `severity` as a `PlanReviewSeverity`
   member, not a raw string.
-- `LLMConfig(implementation={"source": "anthropic", "model":
-  "claude-sonnet-5"}, review={"source": "anthropic", "model":
-  "claude-opus-5"})` parses both roles into `LLMRoleConfig` objects with
-  `source` as a `ModelSource` member, not a raw string.
+- `LLMConfig(intent_orchestration={"source": "anthropic", "model":
+  "claude-sonnet-5"}, code_generator={"source": "anthropic", "model":
+  "claude-sonnet-5"}, code_review={"source": "anthropic", "model":
+  "claude-opus-5"}, review_orchestration={"source": "anthropic", "model":
+  "claude-opus-5"})` parses all four roles into `LLMRoleConfig` objects
+  with `source` as a `ModelSource` member, not a raw string.
 - `LLMRoleConfig(source="bedrock", model="...")` raises a validation
   error today — `ModelSource` has exactly one member.
 

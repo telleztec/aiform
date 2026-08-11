@@ -63,7 +63,7 @@ checks class/method structure and anthropic-related patterns, nothing
 HTTP-library-specific, so a violation could otherwise pass gate #1
 undetected and only surface when this driver's own test suite fails.
 Closed *for now* by an explicit checklist item in
-`prompts/review_driver.md` (Opus gate #1 checks for it) rather than
+`prompts/review_driver.md` (gate #1, `code-review-model`, checks for it) rather than
 extending `validate_driver_source()`. **Known gap, flagged as a named
 follow-up, not silently accepted**: this is inconsistent with this
 project's stated preference for deterministic checks over probabilistic
@@ -209,9 +209,10 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      destroy+recreate path. Restoring power state before raising matters:
      `size` is deliberately not in `LIKELY_REPLACE_FIELDS`, so this
      specific `DriverUpdateNotSupported` triggers the orchestrator's
-     single-resource Opus safety-gate pause (`aiform/driver.py`'s own
-     docstring) before any destroy+recreate proceeds — the entire point
-     of that gate is a human/Opus veto *before* anything destructive
+     single-resource `review-orchestration-model` safety-gate pause
+     (`aiform/driver.py`'s own docstring) before any destroy+recreate
+     proceeds — the entire point of that gate is a human/
+     `review-orchestration-model` veto *before* anything destructive
      happens, which is defeated if the droplet is already sitting
      powered off while the gate is being evaluated. Don't retry the
      resize itself with `disk: true` — only restore power state, then
@@ -246,8 +247,8 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   droplet that might still complete the resize a moment later.
 - `PLAN.md` §8 step 2 itself anticipates a first-generation `update()`
   might be cruder than this (e.g. "resizes on *any* diff instead of
-  scoping to `size`/`region`") and treats that as an Opus-flagged
-  *non-blocking concern*, not a rejection. This spec describes the
+  scoping to `size`/`region`") and treats that as a
+  `code-review-model`-flagged *non-blocking concern*, not a rejection. This spec describes the
   target/ideal behavior; the hand-written test suite should check the
   behaviors that actually matter (size changes work in place; genuinely
   non-updatable fields raise `DriverUpdateNotSupported`, never attempt a
@@ -301,7 +302,7 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     call): `read()` recovers `monitoring` (via `features`) but not
     `ssh_keys`/`backups` — for any resource with `ssh_keys` configured
     (the common case), the diff is non-empty on *every* subsequent
-    `plan`, forcing a real Sonnet categorization call and very likely a
+    `plan`, forcing a real `intent-orchestration-model` categorization call and very likely a
     spurious `DriverUpdateNotSupported` → destroy+recreate proposal,
     each time. This genuinely violates the zero-API-call guarantee for
     that case — not hidden here, but also not something this driver

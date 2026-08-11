@@ -4,9 +4,10 @@
 
 `PLAN.md` §2 / §5 step 2: turn one `.aiform.md` file on disk into a
 validated `ResourceSpec` (frontmatter, zero LLM calls) plus
-`intent_notes[]` (the prose `## Intent` section, one Sonnet call via
-`llm.implementation_call()` — skipped whenever there's nothing worth
-interpreting). Also computes the file's sha256, the same value
+`intent_notes[]` (the prose `## Intent` section, one
+`intent-orchestration-model` call via `llm.intent_orchestration_call()`
+— skipped whenever there's nothing worth interpreting). Also computes
+the file's sha256, the same value
 `orchestrator.py` (not built yet) will record as `StateEntry.aiform_md_sha256`
 (`PLAN.md` §3) and pass into `planner.plan_resource()` as
 `current_aiform_md_sha256`. `specs/planner.md` already names this module
@@ -22,7 +23,7 @@ model, if any (see its Interface section) — this spec is that follow-up.
    note in a typed `IntentNote` model here would just add a conversion
    step at the parser/planner boundary for no consumer that needs it —
    nothing downstream inspects a note's fields individually outside the
-   JSON blob handed to Sonnet. `ParsedResource` (new, in `aiform/models.py`
+   JSON blob handed to the `intent-orchestration-model`. `ParsedResource` (new, in `aiform/models.py`
    — see below) is still a typed Pydantic wrapper for parser's *overall*
    return value, consistent with every other module's typed return; only
    the notes themselves stay untyped dicts, matching `INTENT_NOTES_SCHEMA`'s
@@ -33,9 +34,9 @@ model, if any (see its Interface section) — this spec is that follow-up.
    takes `previous_aiform_md_sha256: str | None` (the hash
    `orchestrator.py` already loaded from `StateEntry.aiform_md_sha256`,
    or `None` for a resource never before applied) and skips the intent
-   Sonnet call whenever it equals the freshly computed hash of the
-   current file — `PLAN.md` §5 step 2's "no reason to re-extract intent
-   from unchanged prose."
+   `intent-orchestration-model` call whenever it equals the freshly
+   computed hash of the current file — `PLAN.md` §5 step 2's "no reason
+   to re-extract intent from unchanged prose."
 3. **Known limitation of judgment call 2, accepted as-is**: a hash match
    only proves the *file* — frontmatter and prose both — is byte-identical
    to what was last applied; it says nothing about whether the *live*
@@ -46,8 +47,9 @@ model, if any (see its Interface section) — this spec is that follow-up.
    itself didn't change. When that happens, `categorize_diff()` runs with
    `intent_notes=[]` for this call — the model loses the prose's nuance
    for that one rationale, but nothing unsafe follows from it: intent
-   notes are advisory context for Sonnet's rationale text, never the
-   mechanism that gates a destructive action (Opus gate #2 is). Accepted
+   notes are advisory context for the `intent-orchestration-model`'s
+   rationale text, never the mechanism that gates a destructive action
+   (gate #2, `review-orchestration-model`, is). Accepted
    rather than restructuring `PLAN.md` §5's step ordering to fix a
    low-stakes, rare edge case.
 4. **A second, independent short-circuit inside `extract_intent_notes()`
@@ -190,7 +192,7 @@ containing a fenced example whose contents happen to include a
 
 Per judgment call 4: `prose_intent_text.strip() == ""` returns `[]`
 immediately, zero LLM calls. Otherwise, exactly one call to
-`llm.implementation_call()`: `system_prompt=llm.load_prompt("parse_intent.md")`,
+`llm.intent_orchestration_call()`: `system_prompt=llm.load_prompt("parse_intent.md")`,
 `user_content=prose_intent_text` (the raw prose itself, **not**
 JSON-wrapped — `PLAN.md` §2's own code sample passes it as plain message
 content, unlike `planner.categorize_diff()`'s JSON-serialized user
@@ -261,7 +263,7 @@ response.
   generalizing `_require_mapping` to work without a path, or plumbing one
   through this module's otherwise-pure interface, is more churn than a
   three-line duplicated check justifies right now.
-- `extract_intent_notes()` raising from `llm.implementation_call()`
+- `extract_intent_notes()` raising from `llm.intent_orchestration_call()`
   (network error, bad API key) or from `json.loads()`/a missing
   `"intent_notes"` key on a malformed response propagates uncaught — same
   "let it fail loudly" stance `planner.categorize_diff()` takes on its
