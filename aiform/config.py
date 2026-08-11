@@ -96,12 +96,7 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
     llm_data = _require_mapping(llm_data, "llm", config_path)
 
     roles: dict[str, LLMRoleConfig] = {}
-    for role_name in (
-        "intent_orchestration",
-        "code_generator",
-        "code_review",
-        "review_orchestration",
-    ):
+    for role_name in LLMConfig.model_fields:
         role_value = llm_data.get(role_name)
         if role_value is None:
             role_value = {}

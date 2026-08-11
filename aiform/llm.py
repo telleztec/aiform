@@ -92,6 +92,27 @@ def _resolve_role(
     return role, MODEL_SOURCES[role.source]
 
 
+def _implementation_tier_call(
+    role_name: str,
+    system_prompt: str,
+    user_content: str,
+    *,
+    output_schema: dict[str, Any] | None = None,
+    max_tokens: int = 4096,
+    client: anthropic.Anthropic | None = None,
+    llm_config: LLMConfig | None = None,
+) -> str:
+    role, call = _resolve_role(llm_config, role_name)
+    return call(
+        role.model,
+        system_prompt,
+        user_content,
+        output_schema=output_schema,
+        max_tokens=max_tokens,
+        client=client,
+    )
+
+
 def intent_orchestration_call(
     system_prompt: str,
     user_content: str,
@@ -101,14 +122,14 @@ def intent_orchestration_call(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
-    role, call = _resolve_role(llm_config, "intent_orchestration")
-    return call(
-        role.model,
+    return _implementation_tier_call(
+        "intent_orchestration",
         system_prompt,
         user_content,
         output_schema=output_schema,
         max_tokens=max_tokens,
         client=client,
+        llm_config=llm_config,
     )
 
 
@@ -121,14 +142,14 @@ def code_generator_call(
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
-    role, call = _resolve_role(llm_config, "code_generator")
-    return call(
-        role.model,
+    return _implementation_tier_call(
+        "code_generator",
         system_prompt,
         user_content,
         output_schema=output_schema,
         max_tokens=max_tokens,
         client=client,
+        llm_config=llm_config,
     )
 
 
