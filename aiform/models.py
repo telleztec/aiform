@@ -63,8 +63,10 @@ class LLMRoleConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    implementation: LLMRoleConfig
-    review: LLMRoleConfig
+    intent_orchestration: LLMRoleConfig
+    code_generator: LLMRoleConfig
+    code_review: LLMRoleConfig
+    review_orchestration: LLMRoleConfig
 
 
 class DriverReview(BaseModel):
@@ -85,7 +87,7 @@ class DriverInfo(BaseModel):
     path: str
     sha256: str
     generated_at: datetime
-    opus_review: DriverReview
+    code_review: DriverReview
 
 
 class ParsedResource(BaseModel):

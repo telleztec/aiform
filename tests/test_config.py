@@ -98,8 +98,12 @@ class TestDefaultLLMConfig:
 
     def test_default_llm_config_preserves_mvp_defaults(self):
         assert DEFAULT_LLM_CONFIG == LLMConfig(
-            implementation=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-            review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+            intent_orchestration=LLMRoleConfig(
+                source=ModelSource.ANTHROPIC, model="claude-sonnet-5"
+            ),
+            code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
+            code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+            review_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
         )
 
 
@@ -125,46 +129,58 @@ class TestResolveLLMConfig:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             "llm:\n"
-            "  implementation:\n"
+            "  intent_orchestration:\n"
             "    source: anthropic\n"
             "    model: claude-sonnet-5-override\n"
-            "  review:\n"
+            "  code_generator:\n"
+            "    source: anthropic\n"
+            "    model: claude-haiku-4-5-override\n"
+            "  code_review:\n"
             "    source: anthropic\n"
             "    model: claude-opus-5-override\n"
+            "  review_orchestration:\n"
+            "    source: anthropic\n"
+            "    model: claude-opus-4-8-override\n"
         )
 
         config = resolve_llm_config(config_path)
 
-        assert config.implementation.model == "claude-sonnet-5-override"
-        assert config.review.model == "claude-opus-5-override"
+        assert config.intent_orchestration.model == "claude-sonnet-5-override"
+        assert config.code_generator.model == "claude-haiku-4-5-override"
+        assert config.code_review.model == "claude-opus-5-override"
+        assert config.review_orchestration.model == "claude-opus-4-8-override"
 
-    def test_partial_override_keeps_other_role_default(self, tmp_path: Path):
+    def test_partial_override_keeps_other_roles_default(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            "llm:\n  review:\n    source: anthropic\n    model: claude-opus-5-override\n"
+            "llm:\n  code_review:\n    source: anthropic\n    model: claude-opus-5-override\n"
         )
 
         config = resolve_llm_config(config_path)
 
-        assert config.implementation == DEFAULT_LLM_CONFIG.implementation
-        assert config.review.model == "claude-opus-5-override"
+        assert config.intent_orchestration == DEFAULT_LLM_CONFIG.intent_orchestration
+        assert config.code_generator == DEFAULT_LLM_CONFIG.code_generator
+        assert config.code_review.model == "claude-opus-5-override"
+        assert config.review_orchestration == DEFAULT_LLM_CONFIG.review_orchestration
 
     def test_partial_field_override_keeps_sibling_field_default(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("llm:\n  review:\n    model: claude-opus-5-override\n")
+        config_path.write_text("llm:\n  code_review:\n    model: claude-opus-5-override\n")
 
         config = resolve_llm_config(config_path)
 
-        assert config.review.source == ModelSource.ANTHROPIC
-        assert config.review.model == "claude-opus-5-override"
-        assert config.implementation == DEFAULT_LLM_CONFIG.implementation
+        assert config.code_review.source == ModelSource.ANTHROPIC
+        assert config.code_review.model == "claude-opus-5-override"
+        assert config.intent_orchestration == DEFAULT_LLM_CONFIG.intent_orchestration
+        assert config.code_generator == DEFAULT_LLM_CONFIG.code_generator
+        assert config.review_orchestration == DEFAULT_LLM_CONFIG.review_orchestration
 
     def test_unknown_source_raises_validation_error(self, tmp_path: Path):
         from pydantic import ValidationError
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            "llm:\n  implementation:\n    source: bedrock\n    model: some-model\n"
+            "llm:\n  intent_orchestration:\n    source: bedrock\n    model: some-model\n"
         )
 
         with pytest.raises(ValidationError):
@@ -195,7 +211,7 @@ class TestResolveLLMConfig:
 
     def test_non_mapping_role_raises(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("llm:\n  implementation: claude-sonnet-5\n")
+        config_path.write_text("llm:\n  intent_orchestration: claude-sonnet-5\n")
 
         with pytest.raises(ValueError):
             resolve_llm_config(config_path)
@@ -216,25 +232,27 @@ class TestResolveLLMConfig:
 
     def test_explicit_null_role_field_falls_back_to_default(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
-        config_path.write_text("llm:\n  review:\n    source:\n    model: claude-opus-5-override\n")
+        config_path.write_text(
+            "llm:\n  code_review:\n    source:\n    model: claude-opus-5-override\n"
+        )
 
         config = resolve_llm_config(config_path)
 
-        assert config.review.source == ModelSource.ANTHROPIC
-        assert config.review.model == "claude-opus-5-override"
+        assert config.code_review.source == ModelSource.ANTHROPIC
+        assert config.code_review.model == "claude-opus-5-override"
 
     def test_strips_leading_utf8_bom(self, tmp_path: Path):
         config_path = tmp_path / "config.yaml"
         config_path.write_bytes(
             b"\xef\xbb\xbfllm:\n"
-            b"  review:\n"
+            b"  code_review:\n"
             b"    source: anthropic\n"
             b"    model: claude-opus-5-override\n"
         )
 
         config = resolve_llm_config(config_path)
 
-        assert config.review.model == "claude-opus-5-override"
+        assert config.code_review.model == "claude-opus-5-override"
 
 
 class TestDotenvParsing:

@@ -188,7 +188,7 @@ def draft_driver(
             "\nThe previous draft was rejected for the following reasons -- "
             "address all of them in this redraft:\n" + feedback + "\n"
         )
-    return llm.implementation_call(
+    return llm.code_generator_call(
         system_prompt,
         user_content,
         max_tokens=8192,

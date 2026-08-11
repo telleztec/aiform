@@ -23,7 +23,7 @@ def make_state_entry(**overrides) -> StateEntry:
             path="drivers/digitalocean/compute.py",
             sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
             generated_at="2026-07-30T18:22:11Z",
-            opus_review=DriverReview(
+            code_review=DriverReview(
                 approved=True,
                 concerns=[],
                 blocking_issues=[],
