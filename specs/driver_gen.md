@@ -10,6 +10,18 @@ validate its source against `ResourceDriver`'s contract
 once if either check fails before giving up. Returns the approved source
 text and its `DriverReview` — it does not write anything to disk.
 
+**Where this sits in mechanism 2's evolution.** `PLAN.md`'s "Driver
+curation" section and §6 describe this pipeline as the first, minimal
+implementation of aiform's own agentic driver-generation mechanism —
+meant to be "tuned and trained progressively" toward the fuller,
+interactive session §7's `aiform driver create` describes (clarifying
+ambiguities, checkpointing at major steps, drawing on an OpenAPI
+reference). This module intentionally stays a single-shot draft/
+validate/review call for now, per `CLAUDE.md`'s MVP-scope discipline —
+building the interactive/OpenAPI-driven shape now would be building
+ahead of the primary orchestration flow this mechanism is sequenced
+after. Extending it that way is future work, not a gap in this spec.
+
 **Three judgment calls made explicit here** (not fully specified in
 `PLAN.md`, resolved before writing this spec):
 
