@@ -332,7 +332,8 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   checks an implementation against it are both built and validated
   against mocked `urllib.request.urlopen`, not a live DO account.
 - **Running this driver's implementation through `generate_driver()`** —
-  deferred along with the rest of on-the-fly generation (see `PLAN.md`'s
-  "Driver curation" section); this spec now also serves as the
+  not done yet, since mechanism 2's on-the-fly generation pipeline
+  (see `PLAN.md`'s "Driver curation" section) isn't wired into
+  `plan`/`apply` yet; this spec now also serves as the
   hand-implementation guide, not only generated-output acceptance
   criteria.
