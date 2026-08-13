@@ -4,6 +4,21 @@ An AI-driven alternative to Terraform.
 
 ## The pitch
 
+The origin of this idea comes from the experience working on two different DBaaS 
+implementations.  The recognition that Terraform code generation is doable with AI
+but still more expensive than it should be, and the result is a somewhat brittle
+mostly works outcome.  Customers still struggle with timeouts, retries, resource
+scarcity at the CSP side, and other issues that often require minor judgements from 
+developers or SREs.  Enter AI, the AI running in the orchestration can make an educated
+guess that and additional retry is warranted, or that perhaps we should quit immediately
+because the error is catastrophic.
+
+This project explores the premise that an LLM will be a better orchestrator than the
+Terraform engine. The side-effects of the project are numerous. One of them is that
+If the driver that implements a resource can be generated on by a user of the tool, then
+the slow process of adding a new resource and publishing it to the Terraform registry could
+shortcut with a faster process.  
+
 Terraform's plan/apply engine is powerful but rigid: every resource attribute is
 statically flagged by the provider author as either updatable-in-place or
 `ForceNew` (destroy + recreate), with no room for "it depends on the actual
