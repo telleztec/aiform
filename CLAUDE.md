@@ -21,9 +21,12 @@ before green), then reviewed by Opus via `/code-review` before it's a PR.
 whenever starting or resuming work on a module. Per-module specs live in
 `specs/`, one file per module — see `specs/README.md` for the format.
 
-Current status: **no implementation exists yet.** `pyproject.toml`,
-`aiform/*.py`, and `drivers/digitalocean/compute.py` all still need to be
-written from `PLAN.md` §1–§4.
+Current status: **implementation in progress.** `pyproject.toml`,
+`aiform/models.py`, `state.py`, `config.py`, `llm.py`, `driver.py`,
+`driver_gen.py`, `parser.py`, `planner.py`, and
+`drivers/digitalocean/compute.py` are all written. Still missing:
+`aiform/orchestrator.py`, `cli.py`, and the `python -m aiform` entry point
+— see the "Suggested implementation order" below for what's left.
 
 ## Non-negotiable design rules
 
