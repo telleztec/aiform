@@ -28,7 +28,7 @@ neither.
    `destroy_entry()`.** `PLAN.md`'s "Resource deletion" section fixes this:
    there is no implicit deletion at all (a resource's `.aiform.md` file
    going missing is never a destroy signal), and destroy is triggered by
-   exactly two mechanisms — an `aiform destroy` CLI argument, or an
+   exactly two mechanisms — an `aiform plan destroy` CLI argument, or an
    `AIFORM-DELETE-<name>.aiform.md` filename. Both are identified by
    `orchestrator.py` (file discovery, argument parsing, the
    `AIFORM-DELETE-` prefix check — none of which this module has any
@@ -90,9 +90,10 @@ def plan_resource(
 
 `intent_notes` is a plain list of `{"concerns_field": str, "guidance":
 str}` dicts (§2's `INTENT_NOTES_SCHEMA` items), not a Pydantic model —
-`aiform/parser.py` (not built yet) owns that extraction and its
-eventual model, if any; this module only ever forwards whatever it's
-given straight into an `intent-orchestration-model` prompt.
+`aiform/parser.py` owns that extraction (`specs/parser.md`), wrapping it
+in `ParsedResource.intent_notes` alongside the parsed `ResourceSpec` and
+file hash; this module only ever forwards whatever it's given straight
+into an `intent-orchestration-model` prompt.
 
 ### `destroy_entry(resource_key, rationale) -> PlanEntry`
 
@@ -101,7 +102,7 @@ Deterministic, zero-LLM, no diff involved — the constructor for the one
 all. Always returns `PlanEntry(resource_key=resource_key,
 action=PlanAction.DESTROY, rationale=rationale, likely_replace=False)`.
 `rationale` is required, not defaulted — the caller (`orchestrator.py`,
-not built yet) already knows *why* (an `aiform destroy` argument naming
+not built yet) already knows *why* (an `aiform plan destroy` argument naming
 this resource, or the specific `AIFORM-DELETE-` file that named it) and
 is expected to say so, the same way `categorize_diff()`'s rationale
 always names the field(s) that changed.
@@ -203,7 +204,7 @@ without a separate "is this new" branch.
 - **Driver existence/trust checks** (`PLAN.md` §5 step 3) —
   `orchestrator.py`, per `PLAN.md` §1's repo layout.
 - **Identifying *which* resources are being destroyed** — parsing
-  `aiform destroy`'s file/resource arguments, detecting the
+  `aiform plan destroy`'s file/resource arguments, detecting the
   `AIFORM-DELETE-` filename prefix, and file discovery generally (`PLAN.md`
   §5 step 1) are all `orchestrator.py`'s job (judgment call 2 above).
   This module only ever constructs the resulting `PlanEntry` once handed

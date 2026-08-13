@@ -358,60 +358,19 @@ filesystem for anything that isn't the specific thing being tested.
   `config.py`, never the reverse). The narrow drift window this leaves
   is accepted, see Edge cases above.
 
-## Suggested implementation order
+## Implementation status
 
-1. **`PLAN.md`/`CLAUDE.md` updates first.** `PLAN.md`'s Context section
-   ("Model tiering") and §1's repo-layout comment for `llm.py` still
-   describe the hardcoded-Sonnet/Opus design; `CLAUDE.md`'s "Model
-   tiering" non-negotiable rule needs a clarifying edit — the *defaults*
-   stay non-negotiable, but user-configurability via `.aiform/config.yaml`
-   is now a deliberate, intentional escape hatch, not a violation of
-   that rule. Small, docs-only, but everything below depends on this
-   being the agreed design before code reflects it.
-2. **`specs/config.md` + `specs/models.md` updates**, formalizing
-   `ModelSource`/`LLMRoleConfig`/`LLMConfig` and `resolve_llm_config()`
-   — already drafted above and in the models.py section; needs
-   `specs/config.md` itself updated to match (currently only documents
-   `resolve_credentials()`).
-3. **`models.py`**: add `ModelSource`, `LLMRoleConfig`, `LLMConfig`
-   (alongside the already-in-flight `PlanReview`/`PlanReviewFlag`/
-   `PlanReviewSeverity` addition from this same pass) — tests, red,
-   implementation, green.
-4. **`config.py`**: add `resolve_llm_config()` + `DEFAULT_LLM_CONFIG` —
-   tests, red, implementation, green. Depends on step 3.
-5. **`llm.py`**: rewrite `tests/test_llm.py` for the renamed
-   functions/config-driven design (the current draft still tests
-   `sonnet_call()`/`opus_review_driver()`/`opus_review_plan()` against
-   hardcoded constants), confirm red, implement, green.
-6. **One `/code-review` + one PR** for the whole pass (steps 3–5
-   together, since `llm.py` can't be reviewed or merged meaningfully
-   without the `models.py`/`config.py` pieces it depends on) — step 1's
-   docs update can either ride in the same PR or go first as its own
-   tiny PR; either is fine, your call when we get there.
-
-## Third revision: implementation currently lags this spec
-
-`aiform/models.py`, `aiform/config.py`, and `aiform/llm.py` already exist
-in this repo, built against the **second** revision above (two roles:
-`implementation`/`review`). This document's "Second revision: four
-roles, not two" section is a **further** revision on top of that,
-splitting `implementation` into `intent_orchestration`/`code_generator`
-and renaming `review` to two named review roles
-(`code_review`/`review_orchestration`). The existing code has not been
-updated to match yet — follow the same suggested order above (docs →
-`models.py` → `config.py` → `llm.py`, tests red-then-green at each step,
-`/code-review` before merge) to bring it in line, treating the
-already-implemented two-role version as the "before" state rather than
-starting from nothing.
-
-**Not just `llm.py` itself** — `aiform/parser.py`, `aiform/planner.py`,
-and `aiform/driver_gen.py` also already exist and call
-`llm.implementation_call()` directly (intent extraction and diff
-categorization in the first two, driver drafting in the third). Renaming
-`implementation_call()` out of existence without updating these three
-call sites — and the `tests/test_llm.py`/`tests/test_parser.py`/
-`tests/test_planner.py`/`tests/test_driver_gen.py` tests that exercise
-them — leaves the codebase broken at import time, not just out of sync
-with this spec. Treat all six files (the three modules named above plus
-these three call sites) as one pass, same as `models.py`/`config.py`/
-`llm.py` are treated as one pass in step 6's suggested-order note.
+The four-role migration this document specifies (second and third
+revisions above) is complete. `PLAN.md`'s "Model tiering" section and §1's
+repo-layout comment describe the four named roles, not the old
+hardcoded-Sonnet/Opus or `implementation`/`review` designs, and
+`aiform/models.py`/`config.py`/`llm.py` implement `ModelSource`/
+`LLMRoleConfig`/`LLMConfig`/`resolve_llm_config()` and the four public
+call functions (`intent_orchestration_call()`, `code_generator_call()`,
+`review_driver()`, `review_plan()`) as specified above.
+`llm.implementation_call()`/`sonnet_call()`/`opus_review_driver()`/
+`opus_review_plan()` no longer exist anywhere in the codebase.
+`aiform/parser.py` and `aiform/planner.py` call
+`llm.intent_orchestration_call()`; `aiform/driver_gen.py` calls
+`llm.code_generator_call()` — matching this spec, not the two-role design
+described in earlier revisions.
