@@ -5,7 +5,7 @@
 Two independent resolvers, both pure — no scaffolding, no prompting:
 
 1. `resolve_credentials()` — the DigitalOcean API token per `PLAN.md`
-   §7's resolution order (env var, then `.aiform/credentials.env`), so
+   §8's resolution order (env var, then `.aiform/credentials.env`), so
    `orchestrator.py` can assemble the `credentials: dict[str, str]`
    every `ResourceDriver` method takes. This is the module
    `CLAUDE.md`'s Credentials rules are about: the fallback file is
@@ -57,7 +57,7 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
   type as the "neither present" case below, so callers can catch one
   type for "credentials configuration problem" — there's no known env
   var name to look for, so there's nothing to resolve.
-- Resolution order for the provider's token (`PLAN.md` §7):
+- Resolution order for the provider's token (`PLAN.md` §8):
   1. The matching environment variable (`os.environ`), checked first.
   2. Fallback: a `KEY=value` line in `credentials_path`, if the file
      exists.
@@ -179,18 +179,18 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
 ## Out of scope
 
 - **`ANTHROPIC_API_KEY`** — resolved directly by the `anthropic` SDK
-  client at construction time in `llm.py` (`PLAN.md` §7: "resolved
+  client at construction time in `llm.py` (`PLAN.md` §8: "resolved
   automatically by `anthropic.Anthropic()`"). `config.py` never touches
   it.
 - **Any CLI flag for supplying credentials** — deliberately never
   built, for either token (`CLAUDE.md`: `ANTHROPIC_API_KEY` "never a
-  CLI flag"; DO token has no `--token` flag in `PLAN.md` §6's command
+  CLI flag"; DO token has no `--token` flag in `PLAN.md` §7's command
   surface either).
 - **Scaffolding or writing `.aiform/credentials.env`** — `aiform init`
   (`cli.py`) prints instructions and the expected filename but never
   writes a value into it or prompts interactively (`CLAUDE.md`,
   non-negotiable).
-- **The `--verbose` output redaction helper** (`PLAN.md` §7's `_redact(d)`,
+- **The `--verbose` output redaction helper** (`PLAN.md` §8's `_redact(d)`,
   blanking `*_TOKEN`/`*_KEY`/`credentials` keys before printing
   request/response payloads) — that operates on arbitrary payload
   dicts for verbose logging, which doesn't exist yet in this codebase.

@@ -31,7 +31,7 @@ def save(state: State, path: Path = DEFAULT_STATE_PATH) -> None: ...
 The literal shape of `.aiform/state.json` (`PLAN.md` §3), keyed by
 `"<provider>.<resource_type>.<name>"`. `aiform_state_version` defaults
 to `1` and is round-tripped as-is — nothing reads or acts on it yet
-(`PLAN.md` §9: no migration story exists, deliberately deferred until
+(`PLAN.md` §10: no migration story exists, deliberately deferred until
 the schema actually changes).
 
 `extra="forbid"`, matching `ResourceSpec` (`specs/models.md`): a
@@ -53,7 +53,7 @@ otherwise silently misaddress a resource.
 
 - File doesn't exist → returns `State(aiform_state_version=1,
   resources={})`. This is the *expected* condition before the first
-  successful `apply` has ever run (`PLAN.md` §8 walkthrough starts from
+  successful `apply` has ever run (`PLAN.md` §9 walkthrough starts from
   no state file at all) — not an error.
 - File exists → parsed and validated as `State`. Malformed JSON or a
   schema/key-mismatch violation propagates as the underlying
@@ -77,7 +77,7 @@ otherwise silently misaddress a resource.
   disk yet to preserve.
 - The backup is a single snapshot of "whatever was there before this
   write," overwritten again on the next save. Not a rotating history —
-  `PLAN.md` §9 explicitly scopes this as "the cheapest possible
+  `PLAN.md` §10 explicitly scopes this as "the cheapest possible
   mitigation, not a real history/rollback mechanism."
 - Creates `path.parent` if it doesn't exist yet (`.aiform/` may not be
   there if `save()` is ever called outside the normal `aiform init` →
@@ -108,14 +108,14 @@ otherwise silently misaddress a resource.
 
 ## Edge cases / errors
 
-- Concurrent `save()` calls against the same path (two `aiform apply`
+- Concurrent `save()` calls against the same path (two `aiform plan apply`
   processes racing) are **not** handled — no file locking, matching
-  `PLAN.md` §9's explicitly deferred "single local state file, no
+  `PLAN.md` §10's explicitly deferred "single local state file, no
   locking, no multi-user story." Not this module's job to fix.
 - A `.backup` file that itself doesn't parse is never read by this
   module — `state.py` only ever writes to `.backup`, never reads it
   back. Recovering from a corrupted primary file using the backup is a
-  manual, human-driven action (per `PLAN.md` §9), not an `aiform`
+  manual, human-driven action (per `PLAN.md` §10), not an `aiform`
   command.
 
 ## Out of scope
@@ -126,7 +126,7 @@ otherwise silently misaddress a resource.
   `planner.py`.
 - `--state-file` flag parsing / resolving the default path from CLI
   context — `cli.py`. `state.py` only ever receives a `Path` it's given.
-- State schema version migration — deliberately deferred (`PLAN.md` §9).
+- State schema version migration — deliberately deferred (`PLAN.md` §10).
 - Any custom exception types for load/save failures — deferred until
   `exceptions.py` is built; underlying stdlib/Pydantic errors propagate
   as-is for now.
