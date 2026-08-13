@@ -52,7 +52,7 @@ Separate from the four roles above: **this project's own build process** (`PROCE
 
 Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §10, "Not Yet Implemented").
 
-## Driver curation (MVP) vs. future on-the-fly generation
+## Driver curation: two permanent mechanisms
 
 **Revised from the original design** after the first real driver-generation
 attempts. The original §5 described drivers as generated at `aiform plan create`
@@ -135,23 +135,23 @@ Two ways a driver gets added:
    Code prompts for tool-use permission — and is never trusted
    silently. `aiform/driver_gen.py` already implements the first,
    minimal version of this pipeline (draft → static-validate → gate #1
-   review, §6 — built, tested, and itself Opus-reviewed via the normal
-   dev loop): a single-shot draft with a 2-attempt retry budget, not
-   yet the fuller interactive session §7 describes (clarifying
-   ambiguities, checkpointing at major steps, drawing on an OpenAPI
-   reference). That fuller session is the direction this pipeline is
-   meant to grow in — **tuned and trained progressively, becoming more
-   capable and more efficient over successive uses**, rather than fixed
-   at today's one-shot shape. What's deferred today: wiring the current
-   pipeline into `plan`/`apply` behind the approval prompt,
-   `aiform driver create`/`refresh` themselves, and the
-   generation-reliability work called out above before any of it runs
-   unattended. **Sequencing**: this mechanism was deliberately built
-   only *after* the primary orchestration flow (plan/diff/apply against
-   curated drivers) was stable and proven — see "MVP scope (locked)"
-   above — and its own interactive/OpenAPI-driven target shape (§7) is
-   sequenced after *that* baseline pipeline in turn. Not yet
-   implemented; see §10.
+   review — built, tested, and itself Opus-reviewed via the normal dev
+   loop): a single-shot draft with a combined 2-draft-attempt budget
+   (not 2 retries on top of a first attempt — see
+   `specs/driver_gen.md`), not yet the fuller interactive session §7
+   describes; §6 and §10 detail that target shape and how it relates to
+   this pipeline. What's deferred today: wiring the current pipeline
+   into `plan`/`apply` behind the approval prompt, `aiform driver
+   create`/`refresh` themselves, and the generation-reliability work
+   called out above before any of it runs unattended. **Sequencing**:
+   wiring this mechanism into the live `plan`/`apply` flow is
+   deliberately sequenced to happen only *after* the primary
+   orchestration flow (plan/diff/apply against curated drivers) is
+   stable and proven — see "MVP scope (locked)" above, and note that
+   neither is true yet as of this writing (`orchestrator.py` doesn't
+   exist; see `CLAUDE.md`'s status) — with the interactive/OpenAPI-driven
+   target shape (§7) sequenced after *that* baseline pipeline in turn.
+   Not yet implemented; see §10.
 
 `aiform plan create` against a `(provider, resource)` pair with no driver on disk
 fails with a clear, actionable error in the MVP — it does not attempt
@@ -876,12 +876,14 @@ once verified.
 
 ## 6. Driver Build (Not Yet Implemented)
 
-This section describes the target shape mechanism 2 ("Driver curation"
-above) is meant to grow into — aiform's own agentic pipeline, tuned
-progressively toward the interactive `aiform driver create` session (§7)
-— not what `driver_gen.py` implements today (a single-shot draft/
-static-validate/review call, `specs/driver_gen.md`). See "Driver
-curation" for how the two relate.
+Not every step below is equally unbuilt. The **Generation** and **Model**
+steps describe the target, OpenAPI-fed, interactive shape mechanism 2
+("Driver curation" above) is meant to grow into over time — not what
+`driver_gen.py` implements today. The **Code-Review-Model** and
+**Approval rule** steps, by contrast, document `driver_gen.py`'s actual,
+already-built, already-tested gate #1 logic (`specs/driver_gen.md`) —
+just not yet reachable from `plan`/`apply`. See "Driver curation" for how
+the pieces relate.
 
 1. **Generation** 
    - `create` The create command needs to point aiform to REST
@@ -1113,20 +1115,16 @@ functionality this project is committing to build later.
   (documented there) showed it isn't reliable enough yet to run
   unattended — that's a reliability problem to solve, not just an
   engineering task to wire up.
-- **Self-service driver creation is not implemented.** "Driver curation"
-  above already names the design — mechanism 2, `aiform` itself walking
-  the user through generating and approving a new driver, either
-  automatically at `plan` time or proactively via `aiform driver create`
-  (§7) — and `aiform/driver_gen.py` already implements that mechanism's
-  first, minimal draft/validate/review pipeline. What's missing: wiring
-  it into `plan`/`apply` behind an explicit approval prompt, `aiform
-  driver create`/`refresh` themselves, the generation-reliability work
-  called out above, and the fuller interactive/OpenAPI-driven session
-  §6/§7 describe as this pipeline's eventual target shape (see the
-  "planned, not yet designed" item below). Until any of that lands, a
-  new `(provider, resource)` pair is added exactly one way: a human (in
-  this repo, via `PROCESS.md`'s loop) hand-authors it — mechanism 1,
-  which keeps running unchanged regardless of mechanism 2's progress.
+- **Self-service driver creation is not implemented.** Mechanism 2
+  ("Driver curation" above, and §6) has a built, tested first stage
+  (`aiform/driver_gen.py`'s draft/validate/review pipeline) but nothing
+  wires it into `plan`/`apply` behind the approval prompt yet, and
+  `aiform driver create`/`refresh` (§7) don't exist — see the "planned,
+  not yet designed" item below for that target shape. Until any of that
+  lands, a new `(provider, resource)` pair is added exactly one way: a
+  human (in this repo, via `PROCESS.md`'s loop) hand-authors it via
+  mechanism 1, which keeps running unchanged regardless of mechanism 2's
+  progress.
 - **Driver submission and publishing is not implemented.** There is
   currently no way for someone outside this repo to contribute a
   driver and have other aiform users install and trust it. A
@@ -1281,22 +1279,16 @@ though none has a full design yet:
   all — useful for orphan detection, auditing, and (eventually) the
   centralized-server and multi-source scenarios above.
 - **`aiform driver create`/`refresh`/`show`/`delete`/`publish` — the
-  target interactive shape of mechanism 2.** §7 settles the CLI surface:
-  `driver` is a noun with its own verb lifecycle (`create`, `refresh`,
-  `show`, `delete`, `publish`). `create`/`refresh` are meant to be
-  genuinely interactive — modeled on how Claude Code builds code, a
-  back-and-forth session that clarifies ambiguities and checkpoints for
-  permission at major steps, drawing on an OpenAPI reference
-  (`--reference-page`/`--reference-file`) — rather than a single
-  unattended generate call. This is the same mechanism 2 named in
-  "Driver curation" above, not a competing flow:
-  `driver_gen.py`'s current draft/validate/review pipeline (§6) is that
-  mechanism's first, minimal implementation, and this interactive
-  session is the shape it's meant to grow into as it's "tuned and
-  trained progressively to become more and more efficient" —
-  contributor-facing, not confined to this repo's own maintainers. Not
-  yet designed: how an OpenAPI reference gets validated/trusted before
-  being handed to the model, what `publish`'s distribution/registry
+  target interactive shape of mechanism 2** ("Driver curation" above,
+  §6). §7 settles the CLI surface: `driver` is a noun with its own verb
+  lifecycle (`create`, `refresh`, `show`, `delete`, `publish`).
+  `create`/`refresh` are meant to be genuinely interactive — modeled on
+  how Claude Code builds code, a back-and-forth session that clarifies
+  ambiguities and checkpoints for permission at major steps, drawing on
+  an OpenAPI reference (`--reference-page`/`--reference-file`) — rather
+  than a single unattended generate call. Not yet designed: how an
+  OpenAPI reference gets validated/trusted before being handed to the
+  model, what `publish`'s distribution/registry
   mechanism looks like ("Driver submission and publishing" above names
   the need but not the design), and how this contributor-facing flow
   relates to this repo's own maintainer-curated PR process for the
