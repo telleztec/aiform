@@ -105,7 +105,9 @@ in here.
 
 - **Branching, commits, PRs**: already fully specified in
   `.claude/skills/github-commit-process/SKILL.md`. Nothing new added by
-  this document — that skill is the authority.
+  this document — that skill is the authority. See "PR approval and
+  merge" below for a human-readable summary of how that skill decides
+  when a PR is actually allowed to merge.
 - **CI**: a GitHub Actions workflow (`.github/workflows/tests.yml`) runs
   `pytest` on every PR. This turns "tests pass" from something someone
   remembers to check into something that blocks merge. It's a no-op
@@ -124,3 +126,31 @@ in here.
 - **Specs are living docs, not write-once**: if implementation reveals a
   spec was wrong, update it in the same PR and say so — same treatment
   `PLAN.md` itself asks for at the top of CLAUDE.md.
+
+## PR approval and merge
+
+`.claude/skills/github-commit-process/SKILL.md` is the authority for the
+exact mechanics (GitHub comment polling, trigger-ordering rules, and so
+on) — this section is a human-readable summary of what it does and why,
+not a duplicate. If the two ever disagree, the skill wins; update this
+section to match rather than the other way around.
+
+Step 6 of the loop above says "nothing merges without human approval."
+Concretely, that approval is **two independent GitHub signals, both
+required**, before a merge happens:
+
+- **`/claude-merge`** — a PR comment or review body from the repo
+  owner's GitHub account, authorizing the merge itself. A native GitHub
+  "Approve" review doesn't substitute for this: GitHub blocks a PR's
+  author from approving their own PR, and every PR in this repo is
+  opened by the same account.
+- **A passing `opus-review` status** — either a real `/code-review` run
+  against the diff, or an explicit **`/claude-skip-review`** comment
+  authorizing skipping it. `/claude-skip-review` exists for small,
+  mechanical changes not worth a full review (e.g. a docs-only PR) —
+  it's a deliberate escape hatch, not a way around the human-approval
+  rule itself, since `/claude-merge` is still separately required.
+
+A **`/claude-reject`** comment stops the merge instead, overriding
+anything else posted. If more than one trigger comment is present, only
+the most recently posted one counts.
