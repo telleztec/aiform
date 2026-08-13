@@ -16,13 +16,13 @@ trash moves, printing), `driver.py`/`driver_gen.py` (dynamic import,
 credential wiring). Everything converges here.
 
 **This module does no CLI I/O beyond one injectable confirmation
-callback** (see judgment call 6). Printing the plan, formatting errors,
+callback** (see judgment call 8). Printing the plan, formatting errors,
 and argument parsing are `cli.py`'s job, not built yet — this spec
 defines what `cli.py` will call.
 
-**Six judgment calls made explicit here** (`PLAN.md` under-specifies each
-of these at the level needed to implement; resolved now rather than left
-to drift into whatever the first implementation happens to do):
+**Eight judgment calls made explicit here** (`PLAN.md` under-specifies
+each of these at the level needed to implement; resolved now rather than
+left to drift into whatever the first implementation happens to do):
 
 1. **`id` is stripped out of a driver's returned dict before it becomes
    `StateEntry.attributes`.** `aiform/driver.py`'s docstrings (`PLAN.md`
@@ -101,7 +101,57 @@ to drift into whatever the first implementation happens to do):
    framing, so reusing one across files sharing a `(provider,
    resource_type)` pair is safe.
 
-6. **`PlannedResource` and `ApplyResult` are plain `@dataclass`es local
+6. **`build_create_plan()` structurally cross-checks every `PlanEntry`'s
+   `action` against whether a `state_entry` actually exists, immediately
+   after `planner.plan_resource()` returns it, instead of trusting the
+   model's categorization all the way to `apply_plan()`.** Nothing in
+   `categorize_diff()`'s payload (`specs/planner.md`: `diff`,
+   `intent_notes`, `param_schema`, `likely_replace_fields`,
+   `drifted_missing`) explicitly tells the `intent-orchestration-model`
+   whether this resource already has a tracked `id` — a brand-new
+   resource's diff (every key differing from `current.get(key) is None`)
+   is structurally similar enough to a heavily-drifted existing
+   resource's diff that a miscategorization is not implausible, and
+   `apply_plan()` would either crash (`update` on a `None` `state_entry.id`)
+   or silently create a duplicate, orphaned CSP resource (`create` on an
+   already-tracked one) if it trusted the category blindly. `planner.py`
+   itself already sets the precedent for a structural guarantee over a
+   prompt-level one here — narrowing `PLAN_CATEGORIZATION_SCHEMA` to
+   exclude `"destroy"` entirely rather than relying on
+   `prompts/diff_plan.md` telling the model not to pick it. This
+   judgment call applies that same principle one level up: `action ==
+   PlanAction.UPDATE and state_entry is None`, or `action ==
+   PlanAction.CREATE and state_entry is not None`, raises
+   `PlanBlockedError` naming the resource and the mismatch — treated as
+   an internal-consistency failure of the categorization call, not a
+   recoverable planning outcome, since it indicates either a malformed
+   model response or a bug in this module's own state-lookup logic. See
+   `build_create_plan()`'s step 7 in Interface below.
+
+7. **The single-resource `review-orchestration-model` re-review triggered
+   by `DriverUpdateNotSupported` (`PLAN.md` §5 apply step 3) is *not*
+   skippable by `--yes`, unlike the batch gate #2 confirmation.**
+   `PLAN.md` describes the batch case explicitly ("`--yes` skips only
+   this prompt, never a `block`") but describes this case with different
+   language — "require fresh confirmation" — for a destructive replace
+   the original plan review never saw (it wasn't flagged
+   `likely_replace: true`, or gate #2 never ran at all because nothing
+   else in the plan warranted it). Treating this confirmation the same
+   as the batch one would let `--yes` silently approve an unplanned
+   delete-then-create the user had no chance to review — inconsistent
+   with the project's whole "review gates aren't a formality" stance
+   elsewhere (e.g. a `block` flag's unconditional, `--yes`-proof halt).
+   Resolved here as its own, stricter rule: `apply_plan()`'s single-
+   resource fallback confirmation always calls `confirm(...)`
+   interactively, regardless of `yes`. `yes=True` still means "no prompt
+   at all" for this specific case is not an option — if there's no TTY
+   to prompt (a fully non-interactive `--yes` run hits an
+   otherwise-unflagged `DriverUpdateNotSupported`), the caller-supplied
+   `confirm` callback is responsible for deciding how to fail (e.g.
+   `cli.py`'s default `confirm` raising rather than blocking on `input()`
+   forever) — this module doesn't special-case a missing TTY itself.
+
+8. **`PlannedResource` and `ApplyResult` are plain `@dataclass`es local
    to this module, not `Pydantic` models in `aiform/models.py`.**
    `specs/models.md`'s established pattern (`DriverReview`, `PlanReview`,
    `LLMConfig`) puts a shape in `models.py` when it's produced in one
@@ -158,7 +208,7 @@ def refresh_resource(
 def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State: ...
 
 
-# --- planning context (judgment call 6) ---
+# --- planning context (judgment call 8) ---
 
 @dataclass
 class PlannedResource:
@@ -253,9 +303,16 @@ caller.
 
 ### `resource_key(provider, resource_type, name) -> str`
 
-`f"{provider}.{resource_type}.{name}"` — the one place this address
-format (`PLAN.md` §3) is assembled, reused by every function below
-instead of each re-deriving the same f-string.
+`f"{provider}.{resource_type}.{name}"` — this address format (`PLAN.md`
+§3), reused by every function below instead of each re-deriving the same
+f-string. **Not** the only place this exact format is assembled in the
+codebase: `specs/state.md`'s `State` validator independently
+reconstructs it from a `StateEntry`'s own fields to check a
+`state.resources` key against its entry — unavoidably, since `state.py`
+cannot import `orchestrator.py` without a cycle. If the address format
+ever changes, both call sites need updating; this function only
+guarantees every use *within `orchestrator.py`* stays consistent with
+itself, not a codebase-wide single source of truth.
 
 ### `discover_files(paths, *, cwd=Path(".")) -> list[Path]`
 
@@ -368,11 +425,15 @@ next time `plan create` runs against that resource, not here.
   a special-cased skip. `key = resource_key(spec.provider, spec.resource, spec.name)`,
   `state_entry = state.resources.get(key)`. `entry = planner.destroy_entry(key,
   rationale=f"marked for deletion via {path.name}")`. Resulting
-  `PlannedResource` has `driver=driver_info=credentials=None` — resolved
-  lazily by `apply_plan()` instead, per judgment call 4 (gate #1 is
-  skipped for a destroy either way, so there's nothing to gain by
-  resolving the driver this early, and every file not otherwise needing
-  it should not pay for it).
+  `PlannedResource` has `desired_params={}` (same reasoning as
+  `build_destroy_plan()`'s identical choice below — unused by a destroy,
+  kept uniform rather than threading `spec.params` through here just
+  because it happens to be available) and
+  `driver=driver_info=credentials=None` — resolved lazily by
+  `apply_plan()` instead, per judgment call 4 (gate #1 is skipped for a
+  destroy either way, so there's nothing to gain by resolving the driver
+  this early, and every file not otherwise needing it should not pay for
+  it).
 - **Otherwise** (normal file):
   1. `content = path.read_text(encoding="utf-8-sig")`, `spec =
      parser.parse_frontmatter(content)` — a first, frontmatter-only pass
@@ -408,7 +469,18 @@ next time `plan create` runs against that resource, not here.
      state_aiform_md_sha256=previous_hash,
      current_aiform_md_sha256=parsed.aiform_md_sha256,
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
-  8. `PlannedResource(entry=entry, provider=spec.provider,
+  8. **Structural cross-check** (judgment call 6): `entry.action ==
+     PlanAction.UPDATE and state_entry is None`, or `entry.action ==
+     PlanAction.CREATE and state_entry is not None`, raises
+     `PlanBlockedError` naming `key` and the mismatch — a categorization
+     response that disagrees with this module's own ground truth about
+     whether the resource is already tracked is never executed, no
+     matter how it was produced. `NO_OP`/`DESTROY` (the latter never
+     actually returned by `plan_resource()`, per `specs/planner.md`) need
+     no check here — `NO_OP` is only ever returned when the no-op
+     short-circuit already confirmed `current_attributes`/`desired_params`
+     agree, and `plan_resource()` cannot return `DESTROY` at all.
+  9. `PlannedResource(entry=entry, provider=spec.provider,
      resource_type=spec.resource, name=spec.name,
      desired_params=spec.params, aiform_md_path=path,
      current_aiform_md_sha256=parsed.aiform_md_sha256, driver=driver,
@@ -439,11 +511,17 @@ Mechanism A. `state = state.load(state_path)`.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
 (naming either the file or "no files given: destroying all tracked
-resources"), `PlannedResource(..., driver=driver_info=credentials=None,
+resources"), `PlannedResource(..., desired_params={}, driver=driver_info=credentials=None,
 state_entry=state_entry)` — same lazy-resolution stance as Mechanism B
-above, and for the same reason (judgment call 4). Never mutates or saves
-state — this command has no refresh/diff step (`PLAN.md`: "skipping
-steps 3-6... entirely").
+above, and for the same reason (judgment call 4). `desired_params={}`
+**unconditionally, in both branches** — even when `paths` was given and
+`spec.params` was actually available from the frontmatter parse, it is
+deliberately discarded rather than threaded through: `apply_plan()`'s
+`DESTROY` branch never reads `desired_params` (a destroy needs the
+resource's `id`, not its desired shape), and using `spec.params` in one
+branch but `{}` in the other would be a real, silent inconsistency for
+no caller that needs it. Never mutates or saves state — this command has
+no refresh/diff step (`PLAN.md`: "skipping steps 3-6... entirely").
 
 ### `build_plan_summary(planned) -> str`
 
@@ -491,18 +569,27 @@ full, is the caller's job — see Behavior below), shared verbatim by
      aiform_md_sha256=pr.current_aiform_md_sha256)` written into
      `state.resources[pr.entry.resource_key]`.
    - `UPDATE` → `try: raw = pr.driver.update(pr.state_entry.id,
-     pr.state_entry.attributes, pr.desired_params, pr.credentials)`.
+     pr.state_entry.attributes, pr.desired_params, pr.credentials)`,
+     any exception other than `DriverUpdateNotSupported` wrapped in
+     `DriverExecutionError` (operation `"update"`), same as every other
+     driver call site in this loop.
      - `DriverUpdateNotSupported` raised: if `not pr.entry.likely_replace`
        (this resource's replace wasn't already covered by step 1's batch
        review — either because `needs_review` was false, or it was true
        but this particular entry wasn't flagged `likely_replace`), run a
        **single-resource** gate #2: `review_plan(build_plan_summary([pr
-       with entry.likely_replace forced True for the summary's benefit]))`,
-       same block/confirm handling as step 1-2 above, scoped to this one
-       resource. Either way (already covered, or freshly re-reviewed and
-       confirmed): `pr.driver.delete(pr.state_entry.id, pr.credentials)`
-       then `raw = pr.driver.create(pr.desired_params, pr.credentials)` —
-       the replace.
+       with entry.likely_replace forced True for the summary's benefit]))`.
+       Block flags halt the same as step 1's batch review. **Unlike**
+       step 1-2's confirmation, this one is never skipped by `yes=True`
+       (judgment call 7) — `confirm(...)` is always called, and a decline
+       here ends the loop the same way a top-level decline does (see
+       Edge cases below for what `ApplyResult` reports in that case).
+       Either way (already covered by the batch review, or freshly
+       re-reviewed and confirmed here): `pr.driver.delete(pr.state_entry.id,
+       pr.credentials)` then `raw = pr.driver.create(pr.desired_params,
+       pr.credentials)` — the replace, both calls wrapped in
+       `DriverExecutionError` (operations `"delete"`/`"create"`
+       respectively) exactly like every other driver call in this loop.
      - No exception: `raw` is the updated attributes directly, no
        replace.
      - Either path: `id, attrs = raw.pop("id"), raw`; the existing
@@ -536,9 +623,16 @@ full, is the caller's job — see Behavior below), shared verbatim by
 
 ### `move_to_trash(path, *, trash_dir=TRASH_DIR) -> Path`
 
-`trash_dir.mkdir(parents=True, exist_ok=True)`; destination
-`trash_dir / f"{utcnow:%Y%m%dT%H%M%SZ}-{path.name}"`; `shutil.move(path,
-destination)` (not `Path.rename` — trash_dir may be a different
+`trash_dir.mkdir(parents=True, exist_ok=True)`; base destination
+`trash_dir / f"{utcnow:%Y%m%dT%H%M%SZ}-{path.name}"`. `PLAN.md`'s "Trash
+directory" section states this naming exists specifically "so repeated
+deletions of resources that happen to share a filename never collide" —
+a second-resolution timestamp alone doesn't actually guarantee that (two
+destroys of same-named files within the same UTC second collide), so
+this function closes the gap itself: if the base destination already
+exists, a `-2`, `-3`, ... suffix is appended before the extension
+(`...Z-name-2.aiform.md`) until a free name is found. `shutil.move(path,
+destination)` (not `Path.rename` — `trash_dir` may be a different
 filesystem in principle, and `shutil.move` handles that transparently).
 Returns the destination path.
 
@@ -592,19 +686,27 @@ Returns the destination path.
   never runs on that path in the first place (nothing to cache).
 - `DriverUpdateNotSupported`'s single-resource gate #2 re-review
   (`apply_plan()`'s `UPDATE` branch) can itself raise `PlanBlockedError`
-  on a `block` flag, or return an aborted state on a declined
-  confirmation — **mid-execute-loop**, after zero or more earlier
-  entries in `planned` have already been successfully applied and
-  persisted. Those earlier resources' state changes are not rolled back;
-  the loop simply stops. This matches `PLAN.md` §5 step 4's own framing
-  ("a crash mid-apply doesn't lose successfully-applied resources'
-  state") — a blocked/declined replace partway through is treated the
-  same as a crash for this purpose, not specially unwound.
-- `move_to_trash()` uses a plain `%Y%m%dT%H%M%SZ` UTC timestamp with
-  second resolution — two destroys of files sharing an original filename
-  within the same second would collide. Not handled (`PLAN.md`'s own
-  trash spec doesn't call for collision handling); accepted as a
-  vanishingly narrow race, not worth a disambiguating suffix.
+  on a `block` flag, or trigger a decline via `confirm(...)` (never
+  skipped here, per judgment call 7) — **mid-execute-loop**, after zero
+  or more earlier entries in `planned` have already been successfully
+  applied and persisted. Those earlier resources' state changes are not
+  rolled back; the loop simply stops. This matches `PLAN.md` §5 step 4's
+  own framing ("a crash mid-apply doesn't lose successfully-applied
+  resources' state") — a blocked/declined replace partway through is
+  treated the same as a crash for this purpose, not specially unwound. A
+  declined mid-loop confirmation returns `ApplyResult(executed=[pr.entry
+  for pr in planned already fully processed before this point,
+  excluding the one that triggered the decline], review_flags=<flags
+  accumulated so far, from both the initial batch review if it ran and
+  this single-resource one>, aborted=True)` — the same field-by-field
+  contract as the top-level decline in step 2, just computed over a
+  prefix of `planned` instead of the empty list, so `cli.py` can report
+  exactly what was and wasn't applied.
+- `move_to_trash()`'s numeric-suffix collision handling (see its own
+  Interface entry above) means two destroys of same-named files within
+  the same UTC second never overwrite each other, closing the gap a
+  plain timestamp alone would have left and matching `PLAN.md`'s literal
+  "never collide" framing for the trash directory.
 
 ## Out of scope
 
