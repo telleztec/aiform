@@ -24,11 +24,19 @@ Anthropic API directly, the same way Terraform is independent of any editor.
 
 ## Status
 
-**Design phase — no implementation yet.** The full architecture is in
+**Implementation in progress.** The full architecture is in
 [`PLAN.md`](./PLAN.md): repo layout, the `aiform.md` file format, the state
 file schema, the resource module interface, the plan/apply algorithm, the
 CLI surface, credential handling, an MVP walkthrough, and what's not yet
 implemented.
+
+Most of the core modules are built and tested against their specs:
+`aiform/models.py`, `state.py`, `config.py`, `llm.py`, `driver.py`,
+`driver_gen.py`, `parser.py`, `planner.py`, and the curated
+`drivers/digitalocean/compute.py` driver all exist. Still missing:
+`aiform/orchestrator.py`, `cli.py`, and the `python -m aiform` entry point —
+so there's no runnable `aiform plan`/`apply` yet, even though the pieces it
+wires together are already in place.
 
 MVP scope is intentionally narrow: one cloud provider (DigitalOcean), one
 resource type (a droplet). Prove the loop end to end before expanding.
