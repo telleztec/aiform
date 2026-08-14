@@ -443,6 +443,7 @@ def apply_plan(
                 pr.provider,
                 pr.resource_type,
                 "create",
+                pr.name,
                 pr.desired_params,
                 pr.credentials,
             )
@@ -510,6 +511,7 @@ def apply_plan(
                     pr.provider,
                     pr.resource_type,
                     "create",
+                    pr.name,
                     pr.desired_params,
                     pr.credentials,
                 )

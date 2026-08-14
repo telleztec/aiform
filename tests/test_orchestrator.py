@@ -63,8 +63,8 @@ class FakeDriver(ResourceDriver):
         self.delete_exception = delete_exception
         self.calls: list[tuple] = []
 
-    def create(self, params, credentials):
-        self.calls.append(("create", params, credentials))
+    def create(self, name, params, credentials):
+        self.calls.append(("create", name, params, credentials))
         return self.create_result
 
     def read(self, id, credentials):
@@ -99,8 +99,8 @@ class Driver(ResourceDriver):
     PARAM_SCHEMA = {"type": "object", "properties": {}}
     LIKELY_REPLACE_FIELDS = ["image"]
 
-    def create(self, params, credentials):
-        return {"id": "new-id-1", **params}
+    def create(self, name, params, credentials):
+        return {"id": "new-id-1", "name": name, **params}
 
     def read(self, id, credentials):
         if id == "MISSING":

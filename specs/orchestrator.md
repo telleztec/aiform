@@ -577,9 +577,14 @@ full, is the caller's job — see Behavior below), shared verbatim by
    MVP's single-resource-per-file model"):
    - `NO_OP` → skip; nothing to persist (`build_create_plan()` already
      persisted its refreshed attributes).
-   - `CREATE` → `raw = pr.driver.create(pr.desired_params, pr.credentials)`
-     (raw driver exceptions wrapped in `DriverExecutionError`, operation
-     `"create"`); `id, attrs = raw.pop("id"), raw` (judgment call 1) — a
+   - `CREATE` → `raw = pr.driver.create(pr.name, pr.desired_params,
+     pr.credentials)`. `create()`'s contract gained a `name` parameter,
+     passed positionally first (`aiform/driver.py`, `PLAN.md` §4), after
+     the curated compute driver turned out to have been reading it out
+     of `params` instead — which `params` never actually contains
+     (`specs/driver.md`'s flagged discrepancy). Raw driver exceptions are
+     wrapped in `DriverExecutionError`, operation
+     `"create"`; `id, attrs = raw.pop("id"), raw` (judgment call 1) — a
      driver response missing `"id"` entirely is *also* a driver-contract
      violation, wrapped in the same `DriverExecutionError` (operation
      unchanged) rather than left as a raw `KeyError`, consistent with
@@ -617,8 +622,9 @@ full, is the caller's job — see Behavior below), shared verbatim by
        side, and state must reflect that even if `create()` itself then
        fails, rather than continuing to claim the old (now-nonexistent)
        `id`/`attributes` until a future refresh happens to notice via
-       `drifted_missing`. Then `raw = pr.driver.create(pr.desired_params,
-       pr.credentials)` (operation `"create"`), same wrapping.
+       `drifted_missing`. Then `raw = pr.driver.create(pr.name,
+       pr.desired_params, pr.credentials)` (operation `"create"`), same
+       wrapping.
      - No exception: `raw` is the updated attributes directly, no
        replace.
      - Either path: `id, attrs = raw.pop("id"), raw`. On a replace, a
