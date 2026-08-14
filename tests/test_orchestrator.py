@@ -10,10 +10,6 @@ from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import DriverInfo, DriverReview, PlanAction, PlanEntry
 
-# ---------------------------------------------------------------------------
-# Shared fakes
-# ---------------------------------------------------------------------------
-
 
 class FakeTextBlock:
     def __init__(self, text: str):
@@ -122,11 +118,6 @@ class Driver(ResourceDriver):
         if id == "FAIL-DELETE":
             raise RuntimeError("simulated CSP delete failure")
 """
-
-
-# ---------------------------------------------------------------------------
-# Shared fixtures / helpers
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -260,11 +251,6 @@ def save_state(state_path: Path, **entries) -> None:
     state.save(state.State(resources=entries), state_path)
 
 
-# ---------------------------------------------------------------------------
-# resource_key / discover_files / is_delete_marked / driver_path
-# ---------------------------------------------------------------------------
-
-
 class TestResourceKey:
     def test_assembles_provider_resource_type_name(self):
         assert (
@@ -325,11 +311,6 @@ class TestDriverPath:
         assert orchestrator.driver_path("digitalocean", "compute") == (
             drivers_dir / "digitalocean" / "compute.py"
         )
-
-
-# ---------------------------------------------------------------------------
-# load_driver / ensure_driver_trusted
-# ---------------------------------------------------------------------------
 
 
 class TestLoadDriver:
@@ -427,11 +408,6 @@ class TestEnsureDriverTrusted:
                 "digitalocean", "compute", state.State(), client=client
             )
         assert "reads ANTHROPIC_API_KEY" in str(exc_info.value)
-
-
-# ---------------------------------------------------------------------------
-# refresh_resource / refresh_state
-# ---------------------------------------------------------------------------
 
 
 class TestRefreshResource:
@@ -548,11 +524,6 @@ class TestRefreshState:
         state.save(state.State(), state_path)
 
         assert orchestrator.refresh_state(state_path=state_path).resources == {}
-
-
-# ---------------------------------------------------------------------------
-# build_create_plan
-# ---------------------------------------------------------------------------
 
 
 class TestBuildCreatePlan:
@@ -854,11 +825,6 @@ class TestBuildCreatePlan:
             )
 
 
-# ---------------------------------------------------------------------------
-# build_destroy_plan
-# ---------------------------------------------------------------------------
-
-
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
@@ -919,11 +885,6 @@ class TestBuildDestroyPlan:
         assert state_path.read_text() == original_content
 
 
-# ---------------------------------------------------------------------------
-# build_plan_summary
-# ---------------------------------------------------------------------------
-
-
 class TestBuildPlanSummary:
     def test_serializes_resource_key_action_rationale_likely_replace(self):
         entry = PlanEntry(
@@ -944,11 +905,6 @@ class TestBuildPlanSummary:
                 "likely_replace": True,
             }
         ]
-
-
-# ---------------------------------------------------------------------------
-# apply_plan
-# ---------------------------------------------------------------------------
 
 
 class TestApplyPlan:
@@ -1421,10 +1377,145 @@ class TestApplyPlan:
 
         assert result.executed == [create_entry]
 
+    def test_update_without_replace_also_refreshes_last_refreshed_at(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            last_refreshed_at="2020-01-01T00:00:00Z",
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-# ---------------------------------------------------------------------------
-# move_to_trash
-# ---------------------------------------------------------------------------
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        refreshed = saved.resources["digitalocean.compute.telleztec-app-01"].last_refreshed_at
+        assert refreshed.year != 2020
+
+    def test_replace_reports_likely_replace_true_in_executed_even_if_not_originally_flagged(
+        self, tmp_path: Path
+    ):
+        driver = FakeDriver(
+            update_exception=DriverUpdateNotSupported("image change"),
+            create_result={"id": "new-2", "region": "sfo3", "image": "new-image"},
+        )
+        existing = make_state_entry(id="123")
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.UPDATE,
+            rationale="image change",
+            likely_replace=False,
+        )
+        pr = make_planned_resource(
+            entry=entry,
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "image": "new-image"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, confirm=lambda p: True, client=client
+        )
+
+        assert result.executed[0].likely_replace is True
+        # the original PlanEntry object passed in is untouched
+        assert entry.likely_replace is False
+
+    def test_replace_removes_stale_state_entry_before_attempting_create(self, tmp_path: Path):
+        driver = FakeDriver(update_exception=DriverUpdateNotSupported("image change"))
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("CSP create quota exceeded")
+
+        driver.create = boom
+        existing = make_state_entry(id="123")
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.UPDATE,
+            rationale="image change",
+            likely_replace=True,
+        )
+        pr = make_planned_resource(entry=entry, driver=driver, state_entry=existing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        # the old resource is verifiably gone (delete() succeeded) -- state
+        # must not still claim the old, now-nonexistent id/attributes.
+        saved = state.load(state_path)
+        assert "digitalocean.compute.telleztec-app-01" not in saved.resources
+
+    def test_batch_review_safe_to_proceed_false_with_no_block_flag_still_raises(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.DESTROY,
+            rationale="x",
+        )
+        pr = orchestrator.PlannedResource(
+            entry=entry,
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        # safe_to_proceed=False but only a non-block flag -- a schema-valid
+        # response that would otherwise slip past a block-flags-only check.
+        warning_flag = {
+            "resource_key": pr.entry.resource_key,
+            "concern": "risky",
+            "severity": "warning",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[warning_flag])])
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        saved = state.load(state_path)
+        assert "digitalocean.compute.telleztec-app-01" in saved.resources
+
+    def test_create_driver_response_missing_id_raises_driver_execution_error(self, tmp_path: Path):
+        driver = FakeDriver(create_result={"region": "sfo3"})
+        pr = make_planned_resource(driver=driver, state_entry=None)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        assert exc_info.value.operation == "create"
 
 
 class TestMoveToTrash:

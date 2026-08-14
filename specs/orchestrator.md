@@ -555,10 +555,18 @@ full, is the caller's job — see Behavior below), shared verbatim by
    llm_config=llm_config)`. Any `flag.severity == PlanReviewSeverity.BLOCK`
    → raise `PlanBlockedError` naming every blocking flag, **unconditionally**
    — `yes=True` never bypasses this (`PLAN.md`: "cannot be bypassed by
-   `--yes`"). Non-blocking flags are carried into the final
-   `ApplyResult.review_flags`. If `needs_review` is false, gate #2 is
-   never called at all (`PLAN.md` §9 walkthrough step 3) —
-   `review_flags` stays `[]`.
+   `--yes`"). **Also raises** (same unconditional treatment) when
+   `review.safe_to_proceed is False` even with no `block`-severity flag
+   attached — a schema-compliant `PLAN_REVIEW_SCHEMA` response can
+   legitimately set `safe_to_proceed: false` without a matching `block`
+   flag naming why, and `prompts/review_plan.md` instructing the model
+   not to do that is advisory, not structural; treating "no block flag"
+   alone as a pass would silently execute a plan the model explicitly
+   flagged unsafe. Mirrors `specs/driver_gen.md`'s identical stance on
+   `DriverReview.approved` vs. `blocking_issues`. Non-blocking flags are
+   carried into the final `ApplyResult.review_flags`. If `needs_review`
+   is false, gate #2 is never called at all (`PLAN.md` §9 walkthrough
+   step 3) — `review_flags` stays `[]`.
 2. **Confirmation**, unless `yes=True`: `(confirm or default_confirm)(prompt_text)`.
    `False` → return `ApplyResult(executed=[], review_flags=<from step 1>,
    aborted=True)` immediately, nothing executed, state untouched.
@@ -571,8 +579,12 @@ full, is the caller's job — see Behavior below), shared verbatim by
      persisted its refreshed attributes).
    - `CREATE` → `raw = pr.driver.create(pr.desired_params, pr.credentials)`
      (raw driver exceptions wrapped in `DriverExecutionError`, operation
-     `"create"`); `id, attrs = raw.pop("id"), raw` (judgment call 1);
-     new `StateEntry(provider=pr.provider, resource_type=pr.resource_type,
+     `"create"`); `id, attrs = raw.pop("id"), raw` (judgment call 1) — a
+     driver response missing `"id"` entirely is *also* a driver-contract
+     violation, wrapped in the same `DriverExecutionError` (operation
+     unchanged) rather than left as a raw `KeyError`, consistent with
+     every other way a driver can misbehave in this loop; new
+     `StateEntry(provider=pr.provider, resource_type=pr.resource_type,
      name=pr.name, id=id, attributes=attrs, driver=pr.driver_info,
      last_applied_at=last_refreshed_at=<now>,
      aiform_md_path=str(pr.aiform_md_path),
@@ -596,19 +608,43 @@ full, is the caller's job — see Behavior below), shared verbatim by
        Edge cases below for what `ApplyResult` reports in that case).
        Either way (already covered by the batch review, or freshly
        re-reviewed and confirmed here): `pr.driver.delete(pr.state_entry.id,
-       pr.credentials)` then `raw = pr.driver.create(pr.desired_params,
-       pr.credentials)` — the replace, both calls wrapped in
-       `DriverExecutionError` (operations `"delete"`/`"create"`
-       respectively) exactly like every other driver call in this loop.
+       pr.credentials)`, both wrapped in `DriverExecutionError` (operation
+       `"delete"`) like every other driver call in this loop. **On
+       success, the old entry is removed from state and saved
+       immediately** — `del state.resources[pr.entry.resource_key]` then
+       `state.save(state, state_path)` — *before* attempting `create()`,
+       not after: the old resource is now verifiably gone on the CSP
+       side, and state must reflect that even if `create()` itself then
+       fails, rather than continuing to claim the old (now-nonexistent)
+       `id`/`attributes` until a future refresh happens to notice via
+       `drifted_missing`. Then `raw = pr.driver.create(pr.desired_params,
+       pr.credentials)` (operation `"create"`), same wrapping.
      - No exception: `raw` is the updated attributes directly, no
        replace.
-     - Either path: `id, attrs = raw.pop("id"), raw`; the existing
-       `StateEntry` at `pr.entry.resource_key` is updated in place —
-       `id`, `attributes`, `driver=pr.driver_info`, `last_applied_at=<now>`,
-       `aiform_md_sha256=pr.current_aiform_md_sha256` (`driver`/`aiform_md_sha256`
-       only actually change on a replace, but overwriting them
-       unconditionally with the current values is simpler than branching,
-       and idempotent when nothing changed).
+     - Either path: `id, attrs = raw.pop("id"), raw`. On a replace, a
+       **new** `StateEntry` is written to `state.resources[pr.entry.resource_key]`
+       (mirroring `CREATE`'s construction exactly: `id`, `attributes`,
+       `driver=pr.driver_info`, `last_applied_at=last_refreshed_at=<now>`,
+       `aiform_md_path`, `aiform_md_sha256=pr.current_aiform_md_sha256`).
+       On a plain in-place update, the existing `StateEntry` is updated
+       in place — `id`, `attributes`, `driver=pr.driver_info`,
+       `last_applied_at=last_refreshed_at=<now>`,
+       `aiform_md_sha256=pr.current_aiform_md_sha256` (all fields
+       overwritten unconditionally rather than branched on whether they
+       actually changed, simpler and idempotent either way;
+       `last_refreshed_at` is included here too — the attributes just
+       returned by a successful `update()` are exactly as fresh as a
+       `read()`'s would be, so there's no reason to leave the plan-time
+       refresh's older timestamp in place).
+     - **The `PlanEntry` appended to `executed` (see step 4) reflects
+       what actually happened, not the plan-time prediction**: on a
+       replace, it's `pr.entry` with `likely_replace` forced `True`
+       (`pr.entry.model_copy(update={"likely_replace": True})`) — even
+       when the original entry had `likely_replace: False` and only
+       became a replace because `update()` raised
+       `DriverUpdateNotSupported`. `pr.entry` itself is never mutated;
+       this is a copy built solely for the returned result. On a plain
+       update, `pr.entry` is appended unchanged.
    - `DESTROY` → if `pr.state_entry is not None`: `driver =
      load_driver(pr.provider, pr.resource_type)`, `credentials =
      config.resolve_credentials(pr.provider)` (`RuntimeError` →
@@ -627,9 +663,15 @@ full, is the caller's job — see Behavior below), shared verbatim by
      step 4), unlike `build_create_plan()`/`refresh_state()`'s
      end-of-run save: a mid-`apply` crash here must not lose state for
      resources already successfully created/updated/destroyed before it.
-4. Returns `ApplyResult(executed=[pr.entry for pr in planned if pr.entry.action
-   != PlanAction.NO_OP], review_flags=<accumulated non-blocking flags>,
-   aborted=False)`.
+     A replace's mid-flight checkpoint (the state-removal-then-save right
+     after `delete()` succeeds, described above) is an *additional* save
+     within that one entry's processing, not a substitute for this one —
+     a replace that completes successfully still gets this final save too,
+     once the new `StateEntry` is written.
+4. Returns `ApplyResult(executed=<one entry per non-NO_OP `pr` in
+   `planned`, in order — `pr.entry` unchanged except on an actual replace,
+   where it's the `likely_replace: True`-corrected copy described above>,
+   review_flags=<accumulated non-blocking flags>, aborted=False)`.
 
 ### `move_to_trash(path, *, trash_dir=TRASH_DIR) -> Path`
 

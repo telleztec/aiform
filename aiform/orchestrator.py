@@ -19,6 +19,7 @@ from aiform.models import (
     LLMConfig,
     PlanAction,
     PlanEntry,
+    PlanReview,
     PlanReviewFlag,
     PlanReviewSeverity,
     StateEntry,
@@ -33,11 +34,6 @@ def resource_key(provider: str, resource_type: str, name: str) -> str:
     return f"{provider}.{resource_type}.{name}"
 
 
-# ---------------------------------------------------------------------------
-# file discovery / classification
-# ---------------------------------------------------------------------------
-
-
 def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[Path]:
     if paths:
         return list(paths)
@@ -46,11 +42,6 @@ def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[P
 
 def is_delete_marked(path: Path) -> bool:
     return path.name.startswith("AIFORM-DELETE-")
-
-
-# ---------------------------------------------------------------------------
-# driver resolution & gate #1
-# ---------------------------------------------------------------------------
 
 
 def driver_path(provider: str, resource_type: str) -> Path:
@@ -108,11 +99,6 @@ def ensure_driver_trusted(
     )
 
 
-# ---------------------------------------------------------------------------
-# refresh
-# ---------------------------------------------------------------------------
-
-
 def refresh_resource(
     driver: ResourceDriver, state_entry: StateEntry, credentials: dict[str, str]
 ) -> tuple[dict[str, Any], bool]:
@@ -144,11 +130,6 @@ def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State:
     return st
 
 
-# ---------------------------------------------------------------------------
-# planning context
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class PlannedResource:
     entry: PlanEntry
@@ -162,11 +143,6 @@ class PlannedResource:
     driver_info: DriverInfo | None
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
-
-
-# ---------------------------------------------------------------------------
-# plan create
-# ---------------------------------------------------------------------------
 
 
 def build_create_plan(
@@ -306,11 +282,6 @@ def build_create_plan(
     return planned, warnings
 
 
-# ---------------------------------------------------------------------------
-# plan destroy, Mechanism A
-# ---------------------------------------------------------------------------
-
-
 def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
@@ -367,10 +338,6 @@ def build_destroy_plan(
     return planned
 
 
-# ---------------------------------------------------------------------------
-# apply
-# ---------------------------------------------------------------------------
-
 ConfirmFn = Callable[[str], bool]
 
 
@@ -399,12 +366,22 @@ def build_plan_summary(planned: list[PlannedResource]) -> str:
     )
 
 
-def _raise_if_blocked(flags: list[PlanReviewFlag]) -> None:
-    blocking = [flag for flag in flags if flag.severity == PlanReviewSeverity.BLOCK]
+def _raise_if_review_blocked(review: PlanReview) -> None:
+    blocking = [flag for flag in review.flags if flag.severity == PlanReviewSeverity.BLOCK]
     if blocking:
         raise PlanBlockedError(
             "plan review blocked: "
             + "; ".join(f"{flag.resource_key}: {flag.concern}" for flag in blocking)
+        )
+    if not review.safe_to_proceed:
+        # A schema-compliant response could set safe_to_proceed=false without
+        # attaching a block-severity flag naming why -- prompts/review_plan.md
+        # instructs against this, but nothing in PLAN_REVIEW_SCHEMA structurally
+        # forbids it. Same defensive stance driver_gen.py already takes on
+        # DriverReview.approved: never trust "no block flag" alone as a pass.
+        raise PlanBlockedError(
+            "plan review declined to approve (safe_to_proceed=false) without naming a "
+            "block-severity flag"
         )
 
 
@@ -413,6 +390,17 @@ def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, oper
         return fn(*args)
     except Exception as exc:
         raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+
+
+def _pop_id(
+    raw: dict[str, Any], provider: str, resource_type: str, operation: str
+) -> tuple[str, dict[str, Any]]:
+    attrs = dict(raw)
+    try:
+        new_id = attrs.pop("id")
+    except KeyError as exc:
+        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+    return new_id, attrs
 
 
 def apply_plan(
@@ -435,7 +423,7 @@ def apply_plan(
     )
     if needs_review:
         review = llm.review_plan(build_plan_summary(planned), client=client, llm_config=llm_config)
-        _raise_if_blocked(review.flags)
+        _raise_if_review_blocked(review)
         review_flags.extend(
             flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK
         )
@@ -458,8 +446,7 @@ def apply_plan(
                 pr.desired_params,
                 pr.credentials,
             )
-            attrs = dict(raw)
-            new_id = attrs.pop("id")
+            new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, "create")
             now = datetime.now(UTC)
             st.resources[pr.entry.resource_key] = StateEntry(
                 provider=pr.provider,
@@ -473,13 +460,16 @@ def apply_plan(
                 aiform_md_path=str(pr.aiform_md_path),
                 aiform_md_sha256=pr.current_aiform_md_sha256,
             )
+            executed.append(pr.entry)
 
         elif pr.entry.action == PlanAction.UPDATE:
+            replaced = False
             try:
                 raw = pr.driver.update(
                     pr.state_entry.id, pr.state_entry.attributes, pr.desired_params, pr.credentials
                 )
             except DriverUpdateNotSupported:
+                replaced = True
                 if not pr.entry.likely_replace:
                     modified_entry = pr.entry.model_copy(update={"likely_replace": True})
                     single_summary = build_plan_summary(
@@ -488,7 +478,7 @@ def apply_plan(
                     single_review = llm.review_plan(
                         single_summary, client=client, llm_config=llm_config
                     )
-                    _raise_if_blocked(single_review.flags)
+                    _raise_if_review_blocked(single_review)
                     review_flags.extend(
                         flag
                         for flag in single_review.flags
@@ -506,6 +496,15 @@ def apply_plan(
                     pr.state_entry.id,
                     pr.credentials,
                 )
+                # The old resource is now verifiably gone on the CSP side --
+                # drop it from state and save immediately, before attempting
+                # create(). If create() then fails, state.json correctly
+                # reflects "not tracked" rather than stale id/attributes for
+                # a resource that no longer exists (the same drifted_missing
+                # self-healing this checkpoint pre-empts would otherwise be
+                # needed to detect it on the next refresh).
+                del st.resources[pr.entry.resource_key]
+                state.save(st, state_path)
                 raw = _call_driver(
                     pr.driver.create,
                     pr.provider,
@@ -517,14 +516,35 @@ def apply_plan(
             except Exception as exc:
                 raise DriverExecutionError(pr.provider, pr.resource_type, "update", exc) from exc
 
-            attrs = dict(raw)
-            new_id = attrs.pop("id")
-            existing = st.resources[pr.entry.resource_key]
-            existing.id = new_id
-            existing.attributes = attrs
-            existing.driver = pr.driver_info
-            existing.last_applied_at = datetime.now(UTC)
-            existing.aiform_md_sha256 = pr.current_aiform_md_sha256
+            operation = "create" if replaced else "update"
+            new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, operation)
+            now = datetime.now(UTC)
+            if replaced:
+                st.resources[pr.entry.resource_key] = StateEntry(
+                    provider=pr.provider,
+                    resource_type=pr.resource_type,
+                    name=pr.name,
+                    id=new_id,
+                    attributes=attrs,
+                    driver=pr.driver_info,
+                    last_applied_at=now,
+                    last_refreshed_at=now,
+                    aiform_md_path=str(pr.aiform_md_path),
+                    aiform_md_sha256=pr.current_aiform_md_sha256,
+                )
+                # entry.likely_replace reflects the plan-time prediction;
+                # report what actually happened instead so a caller (cli.py)
+                # never learns a replace occurred was falsely told it didn't.
+                executed.append(pr.entry.model_copy(update={"likely_replace": True}))
+            else:
+                existing = st.resources[pr.entry.resource_key]
+                existing.id = new_id
+                existing.attributes = attrs
+                existing.driver = pr.driver_info
+                existing.last_applied_at = now
+                existing.last_refreshed_at = now
+                existing.aiform_md_sha256 = pr.current_aiform_md_sha256
+                executed.append(pr.entry)
 
         elif pr.entry.action == PlanAction.DESTROY:
             if pr.state_entry is not None:
@@ -547,15 +567,9 @@ def apply_plan(
             executed.append(pr.entry)
             continue
 
-        executed.append(pr.entry)
         state.save(st, state_path)
 
     return ApplyResult(executed=executed, review_flags=review_flags, aborted=False)
-
-
-# ---------------------------------------------------------------------------
-# trash
-# ---------------------------------------------------------------------------
 
 
 def _split_aiform_md_suffix(name: str) -> tuple[str, str]:
