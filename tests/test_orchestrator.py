@@ -1128,7 +1128,7 @@ class TestApplyPlan:
             )
 
     def test_destroy_tracked_deletes_removes_from_state_and_moves_to_trash(
-        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
@@ -1157,7 +1157,11 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        # A DESTROY action always triggers gate #2's batch review
+        # (needs_review checks action type only, regardless of tracked
+        # status), so a client must always be supplied here.
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
         saved = state.load(state_path)
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
@@ -1165,7 +1169,7 @@ class TestApplyPlan:
         assert result.executed == [pr.entry]
 
     def test_destroy_state_write_happens_before_trash_move(
-        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
@@ -1199,8 +1203,9 @@ class TestApplyPlan:
 
         monkeypatch.setattr(orchestrator, "move_to_trash", failing_move_to_trash)
 
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(RuntimeError, match="simulated filesystem failure"):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
         # PLAN.md §5 apply step 4: "the trash-move happens... after the
         # state write" -- so even though the trash-move itself failed, the
@@ -1209,7 +1214,7 @@ class TestApplyPlan:
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
 
     def test_destroy_untracked_skips_delete_and_driver_resolution(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, prompts_dir: Path, monkeypatch
     ):
         monkeypatch.chdir(tmp_path)
         aiform_md = tmp_path / "AIFORM-DELETE-app.aiform.md"
@@ -1237,8 +1242,11 @@ class TestApplyPlan:
 
         # No drivers_dir/DIGITALOCEAN_TOKEN set up at all -- if load_driver()
         # or config.resolve_credentials() were ever called for an untracked
-        # destroy, this would raise instead of silently succeeding.
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        # destroy, this would raise instead of silently succeeding. A
+        # client IS still required though: DESTROY always triggers gate #2's
+        # batch review regardless of tracked status.
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
         assert not aiform_md.exists()
         assert result.executed == [pr.entry]
