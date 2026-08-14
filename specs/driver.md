@@ -19,6 +19,18 @@ re-export it later if convenient; §1's comment is stale and should be
 corrected whenever `exceptions.py` is actually written, not silently
 worked around.
 
+**Second flagged discrepancy, now resolved**: `create()`'s original
+two-argument signature (`params`, `credentials`) had no way for a driver
+to receive the resource's `name:` frontmatter field, which is a separate
+top-level field never nested inside `params:` (`PLAN.md` §2). The
+curated `drivers/digitalocean/compute.py` driver — and its own test
+suite — were both written under the mistaken assumption that `params`
+would include `"name"`, which it never does; every real `create()` call
+against the live DigitalOcean API would have raised `KeyError`. Fixed by
+adding `name: str` as `create()`'s new first parameter, both here and in
+`PLAN.md` §4 (this spec restates §4, so both had the same gap and both
+are fixed together).
+
 ## Interface
 
 Exactly `PLAN.md` §4's code block, restated here for test-writing:
@@ -40,7 +52,9 @@ class ResourceDriver(ABC):
     LIKELY_REPLACE_FIELDS: list[str] = []
 
     @abstractmethod
-    def create(self, params: dict[str, Any], credentials: dict[str, str]) -> dict[str, Any]: ...
+    def create(
+        self, name: str, params: dict[str, Any], credentials: dict[str, str]
+    ) -> dict[str, Any]: ...
 
     @abstractmethod
     def read(self, id: str, credentials: dict[str, str]) -> dict[str, Any]: ...

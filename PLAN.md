@@ -573,10 +573,17 @@ class ResourceDriver(ABC):
     LIKELY_REPLACE_FIELDS: list[str] = []
 
     @abstractmethod
-    def create(self, params: dict[str, Any], credentials: dict[str, str]) -> dict[str, Any]:
+    def create(
+        self, name: str, params: dict[str, Any], credentials: dict[str, str]
+    ) -> dict[str, Any]:
         """
         Create the resource via the CSP API.
 
+        name: the resource's `name:` field from aiform.md — the primary
+            key in state ("<provider>.<resource>.<name>"), and typically
+            also the identifying label/hostname the CSP itself wants at
+            creation time. A separate top-level frontmatter field, never
+            nested inside `params:`.
         params: the resource's `params` block from aiform.md, already
             validated by the orchestrator against PARAM_SCHEMA before
             this is ever called.
@@ -656,7 +663,7 @@ class Driver(ResourceDriver):
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
 
-    def create(self, params, credentials): ...
+    def create(self, name, params, credentials): ...
 
     def read(self, id, credentials): ...
 
@@ -845,7 +852,7 @@ once verified.
 3. **Execute**, in file order (trivial for MVP's
    single-resource-per-file model; multi-resource sequencing is
    explicitly deferred):
-   - `create` → `driver.create(params, credentials)`, write state.
+   - `create` → `driver.create(name, params, credentials)`, write state.
    - `update` → `driver.update(id, current, desired, credentials)`.
      - If it raises `DriverUpdateNotSupported` **and this resource was not
        already covered by the batch review in step 2**: pause, run a
@@ -1081,7 +1088,7 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    `intent-orchestration-model` categorization call).
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
-   `driver.create(params, credentials)` — one real DO API
+   `driver.create(name, params, credentials)` — one real DO API
    call. `.aiform/state.json` written with the resource entry, including
    `driver.sha256` and the `code_review` record recorded by step 2's
    re-review call.
