@@ -43,10 +43,18 @@ class ResourceDriver(ABC):
     LIKELY_REPLACE_FIELDS: list[str] = []
 
     @abstractmethod
-    def create(self, params: dict[str, Any], credentials: dict[str, str]) -> dict[str, Any]:
+    def create(
+        self, name: str, params: dict[str, Any], credentials: dict[str, str]
+    ) -> dict[str, Any]:
         """
         Create the resource via the CSP API.
 
+        name: the resource's `name:` field from aiform.md -- the primary
+            key in state ("<provider>.<resource>.<name>"), and typically
+            also the identifying label/hostname the CSP itself wants at
+            creation time (e.g. a DigitalOcean droplet's "name"). Passed
+            separately from `params` because it is a distinct top-level
+            frontmatter field, never nested inside `params:`.
         params: the resource's `params` block from aiform.md, already
             validated by the orchestrator against PARAM_SCHEMA before
             this is ever called.

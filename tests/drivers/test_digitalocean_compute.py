@@ -13,9 +13,9 @@ from drivers.digitalocean.compute import Driver
 
 BASE_URL = "https://api.digitalocean.com/v2"
 CREDENTIALS = {"DIGITALOCEAN_TOKEN": "dop_v1_test"}
+NAME = "telleztec-app-01"
 
 BASE_PARAMS = {
-    "name": "telleztec-app-01",
     "region": "sfo3",
     "size": "s-1vcpu-2gb",
     "image": "ubuntu-24-04-x64",
@@ -178,7 +178,7 @@ class TestCreate:
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
 
-        driver.create(BASE_PARAMS, CREDENTIALS)
+        driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert len(fake_urlopen.calls) == 1
         call = fake_urlopen.calls[0]
@@ -193,10 +193,10 @@ class TestCreate:
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
 
-        driver.create(params, CREDENTIALS)
+        driver.create(NAME, params, CREDENTIALS)
 
         body = fake_urlopen.calls[0]["body"]
-        assert body["name"] == params["name"]
+        assert body["name"] == NAME
         assert body["region"] == params["region"]
         assert body["size"] == params["size"]
         assert body["image"] == params["image"]
@@ -223,7 +223,7 @@ class TestCreate:
             ),
         )
 
-        result = driver.create(BASE_PARAMS, CREDENTIALS)
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["id"] == "555"
         assert result["status"] == "new"
@@ -245,7 +245,7 @@ class TestCreate:
             ),
         )
 
-        result = driver.create(BASE_PARAMS, CREDENTIALS)
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["ipv4_address"] == "203.0.113.10"
 
@@ -261,7 +261,7 @@ class TestCreate:
             ),
         )
 
-        result = driver.create(BASE_PARAMS, CREDENTIALS)
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["ipv4_address"] is None
 
@@ -276,7 +276,7 @@ class TestCreate:
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
 
-        result = driver.create(params, CREDENTIALS)
+        result = driver.create(NAME, params, CREDENTIALS)
 
         assert result["ssh_keys"] == ["juan-macbook-ed25519"]
         assert result["backups"] is True
@@ -287,7 +287,7 @@ class TestCreate:
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
 
-        result = driver.create(BASE_PARAMS, CREDENTIALS)
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["ssh_keys"] == []
         assert result["backups"] is False
@@ -298,7 +298,7 @@ class TestCreate:
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
 
-        driver.create(BASE_PARAMS, CREDENTIALS)
+        driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert len(fake_urlopen.calls) == 1
 

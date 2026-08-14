@@ -13,7 +13,7 @@ from aiform.driver import ResourceDriver
 class Driver(ResourceDriver):
     PARAM_SCHEMA = {"type": "object", "properties": {}}
 
-    def create(self, params, credentials):
+    def create(self, name, params, credentials):
         return {"id": "1"}
 
     def read(self, id, credentials):
@@ -165,8 +165,8 @@ class TestValidateDriverSource:
 
     def test_string_literal_containing_anthropic_substring(self):
         source = VALID_DRIVER_SOURCE.replace(
-            '    def create(self, params, credentials):\n        return {"id": "1"}\n',
-            "    def create(self, params, credentials):\n"
+            '    def create(self, name, params, credentials):\n        return {"id": "1"}\n',
+            "    def create(self, name, params, credentials):\n"
             "        import os\n"
             '        os.environ.get("ANTHROPIC_API_KEY")\n'
             '        return {"id": "1"}\n',

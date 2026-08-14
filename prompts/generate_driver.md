@@ -20,13 +20,13 @@ class Driver(ResourceDriver):
     PARAM_SCHEMA = {...}  # required: a JSON Schema describing accepted params
     LIKELY_REPLACE_FIELDS = [...]  # optional: fields where an update is likely to force a replace
 
-    def create(self, params, credentials): ...
+    def create(self, name, params, credentials): ...
     def read(self, id, credentials): ...
     def update(self, id, current, desired, credentials): ...
     def delete(self, id, credentials): ...
 ```
 
-Parameter names must match exactly — `params`/`credentials` for
+Parameter names must match exactly — `name`/`params`/`credentials` for
 `create`, `id`/`credentials` for `read`, `id`/`current`/`desired`/
 `credentials` for `update`, `id`/`credentials` for `delete` — this is
 checked mechanically before any review even happens, and a mismatch
@@ -36,7 +36,12 @@ Requirements, all non-negotiable:
 
 1. **`create`** calls the target provider's real REST API to provision
    the resource and returns a dict with at least `{"id": str, **attributes}`
-   reflecting what was actually created.
+   reflecting what was actually created. `name` is the resource's
+   identifying label (aiform's own `<provider>.<resource>.<name>` state
+   key) — it is a separate argument, never a key inside `params`, and
+   is typically also the name/hostname the provider's own API wants at
+   creation time (pass it through as such unless the provider genuinely
+   has no such concept).
 2. **`read`** fetches current live attributes for `id`, same shape as
    `create`'s return. Raise `aiform.exceptions.ResourceNotFoundError` if
    the resource no longer exists on the provider's side — don't invent a

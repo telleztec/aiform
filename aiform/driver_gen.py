@@ -32,7 +32,7 @@ SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 RESERVED_MODULE_SPEC_NAMES = frozenset({"driver_gen.md"})
 
 EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
-    "create": ["self", "params", "credentials"],
+    "create": ["self", "name", "params", "credentials"],
     "read": ["self", "id", "credentials"],
     "update": ["self", "id", "current", "desired", "credentials"],
     "delete": ["self", "id", "credentials"],

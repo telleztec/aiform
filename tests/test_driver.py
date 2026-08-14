@@ -6,7 +6,7 @@ from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 class FullDriver(ResourceDriver):
     PARAM_SCHEMA = {"type": "object", "properties": {}}
 
-    def create(self, params, credentials):
+    def create(self, name, params, credentials):
         return {"id": "1"}
 
     def read(self, id, credentials):
@@ -22,7 +22,7 @@ class FullDriver(ResourceDriver):
 class MissingDeleteDriver(ResourceDriver):
     PARAM_SCHEMA = {"type": "object", "properties": {}}
 
-    def create(self, params, credentials):
+    def create(self, name, params, credentials):
         return {"id": "1"}
 
     def read(self, id, credentials):
@@ -33,7 +33,7 @@ class MissingDeleteDriver(ResourceDriver):
 
 
 class NoParamSchemaDriver(ResourceDriver):
-    def create(self, params, credentials):
+    def create(self, name, params, credentials):
         return {"id": "1"}
 
     def read(self, id, credentials):
