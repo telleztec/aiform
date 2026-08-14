@@ -1,33 +1,11 @@
 # specs/orchestrator.md — `aiform/orchestrator.py`
 
-## Introduction
-This document describes the design of the orchestration layer of aiform.   The Requirements section translates the use cases into
-requirements that the implementation must meet.  The Purpose section id the detailed design section, 
-that includes a set of decisions made through multiple reviews, an interface and algorithms. The orchestration 
-implements a plan, which is developed to accomplish the intent implicit in the aiform.md configuration file.
-The orchestration layer will need to deal with unexpected outcomes which will be reflected as potential timeouts,
-with failures both recoverable and unrecoverable, and will need to communicate with the user with actionable errors.
-We have chosen to use an llm as the orchestration engine, anchored by deterministic Python execution loops.  
+## Purpose
 
-## Requirements
-### Functional Requirements
-1. The orchestrator should be able to read the plan to create, edit, delete or show a resource's state.
-2. The orchestrator shall tolerate interruptions and failures and shall be idempotent.
-3. The orchestrator shall maintain state, so that it can optimize execution velocity.
-4. The orchestrator shall detect out-of-band modification by refreshing every tracked resource's live attributes and shall surface the result as an ordinary plan entry — an attribute change as a normal diff, a resource missing on the CSP side via the drifted_missing flag proposing a recreate. 
-6. The orchestrator shall come up with a conflict resolution plan if it sees the state of the resource changed outside of the scope of aiform orchestrator. The orchestrator should be able to tell the difference between a resource failure, that needs restart, and a user initiated stop, invoked from the CSP console.
-
-## Purpose & Detailed Design 
-
-### Plan Apply
-   - Implement `PLAN.md` §5's `plan`/`apply` algorithm end to end
-   - Detect out-of-band modification: Implemented by refreshing every tracked resource's live attributes via driver.read() before every diff, and shall surface the result as an ordinary plan entry — an attribute change as a normal diff, a resource missing on the CSP side via the drifted_missing flag proposing a recreate. Drift itself never raises; exceptions are reserved for mechanical failures (DriverExecutionError) and unplannable conditions (PlanBlockedError).
-
-### Gate #1 Code Review
-   - `code-review-model`, driver trust
-
-### Gate #2 Review Orchestration Model
-   - gate #2 (`review-orchestration-model`, plan safety) invocation, state refresh/diff orchestration (delegating the
+`PLAN.md` §5's `plan`/`apply` algorithm end to end, plus §7's `refresh`:
+file discovery, dynamic driver import, credential wiring, gate #1
+(`code-review-model`, driver trust) and gate #2 (`review-orchestration-model`,
+plan safety) invocation, state refresh/diff orchestration (delegating the
 actual diff/categorize work to `planner.py`), and execution
 (`driver.create`/`read`/`update`/`delete`) with per-resource state
 persistence. This is the integration layer every other module's spec
@@ -42,6 +20,25 @@ callback** (see judgment call 8). Printing the plan, formatting errors,
 and argument parsing are `cli.py`'s job, not built yet — this spec
 defines what `cli.py` will call.
 
+## Use Cases
+1. A user would like to create a new resource
+2. A user would like to edit an existing resource
+3. A user would like to delete an existing resource
+4. A resource was edited using the cloud console, the user would like to warned about that and be able to make a judgement call.
+5. If aiform crashes while creating or refreshing, or deleting a resource; restarting should work seamlessly move the resource to the desired state and with good performance
+6. A user would like to be able to follow progress of plan execution
+7. If a user performs a change on the CSP console, the user will expect that aiform behavior is not surprising. 
+
+## Requirements
+### Functional Requirements
+1. The orchestrator should be able to read the plan to create, edit, delete or show a resource's state.
+2. The orchestrator shall tolerate interruptions and failures and shall be idempotent.
+3. The orchestrator shall maintain state, so that it can optimize execution velocity.
+4. The orchestrator shall maintain state so that if a resource is modified outside the scope of aiform, it shall be able to detect that and throw an exception.
+5. The orchestrator shall come up with a conflict resolution plan if it sees the state of the resource changed outside of the scope of aiform orchestrator. Ideally it should be able to tell the difference between a resource failure, that needs restart, and a user initiated stop, invoked from the CSP console. 
+### Non-Functional Requirements
+1. The orchestrator shall know at which step in the plan it can start from after it is interrupted. Maintaining state is required at this implementation, but restarting optimally is NYI (Not Yet Implemented). This is a non-functional optimisation, that will improve performance of plan execution.
+2. The orchestrator shall minimize the number of queries to the the CSP, aiming to discover state in 15 seconds. 
 
 ## Decisions
 
