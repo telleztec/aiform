@@ -78,9 +78,9 @@ class Driver(ResourceDriver):
         self._action(id, credentials, body)
         return self._poll_until(id, credentials, predicate, step)
 
-    def create(self, params, credentials):
+    def create(self, name, params, credentials):
         body = {
-            "name": params["name"],
+            "name": name,
             "region": params["region"],
             "size": params["size"],
             "image": params["image"],

@@ -78,16 +78,17 @@ in its own follow-up PR, not stacked onto this one.
 
 All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
-### `create(params, credentials)`
+### `create(name, params, credentials)`
 
-- `POST /v2/droplets` with a JSON body built from `params`, including
-  `name` — per the Edge cases note below, this spec assumes `params`
-  contains `name` in practice (the orchestrator, once built, merges
-  `ResourceSpec.name` into `params` before calling `create()`), so
-  `create()` reads `params["name"]` directly, not from some other source.
+- `POST /v2/droplets` with a JSON body built from `params` plus the
+  separate `name` argument — resolved by `orchestrator.py`'s spec: `name`
+  is `create()`'s own parameter (`aiform/driver.py`'s `ResourceDriver`
+  contract), never a key inside `params`. See the former "Where does the
+  droplet's `name` come from?" Edge case below, now resolved rather than
+  left open.
 - **Exactly one API call** — per `PLAN.md` §8 step 3 ("Executes
-  `driver.create(params, credentials)` — one real DO API call"), this
-  method does **not** poll until the droplet reaches `status: "active"`.
+  `driver.create(name, params, credentials)` — one real DO API call"),
+  this method does **not** poll until the droplet reaches `status: "active"`.
   DigitalOcean's create response is `202 Accepted` with the droplet
   object already in the body, typically `status: "new"` and
   `networks.v4: []` (no IP yet) — that's an acceptable return value.
@@ -264,15 +265,16 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   points, both flagged inline where they matter: `update()`'s power-off
   requirement for resizing, and whether checking `droplet["features"]`
   is really how DO reports monitoring status on a `GET`.
-- **Where does the droplet's `name` come from?** `params` (validated
-  against `PARAM_SCHEMA`) has no `name` field — the resource's `name`
-  lives on `ResourceSpec`, one level up from what a driver method
-  receives. Until `orchestrator.py` exists to resolve this, this spec
-  assumes `create()` accepts `name` as a required key inside `params`
-  itself in practice (i.e. the orchestrator, once built, merges
-  `spec.name` into the `params` dict before calling `create()`) — flagged
-  as a real gap `orchestrator.py`'s own spec will need to resolve
-  explicitly, not silently assumed away here.
+- **Where does the droplet's `name` come from? Resolved.** This spec
+  originally assumed the orchestrator would merge `spec.name` into
+  `params` before calling `create()` — that assumption turned out wrong:
+  `orchestrator.py` (once built) simply passed `resource_spec.params`
+  through unmerged, so `create()` reading `params["name"]` always raised
+  `KeyError` in practice, undetected because this file's own test suite
+  baked the same wrong assumption into its `BASE_PARAMS` fixture.
+  Resolved instead by adding `name: str` as `create()`'s own parameter
+  on the `ResourceDriver` contract (`aiform/driver.py`, `PLAN.md` §4) —
+  `create()` now receives it directly, never nested inside `params`.
 - A `read()`/`delete()` call against an `id` that was never a valid
   droplet ID (malformed, not just missing) is not specially handled —
   DO's API itself returns `404` for a nonexistent ID same as a
