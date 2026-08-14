@@ -121,12 +121,19 @@ left to drift into whatever the first implementation happens to do):
    `prompts/diff_plan.md` telling the model not to pick it. This
    judgment call applies that same principle one level up: `action ==
    PlanAction.UPDATE and state_entry is None`, or `action ==
-   PlanAction.CREATE and state_entry is not None`, raises
-   `PlanBlockedError` naming the resource and the mismatch — treated as
-   an internal-consistency failure of the categorization call, not a
-   recoverable planning outcome, since it indicates either a malformed
-   model response or a bug in this module's own state-lookup logic. See
-   `build_create_plan()`'s step 7 in Interface below.
+   PlanAction.CREATE and state_entry is not None and not
+   drifted_missing`, raises `PlanBlockedError` naming the resource and
+   the mismatch — treated as an internal-consistency failure of the
+   categorization call, not a recoverable planning outcome, since it
+   indicates either a malformed model response or a bug in this
+   module's own state-lookup logic. The `not drifted_missing` exemption
+   on the `CREATE` side is load-bearing, not incidental: `PLAN.md` §3's
+   refresh mechanism sets `drifted_missing: true` specifically so a
+   tracked-but-vanished resource's diff legitimately categorizes as
+   `create` (recreate) while `state_entry` is still the old, stale
+   entry — without this exemption the check would block the one
+   recreate flow the refresh mechanism exists to enable. See
+   `build_create_plan()`'s step 8 in Interface below.
 
 7. **The single-resource `review-orchestration-model` re-review triggered
    by `DriverUpdateNotSupported` (`PLAN.md` §5 apply step 3) is *not*
@@ -471,13 +478,16 @@ next time `plan create` runs against that resource, not here.
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
   8. **Structural cross-check** (judgment call 6): `entry.action ==
      PlanAction.UPDATE and state_entry is None`, or `entry.action ==
-     PlanAction.CREATE and state_entry is not None`, raises
-     `PlanBlockedError` naming `key` and the mismatch — a categorization
-     response that disagrees with this module's own ground truth about
-     whether the resource is already tracked is never executed, no
-     matter how it was produced. `NO_OP`/`DESTROY` (the latter never
-     actually returned by `plan_resource()`, per `specs/planner.md`) need
-     no check here — `NO_OP` is only ever returned when the no-op
+     PlanAction.CREATE and state_entry is not None and not
+     drifted_missing`, raises `PlanBlockedError` naming `key` and the
+     mismatch — a categorization response that disagrees with this
+     module's own ground truth about whether the resource is already
+     tracked is never executed, no matter how it was produced. A
+     `CREATE` with `state_entry is not None` **and** `drifted_missing`
+     is the expected recreate path (§3's refresh mechanism) and is
+     never blocked. `NO_OP`/`DESTROY` (the latter never actually
+     returned by `plan_resource()`, per `specs/planner.md`) need no
+     check here — `NO_OP` is only ever returned when the no-op
      short-circuit already confirmed `current_attributes`/`desired_params`
      agree, and `plan_resource()` cannot return `DESTROY` at all.
   9. `PlannedResource(entry=entry, provider=spec.provider,
