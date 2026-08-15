@@ -394,12 +394,22 @@ Never itself writes to `.aiform/state.json` — the caller
 ### `refresh_resource(driver, state_entry, credentials) -> tuple[dict[str, Any], bool]`
 
 `driver.read(state_entry.id, credentials)`, judgment call 1's `id`
-stripped from the result. On `ResourceNotFoundError`: returns
-`(state_entry.attributes, True)` — last-known attributes, unchanged,
-plus the `drifted_missing` flag (`PLAN.md` §3's refresh mechanism, step
-2). On success: returns `(attrs_without_id, False)`. Any other exception
-from `driver.read()` is wrapped: `raise DriverExecutionError(state_entry.provider,
-state_entry.resource_type, "read", exc) from exc`.
+stripped from the result via the same `_pop_id()` helper `apply_plan()`'s
+`CREATE`/`UPDATE` branches use — a `read()` response missing `"id"`
+entirely raises `DriverExecutionError` (operation `"read"`) rather than
+being silently tolerated, matching `_pop_id()`'s stance everywhere else
+it's used: a missing `"id"` is a driver-contract violation, not a
+recoverable edge case, even though this call site doesn't actually need
+the popped id value (the caller already has it as `state_entry.id`) —
+the point is validating the contract, not consuming the return value. On
+`ResourceNotFoundError`: returns `(state_entry.attributes, True)` —
+last-known attributes, unchanged, plus the `drifted_missing` flag
+(`PLAN.md` §3's refresh mechanism, step 2), checked *before* the `"id"`
+popping above, since a resource that's gone has no response to validate
+in the first place. On success: returns `(attrs_without_id, False)`. Any
+other exception from `driver.read()` is wrapped: `raise
+DriverExecutionError(state_entry.provider, state_entry.resource_type,
+"read", exc) from exc`.
 
 ### `refresh_state(*, state_path=state.DEFAULT_STATE_PATH) -> State`
 
@@ -408,8 +418,14 @@ parsing, no plan** — for every entry in `state.load(state_path).resources`,
 `load_driver()` + `config.resolve_credentials()` (translated to
 `PlanBlockedError` on failure, same as judgment call 3) +
 `refresh_resource()`, updating `attributes`/`last_refreshed_at` in
-place. Unlike `apply_plan()`'s per-resource write (see Behavior below),
-this saves **once**, after every tracked resource has been refreshed —
+place. Both `load_driver()` and `config.resolve_credentials()` are
+**cached** — per `(provider, resource_type)` and per `provider`
+respectively — for the lifetime of one `refresh_state()` call, mirroring
+`build_create_plan()`'s identical caching (judgment call 5): many tracked
+resources sharing a driver or a provider's credentials must not re-import
+the driver module or re-read `.aiform/credentials.env` once per resource.
+Unlike `apply_plan()`'s per-resource write (see Behavior below), this
+saves **once**, after every tracked resource has been refreshed —
 there are no create/destroy side effects here to protect against a
 mid-run crash losing; a crash partway through just leaves some entries
 with stale attributes, recoverable by re-running `refresh` again, so
@@ -588,12 +604,16 @@ full, is the caller's job — see Behavior below), shared verbatim by
      driver response missing `"id"` entirely is *also* a driver-contract
      violation, wrapped in the same `DriverExecutionError` (operation
      unchanged) rather than left as a raw `KeyError`, consistent with
-     every other way a driver can misbehave in this loop; new
-     `StateEntry(provider=pr.provider, resource_type=pr.resource_type,
-     name=pr.name, id=id, attributes=attrs, driver=pr.driver_info,
-     last_applied_at=last_refreshed_at=<now>,
+     every other way a driver can misbehave in this loop. This is the
+     first of two places that build a fresh `StateEntry` from a
+     `PlannedResource` plus a driver's just-returned `id`/`attrs` (the
+     other is `UPDATE`'s replace path, below) — both go through one
+     shared private constructor rather than duplicating the same ten
+     keyword arguments twice: `StateEntry(provider=pr.provider,
+     resource_type=pr.resource_type, name=pr.name, id=id, attributes=attrs,
+     driver=pr.driver_info, last_applied_at=last_refreshed_at=<now>,
      aiform_md_path=str(pr.aiform_md_path),
-     aiform_md_sha256=pr.current_aiform_md_sha256)` written into
+     aiform_md_sha256=pr.current_aiform_md_sha256)`, written into
      `state.resources[pr.entry.resource_key]`.
    - `UPDATE` → `try: raw = pr.driver.update(pr.state_entry.id,
      pr.state_entry.attributes, pr.desired_params, pr.credentials)`,
@@ -616,7 +636,12 @@ full, is the caller's job — see Behavior below), shared verbatim by
        pr.credentials)`, both wrapped in `DriverExecutionError` (operation
        `"delete"`) like every other driver call in this loop. **On
        success, the old entry is removed from state and saved
-       immediately** — `del state.resources[pr.entry.resource_key]` then
+       immediately** — a resource key present in `planned` but no longer
+       found in the *freshly-loaded* `state` (this function's own
+       `state.load(state_path)` at its start, not necessarily the same
+       state `planned` was built against — see Behavior) raises
+       `PlanBlockedError` naming the mismatch rather than a raw `KeyError`,
+       then `del state.resources[pr.entry.resource_key]` then
        `state.save(state, state_path)` — *before* attempting `create()`,
        not after: the old resource is now verifiably gone on the CSP
        side, and state must reflect that even if `create()` itself then
@@ -629,11 +654,14 @@ full, is the caller's job — see Behavior below), shared verbatim by
        replace.
      - Either path: `id, attrs = raw.pop("id"), raw`. On a replace, a
        **new** `StateEntry` is written to `state.resources[pr.entry.resource_key]`
-       (mirroring `CREATE`'s construction exactly: `id`, `attributes`,
+       via the same shared constructor `CREATE` uses (`id`, `attributes`,
        `driver=pr.driver_info`, `last_applied_at=last_refreshed_at=<now>`,
        `aiform_md_path`, `aiform_md_sha256=pr.current_aiform_md_sha256`).
-       On a plain in-place update, the existing `StateEntry` is updated
-       in place — `id`, `attributes`, `driver=pr.driver_info`,
+       On a plain in-place update, the existing `StateEntry` — looked up
+       the same guarded way as the replace path's removal above, raising
+       `PlanBlockedError` rather than a raw `KeyError` if it's no longer
+       present in the freshly-loaded state — is updated in place: `id`,
+       `attributes`, `driver=pr.driver_info`,
        `last_applied_at=last_refreshed_at=<now>`,
        `aiform_md_sha256=pr.current_aiform_md_sha256` (all fields
        overwritten unconditionally rather than branched on whether they
@@ -658,7 +686,10 @@ full, is the caller's job — see Behavior below), shared verbatim by
      (judgment call 4). `driver.delete(pr.state_entry.id, credentials)`
      (wrapped in `DriverExecutionError`, operation `"delete"`, on raw
      failure — per "Verification," the file is **not** moved to trash if
-     this raises). On success: `del state.resources[pr.entry.resource_key]`.
+     this raises). On success: same guarded removal as `UPDATE`'s replace
+     path — `PlanBlockedError` naming the resource if it's no longer
+     present in the freshly-loaded state, otherwise
+     `del state.resources[pr.entry.resource_key]`.
      If `pr.state_entry is None` (untracked `AIFORM-DELETE-` file): skip
      `driver.delete()` entirely — nothing tracked, nothing to remove from
      state, per `PLAN.md`'s "already satisfied without a wasted API
@@ -765,6 +796,40 @@ Returns the destination path.
   the same UTC second never overwrite each other, closing the gap a
   plain timestamp alone would have left and matching `PLAN.md`'s literal
   "never collide" framing for the trash directory.
+- `move_to_trash()` itself (`shutil.move`) can raise a raw, unwrapped
+  filesystem exception (e.g. `FileNotFoundError` if the source
+  `.aiform.md` was removed or renamed out-of-band between `plan` and
+  `apply`) — reached in `apply_plan()`'s `DESTROY` branch *after* the
+  CSP-side `driver.delete()` and the state removal/save have both
+  already durably committed. A resource in this state is correctly
+  destroyed and correctly untracked — "verified" per `PLAN.md`'s own
+  definition, which covers exactly those two things and nothing about
+  trash archival — but the caller gets an uncaught exception instead of
+  a clean `ApplyResult` for what is, substantively, a successful destroy
+  whose purely cosmetic cleanup step failed. Deliberately not wrapped in
+  a new exception type or given a recovery path here: this is a raw
+  filesystem operation, not a driver call (`DriverExecutionError` doesn't
+  fit) or a policy decision (`PlanBlockedError` doesn't either), and
+  `state.save()`'s own filesystem writes are equally unwrapped elsewhere
+  in this module — inventing a bespoke exception type for this one call
+  site would be exactly the premature abstraction `CLAUDE.md` warns
+  against for a case this narrow. Accepted as a known, low-probability
+  edge case rather than designed around.
+- `ensure_driver_trusted()` reads the driver file more than once on a
+  cache-miss — `path.read_bytes()` for hashing, then `path.read_text()`
+  for the review call, on top of `load_driver()`'s own independent read
+  via `importlib` moments earlier — up to three reads of the same small
+  file per driver resolution instead of one. Deliberately not
+  consolidated: hashing must stay byte-exact (per its own Interface
+  entry above, "is this the exact file that was reviewed"), and
+  `Path.read_text()` performs universal-newline translation by default,
+  so computing the hash from decoded text instead of raw bytes would
+  silently change the recorded hash for any driver file using CRLF line
+  endings — trading a minor, plan-time-only efficiency gain for a real
+  correctness risk to the one guarantee this function exists to provide.
+  Already bounded by judgment call 5's caching to at most once per
+  `(provider, resource_type)` pair per `build_create_plan()`/
+  `refresh_state()` call, not once per resource.
 
 ## Out of scope
 

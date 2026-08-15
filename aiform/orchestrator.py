@@ -34,6 +34,51 @@ def resource_key(provider: str, resource_type: str, name: str) -> str:
     return f"{provider}.{resource_type}.{name}"
 
 
+def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, operation: str, *args):
+    try:
+        return fn(*args)
+    except Exception as exc:
+        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+
+
+def _pop_id(
+    raw: dict[str, Any], provider: str, resource_type: str, operation: str
+) -> tuple[str, dict[str, Any]]:
+    attrs = dict(raw)
+    try:
+        new_id = attrs.pop("id")
+    except KeyError as exc:
+        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+    return new_id, attrs
+
+
+def _require_tracked(st: State, key: str) -> StateEntry:
+    try:
+        return st.resources[key]
+    except KeyError:
+        raise PlanBlockedError(
+            f"{key}: expected to be tracked in state, but state.json no longer has it -- "
+            "state may have changed since this plan was built; re-run plan"
+        ) from None
+
+
+def _new_state_entry(
+    pr: "PlannedResource", new_id: str, attrs: dict[str, Any], now: datetime
+) -> StateEntry:
+    return StateEntry(
+        provider=pr.provider,
+        resource_type=pr.resource_type,
+        name=pr.name,
+        id=new_id,
+        attributes=attrs,
+        driver=pr.driver_info,
+        last_applied_at=now,
+        last_refreshed_at=now,
+        aiform_md_path=str(pr.aiform_md_path),
+        aiform_md_sha256=pr.current_aiform_md_sha256,
+    )
+
+
 def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[Path]:
     if paths:
         return list(paths)
@@ -110,19 +155,28 @@ def refresh_resource(
         raise DriverExecutionError(
             state_entry.provider, state_entry.resource_type, "read", exc
         ) from exc
-    attrs = dict(raw)
-    attrs.pop("id", None)
+    _new_id, attrs = _pop_id(raw, state_entry.provider, state_entry.resource_type, "read")
     return attrs, False
 
 
 def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State:
     st = state.load(state_path)
+    driver_cache: dict[tuple[str, str], ResourceDriver] = {}
+    credentials_cache: dict[str, dict[str, str]] = {}
+
     for entry in st.resources.values():
-        driver = load_driver(entry.provider, entry.resource_type)
-        try:
-            credentials = config.resolve_credentials(entry.provider)
-        except RuntimeError as exc:
-            raise PlanBlockedError(str(exc)) from exc
+        driver_key = (entry.provider, entry.resource_type)
+        if driver_key not in driver_cache:
+            driver_cache[driver_key] = load_driver(entry.provider, entry.resource_type)
+        driver = driver_cache[driver_key]
+
+        if entry.provider not in credentials_cache:
+            try:
+                credentials_cache[entry.provider] = config.resolve_credentials(entry.provider)
+            except RuntimeError as exc:
+                raise PlanBlockedError(str(exc)) from exc
+        credentials = credentials_cache[entry.provider]
+
         attrs, _drifted_missing = refresh_resource(driver, entry, credentials)
         entry.attributes = attrs
         entry.last_refreshed_at = datetime.now(UTC)
@@ -385,24 +439,6 @@ def _raise_if_review_blocked(review: PlanReview) -> None:
         )
 
 
-def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, operation: str, *args):
-    try:
-        return fn(*args)
-    except Exception as exc:
-        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
-
-
-def _pop_id(
-    raw: dict[str, Any], provider: str, resource_type: str, operation: str
-) -> tuple[str, dict[str, Any]]:
-    attrs = dict(raw)
-    try:
-        new_id = attrs.pop("id")
-    except KeyError as exc:
-        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
-    return new_id, attrs
-
-
 def apply_plan(
     planned: list[PlannedResource],
     *,
@@ -449,18 +485,7 @@ def apply_plan(
             )
             new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, "create")
             now = datetime.now(UTC)
-            st.resources[pr.entry.resource_key] = StateEntry(
-                provider=pr.provider,
-                resource_type=pr.resource_type,
-                name=pr.name,
-                id=new_id,
-                attributes=attrs,
-                driver=pr.driver_info,
-                last_applied_at=now,
-                last_refreshed_at=now,
-                aiform_md_path=str(pr.aiform_md_path),
-                aiform_md_sha256=pr.current_aiform_md_sha256,
-            )
+            st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
             executed.append(pr.entry)
 
         elif pr.entry.action == PlanAction.UPDATE:
@@ -504,6 +529,7 @@ def apply_plan(
                 # a resource that no longer exists (the same drifted_missing
                 # self-healing this checkpoint pre-empts would otherwise be
                 # needed to detect it on the next refresh).
+                _require_tracked(st, pr.entry.resource_key)
                 del st.resources[pr.entry.resource_key]
                 state.save(st, state_path)
                 raw = _call_driver(
@@ -522,24 +548,13 @@ def apply_plan(
             new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, operation)
             now = datetime.now(UTC)
             if replaced:
-                st.resources[pr.entry.resource_key] = StateEntry(
-                    provider=pr.provider,
-                    resource_type=pr.resource_type,
-                    name=pr.name,
-                    id=new_id,
-                    attributes=attrs,
-                    driver=pr.driver_info,
-                    last_applied_at=now,
-                    last_refreshed_at=now,
-                    aiform_md_path=str(pr.aiform_md_path),
-                    aiform_md_sha256=pr.current_aiform_md_sha256,
-                )
+                st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
                 # entry.likely_replace reflects the plan-time prediction;
                 # report what actually happened instead so a caller (cli.py)
                 # never learns a replace occurred was falsely told it didn't.
                 executed.append(pr.entry.model_copy(update={"likely_replace": True}))
             else:
-                existing = st.resources[pr.entry.resource_key]
+                existing = _require_tracked(st, pr.entry.resource_key)
                 existing.id = new_id
                 existing.attributes = attrs
                 existing.driver = pr.driver_info
@@ -563,6 +578,7 @@ def apply_plan(
                     pr.state_entry.id,
                     credentials,
                 )
+                _require_tracked(st, pr.entry.resource_key)
                 del st.resources[pr.entry.resource_key]
             state.save(st, state_path)
             move_to_trash(pr.aiform_md_path)

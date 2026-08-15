@@ -449,6 +449,14 @@ class TestRefreshResource:
 
         assert driver.calls == [("read", "123", credentials)]
 
+    def test_read_response_missing_id_raises_driver_execution_error(self):
+        driver = FakeDriver(read_result={"region": "sfo3"})
+        entry = make_state_entry(id="123")
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+        assert exc_info.value.operation == "read"
+
 
 class TestRefreshState:
     def test_updates_attributes_for_tracked_resources(
@@ -524,6 +532,44 @@ class TestRefreshState:
         state.save(state.State(), state_path)
 
         assert orchestrator.refresh_state(state_path=state_path).resources == {}
+
+    def test_credentials_and_driver_resolved_once_across_shared_provider(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        entry1 = make_state_entry(id="123", name="app-01")
+        entry2 = make_state_entry(id="123", name="app-02")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": entry1,
+                "digitalocean.compute.app-02": entry2,
+            },
+        )
+
+        credential_calls = []
+        real_resolve = orchestrator.config.resolve_credentials
+
+        def counting_resolve(provider, *args, **kwargs):
+            credential_calls.append(provider)
+            return real_resolve(provider, *args, **kwargs)
+
+        driver_calls = []
+        real_load_driver = orchestrator.load_driver
+
+        def counting_load_driver(provider, resource_type):
+            driver_calls.append((provider, resource_type))
+            return real_load_driver(provider, resource_type)
+
+        monkeypatch.setattr(orchestrator.config, "resolve_credentials", counting_resolve)
+        monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
+
+        orchestrator.refresh_state(state_path=state_path)
+
+        assert credential_calls == ["digitalocean"]
+        assert driver_calls == [("digitalocean", "compute")]
 
 
 class TestBuildCreatePlan:
@@ -1516,6 +1562,62 @@ class TestApplyPlan:
         with pytest.raises(DriverExecutionError) as exc_info:
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
         assert exc_info.value.operation == "create"
+
+    def test_update_of_resource_no_longer_in_state_raises_plan_blocked_error(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3"})
+        existing = make_state_entry(id="123")
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        # state.json does NOT contain the entry -- stale relative to `pr`,
+        # simulating state having changed since this plan was built.
+        state.save(state.State(), state_path)
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+    def test_destroy_of_resource_no_longer_in_state_raises_plan_blocked_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.DESTROY,
+            rationale="x",
+        )
+        pr = orchestrator.PlannedResource(
+            entry=entry,
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        # state.json does NOT contain the entry, unlike `pr.state_entry`.
+        state.save(state.State(), state_path)
+
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        with pytest.raises(PlanBlockedError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
 
 class TestMoveToTrash:
