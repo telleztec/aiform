@@ -68,8 +68,9 @@ concept. That variant is not designed here; see Out of scope.
   failed before any resource was ever created, a no-op) against
   whatever `state.json` exists in `tmp_path` at that point — so a
   droplet is torn down even when an assertion mid-test raises. This is
-  the single most important property of this suite: every entry point
-  leaves zero running droplets behind, regardless of pass/fail.
+  the primary cleanup path, but not the only one — see "Orphan cleanup
+  (leaked resources)" below for what covers the case where even this
+  fixture doesn't get to run.
 - **Fixture params bound cost**: the `.aiform.md` fixture used
   throughout requests DigitalOcean's cheapest available droplet size
   (`s-1vcpu-512mb-10gb` or equivalent at time of writing — verify
@@ -151,6 +152,124 @@ one created:
     `finally` clause should find an empty or absent `state.json` and
     no-op cleanly).
 
+## Orphan cleanup (leaked resources)
+
+The Interface's teardown fixture is the primary defense, but it only
+runs if the test *process* survives long enough to reach its `finally`
+clause. A CI runner timeout/OOM kill, a `SIGKILL`, a crashed machine, or
+a bug in the fixture itself all bypass it — each one leaves a real,
+billable droplet running with nothing left in this suite to clean it
+up. This section is the backstop for exactly that case.
+
+### Design principle: the backstop must not depend on the code under test
+
+The fixture's `finally` clause calls `aiform plan destroy`, which goes
+through `orchestrator.py` and `drivers/digitalocean/compute.py`'s
+`delete()` — the same code this suite exists to exercise. If *that*
+code is what's broken (the actual failure mode a leak is often evidence
+of), routing the backstop through it too means one bug disables both
+layers at once. So the backstop is required to use a **separate
+implementation, calling DigitalOcean's API directly** — no `import
+aiform.orchestrator`, no `import drivers.digitalocean.compute`, no
+`aiform plan destroy` subprocess. Deliberate code duplication of the
+handful of lines needed to list/delete a droplet, traded for the
+backstop actually being independent.
+
+### Mechanism: a standalone sweep script
+
+`scripts/sweep_system_test_droplets.py` — outside `tests/` entirely
+(it's an ops tool, not something pytest should ever collect):
+
+```python
+def list_tagged_droplets(token: str, tag: str) -> list[dict]:
+    ...  # GET /v2/droplets?tag_name={tag}, urllib.request, no aiform import
+
+def sweep(
+    token: str,
+    tag: str = "aiform-system-test",
+    min_age_minutes: int = 60,
+    dry_run: bool = False,
+) -> list[dict]:
+    ...  # filters list_tagged_droplets() to created_at older than the
+         # threshold, DELETEs each match directly unless dry_run,
+         # returns what was (or would be) removed
+
+def main(argv: list[str] | None = None) -> int:
+    ...  # CLI: --dry-run, --min-age-minutes, --tag; reads
+         # DIGITALOCEAN_TOKEN from env the same way the driver does;
+         # prints a summary; exits non-zero if anything was swept
+```
+
+- **`min_age_minutes=60` default**: this suite never legitimately runs
+  more than a few minutes, so a threshold well above that means the
+  sweep can never race a still-in-progress, healthy run — while still
+  catching a real leak before it accrues much cost.
+- **Runs on its own schedule**, independent of whatever triggers the
+  system-test suite: a separate GitHub Actions workflow
+  (`.github/workflows/sweep-system-test.yml`, `schedule` +
+  `workflow_dispatch`, `DIGITALOCEAN_TOKEN` as a repo secret). This
+  matters specifically because the scenario that produces a leak (the
+  system-test workflow crashing, being disabled, or its own trigger
+  breaking) is exactly the scenario where relying on that same workflow
+  to also schedule cleanup would fail to fire.
+- **A non-empty sweep is always treated as a bug report**, not routine
+  maintenance: the workflow run fails loudly / posts a non-empty
+  summary whenever it actually deletes something, since every hit means
+  the primary teardown fixture (or the suite itself) failed to clean up
+  after itself somewhere.
+- The sweep script's own logic (age filtering, tag matching) gets
+  ordinary mocked unit tests (`tests/test_sweep_system_test_droplets.py`,
+  mocking `urllib.request.urlopen` the same way
+  `tests/drivers/test_digitalocean_compute.py` does) — through the
+  normal `PROCESS.md` spec-first loop as its own small pass, not part
+  of this system-test suite's own spec.
+
+### Tag reliance: what's guaranteed today vs. deferred
+
+The sweep only reaches droplets that actually carry the
+`aiform-system-test` tag, so the whole mechanism depends on that tag
+reliably being present.
+
+- **Works today, no aiform changes needed.** `PARAM_SCHEMA` already
+  accepts an optional `tags` field, and `create()` echoes back whatever
+  `params["tags"]` was, sent straight through to DO on `POST
+  /v2/droplets` (`specs/digitalocean_compute.md`'s Behavior section).
+  This suite's own `.aiform.md` fixture sets `tags: ["aiform-system-test"]`
+  explicitly — since the suite owns and fully controls its own fixture,
+  that's a real, sufficient guarantee for *this* suite specifically.
+  This is why the sweep above can be designed and built now, not
+  blocked on anything new.
+- **Not a general guarantee — a real, separate gap.** Nothing in
+  `aiform/driver.py`'s `ResourceDriver` contract or `orchestrator.py`
+  forces *any* aiform-created resource to carry an identifying tag —
+  `tags` is just one more optional key a user's own `.aiform.md` may or
+  may not set (`additionalProperties: True`, no default, no orchestrator
+  involvement). So this sweep, as designed, only ever reaches resources
+  whose own config happened to request the tag. That's fine for this
+  suite's fixture, but it is not a general safety net — it would not
+  catch a leak from, say, a hand-run `aiform plan apply` against a
+  `.aiform.md` that never set `tags`.
+- **Proposed follow-up subtask (not designed here): project-wide
+  automatic resource marking.** A guarantee that every resource any
+  driver creates carries a fixed, aiform-owned marker tag (e.g.
+  `aiform-managed`) transparently, regardless of what the user's file
+  specifies — most naturally as `orchestrator.py` merging that marker
+  into `params` before calling `driver.create()`, so it's one
+  provider-agnostic seam rather than something every driver has to
+  remember to do itself. This has real value beyond testing (e.g.
+  answering "what has aiform ever created in this account," independent
+  of a `state.json` that could itself be lost or corrupted), which is
+  why it's proposed as its own spec (`specs/resource_tagging.md`, not
+  written in this PR) rather than folded into this one. Open questions
+  that spec would need to resolve: orchestrator-level vs. per-driver
+  placement; how it composes with a future driver whose CSP doesn't
+  support tagging on a given resource kind at all; and whether the
+  marker should carry more than "aiform made this" (e.g. which
+  project/state file, for multi-project cleanup). Until that lands,
+  this suite's own explicit fixture tag (above) is what the sweep
+  relies on — sufficient to ship this spec's mechanism now, not a
+  reason to block on the general feature.
+
 ## Edge cases / errors
 
 - **Never treat a DO/Anthropic transient error as suite flakiness to
@@ -168,14 +287,10 @@ one created:
   `tests/system/conftest.py`'s fixture constants, not a driver or
   orchestrator bug — don't conflate the two when triaging a failure
   here.
-- **Resource tagging for orphan recovery.** Every droplet this suite
-  creates gets a recognizable tag or name prefix (e.g.
-  `aiform-system-test`) distinct from anything a real user's droplets
-  would use, so that if the teardown fixture itself never runs (process
-  killed, machine crash mid-suite), a human or a separate scheduled
-  sweep job can find and remove orphaned droplets by that tag — the
-  in-test `finally` clause is the primary cleanup mechanism, this is
-  the backstop for when it doesn't fire.
+- **Leaked droplets from a killed/crashed test process** — see "Orphan
+  cleanup (leaked resources)" above for the full mechanism (an
+  independent, non-aiform sweep script keyed on the
+  `aiform-system-test` tag this suite's fixture sets).
 - **Real dollar and token cost.** This suite creates a real (if
   minimal) billable droplet and makes real `code-review-model`/
   `review-orchestration-model`/`intent-orchestration-model` calls at
@@ -193,6 +308,17 @@ one created:
 
 ## Out of scope
 
+- **`specs/resource_tagging.md`** — the project-wide "every aiform-created
+  resource carries an aiform-owned marker tag" guarantee proposed in
+  "Orphan cleanup (leaked resources)" above. Named here as a concrete
+  follow-up subtask, not designed in this spec: this suite's own sweep
+  only needs the tag its own fixture already sets, which works without
+  it.
+- **The sweep script's own test suite**
+  (`tests/test_sweep_system_test_droplets.py`) and the scheduled GH
+  Actions workflow that runs it — both named in "Orphan cleanup" above,
+  built as their own small `PROCESS.md` pass, not part of implementing
+  this spec's `tests/system/test_cli_digitalocean.py`.
 - **The generated-driver variant of this same system test** (`PLAN.md`
   §6: run only after gate #1 approves a freshly generated driver, as
   part of that driver's own generated test suite) — not designed here;
