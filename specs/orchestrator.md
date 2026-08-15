@@ -186,15 +186,19 @@ def resource_key(provider: str, resource_type: str, name: str) -> str: ...
 
 # --- file discovery / classification (PLAN.md §5 step 1, "Resource deletion" Mechanism B) ---
 
+
 def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[Path]: ...
 def is_delete_marked(path: Path) -> bool: ...
 
 
 # --- driver resolution & gate #1 (PLAN.md §5 step 3, §4's invocation contract) ---
 
+
 def driver_path(provider: str, resource_type: str) -> Path: ...
 
+
 def load_driver(provider: str, resource_type: str) -> ResourceDriver: ...
+
 
 def ensure_driver_trusted(
     provider: str,
@@ -208,14 +212,17 @@ def ensure_driver_trusted(
 
 # --- refresh (PLAN.md §3's "Refresh mechanism", §7's `aiform plan refresh`) ---
 
+
 def refresh_resource(
     driver: ResourceDriver, state_entry: StateEntry, credentials: dict[str, str]
 ) -> tuple[dict[str, Any], bool]: ...
+
 
 def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State: ...
 
 
 # --- planning context (judgment call 8) ---
+
 
 @dataclass
 class PlannedResource:
@@ -234,6 +241,7 @@ class PlannedResource:
 
 # --- plan create (PLAN.md §5 "aiform plan create") ---
 
+
 def build_create_plan(
     paths: list[Path] | None = None,
     *,
@@ -245,6 +253,7 @@ def build_create_plan(
 
 
 # --- plan destroy, Mechanism A (PLAN.md "Resource deletion") ---
+
 
 def build_destroy_plan(
     paths: list[Path] | None = None,
@@ -267,6 +276,7 @@ class ApplyResult:
 
 def build_plan_summary(planned: list[PlannedResource]) -> str: ...
 
+
 def apply_plan(
     planned: list[PlannedResource],
     *,
@@ -279,6 +289,7 @@ def apply_plan(
 
 
 # --- trash (PLAN.md "Resource deletion" > "Trash directory") ---
+
 
 def move_to_trash(path: Path, *, trash_dir: Path = TRASH_DIR) -> Path: ...
 ```
@@ -671,14 +682,22 @@ full, is the caller's job — see Behavior below), shared verbatim by
        `read()`'s would be, so there's no reason to leave the plan-time
        refresh's older timestamp in place).
      - **The `PlanEntry` appended to `executed` (see step 4) reflects
-       what actually happened, not the plan-time prediction**: on a
-       replace, it's `pr.entry` with `likely_replace` forced `True`
-       (`pr.entry.model_copy(update={"likely_replace": True})`) — even
-       when the original entry had `likely_replace: False` and only
-       became a replace because `update()` raised
-       `DriverUpdateNotSupported`. `pr.entry` itself is never mutated;
-       this is a copy built solely for the returned result. On a plain
-       update, `pr.entry` is appended unchanged.
+       what actually happened, not the plan-time prediction, in both
+       directions**: either way it's `pr.entry.model_copy(update={"likely_replace": replaced})`
+       — `replaced` (this branch's own local, `True` on a
+       `DriverUpdateNotSupported` fallback, `False` otherwise) is the
+       single source of truth for this field on the returned entry,
+       regardless of what the plan-time categorization predicted. On a
+       replace, this corrects a `likely_replace: False` prediction that
+       only became a replace because `update()` raised
+       `DriverUpdateNotSupported`. On a plain in-place update, this
+       equally corrects a `likely_replace: True` prediction that
+       `update()` turned out to handle without raising — a resource
+       whose plan-time categorization flagged it as a likely replace but
+       whose `update()` succeeded in place must not be reported to the
+       caller (`cli.py`) as having been replaced just because the
+       prediction said so. `pr.entry` itself is never mutated in either
+       case; this is a copy built solely for the returned result.
    - `DESTROY` → if `pr.state_entry is not None`: `driver =
      load_driver(pr.provider, pr.resource_type)`, `credentials =
      config.resolve_credentials(pr.provider)` (`RuntimeError` →
