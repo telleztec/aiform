@@ -382,6 +382,60 @@ class TestPlanApply:
         assert code == 0
         assert "[verbose] 2 Anthropic API call(s) made" in err
 
+    def test_apply_verbose_reports_call_count_even_when_blocked(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # The driver review + categorization calls already happened (real,
+        # billable calls) before gate #2 blocks the apply -- --verbose must
+        # still report that count on the error exit path, not just on
+        # success.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        patch_client(
+            monkeypatch,
+            [
+                categorization_response(action="update", likely_replace=True),
+                plan_review_response(
+                    safe_to_proceed=False,
+                    flags=[
+                        {
+                            "resource_key": "digitalocean.compute.telleztec-app-01",
+                            "concern": "do not resize production",
+                            "severity": "block",
+                        }
+                    ],
+                ),
+            ],
+        )
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
+        assert "[verbose] 2 Anthropic API call(s) made" in err
+
 
 class TestPlanDestroy:
     def test_destroy_all_tracked_moves_file_to_trash(
@@ -546,6 +600,17 @@ class TestPlanShow:
         assert code == 0
         assert "digitalocean.compute.telleztec-app-01" in out
         assert "123456789" in out
+
+    def test_show_corrupt_state_file_exits_2_with_clean_error(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text("not valid json{{{")
+
+        code = cli.main(["plan", "show", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
 
 
 class TestMainModuleEntryPoint:

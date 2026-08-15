@@ -1024,6 +1024,37 @@ class TestApplyPlan:
         )
         assert result.executed == [pr.entry]
 
+    def test_update_without_replace_corrects_stale_likely_replace_true_prediction(
+        self, tmp_path: Path
+    ):
+        # A plan-time categorization can flag likely_replace=True as a
+        # heuristic warning, but update() may still handle the diff in
+        # place without raising DriverUpdateNotSupported. The executed
+        # entry must report what actually happened (no replace), not the
+        # stale prediction -- otherwise a caller (cli.py) reports a
+        # destructive replace that never happened.
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(id="123", attributes={"region": "sfo3", "size": "s-1vcpu-2gb"})
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+                likely_replace=True,
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        assert result.executed[0].likely_replace is False
+        assert pr.entry.likely_replace is True
+
     def test_update_not_supported_already_flagged_replaces_without_reconfirming(
         self, tmp_path: Path
     ):

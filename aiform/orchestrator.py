@@ -549,10 +549,6 @@ def apply_plan(
             now = datetime.now(UTC)
             if replaced:
                 st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
-                # entry.likely_replace reflects the plan-time prediction;
-                # report what actually happened instead so a caller (cli.py)
-                # never learns a replace occurred was falsely told it didn't.
-                executed.append(pr.entry.model_copy(update={"likely_replace": True}))
             else:
                 existing = _require_tracked(st, pr.entry.resource_key)
                 existing.id = new_id
@@ -561,7 +557,13 @@ def apply_plan(
                 existing.last_applied_at = now
                 existing.last_refreshed_at = now
                 existing.aiform_md_sha256 = pr.current_aiform_md_sha256
-                executed.append(pr.entry)
+            # entry.likely_replace reflects the plan-time prediction; report
+            # what actually happened instead, in both directions -- a
+            # predicted replace that update() handled in place must not be
+            # reported as a replace just because the prediction said so, the
+            # same way an unpredicted replace (the `replaced` branch above)
+            # must not be under-reported.
+            executed.append(pr.entry.model_copy(update={"likely_replace": replaced}))
 
         elif pr.entry.action == PlanAction.DESTROY:
             if pr.state_entry is not None:

@@ -682,14 +682,22 @@ full, is the caller's job — see Behavior below), shared verbatim by
        `read()`'s would be, so there's no reason to leave the plan-time
        refresh's older timestamp in place).
      - **The `PlanEntry` appended to `executed` (see step 4) reflects
-       what actually happened, not the plan-time prediction**: on a
-       replace, it's `pr.entry` with `likely_replace` forced `True`
-       (`pr.entry.model_copy(update={"likely_replace": True})`) — even
-       when the original entry had `likely_replace: False` and only
-       became a replace because `update()` raised
-       `DriverUpdateNotSupported`. `pr.entry` itself is never mutated;
-       this is a copy built solely for the returned result. On a plain
-       update, `pr.entry` is appended unchanged.
+       what actually happened, not the plan-time prediction, in both
+       directions**: either way it's `pr.entry.model_copy(update={"likely_replace": replaced})`
+       — `replaced` (this branch's own local, `True` on a
+       `DriverUpdateNotSupported` fallback, `False` otherwise) is the
+       single source of truth for this field on the returned entry,
+       regardless of what the plan-time categorization predicted. On a
+       replace, this corrects a `likely_replace: False` prediction that
+       only became a replace because `update()` raised
+       `DriverUpdateNotSupported`. On a plain in-place update, this
+       equally corrects a `likely_replace: True` prediction that
+       `update()` turned out to handle without raising — a resource
+       whose plan-time categorization flagged it as a likely replace but
+       whose `update()` succeeded in place must not be reported to the
+       caller (`cli.py`) as having been replaced just because the
+       prediction said so. `pr.entry` itself is never mutated in either
+       case; this is a copy built solely for the returned result.
    - `DESTROY` → if `pr.state_entry is not None`: `driver =
      load_driver(pr.provider, pr.resource_type)`, `credentials =
      config.resolve_credentials(pr.provider)` (`RuntimeError` →

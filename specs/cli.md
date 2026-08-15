@@ -195,10 +195,20 @@ pass, unconditionally subject to gate #2 by construction (every entry
   prefix of `sha256`, `last_applied_at`/`last_refreshed_at`, and
   `aiform_md_path`. An empty `state.resources` prints a single `no
   resources tracked` line rather than an empty table.
-- Always exits 0 — loading and printing existing state has no failure
-  mode this module treats specially (a corrupt `state.json` propagates
-  whatever `state.load`/pydantic raises, uncaught, per this codebase's
-  established "let it fail loudly" stance).
+- Exits 0 on a successfully loaded, printed state. A corrupt or
+  schema-violating `state.json` is **not** a special case this command
+  adds — but it isn't uncaught either: `state.load`/pydantic's
+  `ValidationError` (a `ValueError` subclass) and a malformed file's
+  `json.JSONDecodeError` (likewise) both fall through to `main()`'s
+  shared `_HANDLED_EXCEPTIONS` handling (see "Error formatting and exit
+  codes" below) the same as every other command's operational errors —
+  printed as `Error: ...` on stderr, exit 2. Corrected from an earlier
+  draft of this spec that claimed these propagate uncaught: `main()`'s
+  error handling is a single, command-agnostic `try`/`except` around
+  all dispatch, so no per-command carve-out like that is actually
+  possible without deliberately narrowing that `except` clause, which
+  this module doesn't do — a clean, consistent error message beats an
+  uncaught traceback here, same as everywhere else in this module.
 
 ### Confirmation and non-interactive runs
 

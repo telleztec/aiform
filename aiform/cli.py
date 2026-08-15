@@ -109,6 +109,14 @@ def _resolve_paths(files: list[str]) -> list[Path] | None:
     return [Path(f) for f in files] if files else None
 
 
+# _action_label (plan output, below) and _print_apply_result's inline
+# equivalent (apply-result output) intentionally use different wording
+# for the same underlying likely_replace flag, not duplicated by
+# oversight: this one describes a plan-time *prediction* ("likely
+# replace" -- may not happen), the other an apply-time *actual outcome*
+# ("replaced" -- did happen, per orchestrator.apply_plan's own
+# correction of this flag to reflect reality). Unifying them into one
+# helper would blur that distinction rather than remove real duplication.
 def _action_label(action: PlanAction, *, likely_replace: bool) -> str:
     label = action.value
     if action == PlanAction.UPDATE and likely_replace:
@@ -240,8 +248,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_plan_create(args: argparse.Namespace) -> int:
-    client = _CountingClient()
+def _cmd_plan_create(args: argparse.Namespace, client: _CountingClient) -> int:
     planned, warnings = orchestrator.build_create_plan(
         _resolve_paths(args.files), state_path=args.state_file, client=client
     )
@@ -249,36 +256,35 @@ def _cmd_plan_create(args: argparse.Namespace) -> int:
         print(json.dumps(_plan_to_json(planned, warnings), indent=2))
     else:
         _print_plan(planned, warnings, color=not args.no_color)
-    _report_verbose_calls(args, client)
     return 0
 
 
-def _cmd_plan_apply(args: argparse.Namespace) -> int:
-    client = _CountingClient()
-    planned, warnings = orchestrator.build_create_plan(
-        _resolve_paths(args.files), state_path=args.state_file, client=client
-    )
+def _plan_apply_and_report(
+    args: argparse.Namespace,
+    client: _CountingClient,
+    planned: list[orchestrator.PlannedResource],
+    warnings: list[str],
+) -> int:
     _print_plan(planned, warnings, color=not args.no_color)
     result = orchestrator.apply_plan(
         planned, state_path=args.state_file, yes=args.yes, confirm=_confirm, client=client
     )
     _print_apply_result(result)
-    _report_verbose_calls(args, client)
     return 1 if result.aborted else 0
 
 
-def _cmd_plan_destroy(args: argparse.Namespace) -> int:
+def _cmd_plan_apply(args: argparse.Namespace, client: _CountingClient) -> int:
+    planned, warnings = orchestrator.build_create_plan(
+        _resolve_paths(args.files), state_path=args.state_file, client=client
+    )
+    return _plan_apply_and_report(args, client, planned, warnings)
+
+
+def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
     planned = orchestrator.build_destroy_plan(
         _resolve_paths(args.files), state_path=args.state_file
     )
-    _print_plan(planned, [], color=not args.no_color)
-    client = _CountingClient()
-    result = orchestrator.apply_plan(
-        planned, state_path=args.state_file, yes=args.yes, confirm=_confirm, client=client
-    )
-    _print_apply_result(result)
-    _report_verbose_calls(args, client)
-    return 1 if result.aborted else 0
+    return _plan_apply_and_report(args, client, planned, [])
 
 
 def _cmd_plan_refresh(args: argparse.Namespace) -> int:
@@ -293,10 +299,16 @@ def _cmd_plan_show(args: argparse.Namespace) -> int:
     return 0
 
 
-_PLAN_DISPATCH = {
+# create/apply/destroy may call an LLM (via the shared client, so --verbose
+# reports one running total per invocation); refresh/show never do
+# (PLAN.md §7: refresh is "no LLM calls at all", show is a direct
+# state.load()) and so take no client at all.
+_LLM_PLAN_DISPATCH = {
     "create": _cmd_plan_create,
     "apply": _cmd_plan_apply,
     "destroy": _cmd_plan_destroy,
+}
+_PLAIN_PLAN_DISPATCH = {
     "refresh": _cmd_plan_refresh,
     "show": _cmd_plan_show,
 }
@@ -344,7 +356,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             return _cmd_init(args)
-        return _PLAN_DISPATCH[args.plan_command](args)
+        if args.plan_command in _LLM_PLAN_DISPATCH:
+            client = _CountingClient()
+            try:
+                return _LLM_PLAN_DISPATCH[args.plan_command](args, client)
+            finally:
+                # In a `finally` so a real, billable call count is still
+                # reported even when the command goes on to raise (e.g. a
+                # gate #2 PlanBlockedError after the driver-review/
+                # categorization calls already happened) -- the case where
+                # a user most wants to know what was actually spent.
+                _report_verbose_calls(args, client)
+        return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
     except _HANDLED_EXCEPTIONS as exc:
         print(f"Error: {_format_error(exc)}", file=sys.stderr)
         return 2
