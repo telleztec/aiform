@@ -186,15 +186,19 @@ def resource_key(provider: str, resource_type: str, name: str) -> str: ...
 
 # --- file discovery / classification (PLAN.md §5 step 1, "Resource deletion" Mechanism B) ---
 
+
 def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[Path]: ...
 def is_delete_marked(path: Path) -> bool: ...
 
 
 # --- driver resolution & gate #1 (PLAN.md §5 step 3, §4's invocation contract) ---
 
+
 def driver_path(provider: str, resource_type: str) -> Path: ...
 
+
 def load_driver(provider: str, resource_type: str) -> ResourceDriver: ...
+
 
 def ensure_driver_trusted(
     provider: str,
@@ -208,14 +212,17 @@ def ensure_driver_trusted(
 
 # --- refresh (PLAN.md §3's "Refresh mechanism", §7's `aiform plan refresh`) ---
 
+
 def refresh_resource(
     driver: ResourceDriver, state_entry: StateEntry, credentials: dict[str, str]
 ) -> tuple[dict[str, Any], bool]: ...
+
 
 def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State: ...
 
 
 # --- planning context (judgment call 8) ---
+
 
 @dataclass
 class PlannedResource:
@@ -234,6 +241,7 @@ class PlannedResource:
 
 # --- plan create (PLAN.md §5 "aiform plan create") ---
 
+
 def build_create_plan(
     paths: list[Path] | None = None,
     *,
@@ -245,6 +253,7 @@ def build_create_plan(
 
 
 # --- plan destroy, Mechanism A (PLAN.md "Resource deletion") ---
+
 
 def build_destroy_plan(
     paths: list[Path] | None = None,
@@ -267,6 +276,7 @@ class ApplyResult:
 
 def build_plan_summary(planned: list[PlannedResource]) -> str: ...
 
+
 def apply_plan(
     planned: list[PlannedResource],
     *,
@@ -279,6 +289,7 @@ def apply_plan(
 
 
 # --- trash (PLAN.md "Resource deletion" > "Trash directory") ---
+
 
 def move_to_trash(path: Path, *, trash_dir: Path = TRASH_DIR) -> Path: ...
 ```

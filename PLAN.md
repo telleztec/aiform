@@ -913,20 +913,20 @@ the pieces relate.
    swallows). Structured verdict, via `llm.review_driver(driver_source_text)`:
 
    ```python
-        DRIVER_REVIEW_SCHEMA = {
-            "type": "object",
-            "properties": {
-                "approved": {"type": "boolean"},
-                "concerns": {"type": "array", "items": {"type": "string"}},
-                "blocking_issues": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["approved", "concerns", "blocking_issues"],
-            "additionalProperties": False,
-        }
-        from aiform.llm import review_driver
+   DRIVER_REVIEW_SCHEMA = {
+       "type": "object",
+       "properties": {
+           "approved": {"type": "boolean"},
+           "concerns": {"type": "array", "items": {"type": "string"}},
+           "blocking_issues": {"type": "array", "items": {"type": "string"}},
+       },
+       "required": ["approved", "concerns", "blocking_issues"],
+       "additionalProperties": False,
+   }
+   from aiform.llm import review_driver
 
-        # model resolved from llm_config.code_review
-        review = review_driver(driver_source_text) 
+   # model resolved from llm_config.code_review
+   review = review_driver(driver_source_text)
     ```
         `review_driver()` (`aiform/llm.py`) is the only place this schema is sent 
         to a model — which model backs `code-review-model` is resolved from 
