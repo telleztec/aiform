@@ -39,7 +39,15 @@ concept. That variant is not designed here; see Out of scope.
 - **Location**: `tests/system/test_cli_digitalocean.py`, in a new
   `tests/system/` directory — mirrors the existing `tests/drivers/`
   grouping, and leaves room for a second provider's system test later
-  without cluttering `tests/`'s root.
+  without cluttering `tests/`'s root. **Naming note**: this spec's own
+  filename, `specs/system_test.md`, deliberately doesn't follow
+  `specs/README.md`'s strict per-module mirroring rule
+  (`drivers/digitalocean/compute.py` → `specs/digitalocean_compute.md`)
+  — that rule assumes one spec maps to one implementation module, and
+  this spec instead covers a cross-cutting test suite that exercises
+  `cli.py`, `orchestrator.py`, and the compute driver together end to
+  end, with no single module to mirror. Named for what it is rather than
+  mechanically flattening the test file's own path.
 - **Invocation**: a pytest marker, `@pytest.mark.system`, registered in
   `pyproject.toml`'s `[tool.pytest.ini_options]` with `markers = ["system: ..."]`
   and excluded from the default run via `addopts = "-m 'not system'"`.
@@ -62,15 +70,23 @@ concept. That variant is not designed here; see Out of scope.
   stdout/stderr capture and exit codes are asserted the same way the
   existing CLI tests do, and `--verbose`'s call-count line
   (`aiform/cli.py:197`) is directly assertable.
-- **Cost/cleanup fixture**: a function-scoped fixture that yields
-  control to the test body inside a `try`/`finally`, and in the
-  `finally` clause runs `aiform plan destroy --yes` (or, if the test
-  failed before any resource was ever created, a no-op) against
-  whatever `state.json` exists in `tmp_path` at that point — so a
-  droplet is torn down even when an assertion mid-test raises. This is
-  the primary cleanup path, but not the only one — see "Orphan cleanup
-  (leaked resources)" below for what covers the case where even this
-  fixture doesn't get to run.
+- **Cost/cleanup fixture**: a fixture that yields control to the test
+  body inside a `try`/`finally`, and in the `finally` clause runs
+  `aiform plan destroy --yes` (or, if nothing was ever created, a
+  no-op) against whatever `state.json` exists in `tmp_path` at that
+  point — so a droplet is torn down even when an assertion mid-test
+  raises. Its scope must match how Behavior's ordered sequence
+  (cases 1–9) is implemented: since those cases deliberately share one
+  `tmp_path` and one tracked droplet across the whole sequence (see
+  Behavior), that entire sequence is **one pytest test function**, with
+  one function-scoped instance of this fixture wrapping it — not
+  several chained test functions each with their own instance, which
+  would tear the droplet down after the first one finishes and break
+  every case after it. Case 10 (the bad-token path) is independent and
+  gets its own separate test function with its own instance of this
+  fixture. This is the primary cleanup path, but not the only one — see
+  "Orphan cleanup (leaked resources)" below for what covers the case
+  where even this fixture doesn't get to run.
 - **Fixture params bound cost**: the `.aiform.md` fixture used
   throughout requests DigitalOcean's cheapest available droplet size
   (`s-1vcpu-512mb-10gb` or equivalent at time of writing — verify
@@ -80,11 +96,12 @@ concept. That variant is not designed here; see Out of scope.
 
 ## Behavior
 
-Each bullet is one test case, run in the order below within a single
-test (or a small ordered chain of tests sharing one `tmp_path` and one
-tracked droplet) — this suite is deliberately sequential, not
-independent per-case, because each step depends on state the previous
-one created:
+Cases 1–9 are one ordered sequence within a single test function,
+sharing one `tmp_path` and one tracked droplet — deliberately
+sequential, not independent per-case, because each step depends on
+state the previous one created (see Interface's fixture-scope note for
+why this must not be split across multiple test functions). Case 10 is
+independent, in its own test function with its own `tmp_path`.
 
 1. **`aiform init`** — scaffolds `.aiform/`, `.gitignore` entries, and
    `examples/compute.aiform.md`; with both real env vars set, prints
@@ -95,15 +112,31 @@ one created:
    that surfaces at step 2, not step 1 — don't expect `init` to catch a
    bad token.)
 2. **First `plan create`** (fresh project, no `state.json` yet) — per
-   `PLAN.md` §9 step 2: gate #1 (`code-review-model`) fires exactly
-   once to trust-on-first-use the curated driver's on-disk hash; plan
-   output shows one `create` action; exit code `0`.
-3. **`plan apply --yes`** — executes a real `driver.create()` (one DO
-   API call per `specs/digitalocean_compute.md`'s "exactly one API
-   call"); assert the printed result includes an `id`; assert
-   `.aiform/state.json` now has one resource entry carrying `driver.sha256`
-   and a `code_review` record; assert `.aiform/state.json.backup` exists
-   (written before the overwrite, per CLAUDE.md's state-handling rule).
+   `PLAN.md` §9 step 2: gate #1 (`code-review-model`) fires to
+   trust-on-first-use the curated driver's on-disk hash, since no state
+   entry yet exists to short-circuit it; plan output shows one `create`
+   action; exit code `0`.
+3. **`plan apply --yes`** — a separate CLI invocation, which per
+   `aiform/cli.py`'s `_cmd_plan_apply` re-runs `orchestrator.build_create_plan()`
+   from scratch before applying — so gate #1 fires **again** here, a
+   second time, since step 2 never wrote a resource entry to state (only
+   an applied resource's `StateEntry` records a trusted driver hash) and
+   there is still nothing to short-circuit it. Don't assert a combined
+   call count of `1` across steps 2–3; assert `>= 1` in each step
+   individually instead, and note in the test that the `code_review`
+   record actually persisted into state.json is from this step's
+   review, not step 2's (step 2's result is discarded — `plan create`
+   never persists a driver trust record on its own, only a
+   resource-creating `apply` does). Beyond that: executes a real
+   `driver.create()` (one DO API call per
+   `specs/digitalocean_compute.md`'s "exactly one API call"); assert
+   the printed result includes an `id`; assert `.aiform/state.json` now
+   has one resource entry carrying `driver.sha256` and a `code_review`
+   record; assert `.aiform/state.json.backup` exists (written before
+   the overwrite, per CLAUDE.md's state-handling rule). From this point
+   on — every case after this one — the driver's hash is trust-cached
+   against this resource's state entry, so gate #1 does not fire again
+   for the rest of this sequence (see case 7's note).
 4. **Second `plan create`, file unchanged** — the concrete proof of the
    zero-Anthropic-call no-op guarantee (`PLAN.md` §9 step 4, CLAUDE.md's
    "must make zero Anthropic API calls" rule): run with `--verbose` and
@@ -111,10 +144,21 @@ one created:
    assert the plan reports `no-op`; assert exactly one DO `read()` call
    was made (refresh-before-diff still happens mechanically, per
    CLAUDE.md's "refresh before diff" rule — only the *LLM* call count is
-   zero, not the DO call count).
-5. **`plan refresh`** — no `.aiform.md` parsing, no LLM calls at all
-   (assert `--verbose` shows `0` again); state's attributes match a
-   direct `read()` against the live droplet.
+   zero, not the DO call count). This case's fixture deliberately omits
+   `ssh_keys` from `params` — see case 11 below for why that's not
+   incidental, and for the separate, dedicated case that exercises the
+   realistic (`ssh_keys`-configured) path where this guarantee is
+   already known not to hold.
+5. **`plan refresh`** — no `.aiform.md` parsing, no LLM calls at all.
+   **Not verifiable via `--verbose`**: `refresh`/`show` are dispatched
+   through `aiform/cli.py`'s `_PLAIN_PLAN_DISPATCH`, which never
+   constructs a `_CountingClient` or calls `_report_verbose_calls` —
+   there is no `"[verbose] ..."` line to assert for this command at all
+   (unlike `create`/`apply`/`destroy`). The zero-LLM-call property here
+   is structural (nothing in `refresh_state()`'s code path can reach
+   `llm.py`), not something this test asserts via output; instead
+   assert state's attributes match a direct `read()` against the live
+   droplet.
 6. **In-place update (size only)** — edit the fixture's `.aiform.md` to
    change only `size` to a different valid size; `plan create` shows an
    `update` action (not `create`/`destroy`); `plan apply --yes` drives
@@ -128,29 +172,70 @@ one created:
    (`review-orchestration-model`, since this is destructive) before
    executing; assert the old droplet is actually gone (direct `GET` →
    `404`) and a new `id` is recorded in state; assert `--verbose`'s
-   Anthropic call count is `>= 1` for this run (both gate #1's
-   diff-categorization and gate #2 fire here).
+   Anthropic call count is `>= 1` for this run — the `intent-orchestration-model`'s
+   diff categorization (correcting an earlier draft of this spec, which
+   wrongly attributed that to "gate #1") plus gate #2's
+   `review-orchestration-model` both fire here. Gate #1 does **not**
+   fire in this case: the driver's hash is already trust-cached against
+   this resource's state entry from case 3's apply (see case 3's note),
+   so `ensure_driver_trusted()` short-circuits before any review call.
+   Capture this case's new `id` — needed by case 9, after case 8 removes
+   it from state.
 8. **`plan destroy --yes`** — plans and applies destroy of the tracked
    resource; gate #2 fires unconditionally (`PLAN.md` §7: destroy is
-   "100% subject to gate #2 by definition"); assert the droplet is
+   "100% subject to gate #2 by definition") — assert `--verbose`'s
+   Anthropic call count is `>= 1` for this run specifically (this is the
+   test's only direct evidence that gate #2 actually ran for a plain
+   destroy, rather than merely inferring it from the droplet being
+   gone, which a regression that silently skipped `review_plan()` for a
+   destroy-only plan would still produce); assert the droplet is
    actually gone (direct `GET` → `404`); assert the resource's
    `.aiform.md` file has moved into `.aiform/trash/`; assert the entry is
    removed from `state.json`.
-9. **Idempotent delete** — with the resource already destroyed in step
-   8, directly instantiate `drivers.digitalocean.compute.Driver` and call
+9. **Idempotent delete** — using the `id` captured in case 7 (state no
+   longer has it after case 8's destroy removed the entry), directly
+   instantiate `drivers.digitalocean.compute.Driver` and call
    `delete(id, credentials)` again against the now-gone `id`; assert it
    returns `None` and raises nothing (`404` treated as success, per
    `aiform/driver.py`'s own contract docstring — "the single most
    important behavior" `specs/digitalocean_compute.md` calls out for
    this driver).
 10. **Bad-token failure path** — with `DIGITALOCEAN_TOKEN` overridden to
-    an obviously invalid value for one isolated sub-test (a fresh
-    `tmp_path`, not reusing the tracked resource above): `plan apply`
+    an obviously invalid value for one isolated test function (its own
+    `tmp_path`, not reusing case 1–9's tracked resource): `plan apply`
     fails with a clear, non-crashing error; assert no `state.json`
     entry was written for the failed resource and no droplet was
     created (nothing to tear down for this case — the cleanup fixture's
     `finally` clause should find an empty or absent `state.json` and
-    no-op cleanly).
+    no-op cleanly); assert the invalid token's literal value does not
+    appear anywhere in captured stdout/stderr — `PLAN.md` §5 step 3
+    requires a bad-credential failure to name "enough of the CSP's own
+    error to diagnose it — never the credential's value itself," and
+    this suite's own stdout/stderr can land in CI logs, so this is a
+    real check, not a formality.
+11. **Known-gap coverage: a resource with `ssh_keys` configured** — a
+    separate, isolated test function (its own `tmp_path` and tracked
+    droplet, not sharing cases 1–9's), whose fixture sets a real
+    `ssh_keys` value in `params`. Create and apply it, then refresh and
+    run a second `plan create` the same way case 4 does. Unlike case 4,
+    **do not** assert a zero-call no-op here — `specs/digitalocean_compute.md`'s
+    Edge Cases section already documents that DO's `read()` can't
+    recover `ssh_keys` (they're write-only), so `attributes["ssh_keys"]`
+    comes back empty on refresh while `desired["ssh_keys"]` still has
+    the real value, producing a non-empty diff on every subsequent
+    `plan` — a real, already-known violation of the zero-Anthropic-call
+    guarantee for this configuration, not a bug this test is checking
+    for accidentally. Assert instead that this is exactly what happens:
+    the second `plan create`'s Anthropic call count is `>= 1` (the
+    `intent-orchestration-model` categorizes a real diff), and the diff
+    it categorizes names `ssh_keys`. This case exists so the suite
+    doesn't give false confidence that the no-op guarantee holds
+    universally when case 4's fixture (no `ssh_keys`) happens to dodge
+    the one configuration where it's already known not to — and so that
+    whenever this gap is eventually fixed (per
+    `specs/digitalocean_compute.md`'s named follow-up for `planner.py`),
+    this case starts failing as a visible signal to update it, rather
+    than the gap silently persisting unnoticed forever.
 
 ## Orphan cleanup (leaked resources)
 
@@ -249,26 +334,23 @@ reliably being present.
   suite's fixture, but it is not a general safety net — it would not
   catch a leak from, say, a hand-run `aiform plan apply` against a
   `.aiform.md` that never set `tags`.
-- **Proposed follow-up subtask (not designed here): project-wide
-  automatic resource marking.** A guarantee that every resource any
-  driver creates carries a fixed, aiform-owned marker tag (e.g.
-  `aiform-managed`) transparently, regardless of what the user's file
-  specifies — most naturally as `orchestrator.py` merging that marker
-  into `params` before calling `driver.create()`, so it's one
-  provider-agnostic seam rather than something every driver has to
-  remember to do itself. This has real value beyond testing (e.g.
-  answering "what has aiform ever created in this account," independent
-  of a `state.json` that could itself be lost or corrupted), which is
-  why it's proposed as its own spec (`specs/resource_tagging.md`, not
-  written in this PR) rather than folded into this one. Open questions
-  that spec would need to resolve: orchestrator-level vs. per-driver
-  placement; how it composes with a future driver whose CSP doesn't
-  support tagging on a given resource kind at all; and whether the
-  marker should carry more than "aiform made this" (e.g. which
-  project/state file, for multi-project cleanup). Until that lands,
-  this suite's own explicit fixture tag (above) is what the sweep
-  relies on — sufficient to ship this spec's mechanism now, not a
-  reason to block on the general feature.
+- **Project-wide automatic resource marking: `specs/resource_tagging.md`.**
+  A guarantee that every resource any driver creates carries a fixed,
+  aiform-owned marker tag (`aiform-managed`), transparently, regardless
+  of what the user's file specifies — an opt-in
+  `ResourceDriver.SUPPORTS_TAGGING` flag plus base-class helpers that
+  keep the marker invisible to the orchestrator's diff engine. This has
+  real value beyond testing (e.g. answering "what has aiform ever
+  created in this account," independent of a `state.json` that could
+  itself be lost or corrupted). Note this spec is also, separately, a
+  deliberately minimal first slice of `PLAN.md` §10's own pre-existing
+  "Resource tagging convention" entry — a fuller, structured tag format
+  that entry already committed to, which `specs/resource_tagging.md`
+  explicitly reconciles with rather than silently duplicating (see that
+  spec's Purpose section). Until it's implemented, this suite's own
+  explicit fixture tag (above) is what the sweep relies on — sufficient
+  to ship this spec's mechanism now, not a reason to block on the
+  general feature.
 
 ## Edge cases / errors
 
@@ -308,12 +390,13 @@ reliably being present.
 
 ## Out of scope
 
-- **`specs/resource_tagging.md`** — the project-wide "every aiform-created
-  resource carries an aiform-owned marker tag" guarantee proposed in
-  "Orphan cleanup (leaked resources)" above. Named here as a concrete
-  follow-up subtask, not designed in this spec: this suite's own sweep
-  only needs the tag its own fixture already sets, which works without
-  it.
+- **Implementing `specs/resource_tagging.md`'s mechanism** — the
+  project-wide "every aiform-created resource carries an aiform-owned
+  marker tag" guarantee named in "Orphan cleanup (leaked resources)"
+  above and specified in full (including its relationship to `PLAN.md`
+  §10's pre-existing tagging-convention entry) in that spec. Not
+  implemented as part of this spec: this suite's own sweep only needs
+  the tag its own fixture already sets, which works without it.
 - **The sweep script's own test suite**
   (`tests/test_sweep_system_test_droplets.py`) and the scheduled GH
   Actions workflow that runs it — both named in "Orphan cleanup" above,
