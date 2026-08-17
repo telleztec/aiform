@@ -23,7 +23,16 @@ One pass of this loop = one module = one PR. Don't batch multiple modules
 into one pass to save time — that's exactly the "overwhelming PR" failure
 mode this process exists to avoid.
 
-1. **Spec.** Write `specs/<module>.md` before touching code. See format
+1. **Spec.** First, grep `PLAN.md` §9 ("Not Yet Implemented") and §10
+   ("Planned, not yet designed in detail") for an existing entry on the
+   same topic — a new spec that duplicates or contradicts one of those
+   without noticing costs a whole separate reconciliation PR to fix
+   later (this happened once: `specs/resource_tagging.md` shipped
+   without checking §10's pre-existing "Resource tagging convention"
+   entry, caught only by a later `/code-review` pass). If one exists,
+   the new spec must explicitly cross-reference it — implement it,
+   narrow it with a stated reason, or extend it, never silently ignore
+   it. Then write `specs/<module>.md` before touching code. See format
    below. If a spec for this module already exists from a prior pass and
    nothing about it changed, skip re-writing it — but check it's still
    accurate against what's actually being built.

@@ -337,20 +337,20 @@ reliably being present.
 - **Project-wide automatic resource marking: `specs/resource_tagging.md`.**
   A guarantee that every resource any driver creates carries a fixed,
   aiform-owned marker tag (`aiform-managed`), transparently, regardless
-  of what the user's file specifies — an opt-in
-  `ResourceDriver.SUPPORTS_TAGGING` flag plus base-class helpers that
-  keep the marker invisible to the orchestrator's diff engine. This has
-  real value beyond testing (e.g. answering "what has aiform ever
-  created in this account," independent of a `state.json` that could
-  itself be lost or corrupted). Note this spec is also, separately, a
-  deliberately minimal first slice of `PLAN.md` §10's own pre-existing
-  "Resource tagging convention" entry — a fuller, structured tag format
-  that entry already committed to, which `specs/resource_tagging.md`
-  explicitly reconciles with rather than silently duplicating (see that
-  spec's Purpose section). Until it's implemented, this suite's own
-  explicit fixture tag (above) is what the sweep relies on — sufficient
-  to ship this spec's mechanism now, not a reason to block on the
-  general feature.
+  of what the user's file specifies — two concrete base-class helper
+  methods a driver calls from its own `create()`/`read()`/`update()`
+  that keep the marker invisible to the orchestrator's diff engine.
+  This has real value beyond testing (e.g. answering "what has aiform
+  ever created in this account," independent of a `state.json` that
+  could itself be lost or corrupted). Note this spec is also,
+  separately, a deliberately minimal first slice of `PLAN.md` §10's own
+  pre-existing "Resource tagging convention" entry — that entry's
+  long-term target is a fuller, structured tag format, which
+  `specs/resource_tagging.md` explicitly reconciles with rather than
+  silently duplicating (see that spec's Purpose section). Until it's
+  implemented, this suite's own explicit fixture tag (above) is what
+  the sweep relies on — sufficient to ship this spec's mechanism now,
+  not a reason to block on the general feature.
 
 ## Edge cases / errors
 
