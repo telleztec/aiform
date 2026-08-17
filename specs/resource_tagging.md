@@ -47,8 +47,11 @@ class ResourceDriver(ABC):
     def _tags_for_create(self, requested_tags: list[str]) -> list[str]:
         """Call from create() (and, on the replace path, the create()
         that follows a delete()) when building the CSP request body:
-        appends AIFORM_MANAGED_TAG to whatever tags were requested, if
-        not already present. No-op (returns requested_tags unchanged)
+        appends AIFORM_MANAGED_TAG to whatever tags were requested.
+        Raises ValueError if AIFORM_MANAGED_TAG is already present in
+        requested_tags -- that string is reserved for aiform's own
+        use; a user's own aiform.md must not set it (see Edge cases).
+        No-op (returns requested_tags unchanged, no check performed)
         when SUPPORTS_TAGGING is False."""
 
     def _tags_for_attributes(self, live_tags: list[str]) -> list[str]:
@@ -82,13 +85,17 @@ integration points named in Behavior below.
   `orchestrator.py`'s point of view, an opted-in driver's resources look
   exactly as if the feature didn't exist. This is why nothing in
   `orchestrator.py`/`planner.py` needs to change at all.
-- **`_tags_for_create(requested_tags)`**: returns
-  `[*requested_tags, AIFORM_MANAGED_TAG]` unless the marker is already
-  present (idempotent — see the replace-path note below), when
-  `SUPPORTS_TAGGING` is `True`; returns `requested_tags` unchanged
-  otherwise. Marker is always appended last, not inserted anywhere else
-  — order doesn't matter for correctness (the CSP doesn't care), but a
-  fixed position keeps behavior predictable to read.
+- **`_tags_for_create(requested_tags)`**: when `SUPPORTS_TAGGING` is
+  `True`, raises `ValueError` if `AIFORM_MANAGED_TAG` is already present
+  in `requested_tags` — that string is reserved for aiform's own use,
+  and a user's own `.aiform.md` setting it explicitly is precisely the
+  collision case Edge cases names below, surfaced loudly at `create()`/
+  `apply` time rather than allowed to silently corrupt future diffs.
+  Otherwise returns `[*requested_tags, AIFORM_MANAGED_TAG]` — marker
+  always appended last, not inserted anywhere else, so behavior stays
+  predictable to read (order doesn't matter to the CSP itself). Returns
+  `requested_tags` unchanged, no check performed, when `SUPPORTS_TAGGING`
+  is `False` — nothing is reserved for a driver that never opts in.
 - **`_tags_for_attributes(live_tags)`**: returns
   `[t for t in live_tags if t != AIFORM_MANAGED_TAG]` when
   `SUPPORTS_TAGGING` is `True`; returns `live_tags` unchanged otherwise.
@@ -109,14 +116,23 @@ integration points named in Behavior below.
     both `create()` and `read()` already share this one method, this is
     a one-line change that covers both call sites at once — no separate
     edit needed in `read()` itself.
-  - `update()`'s in-place resize path returns attributes "echoed from
-    `desired`" per `specs/digitalocean_compute.md`'s Behavior section
-    (`update()` has `desired` in scope, unlike `read()`); that echo
-    should also route `tags` through `_tags_for_attributes` for the same
-    invisibility guarantee, even though `desired["tags"]` never
-    legitimately contains the marker today (see the migration-safety
-    point below) — defense in depth, not defense against a case that's
-    expected to occur.
+  - `update()`'s in-place resize path needs **no separate change at
+    all** for `tags` — correcting an earlier draft of this spec, which
+    wrongly assumed `tags` was one of the fields `update()` echoes from
+    `desired` the way it does for `ssh_keys`/`backups`/`monitoring`. It
+    isn't: per `specs/digitalocean_compute.md`'s Behavior section and
+    the real `update()` (`drivers/digitalocean/compute.py`), only
+    `ssh_keys`/`backups`/`monitoring` are echoed from `desired`/`current`
+    after the resize; `tags` comes entirely from
+    `attrs = self._flatten(final_droplet)` — the live post-resize
+    droplet response — which the `_flatten()` fix above already covers.
+    **Do not** add a fourth echo line for `tags` alongside the
+    `ssh_keys`/`backups`/`monitoring` ones: doing so would overwrite the
+    freshly-observed live tags with a value derived from `desired`/
+    `current` instead, discarding real CSP state in favor of stale
+    input — exactly the "state is a cache of live reality, not a source
+    of truth" bug `CLAUDE.md`'s State handling section warns against,
+    for `tags` specifically.
 - **Zero extra API calls.** The marker rides in the same `POST
   /v2/droplets` request `create()` already makes — there is no separate
   "tag this resource" round trip, no orchestrator-level call site added,
@@ -157,6 +173,26 @@ integration points named in Behavior below.
 
 ## Edge cases / errors
 
+- **A user's own `.aiform.md` explicitly requesting the literal tag
+  `aiform-managed`.** `PARAM_SCHEMA["tags"]` is an unconstrained string
+  array (`specs/digitalocean_compute.md`) — nothing stops a user from
+  writing `tags: ["aiform-managed"]` themselves. Left unhandled, this is
+  a real, silent footgun: `_tags_for_create` would treat the marker as
+  already present and no-op, `_tags_for_attributes` would then
+  unconditionally strip it out of every subsequent `create()`/`read()`
+  return, permanently zeroing that entry out of `attributes["tags"]`
+  while `desired_params["tags"]` (never touched, per this spec's core
+  "never enters the diff engine" invariant) still has it — a permanent
+  `tags` mismatch on every future `plan`, and since `update()` only
+  accepts a `size`-alone diff in place, a permanent destroy+recreate
+  loop on every `apply`. This is why `_tags_for_create` raises
+  `ValueError` on this input instead (see Behavior above): the failure
+  surfaces immediately, before any CSP call is made, naming the reserved
+  tag, instead of manifesting later as an unexplained replace loop.
+  Choosing a more obscure marker string wouldn't fix the general
+  problem — any fixed string a user could plausibly type is a possible
+  collision, so raising on collision is the actual fix, not the
+  specific string chosen.
 - **A CSP/resource kind with no tagging primitive at all.** The driver
   simply leaves `SUPPORTS_TAGGING` at its default `False` — not an
   error, not a degraded mode, the guarantee just doesn't extend to that
@@ -168,10 +204,10 @@ integration points named in Behavior below.
   (`orchestrator.py`'s `apply_plan()`, the `DriverUpdateNotSupported`
   branch) with the same `desired_params` used for the original diff.
   Per the migration-safety point above, `desired_params["tags"]` never
-  legitimately contains the marker, so `_tags_for_create`'s
-  already-present check is defensive rather than load-bearing today —
-  written that way anyway, since "this input can't actually contain the
-  marker" is exactly the kind of assumption worth not hard-coding.
+  legitimately contains the marker, so `_tags_for_create`'s new
+  reserved-tag check (previous bullet) has nothing to trigger on here —
+  the same non-issue as the general migration-safety argument, not a
+  new risk introduced by that check.
 - **Two independent tag concepts coexist for the system test
   specifically**, and that's fine: this spec's `aiform-managed` marker
   (global, applied to every opted-in driver's resources, invisible to
