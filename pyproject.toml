@@ -16,6 +16,12 @@ dev = [
     "pre-commit>=4.0",
 ]
 
+[tool.pytest.ini_options]
+markers = [
+    "system: live end-to-end tests against real DigitalOcean/Anthropic APIs (specs/system_test.md); excluded by default, run explicitly with `pytest -m system tests/system/`",
+]
+addopts = "-m 'not system'"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
