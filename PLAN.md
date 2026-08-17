@@ -1318,7 +1318,21 @@ entry's own note below.
   CSP's observed behavior, not a real policy — likely candidates for
   whatever configurable retry/backoff mechanism this entry ends up
   designing, rather than two more magic numbers to hand-tune again
-  later.
+  later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
+  has no error tolerance at all today.** `drivers/digitalocean/compute.py`'s
+  `_get_droplet()` call inside that loop doesn't catch `HTTPError` — so
+  a single transient error on *any one* poll attempt (a `429` from the
+  exact rate-limit/quota mechanism a tight, fixed-interval polling
+  cadence risks triggering, or an ordinary `5xx`) aborts the entire
+  `create`/`update` operation immediately, rather than being tolerated
+  and retried on the next interval. This is a real risk today only at
+  the margins (a single resource's poll loop stays well under DO's
+  per-token rate limit on its own), but becomes materially sharper once
+  the "no dependency graph" gap above is closed and multiple resources
+  can be created/updated concurrently — N concurrent poll loops multiply
+  the aggregate request rate, and this loop's current all-or-nothing
+  behavior means a single rate-limit hit anywhere kills that resource's
+  entire operation rather than just slowing it down.
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two
