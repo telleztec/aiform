@@ -86,17 +86,28 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   contract), never a key inside `params`. See the former "Where does the
   droplet's `name` come from?" Edge case below, now resolved rather than
   left open.
-- **Exactly one API call** — per `PLAN.md` §8 step 3 ("Executes
-  `driver.create(name, params, credentials)` — one real DO API call"),
-  this method does **not** poll until the droplet reaches `status: "active"`.
-  DigitalOcean's create response is `202 Accepted` with the droplet
-  object already in the body, typically `status: "new"` and
-  `networks.v4: []` (no IP yet) — that's an acceptable return value.
-  Convergence to `"active"` (and a real IP) is picked up later by a
-  subsequent `read()` call during the next `plan`/`refresh`, per this
-  project's "state is a cache of live reality, refreshed via `read()`"
-  design — `create()` is not responsible for waiting out DO's own
-  asynchronous provisioning.
+- **One mutating call, plus polling GETs to convergence.** `PLAN.md` §9
+  step 3's "one real DO API call" describes this step of the MVP
+  walkthrough at the level of "this is a real CSP-side operation, not an
+  LLM-only step" — not a literal one-HTTP-request budget on `create()`
+  internally, the same way `update()`'s in-place resize already makes
+  several (power-off, poll, resize, poll, power-on, poll) without
+  violating that framing. DigitalOcean's create response is `202
+  Accepted` with the droplet object already in the body, typically
+  `status: "new"` and `networks.v4: []` (no IP yet) — `create()` takes
+  only the new `id` from that response and then polls `GET
+  /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
+  `update()` uses, bounded the same way: `max_attempts=20`,
+  `delay_seconds=2`, raising `TimeoutError` naming the droplet `id` on
+  exhaustion) until `status == "active"`, discarding the transient POST
+  body in favor of the converged GET response. This was originally
+  designed the other way (no polling, convergence picked up by a later
+  `plan`/`refresh`) but that left `create()` returning a permanently
+  wrong `status`/`ipv4_address` immediately after every `apply` and was
+  inconsistent with `update()`'s own convergence-polling — revised after
+  a live `code-review-model` run against the curated driver flagged the
+  missing convergence handling as a real correctness gap, not a false
+  positive.
 - Returns a **flattened** dict whose keys mirror `PARAM_SCHEMA`'s flat
   shape (plus `id`/`status`/`ipv4_address` — note that key name, not
   `ip_address`: it must match the field name `PLAN.md`'s worked
@@ -325,8 +336,6 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
 ## Out of scope
 
-- **Polling `create()` to `"active"`** — deliberately not done, per
-  `PLAN.md` §8's "one real DO API call" framing (see Behavior above).
 - **In-place update support for `ssh_keys`/`backups`/`monitoring`/`tags`**
   — DO likely exposes narrower endpoints for some of these (e.g.
   `enable_backups`/`disable_backups` actions), but supporting them is

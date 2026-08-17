@@ -70,9 +70,7 @@ class Driver(ResourceDriver):
                 return droplet
             if attempt < max_attempts - 1:
                 time.sleep(delay_seconds)
-        raise TimeoutError(
-            f"timed out waiting for droplet {id} during the {step} step of an in-place resize"
-        )
+        raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
 
     def _do_action_and_wait(self, id, credentials, body, predicate, step):
         self._action(id, credentials, body)
@@ -90,7 +88,9 @@ class Driver(ResourceDriver):
                 body[key] = params[key]
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
-        attrs = self._flatten(payload["droplet"])
+        new_id = payload["droplet"]["id"]
+        droplet = self._poll_until(new_id, credentials, lambda d: d["status"] == "active", "create")
+        attrs = self._flatten(droplet)
         attrs["ssh_keys"] = params.get("ssh_keys", [])
         attrs["backups"] = params.get("backups", False)
         attrs["monitoring"] = params.get("monitoring", False)

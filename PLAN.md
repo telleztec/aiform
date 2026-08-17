@@ -1106,10 +1106,15 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    `intent-orchestration-model` categorization call).
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
-   `driver.create(name, params, credentials)` — one real DO API
-   call. `.aiform/state.json` written with the resource entry, including
-   `driver.sha256` and the `code_review` record recorded by step 2's
-   re-review call.
+   `driver.create(name, params, credentials)` — a real DO operation, as
+   opposed to the LLM-only steps around it (not a literal one-HTTP-request
+   budget: `create()` itself makes one mutating `POST` plus bounded
+   polling `GET`s until the droplet converges to `status: "active"`,
+   the same convergence-polling shape `update()`'s in-place resize
+   already uses — see `specs/digitalocean_compute.md`'s `create()`
+   Behavior section). `.aiform/state.json` written with the resource
+   entry, including `driver.sha256` and the `code_review` record
+   recorded by step 2's re-review call.
 4. **Second `aiform plan create`** — `driver.read(id, credentials)` refreshes
    attributes (one DO call), `aiform_md_sha256` matches the unchanged
    file, dict-diff empty → `no-op` reported with **zero Anthropic API
