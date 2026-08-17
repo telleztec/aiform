@@ -1274,6 +1274,29 @@ entry's own note below.
   resolved model, and what it decided), not ad hoc `print()`s. Not yet
   designed: the exact log line schema, log level conventions, and
   where output goes by default vs. under `--verbose`.
+- **Timeout/retry/failover orchestration for driver network calls.** §6's
+  rationale for avoiding CSP SDKs ("SDKs are opinionated in error
+  handling and retries, and we want to make sure our orchestrator can
+  handle both error handling, retry, and failover decisions") commits
+  this responsibility to the orchestrator, but `aiform/orchestrator.py`
+  doesn't implement it yet. The only timeout handling that exists today
+  is `drivers/digitalocean/compute.py`'s own `REQUEST_TIMEOUT_SECONDS`
+  on each raw `urllib` call and `_poll_until`'s local
+  convergence-polling loop (`max_attempts`/`delay_seconds`) for
+  resize/power actions — neither retries a failed request. A transient
+  DigitalOcean or Anthropic `5xx`/`429` today just propagates as a hard
+  failure (`DriverExecutionError`, or an uncaught `anthropic` error).
+  `specs/system_test.md`'s Edge Cases section names the consequence
+  directly: a real transient error during the live system-test suite
+  must surface as a visible test failure rather than being retried away
+  by the test itself, precisely because there's no retry layer yet that
+  a test-level retry would be masking. Not yet designed: retry
+  count/backoff policy, which operations are safe to retry idempotently
+  (`read`/`delete` vs. non-idempotent `create`), whether retry policy is
+  configurable per-role/per-driver the same way model tiering is, and
+  how it interacts with the review-gate LLM calls (a review-tier call
+  retried mid-flow must not silently double-bill or re-trigger a gate
+  the user already confirmed).
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two
