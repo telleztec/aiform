@@ -1,5 +1,16 @@
 # specs/resource_tagging.md — marker-tag contract for `aiform/driver.py` (+ `drivers/digitalocean/compute.py` as the first adopter)
 
+**Naming note**: this filename deliberately doesn't follow
+`specs/README.md`'s strict per-module mirroring rule
+(`drivers/digitalocean/compute.py` → `specs/digitalocean_compute.md`) —
+that rule assumes one spec maps to one implementation module, and this
+spec instead adds a small, shared capability to `aiform/driver.py`
+(already specced in `specs/driver.md`) with one concrete integration
+against `drivers/digitalocean/compute.py` (already specced in
+`specs/digitalocean_compute.md`). Named for the feature it adds rather
+than either module, with both of those specs cross-referencing it (see
+below) so it's discoverable from either direction.
+
 ## Purpose
 
 `specs/system_test.md`'s "Orphan cleanup (leaked resources)" section
@@ -13,7 +24,7 @@ works around this by having its fixture set an explicit
 suite itself creates.
 
 This spec is the general fix: every resource created through a driver
-that opts in gets a fixed, aiform-owned marker tag
+that chooses to use it gets a fixed, aiform-owned marker tag
 (`aiform-managed`) attached, transparently, regardless of what the
 user's file specifies. This has value beyond testing — most directly,
 answering "what has aiform ever created in this account" from the CSP
@@ -40,6 +51,23 @@ scoping this spec's own Out of scope section defers is, concretely,
 the `<short-uuid>`/`<owner-id>` portion of that fuller format — tracked
 there, not solved here.
 
+**Why no opt-in flag.** An earlier draft of this spec added a
+`SUPPORTS_TAGGING: bool` class attribute to `ResourceDriver`, mirroring
+`LIKELY_REPLACE_FIELDS`'s pattern, so the two helper methods below could
+no-op instead of act. Dropped: unlike `LIKELY_REPLACE_FIELDS` (which the
+orchestrator reads externally, for UX warnings), nothing outside a
+driver's own `create()`/`read()` would ever have read `SUPPORTS_TAGGING`
+— a driver "opts in" simply by choosing to call the two helpers from its
+own methods, or not. A boolean flag whose only job is gating a codepath
+that a *single existing driver* (`digitalocean`/`compute`, the only one
+that exists per `PLAN.md` §10) always exercises is exactly the kind of
+config knob `CLAUDE.md`'s "don't add abstractions ... for scenarios that
+can't happen yet" rule warns against — the `False` branch existed only
+for a hypothetical future CSP without a tagging primitive. If and when a
+second driver actually needs to signal "I don't support this," that's
+the point to add a flag, informed by a real second case instead of a
+guessed one.
+
 ## Interface
 
 All additions live in `aiform/driver.py`, on `ResourceDriver` itself —
@@ -58,38 +86,36 @@ AIFORM_MANAGED_TAG = "aiform-managed"
 
 class ResourceDriver(ABC):
     ...
-    # Opt-in, mirrors LIKELY_REPLACE_FIELDS's pattern: defaults to
-    # "not supported," a subclass whose CSP has a tagging primitive
-    # reassigns it explicitly.
-    SUPPORTS_TAGGING: bool = False
-
     def _tags_for_create(self, requested_tags: list[str]) -> list[str]:
         """Call from create() (and, on the replace path, the create()
         that follows a delete()) when building the CSP request body:
         appends AIFORM_MANAGED_TAG to whatever tags were requested.
         Raises ValueError if AIFORM_MANAGED_TAG is already present in
         requested_tags -- that string is reserved for aiform's own
-        use; a user's own aiform.md must not set it (see Edge cases).
-        No-op (returns requested_tags unchanged, no check performed)
-        when SUPPORTS_TAGGING is False."""
+        use; a user's own aiform.md must not set it (see Edge cases)."""
 
     def _tags_for_attributes(self, live_tags: list[str]) -> list[str]:
         """Call from every point a driver builds the `tags` value it
         returns to the orchestrator (create()'s return, read()'s
-        return, update()'s return): strips AIFORM_MANAGED_TAG back out.
-        No-op when SUPPORTS_TAGGING is False."""
+        return, update()'s return): strips AIFORM_MANAGED_TAG back
+        out."""
 ```
 
-Both are concrete (not abstract) methods on the base class, callable by
-any driver whether or not it opts in — a driver that leaves
-`SUPPORTS_TAGGING` at its default `False` can still call them
-harmlessly (they're identity functions in that case), so opting in
-later is a one-line flag flip plus wiring in the two call sites, not a
-larger refactor.
+Both are concrete (not abstract) methods on the base class. A driver
+opts in purely by calling them from its own `create()`/`read()`/
+`update()`; a driver that never calls them is entirely unaffected — no
+flag, no conditional, nothing to configure.
 
 `drivers/digitalocean/compute.py` is the first (and, per `PLAN.md` §10,
-currently only) adopter: `SUPPORTS_TAGGING = True`, plus the two
-integration points named in Behavior below.
+currently only) adopter, via the two integration points named in
+Behavior below.
+
+`specs/driver.md` (the spec for this already-implemented module) and
+`PLAN.md` §4 (its "exact contract") both need a small addendum adding
+`AIFORM_MANAGED_TAG` and these two methods, since `CLAUDE.md` treats
+§4's contract as authoritative and requires it be followed exactly —
+not done as part of this spec (see Out of scope), but a hard
+prerequisite before implementation, not an afterthought.
 
 ## Behavior
 
@@ -101,23 +127,21 @@ integration points named in Behavior below.
   side of that comparison is touched by this feature: the marker is
   added only inside a driver's own CSP request body, and stripped back
   out of anything the driver hands back to the orchestrator. From
-  `orchestrator.py`'s point of view, an opted-in driver's resources look
-  exactly as if the feature didn't exist. This is why nothing in
-  `orchestrator.py`/`planner.py` needs to change at all.
-- **`_tags_for_create(requested_tags)`**: when `SUPPORTS_TAGGING` is
-  `True`, raises `ValueError` if `AIFORM_MANAGED_TAG` is already present
-  in `requested_tags` — that string is reserved for aiform's own use,
-  and a user's own `.aiform.md` setting it explicitly is precisely the
-  collision case Edge cases names below, surfaced loudly at `create()`/
-  `apply` time rather than allowed to silently corrupt future diffs.
-  Otherwise returns `[*requested_tags, AIFORM_MANAGED_TAG]` — marker
-  always appended last, not inserted anywhere else, so behavior stays
-  predictable to read (order doesn't matter to the CSP itself). Returns
-  `requested_tags` unchanged, no check performed, when `SUPPORTS_TAGGING`
-  is `False` — nothing is reserved for a driver that never opts in.
+  `orchestrator.py`'s point of view, a resource created by a driver
+  using these helpers looks exactly as if the feature didn't exist.
+  This is why nothing in `orchestrator.py`/`planner.py` needs to change
+  at all.
+- **`_tags_for_create(requested_tags)`**: raises `ValueError` if
+  `AIFORM_MANAGED_TAG` is already present in `requested_tags` — that
+  string is reserved for aiform's own use, and a user's own
+  `.aiform.md` setting it explicitly is precisely the collision case
+  Edge cases names below, surfaced loudly at `create()`/`apply` time
+  rather than allowed to silently corrupt future diffs. Otherwise
+  returns `[*requested_tags, AIFORM_MANAGED_TAG]` — marker always
+  appended last, not inserted anywhere else, so behavior stays
+  predictable to read (order doesn't matter to the CSP itself).
 - **`_tags_for_attributes(live_tags)`**: returns
-  `[t for t in live_tags if t != AIFORM_MANAGED_TAG]` when
-  `SUPPORTS_TAGGING` is `True`; returns `live_tags` unchanged otherwise.
+  `[t for t in live_tags if t != AIFORM_MANAGED_TAG]`, unconditionally.
 - **`drivers/digitalocean/compute.py` integration** (concrete worked
   example, mirroring how `specs/digitalocean_compute.md` treats
   `PLAN.md`'s worked example as authoritative rather than illustrative):
@@ -125,33 +149,36 @@ integration points named in Behavior below.
     (`for key in ("ssh_keys", "backups", "monitoring", "tags"): if key
     in params: body[key] = params[key]`) changes its `tags` case to
     `body["tags"] = self._tags_for_create(params.get("tags", []))`,
-    called unconditionally (not only `if "tags" in params"`) so the
+    called unconditionally (not only `if "tags" in params:`) so the
     marker is attached even when the user's `.aiform.md` never mentions
     `tags` at all.
-  - `_flatten()` — the single helper both `create()` and `read()`
-    already funnel through to build the attributes dict — changes its
-    `"tags": droplet.get("tags", [])` line to
-    `"tags": self._tags_for_attributes(droplet.get("tags", []))`. Because
-    both `create()` and `read()` already share this one method, this is
-    a one-line change that covers both call sites at once — no separate
-    edit needed in `read()` itself.
-  - `update()`'s in-place resize path needs **no separate change at
-    all** for `tags` — correcting an earlier draft of this spec, which
-    wrongly assumed `tags` was one of the fields `update()` echoes from
-    `desired` the way it does for `ssh_keys`/`backups`/`monitoring`. It
-    isn't: per `specs/digitalocean_compute.md`'s Behavior section and
-    the real `update()` (`drivers/digitalocean/compute.py`), only
-    `ssh_keys`/`backups`/`monitoring` are echoed from `desired`/`current`
-    after the resize; `tags` comes entirely from
+  - `_flatten()` — the one helper `create()`, `read()`, **and**
+    `update()`'s in-place resize path all funnel through to build the
+    attributes dict — changes its `"tags": droplet.get("tags", [])`
+    line to `"tags": self._tags_for_attributes(droplet.get("tags", []))`.
+    Because all three already share this one method, this is a
+    one-line change that covers all three call sites at once — no
+    separate edit needed in `read()` or `update()` themselves. See the
+    next bullet for why `update()` specifically needs no *additional*
+    change beyond this shared fix.
+  - `update()`'s in-place resize path needs **no separate change
+    beyond the `_flatten()` fix above** — correcting an earlier draft
+    of this spec, which wrongly assumed `tags` was one of the fields
+    `update()` echoes from `desired` the way it does for
+    `ssh_keys`/`backups`/`monitoring`. It isn't: per
+    `specs/digitalocean_compute.md`'s Behavior section and the real
+    `update()` (`drivers/digitalocean/compute.py`), only
+    `ssh_keys`/`backups`/`monitoring` are echoed from `desired`/
+    `current` after the resize; `tags` comes entirely from
     `attrs = self._flatten(final_droplet)` — the live post-resize
-    droplet response — which the `_flatten()` fix above already covers.
-    **Do not** add a fourth echo line for `tags` alongside the
-    `ssh_keys`/`backups`/`monitoring` ones: doing so would overwrite the
-    freshly-observed live tags with a value derived from `desired`/
-    `current` instead, discarding real CSP state in favor of stale
-    input — exactly the "state is a cache of live reality, not a source
-    of truth" bug `CLAUDE.md`'s State handling section warns against,
-    for `tags` specifically.
+    droplet response, already covered by the previous bullet. **Do
+    not** add a fourth echo line for `tags` alongside the
+    `ssh_keys`/`backups`/`monitoring` ones: doing so would overwrite
+    the freshly-observed live tags with a value derived from
+    `desired`/`current` instead, discarding real CSP state in favor of
+    stale input — exactly the "state is a cache of live reality, not a
+    source of truth" bug `CLAUDE.md`'s State handling section warns
+    against, for `tags` specifically.
 - **Zero extra API calls.** The marker rides in the same `POST
   /v2/droplets` request `create()` already makes — there is no separate
   "tag this resource" round trip, no orchestrator-level call site added,
@@ -161,15 +188,15 @@ integration points named in Behavior below.
   touches (`create()`) was already being made regardless.
 - **Migration safety for resources that already exist.** Because the
   marker is never part of `desired_params` (aiform.md's own params) and
-  never visible in the `attributes` a driver returns to the orchestrator,
-  a resource created *before* a driver opts into `SUPPORTS_TAGGING` — or
-  before this feature exists at all — produces an empty diff and is
-  never touched, retried, or replaced by this feature landing. This is
-  the specific hazard that ruled out the alternative of merging the
-  marker into `resource_spec.params["tags"]` at the orchestrator level:
-  that approach would make an already-live resource's real (unmarked)
-  tags disagree with the newly-marker-including desired params on the
-  very next `plan`, and — because
+  never visible in the `attributes` a driver returns to the
+  orchestrator, a resource created *before* this feature exists (or
+  before a given driver starts calling these helpers) produces an empty
+  diff and is never touched, retried, or replaced by this feature
+  landing. This is the specific hazard that ruled out the alternative of
+  merging the marker into `resource_spec.params["tags"]` at the
+  orchestrator level: that approach would make an already-live
+  resource's real (unmarked) tags disagree with the newly-marker-
+  including desired params on the very next `plan`, and — because
   `drivers/digitalocean/compute.py`'s `update()` only accepts a
   `size`-alone diff in place (`specs/digitalocean_compute.md`'s Behavior
   section) — a `tags`-only diff would raise `DriverUpdateNotSupported`
@@ -178,17 +205,19 @@ integration points named in Behavior below.
   driver, invisible to the diff, avoids that failure mode structurally
   rather than by convention. **This also means the feature is
   intentionally not a backfill mechanism** — see Out of scope.
-- **Review checklist follow-up required, not optional.** `SUPPORTS_TAGGING
-  = True` declared without both `_tags_for_create`/`_tags_for_attributes`
-  actually wired into `create()`/`read()`/`update()` is exactly the kind
-  of thing gate #1 (`code-review-model`) needs to catch, not something
-  any existing static check covers — `prompts/review_driver.md` needs a
-  new numbered checklist item alongside its existing "urllib.request
-  only" item (item 8) and idempotent-delete item (item 3), phrased the
-  same way: a driver claiming the flag but not honoring it is a
-  `blocking_issues` entry, not a `concerns` one. Not written in this
-  spec — a small, separate edit to that prompt file, done alongside
-  whichever PR first lands `SUPPORTS_TAGGING = True` on a real driver.
+- **Review checklist follow-up required, not optional.** A driver whose
+  `create()` calls `_tags_for_create` but whose `read()`/`update()`
+  don't correspondingly call `_tags_for_attributes` everywhere they
+  return `tags` (or vice versa) is exactly the kind of inconsistency
+  gate #1 (`code-review-model`) needs to catch, not something any
+  existing static check covers — `prompts/review_driver.md` needs a new
+  numbered checklist item alongside its existing "urllib.request only"
+  item (item 8) and idempotent-delete item (item 3): a driver that
+  attaches the marker on create but leaks it back out anywhere (or
+  strips a tag it never attached) is a `blocking_issues` entry, not a
+  `concerns` one. Not written in this spec — a small, separate edit to
+  that prompt file, done alongside whichever PR first wires these
+  helpers into a real driver.
 
 ## Edge cases / errors
 
@@ -212,24 +241,25 @@ integration points named in Behavior below.
   problem — any fixed string a user could plausibly type is a possible
   collision, so raising on collision is the actual fix, not the
   specific string chosen.
-- **A CSP/resource kind with no tagging primitive at all.** The driver
-  simply leaves `SUPPORTS_TAGGING` at its default `False` — not an
-  error, not a degraded mode, the guarantee just doesn't extend to that
-  `(provider, resource)` pair. Any sweep/audit tooling built against
-  this mechanism has no signal for such a driver's resources and would
-  need a different identification strategy (e.g. a name prefix
-  convention) — a real limitation, named here, not solved by this spec.
+- **A CSP/resource kind with no tagging primitive at all, or a driver
+  that simply chooses not to use this.** The driver's `create()`/
+  `read()`/`update()` just never call `_tags_for_create`/
+  `_tags_for_attributes` — not an error, not a degraded mode, the
+  guarantee just doesn't extend to that `(provider, resource)` pair.
+  Any sweep/audit tooling built against this mechanism has no signal
+  for such a driver's resources and would need a different
+  identification strategy (e.g. a name prefix convention) — a real
+  limitation, named here, not solved by this spec.
 - **`update()`'s replace path calls `create()` a second time**
   (`orchestrator.py`'s `apply_plan()`, the `DriverUpdateNotSupported`
   branch) with the same `desired_params` used for the original diff.
   Per the migration-safety point above, `desired_params["tags"]` never
-  legitimately contains the marker, so `_tags_for_create`'s new
-  reserved-tag check (previous bullet) has nothing to trigger on here —
-  the same non-issue as the general migration-safety argument, not a
-  new risk introduced by that check.
+  legitimately contains the marker, so `_tags_for_create`'s
+  reserved-tag check has nothing to trigger on here — the same
+  non-issue as the general migration-safety argument, not a new risk.
 - **Two independent tag concepts coexist for the system test
   specifically**, and that's fine: this spec's `aiform-managed` marker
-  (global, applied to every opted-in driver's resources, invisible to
+  (global, applied by any driver that uses these helpers, invisible to
   the diff engine) and `specs/system_test.md`'s own
   `aiform-system-test` tag (test-scoped, explicitly set by that suite's
   `.aiform.md` fixture through the ordinary, user-facing `tags` param,
@@ -245,14 +275,19 @@ integration points named in Behavior below.
 
 ## Out of scope
 
+- **Updating `specs/driver.md`/`PLAN.md` §4 with `AIFORM_MANAGED_TAG`
+  and the two new methods.** Named as a hard prerequisite above, not
+  done in this spec — a small, mechanical addendum to both, since
+  `aiform/driver.py` is already implemented and `CLAUDE.md` requires
+  its contract be followed exactly.
 - **Retroactively tagging resources that already exist.** The marker is
   only ever attached at a resource's `create()` time (see Behavior's
   migration-safety point) — there is no mechanism here that walks
   existing `state.json` entries and tags what's already live. A future
-  one-time migration tool (iterate tracked resources, call each opted-in
-  driver's tagging capability directly against them, outside the normal
-  diff/plan path entirely) is real, separate future work, not designed
-  here.
+  one-time migration tool (iterate tracked resources, call each
+  adopting driver's tagging capability directly against them, outside
+  the normal diff/plan path entirely) is real, separate future work,
+  not designed here.
 - **Multi-project or provenance-scoped tagging** (e.g. encoding which
   local `state.json`/project a resource belongs to, not just "aiform
   made this somewhere") — concretely, the `<short-uuid>`/`<owner-id>`
@@ -274,7 +309,10 @@ integration points named in Behavior below.
 - **Validating that this pattern generalizes to a second driver/CSP.**
   `digitalocean`/`compute` is the only driver that exists (`PLAN.md` §10,
   "Only one resource kind is implemented") and the only one this spec
-  designs the integration for; whether `SUPPORTS_TAGGING`/the two helper
-  methods are a good fit for a CSP with a meaningfully different tagging
-  model is untested until a second driver exists, the same caveat
-  `PLAN.md` §10 already states for the driver interface generally.
+  designs the integration for; whether these two helper methods are a
+  good fit for a CSP with a meaningfully different tagging model — or
+  none at all — is untested until a second driver exists, the same
+  caveat `PLAN.md` §10 already states for the driver interface
+  generally. If that turns out to need a discoverable per-driver
+  capability flag after all, that's the point to add one, informed by a
+  real case (see "Why no opt-in flag" above).

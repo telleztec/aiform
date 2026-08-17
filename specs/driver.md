@@ -124,6 +124,29 @@ in Behavior below.
   as `.unsupported_fields == []`; the module doesn't distinguish "caller
   passed an empty list" from "caller passed nothing."
 
+## Addendum: marker-tag helpers (`specs/resource_tagging.md`, not yet implemented)
+
+`specs/resource_tagging.md` adds a module-level constant,
+`AIFORM_MANAGED_TAG = "aiform-managed"`, and two concrete (non-abstract)
+methods to `ResourceDriver`:
+
+```python
+def _tags_for_create(self, requested_tags: list[str]) -> list[str]: ...
+def _tags_for_attributes(self, live_tags: list[str]) -> list[str]: ...
+```
+
+Per `CLAUDE.md`'s "follow the `ResourceDriver` interface in `PLAN.md`
+§4 exactly," `PLAN.md` §4's code block has been updated to include
+them, and this file's Interface code block above should be updated to
+match at implementation time. Not done as part of that spec or this one
+— this addendum exists so a reader of this file doesn't miss that the
+contract is about to grow, and isn't misled into thinking the four
+abstract methods above are still the whole story. See
+`specs/resource_tagging.md`'s Behavior/Edge cases sections for what
+these two methods do, when a driver should call them, and why they're
+concrete rather than abstract (no flag gates them — a driver opts in by
+calling them from its own methods, or doesn't).
+
 ## Out of scope
 
 - `ResourceNotFoundError`, `DriverExecutionError`, `PlanBlockedError` —
