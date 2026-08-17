@@ -247,9 +247,10 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      drop those three keys from state on every successful resize, a
      worse, undisclosed version of the refresh-only gap Edge cases
      describes below.
-  This is the one path in this driver allowed more than one API call —
-  unlike `create`/`read`/`delete`, an in-place resize is a genuinely
-  multi-step DO operation, not a single request.
+  Alongside `create`'s own convergence-polling (see Behavior above),
+  this is one of the two paths in this driver that make more than one
+  API call — `read`/`delete` remain genuinely single-request. An
+  in-place resize is a multi-step DO operation, not a single request.
   **If any polling step (2, 5, or 6) exhausts its bounded attempt
   budget without reaching the target state**, raise a plain
   `TimeoutError` naming which step and the droplet `id` — don't retry
@@ -261,6 +262,24 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *unexpected* and should surface as a loud error for a human to
   investigate, not trigger an automatic destroy+recreate against a
   droplet that might still complete the resize a moment later.
+- **`create()`'s convergence poll timing out orphans a real droplet.**
+  If the `POST /v2/droplets` call already succeeded (the droplet exists
+  and is billing) but the subsequent poll to `status == "active"`
+  exhausts its bounded attempts (or hits a transient error), `create()`
+  raises `TimeoutError` and `aiform/orchestrator.py`'s `apply_plan()`
+  never gets a return value to write into `state.json` — the droplet
+  is real but untracked. This isn't specific to `create()`: `update()`'s
+  own poll timeout above has the same shape (a mutating action already
+  succeeded before the poll that follows it times out). Neither is
+  fixed here — `PLAN.md` §10's "Timeout/retry/failover orchestration
+  for driver network calls" entry tracks the general gap (no retry
+  layer, and no orchestrator-level recovery for a driver call that
+  fails after partially succeeding). What *is* addressed here: the
+  poll's bounded-attempt budget is sized generously enough
+  (`max_attempts=60`, `delay_seconds=3` — 180 seconds) that a
+  legitimately-provisioning droplet essentially never hits it in
+  practice; this remains a real but rare failure mode, not a
+  routinely-triggered one.
 - `PLAN.md` §8 step 2 itself anticipates a first-generation `update()`
   might be cruder than this (e.g. "resizes on *any* diff instead of
   scoping to `size`/`region`") and treats that as a

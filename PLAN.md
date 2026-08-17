@@ -1288,10 +1288,16 @@ entry's own note below.
   is `drivers/digitalocean/compute.py`'s own `REQUEST_TIMEOUT_SECONDS`
   on each raw `urllib` call and `_poll_until`'s local
   convergence-polling loop (`max_attempts`/`delay_seconds`) for
-  resize/power actions — neither retries a failed request. A transient
-  DigitalOcean or Anthropic `5xx`/`429` today just propagates as a hard
-  failure (`DriverExecutionError`, or an uncaught `anthropic` error).
-  `specs/system_test.md`'s Edge Cases section names the consequence
+  `create`'s convergence-to-`"active"` wait and `update`'s
+  resize/power actions — neither retries a failed request, and neither
+  layer feeds back into `aiform/orchestrator.py`: if a poll loop times
+  out or hits a transient error *after* its mutating call already
+  succeeded (the droplet genuinely exists, or was already resized), the
+  exception still propagates as a hard failure and `state.json` is
+  never updated, leaving a real, billable resource untracked. A
+  transient DigitalOcean or Anthropic `5xx`/`429` today just propagates
+  as a hard failure (`DriverExecutionError`, or an uncaught `anthropic`
+  error). `specs/system_test.md`'s Edge Cases section names the consequence
   directly: a real transient error during the live system-test suite
   must surface as a visible test failure rather than being retried away
   by the test itself, precisely because there's no retry layer yet that
