@@ -21,6 +21,25 @@ side, independent of a `state.json` that could itself be lost,
 corrupted, or simply never written (e.g. a crash between `create()`
 succeeding and the state write in `orchestrator.py`'s `apply_plan()`).
 
+**Relationship to `PLAN.md` §10's "Resource tagging convention" entry —
+corrected after this spec initially missed it entirely.** That entry
+already commits to a long-term target format,
+`aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
+— a structured tag encoding which aiform state/formation owns a
+resource, a generation counter, a fixed marker segment, and an owner
+identifier. This spec does **not** implement that format. It ships only
+the fixed marker-segment piece (`aiform-managed`, standing in for that
+entry's `intended-state` literal), because the other three components
+each depend on state/design work that doesn't exist yet: `state.json`
+has no formation-UUID or incarnation-counter concept to source
+`<short-uuid>`/`<state-incarnation-no>` from, and `<owner-id>`'s own
+identifier scheme is explicitly still undetermined in `PLAN.md` §10
+itself. `PLAN.md` §10 has been updated to say so explicitly, so the two
+documents no longer silently disagree. The multi-project/provenance
+scoping this spec's own Out of scope section defers is, concretely,
+the `<short-uuid>`/`<owner-id>` portion of that fuller format — tracked
+there, not solved here.
+
 ## Interface
 
 All additions live in `aiform/driver.py`, on `ResourceDriver` itself —
@@ -236,10 +255,12 @@ integration points named in Behavior below.
   here.
 - **Multi-project or provenance-scoped tagging** (e.g. encoding which
   local `state.json`/project a resource belongs to, not just "aiform
-  made this somewhere") — `specs/system_test.md` already named this as
-  an open question when it proposed this spec. Deliberately deferred in
-  favor of shipping the smallest useful version first: one fixed, global
-  `aiform-managed` string.
+  made this somewhere") — concretely, the `<short-uuid>`/`<owner-id>`
+  components of `PLAN.md` §10's full target format (see Purpose's
+  "Relationship to `PLAN.md` §10" note). Deliberately deferred in favor
+  of shipping the smallest useful version first: one fixed, global
+  `aiform-managed` string, with no formation-identity or ownership
+  encoding.
 - **A CLI surface over this mechanism** (e.g. `aiform resources list`
   querying every configured provider's tagging API for everything
   tagged `aiform-managed`) — a real, valuable future consumer, not built

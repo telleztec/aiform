@@ -1269,10 +1269,10 @@ though none has a full design yet:
   single-operator model (see "Single local state file" above) and is
   explicitly not designed yet — named here as a direction, not a
   commitment to a specific architecture.
-- **Resource tagging convention.** Every resource aiform creates will be
-  tagged (using each CSP's native tagging mechanism, e.g. DigitalOcean
-  droplet tags) with a convention of the form
-  `aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
+- **Resource tagging convention.** The long-term target is every
+  resource aiform creates tagged (using each CSP's native tagging
+  mechanism, e.g. DigitalOcean droplet tags) with a convention of the
+  form `aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
   — where `<short-uuid>` identifies the aiform state/formation that owns
   the resource, `<state-incarnation-no>` is a generation counter for
   that state (bumped on some as-yet-undefined "incarnation" event,
@@ -1285,6 +1285,19 @@ though none has a full design yet:
   CSP console, independent of `.aiform/state.json` being available at
   all — useful for orphan detection, auditing, and (eventually) the
   centralized-server and multi-source scenarios above.
+  **`specs/resource_tagging.md` ships a deliberately minimal first
+  slice of this**, not the full format: a single fixed marker tag
+  (`aiform-managed`, corresponding to this entry's `intended-state`
+  segment only), applied by an opt-in `ResourceDriver.SUPPORTS_TAGGING`
+  flag. The `<short-uuid>`/`<state-incarnation-no>`/`<owner-id>`
+  components remain undesigned and unbuilt — `state.json` has no
+  formation-identity or incarnation-counter concept today, and both
+  `<owner-id>`'s scheme and the incarnation-bump trigger are still open
+  questions this entry itself already flagged. Chosen deliberately as
+  the smallest useful step (enough to identify *an* aiform-managed
+  resource from the CSP console, even if not yet *which* formation/owner
+  it belongs to) rather than blocking on this entry's full, only
+  partially-specified format.
 - **`aiform driver create`/`refresh`/`show`/`delete`/`publish` — the
   target interactive shape of mechanism 2** ("Driver curation" above,
   §6). §7 settles the CLI surface: `driver` is a noun with its own verb
