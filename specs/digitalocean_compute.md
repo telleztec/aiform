@@ -122,6 +122,10 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       "ipv4_address": <first networks.v4 entry where type == "public", or None>,
   }
   ```
+  **Pending update**: `specs/resource_tagging.md` (not yet implemented)
+  wraps this `"tags"` line in `self._tags_for_attributes(...)` — this
+  code fence will understate what `_flatten()` actually returns once
+  that lands. See that spec for the corrected picture.
   `ssh_keys`/`backups`/`monitoring`: `create()` additionally echoes back
   whatever was in `params` for these three keys, **preserving each
   field's own type** — `"ssh_keys": params.get("ssh_keys", [])`,

@@ -527,11 +527,22 @@ subclassing the hand-written `ResourceDriver` ABC
 driver's internals, only calls the four contract methods below. Exact
 contract:
 
+**Addendum (`specs/resource_tagging.md`, not yet reflected in the
+actual `aiform/driver.py` file on disk as of this writing — implemented
+means the two-attribute, four-abstract-method version below):**
+`AIFORM_MANAGED_TAG` and two concrete (non-abstract) helper methods,
+`_tags_for_create`/`_tags_for_attributes`, included below as part of
+this contract per `CLAUDE.md`'s "follow the `ResourceDriver` interface
+in `PLAN.md` §4 exactly" — see `specs/driver.md` and
+`specs/resource_tagging.md` for their full behavior.
+
 ```python
 # aiform/driver.py — hand-written, not generated
 
 from abc import ABC, abstractmethod
 from typing import Any
+
+AIFORM_MANAGED_TAG = "aiform-managed"
 
 
 class DriverUpdateNotSupported(Exception):
@@ -571,6 +582,13 @@ class ResourceDriver(ABC):
     # without pretending to know for certain the way Terraform's
     # ForceNew does. Subclasses that don't override it get an empty list.
     LIKELY_REPLACE_FIELDS: list[str] = []
+
+    # Concrete, not abstract -- a driver opts in by calling these from
+    # its own create()/read()/update(), not by overriding a flag.
+    # specs/resource_tagging.md.
+    def _tags_for_create(self, requested_tags: list[str]) -> list[str]: ...
+
+    def _tags_for_attributes(self, live_tags: list[str]) -> list[str]: ...
 
     @abstractmethod
     def create(
@@ -1233,8 +1251,12 @@ functionality this project is committing to build later.
 ### Planned, not yet designed in detail
 
 The following are functionality this project is committing to build,
-beyond the deferred items above — named here so they aren't lost, even
-though none has a full design yet:
+beyond the deferred items above — named here so they aren't lost. Most
+have no full design yet; "Resource tagging convention" below is a
+partial exception — a deliberately minimal first slice of it now has a
+full, implementable design (`specs/resource_tagging.md`), while the
+entry's own fuller target format remains undesigned in detail, per that
+entry's own note below.
 
 - **Observability.** `aiform` will publish a URL that can be visited to see
   the live status of a formation (what's planned, what's applying,
@@ -1269,10 +1291,10 @@ though none has a full design yet:
   single-operator model (see "Single local state file" above) and is
   explicitly not designed yet — named here as a direction, not a
   commitment to a specific architecture.
-- **Resource tagging convention.** Every resource aiform creates will be
-  tagged (using each CSP's native tagging mechanism, e.g. DigitalOcean
-  droplet tags) with a convention of the form
-  `aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
+- **Resource tagging convention.** The long-term target is every
+  resource aiform creates tagged (using each CSP's native tagging
+  mechanism, e.g. DigitalOcean droplet tags) with a convention of the
+  form `aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
   — where `<short-uuid>` identifies the aiform state/formation that owns
   the resource, `<state-incarnation-no>` is a generation counter for
   that state (bumped on some as-yet-undefined "incarnation" event,
@@ -1285,6 +1307,13 @@ though none has a full design yet:
   CSP console, independent of `.aiform/state.json` being available at
   all — useful for orphan detection, auditing, and (eventually) the
   centralized-server and multi-source scenarios above.
+  **`specs/resource_tagging.md` ships only the `intended-state` marker
+  segment as a deliberate first slice** — see that spec's Purpose
+  section ("Relationship to `PLAN.md` §10") for the full rationale and
+  exactly which components (`<short-uuid>`/`<state-incarnation-no>`/
+  `<owner-id>`) remain undesigned; not restated here to avoid the two
+  documents drifting out of sync again the way they did before this
+  entry was cross-referenced.
 - **`aiform driver create`/`refresh`/`show`/`delete`/`publish` — the
   target interactive shape of mechanism 2** ("Driver curation" above,
   §6). §7 settles the CLI surface: `driver` is a noun with its own verb
