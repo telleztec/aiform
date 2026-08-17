@@ -2,6 +2,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+import warnings
 from pathlib import Path
 
 import pytest
@@ -74,15 +75,25 @@ def teardown_tracked_resources(project_dir: Path):
     """Primary cleanup path for a live-created droplet: drives the real
     `aiform plan destroy` in a finally clause so a droplet is torn down
     even when an assertion mid-test raises. This depends on the code
-    under test (orchestrator.py / the driver), unlike the independent
-    sweep script that backstops the case where even this doesn't run --
-    see specs/system_test.md's "Orphan cleanup" section."""
+    under test (orchestrator.py / the driver) and only runs if the test
+    process survives long enough to reach it -- specs/system_test.md's
+    "Orphan cleanup" section specs an independent, non-aiform sweep
+    script as the backstop for the case where even this doesn't run;
+    that script is not implemented yet (tracked as separate follow-up
+    work, out of scope for this suite)."""
     try:
         yield
     finally:
         state_path = project_dir / ".aiform" / "state.json"
         if state_path.exists():
-            cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path)])
+            code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path)])
+            if code != 0:
+                warnings.warn(
+                    f"teardown 'plan destroy' exited {code} -- a droplet may still be live "
+                    f"and billable; check {state_path} and DigitalOcean's droplet list "
+                    f"(tag {SYSTEM_TEST_TAG!r}) by hand",
+                    stacklevel=2,
+                )
 
 
 def get_droplet_or_none(token: str, droplet_id: str) -> dict | None:

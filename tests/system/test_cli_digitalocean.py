@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from aiform import cli, state
+from aiform import cli, orchestrator, state
 from drivers.digitalocean import compute as do_compute
 from tests.system.conftest import (
     ALTERNATE_REGION,
@@ -33,14 +33,28 @@ def _resource_key(name: str) -> str:
 
 
 def _count_driver_reads(monkeypatch) -> list[str]:
+    # orchestrator.load_driver() execs the driver module fresh via
+    # importlib.util.spec_from_file_location on every call, never caching
+    # it in sys.modules (tests/test_orchestrator.py's
+    # test_each_call_returns_a_fresh_instance) -- so the statically
+    # imported drivers.digitalocean.compute.Driver class is never the
+    # same object orchestrator.py actually instantiates. Wrap the
+    # instance load_driver() itself returns instead.
     calls: list[str] = []
-    original_read = do_compute.Driver.read
+    real_load_driver = orchestrator.load_driver
 
-    def counting_read(self, id, credentials):
-        calls.append(id)
-        return original_read(self, id, credentials)
+    def counting_load_driver(provider, resource_type):
+        driver = real_load_driver(provider, resource_type)
+        real_read = driver.read
 
-    monkeypatch.setattr(do_compute.Driver, "read", counting_read)
+        def counting_read(id, credentials):
+            calls.append(id)
+            return real_read(id, credentials)
+
+        driver.read = counting_read
+        return driver
+
+    monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
     return calls
 
 
