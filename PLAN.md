@@ -1307,7 +1307,18 @@ entry's own note below.
   configurable per-role/per-driver the same way model tiering is, and
   how it interacts with the review-gate LLM calls (a review-tier call
   retried mid-flow must not silently double-bill or re-trigger a gate
-  the user already confirmed).
+  the user already confirmed). **When this actually gets built, replace
+  the two hardcoded `_poll_until` budgets it's meant to supersede**,
+  both in `drivers/digitalocean/compute.py`: the default
+  (`max_attempts=20`, `delay_seconds=2` — 40s, used by `update`'s
+  power-off/resize/power-on actions) and `create`'s own override
+  (`max_attempts=60`, `delay_seconds=3` — 180s, widened specifically
+  because the default was tuned for `update` and timed out too eagerly
+  on full droplet provisioning). Both are guesses tuned against one
+  CSP's observed behavior, not a real policy — likely candidates for
+  whatever configurable retry/backoff mechanism this entry ends up
+  designing, rather than two more magic numbers to hand-tune again
+  later.
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two
