@@ -1,3 +1,4 @@
+import http.client
 import json
 import os
 import time
@@ -8,10 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from aiform import cli
+from aiform import cli, config
 from drivers.digitalocean import compute as do_compute
 
 _SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
+
+# Snapshotted at import, before any test can monkeypatch these. Reading
+# os.environ at report time instead would mean a test that patches a
+# secret var (test_bad_token_... sets a bogus DIGITALOCEAN_TOKEN) leaves
+# the *real* value unscrubbable for its duration -- silently disabling
+# the backstop for exactly the tests most likely to touch credentials.
+_SECRETS = {var: os.environ.get(var) for var in _SECRET_ENV_VARS}
 
 
 class RedactedSecret(str):
@@ -71,34 +79,83 @@ def live_token() -> RedactedSecret:
     return _redacted_env("DIGITALOCEAN_TOKEN")
 
 
+# A secret rarely reaches a report intact. pytest renders frame
+# arguments through saferepr, which truncates each repr at 240 chars by
+# eliding the MIDDLE -- so a token inside a long `planned=[...]` repr
+# arrives split into a head and a tail, and an exact-value replace()
+# matches neither. Measured on the real thing: 58 of a 71-char token
+# written to the log with the exact-match scrub already in place.
+# Fragments are therefore matched too, longest-first. 12 is short enough
+# that no realistic truncation leaves a usable remnant, and long enough
+# that a false positive would require unrelated text to contain a
+# 12-character run of the actual secret.
+_MIN_LEAKED_FRAGMENT = 12
+
+
 def _scrub(text: str) -> str:
-    for var in _SECRET_ENV_VARS:
-        value = os.environ.get(var)
-        if value:
-            text = text.replace(value, f"<{var} redacted>")
+    for var, value in _SECRETS.items():
+        if not value:
+            continue
+        marker = f"<{var} redacted>"
+        text = text.replace(value, marker)
+        for length in range(len(value) - 1, _MIN_LEAKED_FRAGMENT - 1, -1):
+            for start in range(len(value) - length + 1):
+                fragment = value[start : start + length]
+                if fragment in text:
+                    text = text.replace(fragment, marker)
     return text
+
+
+@pytest.fixture(autouse=True)
+def _redact_resolved_credentials(monkeypatch):
+    """Wrap the credentials the *code under test* resolves for itself.
+
+    The scrubbing hook is a backstop on rendered text; this stops the
+    plaintext from ever reaching a repr in the first place, which is the
+    more reliable half. config.resolve_credentials() is the single point
+    where aiform turns an env var into a live credential, and its return
+    value is what ends up in PlannedResource.credentials and therefore
+    in apply_plan()'s frame arguments.
+
+    RedactedSecret is a str subclass, so the code under test is
+    unaffected -- it interpolates into an Authorization header exactly
+    as before. What changes is that the repr is a short marker, which
+    also means saferepr truncation has nothing to split.
+    """
+    real_resolve = config.resolve_credentials
+
+    # *args/**kwargs rather than (provider): the real signature also takes
+    # credentials_path, and a wrapper that silently narrowed it would
+    # TypeError on any call site that passes it.
+    def resolve_redacted(*args, **kwargs) -> dict[str, str]:
+        return {
+            var: RedactedSecret(value, var) for var, value in real_resolve(*args, **kwargs).items()
+        }
+
+    monkeypatch.setattr(config, "resolve_credentials", resolve_redacted)
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(item, call):
     """Strip live credentials out of any failure report before it is written.
 
-    RedactedSecret covers the credentials *this suite* passes around, but not
-    the one the code under test resolves for itself: cli.main() reads
-    os.environ via config.resolve_credentials(), stores a plain str in
-    PlannedResource.credentials, and hands it to apply_plan(planned,
-    ...) as a frame argument. cli.main only catches _HANDLED_EXCEPTIONS,
-    so anything else -- an anthropic 529 on the gate #2 review call is
-    the realistic one on a 7-minute live run -- propagates out as a
-    traceback, and pytest prints that frame's arguments verbatim,
-    credentials dict included.
+    Last of three layers, and the only one that needs no cooperation
+    from whoever wrote the code that leaked:
 
-    No value-level wrapper can reach that path, because the value is
-    constructed inside the code under test. Scrubbing the rendered
-    report is the layer that actually covers every source at once, so
-    this is the backstop rather than the first line of defence
-    (RedactedSecret still keeps the token out of the common assert-
-    introspection path, and keeps it readable when it does show).
+    1. `live_token()` wraps what this suite passes around.
+    2. `_redact_resolved_credentials` wraps what the code under test
+       resolves for itself -- the path that actually matters, since
+       cli.main() only catches _HANDLED_EXCEPTIONS and anything else (an
+       anthropic 529 on the gate #2 review call is the realistic one on
+       a 7-minute live run) propagates out with apply_plan(planned, ...)
+       on the stack, whose frame arguments pytest prints verbatim.
+    3. This hook, covering anything the first two miss -- a credential
+       from a source neither anticipated, or one that reaches the report
+       through captured output rather than a frame argument.
+
+    Layer 2 makes layer 3 mostly redundant for the known path, which is
+    the point: the fix that failed twice was the one relying on a single
+    layer being complete.
 
     Replacing longrepr with a plain string costs syntax highlighting and
     the reprcrash the "short test summary info" line is built from (that
@@ -263,7 +320,21 @@ def wait_until_droplet_gone(
     while True:
         try:
             droplet = get_droplet_or_none(token, droplet_id)
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            http.client.HTTPException,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            # Deliberately wide. urllib only wraps OSError from the
+            # request itself into URLError -- anything raised by
+            # getresponse() or response.read() (RemoteDisconnected,
+            # IncompleteRead) propagates unwrapped, and a truncated body
+            # surfaces as JSONDecodeError. Those are the *likely*
+            # transient failures across ~60 GETs, so a narrow clause
+            # would abort on precisely the errors this loop exists to
+            # ride out.
             last_error = exc
         else:
             if droplet is None:
