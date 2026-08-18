@@ -11,8 +11,6 @@ Opus/Sonnet-priced calls; never run this on the default pull_request/push
 CI trigger.
 """
 
-import os
-
 import pytest
 
 from aiform import cli, orchestrator, state
@@ -22,6 +20,7 @@ from tests.system.conftest import (
     ALTERNATE_SIZE,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
+    live_token,
     wait_until_droplet_gone,
     write_aiform_md,
 )
@@ -83,7 +82,7 @@ class TestFullLifecycleSequence:
         state_path = project_dir / ".aiform" / "state.json"
         name = "aiform-system-test-lifecycle"
         key = _resource_key(name)
-        token = os.environ["DIGITALOCEAN_TOKEN"]
+        token = live_token()
 
         # Case 1: `aiform init`
         code = cli.main(["init"])
@@ -240,7 +239,7 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
     now closed (drivers/digitalocean/compute.py's NON_DIFFABLE_FIELDS,
     specs/digitalocean_compute.md) -- kept as its own case so a
     regression that reintroduces it starts failing here immediately."""
-    token = os.environ["DIGITALOCEAN_TOKEN"]
+    token = live_token()
     fingerprints = list_account_ssh_key_fingerprints(token)
     if not fingerprints:
         pytest.skip(

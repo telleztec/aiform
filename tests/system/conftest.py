@@ -11,6 +11,42 @@ import pytest
 from aiform import cli
 from drivers.digitalocean import compute as do_compute
 
+
+class RedactedToken(str):
+    """A `str` that carries a live credential but never renders it in a repr.
+
+    pytest writes two things into the log verbatim on a failure: the
+    operands of a failing assert, and **the arguments of every frame in
+    the traceback**. The second one is the dangerous one here -- it
+    needs no assert at all. `get_droplet_or_none()` re-raises any
+    non-404 HTTPError, so a single transient DO 500 or timeout anywhere
+    in a 7-minute run prints `token = 'dop_v1_...'` into
+    .aiform/testlog/*.log. That is exactly how the real token leaked
+    once already.
+
+    Subclassing `str` keeps it usable everywhere a token is used
+    (f-string interpolation into an Authorization header, dict values,
+    equality) because those go through `__str__`/`__eq__`, while
+    pytest's display path goes through `repr()` -- which this
+    overrides. Redacting at the value means every call site is covered
+    by construction, including ones added later that never think about
+    this.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<DIGITALOCEAN_TOKEN redacted>"
+
+
+def live_token() -> RedactedToken:
+    """The real DIGITALOCEAN_TOKEN, wrapped so it can't leak into a log.
+
+    Always use this rather than reading os.environ directly in a test.
+    """
+    return RedactedToken(os.environ["DIGITALOCEAN_TOKEN"])
+
+
 SYSTEM_TEST_TAG = "aiform-system-test"
 REGION = "sfo3"
 ALTERNATE_REGION = "nyc3"
