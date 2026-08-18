@@ -37,7 +37,10 @@ def rotate_logs(log_dir: Path, *, keep: int = MAX_LOG_FILES) -> None:
     bring the total back up to keep."""
 
 def new_log_path(log_dir: Path, *, now: datetime | None = None) -> Path:
-    """log_dir / f"system-test-{now:%Y%m%dT%H%M%SZ}.log", UTC."""
+    """log_dir / f"system-test-{now:%Y%m%dT%H%M%SZ}.log", UTC. On a
+    same-second collision (a file already exists at that path), appends
+    a "-2", "-3", ... counter suffix until the path is free -- mirrors
+    aiform/orchestrator.py's move_to_trash()."""
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point; returns the process exit code (see Behavior)."""
@@ -83,6 +86,12 @@ def main(argv: list[str] | None = None) -> int:
   more than `MAX_LOG_FILES` total.
 - **`LOG_DIR` has fewer than 9 existing `*.log` files, or none** —
   `rotate_logs` is a no-op; nothing to delete.
+- **Two invocations within the same UTC second** (a quick Ctrl-C and
+  rerun, or two automation triggers firing close together) — the
+  timestamp alone isn't unique enough; `new_log_path` appends a
+  counter suffix on collision (see Interface) so the second run gets
+  its own file rather than truncating the first run's still-being-written
+  log via `open(..., "w")`.
 - **The underlying `pytest` invocation itself fails to start** (e.g. a
   broken environment) — `subprocess.run` surfaces that as a non-zero
   return code the same way a real test failure would; this script

@@ -101,6 +101,27 @@ class TestNewLogPath:
 
         assert path == Path("/tmp/testlog/system-test-20260817T235905Z.log")
 
+    def test_appends_a_counter_suffix_on_same_second_collision(self, tmp_path):
+        import datetime
+
+        now = datetime.datetime(2026, 8, 17, 23, 59, 5, tzinfo=datetime.UTC)
+        (tmp_path / "system-test-20260817T235905Z.log").write_text("first run")
+
+        path = run_system_tests.new_log_path(tmp_path, now=now)
+
+        assert path == tmp_path / "system-test-20260817T235905Z-2.log"
+
+    def test_counter_suffix_increments_past_multiple_collisions(self, tmp_path):
+        import datetime
+
+        now = datetime.datetime(2026, 8, 17, 23, 59, 5, tzinfo=datetime.UTC)
+        (tmp_path / "system-test-20260817T235905Z.log").write_text("first")
+        (tmp_path / "system-test-20260817T235905Z-2.log").write_text("second")
+
+        path = run_system_tests.new_log_path(tmp_path, now=now)
+
+        assert path == tmp_path / "system-test-20260817T235905Z-3.log"
+
 
 @pytest.fixture
 def project_dir(tmp_path: Path, monkeypatch) -> Path:

@@ -26,7 +26,16 @@ def rotate_logs(log_dir: Path, *, keep: int = MAX_LOG_FILES) -> None:
 
 def new_log_path(log_dir: Path, *, now: datetime | None = None) -> Path:
     now = now or datetime.now(UTC)
-    return log_dir / f"system-test-{now:%Y%m%dT%H%M%SZ}.log"
+    timestamp = f"{now:%Y%m%dT%H%M%SZ}"
+
+    # Mirrors aiform/orchestrator.py's move_to_trash() -- same one-second
+    # filename resolution, same collision-avoidance fix.
+    path = log_dir / f"system-test-{timestamp}.log"
+    counter = 2
+    while path.exists():
+        path = log_dir / f"system-test-{timestamp}-{counter}.log"
+        counter += 1
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
