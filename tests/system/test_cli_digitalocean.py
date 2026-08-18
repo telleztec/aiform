@@ -22,6 +22,7 @@ from tests.system.conftest import (
     ALTERNATE_SIZE,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
+    wait_until_droplet_gone,
     write_aiform_md,
 )
 
@@ -30,6 +31,21 @@ pytestmark = pytest.mark.system
 
 def _resource_key(name: str) -> str:
     return f"digitalocean.compute.{name}"
+
+
+def _assert_ok(code: int, captured, step: str) -> None:
+    """Assert a CLI invocation exited 0, surfacing its stderr when it
+    didn't. Every failure mode this suite exists to catch (gate #1
+    declining a driver, a DriverExecutionError from the live DO API, a
+    credential resolution failure) reports itself only through the
+    `Error: ...` line cli.main() prints to stderr before returning 2 --
+    and capsys.readouterr() has already consumed that by the time a bare
+    `assert code == 0` fires, so pytest's own capture sections show
+    nothing. Without this the log says `assert 2 == 0` and nothing else,
+    which is not enough to diagnose a 4-minute billable run."""
+    assert code == 0, (
+        f"{step} exited {code}\n--- stderr ---\n{captured.err}\n--- stdout ---\n{captured.out}"
+    )
 
 
 def _count_driver_reads(monkeypatch) -> list[str]:
@@ -82,7 +98,7 @@ class TestFullLifecycleSequence:
         # nothing in state yet to short-circuit it).
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        assert code == 0
+        _assert_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
         assert "[verbose]" in captured.err
         call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
@@ -92,7 +108,7 @@ class TestFullLifecycleSequence:
         # fires again (plan create never persists a driver-trust record).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        assert code == 0
+        _assert_ok(code, captured, "case 3: plan apply --yes")
         assert "[verbose]" in captured.err
         apply_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert apply_call_count >= 1
@@ -118,7 +134,7 @@ class TestFullLifecycleSequence:
         read_calls = _count_driver_reads(monkeypatch)
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        assert code == 0
+        _assert_ok(code, captured, "case 4: unchanged plan create")
         assert "[verbose] 0 Anthropic API call(s) made" in captured.err
         assert f"= {key}: no-op" in captured.out
         assert len(read_calls) == 1
@@ -156,11 +172,14 @@ class TestFullLifecycleSequence:
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        assert code == 0
+        _assert_ok(code, captured, "case 7: forced-replace plan apply")
         replace_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert replace_call_count >= 1
 
-        assert get_droplet_or_none(token, droplet_id) is None  # old droplet gone
+        # Old droplet gone. Polled, not checked once: DO's delete is async
+        # (see conftest.wait_until_droplet_gone).
+        leftover = wait_until_droplet_gone(token, droplet_id)
+        assert leftover is None, f"replaced droplet {droplet_id} still live: {leftover}"
 
         st = state.load(state_path)
         replaced_id = st.resources[key].id
@@ -169,11 +188,12 @@ class TestFullLifecycleSequence:
         # Case 8: `plan destroy --yes` -- gate #2 fires unconditionally.
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        assert code == 0
+        _assert_ok(code, captured, "case 8: plan destroy --yes")
         destroy_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert destroy_call_count >= 1
 
-        assert get_droplet_or_none(token, replaced_id) is None
+        destroyed = wait_until_droplet_gone(token, replaced_id)
+        assert destroyed is None, f"destroyed droplet {replaced_id} still live: {destroyed}"
         assert list((project_dir / ".aiform" / "trash").glob("*compute*")) or list(
             (project_dir / ".aiform" / "trash").glob(f"*{name}*")
         )
@@ -234,13 +254,13 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
     write_aiform_md(project_dir, name=name, ssh_keys=[fingerprints[0]])
 
     code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
-    assert code == 0
+    _assert_ok(code, capsys.readouterr(), "case 11: ssh_keys plan apply")
 
     code = cli.main(["plan", "refresh", "--state-file", str(state_path)])
-    assert code == 0
+    _assert_ok(code, capsys.readouterr(), "case 11: plan refresh")
 
     code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
     captured = capsys.readouterr()
-    assert code == 0
+    _assert_ok(code, captured, "case 11: unchanged plan create")
     assert "[verbose] 0 Anthropic API call(s) made" in captured.err
     assert f"= {key}: no-op" in captured.out

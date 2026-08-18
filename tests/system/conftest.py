@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 import warnings
@@ -111,6 +112,35 @@ def get_droplet_or_none(token: str, droplet_id: str) -> dict | None:
             return None
         raise
     return payload["droplet"]
+
+
+def wait_until_droplet_gone(
+    token: str, droplet_id: str, *, timeout_seconds: int = 120, poll_seconds: int = 5
+) -> dict | None:
+    """Poll until `droplet_id` 404s. Returns None once it's gone, or the
+    still-live droplet if it outlasts the timeout.
+
+    DigitalOcean's `DELETE /v2/droplets/{id}` is asynchronous: it returns
+    204 as soon as the teardown is *accepted*, and the droplet keeps
+    answering GET for a while afterwards. The driver's delete() is right
+    to treat 204 as done (exactly one API call, per
+    specs/digitalocean_compute.md) -- it's this suite's
+    "is it actually gone" check that has to tolerate the lag, or it
+    races DO's own convergence and fails a destroy that in fact worked.
+
+    Returns the droplet rather than raising so callers can assert on the
+    result: passing `token` into an asserted expression puts the live
+    credential into pytest's assertion-introspection output, which is
+    written verbatim to .aiform/testlog/*.log.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        droplet = get_droplet_or_none(token, droplet_id)
+        if droplet is None:
+            return None
+        if time.monotonic() >= deadline:
+            return droplet
+        time.sleep(poll_seconds)
 
 
 def list_account_ssh_key_fingerprints(token: str) -> list[str]:
