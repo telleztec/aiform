@@ -102,7 +102,7 @@ class TestDefaultLLMConfig:
                 source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
             ),
             code_generator=LLMRoleConfig(
-                source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+                source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=8192
             ),
             code_review=LLMRoleConfig(
                 source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
@@ -203,6 +203,23 @@ class TestResolveLLMConfig:
         )
 
         with pytest.raises(ValidationError):
+            resolve_llm_config(config_path)
+
+    def test_unknown_field_in_a_role_raises_clear_error(self, tmp_path: Path):
+        # A typo like "max_toekns" must not silently no-op back to the
+        # default -- the whole point of a per-field override is that the
+        # user can tell whether it actually took effect.
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  code_review:\n    max_toekns: 16384\n")
+
+        with pytest.raises(ValueError, match="max_toekns"):
+            resolve_llm_config(config_path)
+
+    def test_unknown_role_name_raises_clear_error(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("llm:\n  cod_review:\n    max_tokens: 16384\n")
+
+        with pytest.raises(ValueError, match="cod_review"):
             resolve_llm_config(config_path)
 
     def test_malformed_yaml_raises(self, tmp_path: Path):

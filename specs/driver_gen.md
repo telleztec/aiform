@@ -137,10 +137,17 @@ check fails; returns `None` on success.
 Calls `llm.code_generator_call()` with `prompts/generate_driver.md`
 (loaded from `aiform.llm.PROMPTS_DIR`) as the system prompt, no
 `output_schema` (plain-text response — Python source isn't a good fit
-for `output_config.format`, per `PLAN.md` §5 step 3a), `max_tokens=8192`
-(higher than `code_generator_call`'s 4096 default — a full CRUD driver
-with docstrings plausibly exceeds that). Returns the raw response text
-unmodified — no parsing, no stripping markdown code fences.
+for `output_config.format`, per `PLAN.md` §5 step 3a), no `max_tokens`
+override either — it resolves `llm_config.code_generator.max_tokens`
+(`specs/config.md`'s `DEFAULT_LLM_CONFIG`, `8192` by default: a full CRUD
+driver with docstrings plausibly exceeds `code_generator_call`'s old
+flat default, which is exactly why this call originally hardcoded
+`max_tokens=8192` here directly — now expressed as this role's own
+configured budget instead of a call-site literal, so a
+`.aiform/config.yaml` override actually takes effect here too; see
+`specs/llm.md`'s "`max_tokens` is per-role, not a shared constant").
+Returns the raw response text unmodified — no parsing, no stripping
+markdown code fences.
 
 ### `generate_driver(spec, *, client=None, llm_config=None) -> tuple[str, DriverReview]`
 

@@ -191,7 +191,6 @@ def draft_driver(
     return llm.code_generator_call(
         system_prompt,
         user_content,
-        max_tokens=8192,
         client=client,
         llm_config=llm_config,
     )

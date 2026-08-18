@@ -178,6 +178,14 @@ class TestLLMConfig:
         with pytest.raises(ValidationError):
             LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model")
 
+    def test_rejects_zero_max_tokens(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model", max_tokens=0)
+
+    def test_rejects_negative_max_tokens(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model", max_tokens=-1)
+
     def test_parses_roles_into_objects(self):
         config = LLMConfig(
             intent_orchestration={

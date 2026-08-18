@@ -125,7 +125,7 @@ class ModelSource(str, Enum):
 class LLMRoleConfig(BaseModel):
     source: ModelSource
     model: str
-    max_tokens: int
+    max_tokens: int = Field(gt=0)
 
 
 class LLMConfig(BaseModel):
@@ -144,10 +144,17 @@ class LLMConfig(BaseModel):
 - `LLMRoleConfig.model` is a plain `str`, not its own enum — model
   *names* change far more often than model *sources*, and there's no
   fixed set to validate against.
-- `LLMRoleConfig.max_tokens` is required, no pydantic-level default —
-  same reasoning as `source`/`model`: every default value lives in
-  `config.py`'s `DEFAULT_LLM_CONFIG`, the single source of truth, not
-  duplicated here. Added after a live system-test run against
+- `LLMRoleConfig.max_tokens` is required (`Field(gt=0)`, no pydantic-level
+  *default* — same reasoning as `source`/`model`: every default value
+  lives in `config.py`'s `DEFAULT_LLM_CONFIG`, the single source of
+  truth, not duplicated here). The `gt=0` bound rejects `0`/negative
+  values at config-load time with a clear `ValidationError` — matching
+  how other fields in this file already constrain themselves
+  (`Field(min_length=1)`/`Field(pattern=...)` elsewhere) — rather than
+  letting a `0` or a typo'd negative value from `.aiform/config.yaml`
+  reach the Anthropic API and surface only as an opaque HTTP error deep
+  inside `review_driver()`/`review_plan()`. Added after a live
+  system-test run against
   `code_review`'s gate #1 call surfaced that Opus's (apparently
   automatic) extended-thinking output can consume most of a shared
   `max_tokens` budget before the actual structured JSON response even

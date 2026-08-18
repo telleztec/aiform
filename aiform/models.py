@@ -60,7 +60,7 @@ class ModelSource(str, Enum):
 class LLMRoleConfig(BaseModel):
     source: ModelSource
     model: str
-    max_tokens: int
+    max_tokens: int = Field(gt=0)
 
 
 class LLMConfig(BaseModel):

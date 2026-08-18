@@ -127,7 +127,7 @@ llm:
   code_generator:
     source: anthropic
     model: claude-sonnet-5
-    max_tokens: 4096
+    max_tokens: 8192
   code_review:
     source: anthropic
     model: claude-opus-5
@@ -168,12 +168,22 @@ response gets cut off mid-string, and `json.loads()` fails downstream
 with a generic parse error that gives no hint the real cause is a token
 budget, not malformed output.
 
-`max_tokens` moved onto `LLMRoleConfig` (`specs/models.md`) so each role
-resolves its own configured budget instead of sharing one constant —
-`intent_orchestration`/`code_generator` keep the original `4096`
-(lighter, more routine calls; no observed need for more), `code_review`/
-`review_orchestration` default to `8192` (same model tier and prose-heavy
-schema shape as the one that was directly observed truncating).
+`max_tokens` moved onto `LLMRoleConfig` (`specs/models.md`, `Field(gt=0)`
+— zero/negative rejected at config-load time rather than surfacing as an
+opaque Anthropic API error later) so each role resolves its own
+configured budget instead of sharing one constant. `intent_orchestration`
+keeps the original `4096` (short structured categorizations, no observed
+need for more). The other three default to `8192`: `code_review`/
+`review_orchestration` for the thinking-vs-prose reason above, and
+`code_generator` because `aiform/driver_gen.py`'s `draft_driver()` — its
+one real caller — already hardcoded `max_tokens=8192` at its call site
+before this field existed, for an independent, pre-existing reason (a
+full CRUD driver's Python source plausibly exceeds a smaller budget).
+That hardcoded override is now removed in favor of `code_generator`'s
+own role-configured `8192` — the whole point of this change is a role's
+budget living in one place, not a per-call-site literal a
+`.aiform/config.yaml` override would silently fail to reach; see
+`specs/driver_gen.md`.
 `intent_orchestration_call()`/`code_generator_call()` still accept an
 explicit `max_tokens` override parameter (now `None` by default, meaning
 "use the resolved role's own value" instead of a hardcoded literal);
@@ -189,8 +199,8 @@ def _anthropic_call(
     system_prompt: str,
     user_content: str,
     *,
+    max_tokens: int,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
     client: anthropic.Anthropic | None = None,
 ) -> str: ...
 
@@ -260,6 +270,16 @@ call always does), so `response.content[0]` is a `ThinkingBlock` — no
 `type == "text"`, raises a plain `RuntimeError`; not expected to happen
 in practice, but silently returning `None`/empty would be worse than a
 clear failure.
+
+`max_tokens` is a required keyword-only parameter here, no fallback
+default — deliberately, after the per-role `max_tokens` change above.
+Every real call path (`_implementation_tier_call()`, `review_driver()`,
+`review_plan()`) always resolves a role's own `max_tokens` and passes it
+explicitly; a hardcoded default here would be dead code on every current
+path and a silent trap for a future caller that forgets to resolve one —
+exactly the shared-constant problem this change exists to eliminate,
+reintroduced one call site at a time. A caller that omits it gets a
+`TypeError` immediately, not a quietly-wrong budget.
 
 ### `MODEL_SOURCES`
 

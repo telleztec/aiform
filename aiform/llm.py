@@ -55,8 +55,8 @@ def _anthropic_call(
     system_prompt: str,
     user_content: str,
     *,
+    max_tokens: int,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
     client: anthropic.Anthropic | None = None,
 ) -> str:
     if client is None:

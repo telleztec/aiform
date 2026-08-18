@@ -43,7 +43,7 @@ DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
         source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
     ),
     code_generator=LLMRoleConfig(
-        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=8192
     ),
     code_review=LLMRoleConfig(
         source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
@@ -92,7 +92,7 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
     code_generator:
       source: anthropic
       model: claude-sonnet-5
-      max_tokens: 4096
+      max_tokens: 8192
     code_review:
       source: anthropic
       model: claude-opus-5
@@ -102,16 +102,24 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
       model: claude-opus-5
       max_tokens: 8192
   ```
-  `code_review`/`review_orchestration` default higher than the other
-  two roles: both are Opus-tier gates whose prompts ask for detailed
-  critique prose (`concerns`/`blocking_issues`, or a `flags[].concern`
-  per finding), and Opus's own (apparently automatic) extended-thinking
-  output competes with that prose for the same `max_tokens` budget —
-  a live system-test run caught `code_review`'s response getting
-  truncated mid-string when thinking alone consumed the majority of a
+  `intent_orchestration` is the only role still at `4096` — its
+  responses are short structured categorizations, not prose. The other
+  three default to `8192`: `code_review`/`review_orchestration` are
+  Opus-tier gates whose prompts ask for detailed critique prose
+  (`concerns`/`blocking_issues`, or a `flags[].concern` per finding),
+  and Opus's own (apparently automatic) extended-thinking output
+  competes with that prose for the same `max_tokens` budget — a live
+  system-test run caught `code_review`'s response getting truncated
+  mid-string when thinking alone consumed the majority of a
   4096-token budget, verified directly against
   `usage.output_tokens_details.thinking_tokens` on the actual API
-  response, not inferred from the error message alone.
+  response, not inferred from the error message alone. `code_generator`
+  drafts a full CRUD driver's Python source as plain text, not
+  structured JSON — `aiform/driver_gen.py`'s `draft_driver()` originally
+  hardcoded `max_tokens=8192` at its one call site for exactly this
+  reason (a full driver plausibly exceeds a smaller budget) before this
+  field existed to express it as role config instead; see
+  `specs/driver_gen.md`.
 - File missing entirely → returns `DEFAULT_LLM_CONFIG` unchanged. Unlike
   `resolve_credentials()`, there is no error path for "nothing
   configured" — every field has a safe default, so an MVP user never
@@ -132,6 +140,16 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
 - `source: bedrock` (or any string that isn't a valid `ModelSource`
   member) raises a Pydantic `ValidationError` from `LLMRoleConfig`
   construction — this module doesn't catch or wrap it.
+- **An unrecognized role name or field name in `.aiform/config.yaml`
+  raises a plain `ValueError` naming the config path and the exact
+  unrecognized key(s)** — e.g. `llm.code_review.max_toekns` (a typo of
+  `max_tokens`) or a top-level `llm.cod_review` (a typo of
+  `code_review`). Checked against `LLMConfig.model_fields`/
+  `LLMRoleConfig.model_fields` before any merging happens, so a typo can
+  never silently no-op back to the default with no error — a user
+  raising `code_review`'s `max_tokens` to fix a truncation problem needs
+  to know immediately if the key didn't reach `LLMRoleConfig` at all,
+  not discover it later from `code_review` still truncating.
 - Malformed YAML raises whatever `yaml.safe_load()` raises — not caught
   or wrapped, same "propagate, don't invent a custom exception ahead of
   `exceptions.py`" stance as `resolve_credentials()`.

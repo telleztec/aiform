@@ -102,6 +102,15 @@ class TestModelSources:
     def test_anthropic_source_dispatches_to_anthropic_call(self):
         assert llm.MODEL_SOURCES[ModelSource.ANTHROPIC] is llm._anthropic_call
 
+    def test_anthropic_call_requires_max_tokens_explicitly(self):
+        # No hardcoded fallback default -- every real call path resolves
+        # max_tokens from a role's own config and must pass it explicitly;
+        # a caller that forgets is a bug, not a silent revert to a shared
+        # constant.
+        client = FakeClient("ignored")
+        with pytest.raises(TypeError):
+            llm._anthropic_call("claude-sonnet-5", "system", "user", client=client)
+
 
 class TestIntentOrchestrationCall:
     def test_returns_raw_response_text(self):

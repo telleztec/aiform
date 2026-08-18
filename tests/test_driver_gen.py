@@ -213,7 +213,10 @@ class TestDraftDriver:
         driver_gen.draft_driver(make_spec(), client=client)
         assert "output_config" not in client.messages.calls[0]
 
-    def test_uses_max_tokens_8192(self, prompts_dir: Path):
+    def test_uses_max_tokens_8192_via_code_generator_role_config(self, prompts_dir: Path):
+        # Not a call-site override anymore -- draft_driver() no longer
+        # hardcodes max_tokens; this is DEFAULT_LLM_CONFIG.code_generator's
+        # own configured value flowing through, same as any other caller.
         client = FakeClient([VALID_DRIVER_SOURCE])
         driver_gen.draft_driver(make_spec(), client=client)
         assert client.messages.calls[0]["max_tokens"] == 8192

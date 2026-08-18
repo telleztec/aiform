@@ -19,7 +19,7 @@ DEFAULT_LLM_CONFIG = LLMConfig(
         source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
     ),
     code_generator=LLMRoleConfig(
-        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=8192
     ),
     code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192),
     review_orchestration=LLMRoleConfig(
@@ -103,12 +103,27 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
         llm_data = {}
     llm_data = _require_mapping(llm_data, "llm", config_path)
 
+    unknown_roles = set(llm_data) - set(LLMConfig.model_fields)
+    if unknown_roles:
+        raise ValueError(
+            f"{config_path}: llm has unknown role(s): {sorted(unknown_roles)} -- "
+            f"valid roles are {sorted(LLMConfig.model_fields)}"
+        )
+
     roles: dict[str, LLMRoleConfig] = {}
     for role_name in LLMConfig.model_fields:
         role_value = llm_data.get(role_name)
         if role_value is None:
             role_value = {}
         role_override = _require_mapping(role_value, f"llm.{role_name}", config_path)
+
+        unknown_fields = set(role_override) - set(LLMRoleConfig.model_fields)
+        if unknown_fields:
+            raise ValueError(
+                f"{config_path}: llm.{role_name} has unknown field(s): {sorted(unknown_fields)} "
+                f"-- valid fields are {sorted(LLMRoleConfig.model_fields)}"
+            )
+
         roles[role_name] = _merge_role(getattr(DEFAULT_LLM_CONFIG, role_name), role_override)
 
     return LLMConfig(**roles)
