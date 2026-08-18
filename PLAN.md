@@ -583,6 +583,25 @@ class ResourceDriver(ABC):
     # ForceNew does. Subclasses that don't override it get an empty list.
     LIKELY_REPLACE_FIELDS: list[str] = []
 
+    # PARAM_SCHEMA keys read() structurally cannot recover from the CSP
+    # (e.g. a write-only field only accepted at creation time, never
+    # returned by any subsequent GET). NOT a diff-exclusion list --
+    # orchestrator.py's refresh_resource() carries a prior state entry's
+    # value for each key named here forward across every read()-driven
+    # refresh, since read() itself can never repopulate it. planner.py's
+    # diff_attributes() and a driver's own update() then do a completely
+    # ordinary current-vs-desired comparison with no special-casing:
+    # since current_attributes is already correct by the time either
+    # sees it, an unchanged desired value diffs as unchanged and a
+    # genuinely changed one still diffs against the last-known value and
+    # surfaces as a real change. (Excluding these keys from the diff
+    # directly, instead of carrying the value forward, was tried first
+    # and reverted -- it silently dropped genuine edits to the field,
+    # not just the spurious mismatches read()'s own limitation causes.)
+    # Subclasses that don't override it get an empty list, same sharing
+    # rule as LIKELY_REPLACE_FIELDS (reassign, never mutate in place).
+    NON_DIFFABLE_FIELDS: list[str] = []
+
     # Concrete, not abstract -- a driver opts in by calling these from
     # its own create()/read()/update(), not by overriding a flag.
     # specs/resource_tagging.md.
@@ -680,6 +699,7 @@ class Driver(ResourceDriver):
         "additionalProperties": True,
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def create(self, name, params, credentials): ...
 
@@ -775,13 +795,18 @@ class Driver(ResourceDriver):
      spending an `intent-orchestration-model` call on a plan that could
      never actually be applied.
 
-4. **Refresh state** for any resource in the plan that already exists in state.
-5. **Diff, deterministically first**: compute a plain dict-diff
-   between refreshed `attributes` and the desired `params`. If the
-   diff is empty **and** `aiform_md_sha256` matches the current file
-   **and** no `drifted_missing` flag is set → the action is `no-op`,
-   decided with **zero LLM calls**. This is what makes the
-   second-and-later `plan` runs cheap.
+4. **Refresh state** for any resource in the plan that already exists in
+   state — for any key in the driver's `NON_DIFFABLE_FIELDS` absent from
+   the fresh `read()` result, the refreshed `attributes` carry the prior
+   state entry's value forward rather than losing it, since `read()`
+   structurally can never repopulate that key.
+5. **Diff, deterministically first**: compute a plain dict-diff between
+   refreshed `attributes` (already correct per step 4 above, no
+   special-casing needed here) and the desired `params`. If the diff is
+   empty **and** `aiform_md_sha256` matches the current file **and** no
+   `drifted_missing` flag is set → the action is `no-op`, decided with
+   **zero LLM calls**. This is what makes the second-and-later `plan`
+   runs cheap.
 6. **Categorize with the `intent-orchestration-model`, only when
    there's something to interpret** (a real diff, a `drifted_missing`
    resource, or a changed aiform.md file): one call passing the raw

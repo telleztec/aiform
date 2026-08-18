@@ -26,6 +26,7 @@ class Driver(ResourceDriver):
         "additionalProperties": True,
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def _request(self, method, url, credentials, body=None):
         data = None
@@ -118,6 +119,7 @@ class Driver(ResourceDriver):
             raise
         attrs = self._flatten(droplet)
         attrs["monitoring"] = "monitoring" in droplet.get("features", [])
+        attrs["backups"] = "backups" in droplet.get("features", [])
         return attrs
 
     def update(self, id, current, desired, credentials):

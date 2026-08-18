@@ -23,6 +23,22 @@ neither.
    in `desired` and would otherwise show up as a permanent, un-resolvable
    diff entry forever. `diff_attributes()` therefore only ever compares
    keys present in `desired`; a key present only in `current` is ignored.
+   **Not this module's concern, but worth knowing about here**: a
+   related problem — a `desired` key naming a field the driver's
+   `read()` can never populate at all (write-only at the CSP level, e.g.
+   a droplet's `ssh_keys`) — is deliberately *not* solved by excluding
+   the key from this diff. An earlier version of this fix did exactly
+   that, and it silently dropped genuine, intended changes to the field
+   (the diff never contained the key at all, so a real edit produced the
+   same empty diff as no edit) — caught by `/code-review` and reverted.
+   The actual fix lives one layer up, in `orchestrator.py`'s
+   `refresh_resource()` (`specs/orchestrator.md`,
+   `aiform/driver.py`'s `NON_DIFFABLE_FIELDS`): it carries a prior state
+   entry's value for such a field forward across a `read()` refresh
+   instead of letting the fresh response blank it out, so by the time
+   `current_attributes` reaches this module's `diff_attributes()`, it's
+   already correct — an ordinary, unmodified diff then does the right
+   thing on its own, with no special-casing needed here at all.
 2. **`destroy` is never derived from a diff or an `intent-orchestration-model` call — it's always
    an explicit instruction, constructed deterministically by
    `destroy_entry()`.** `PLAN.md`'s "Resource deletion" section fixes this:

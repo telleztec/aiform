@@ -50,6 +50,7 @@ class DriverUpdateNotSupported(Exception):
 class ResourceDriver(ABC):
     PARAM_SCHEMA: dict[str, Any]
     LIKELY_REPLACE_FIELDS: list[str] = []
+    NON_DIFFABLE_FIELDS: list[str] = []
 
     @abstractmethod
     def create(
@@ -90,6 +91,33 @@ in Behavior below.
   reassign it, never mutate it in place (`.append(...)`), or it corrupts
   the inherited empty list for every other driver that hasn't overridden
   it yet.
+- `NON_DIFFABLE_FIELDS` — same `[]` default, same shared-class-attribute
+  reassign-don't-mutate rule as `LIKELY_REPLACE_FIELDS`. Declares
+  `PARAM_SCHEMA` keys a driver's `read()` structurally cannot ever
+  populate (write-only at the CSP level, only accepted at creation
+  time) — `driver.py` itself does nothing with this list; it's read by
+  `orchestrator.py`'s `refresh_resource()` (`specs/orchestrator.md`),
+  which carries a prior state entry's value for such a key forward
+  across a `read()` refresh instead of letting the fresh (necessarily
+  incomplete) response blank it out. **This is not a diff-exclusion
+  mechanism** — an earlier version of this fix had `planner.py`'s
+  `diff_attributes()` skip these keys entirely, which silently dropped
+  a genuine, intended change to the field (a user editing
+  `ssh_keys` in `.aiform.md` got a `no-op` plan and no error, because
+  the diff never contained the changed key at all) — caught by a
+  `/code-review` pass and reverted before merge. Carrying the value
+  forward instead means the diff itself is untouched: an unchanged
+  desired value correctly diffs as unchanged (the field it was added to
+  fix), and a genuinely changed desired value still diffs against the
+  last-known one and correctly surfaces as a real change. Added after a
+  live system-test run showed `drivers/digitalocean/compute.py`'s
+  `ssh_keys` field — accepted by `PARAM_SCHEMA` but never returned by
+  DigitalOcean's `GET /v2/droplets/{id}` at all (verified against DO's
+  public OpenAPI schema, not merely asserted) — produced a permanent,
+  spurious diff on every `plan` after the first `read()` refresh. See
+  `specs/digitalocean_compute.md` for the full worked case, including
+  why `backups` — also affected, but for a different reason — is fixed
+  differently (in `read()` itself, not via carry-forward).
 - `PARAM_SCHEMA` is a bare type annotation with no default — **not** an
   `@abstractmethod`, so Python's `abc` machinery does not enforce its
   presence at instantiation time. A subclass that omits it can still be

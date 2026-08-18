@@ -85,6 +85,10 @@ class FakeDriver(ResourceDriver):
             raise self.delete_exception
 
 
+class FakeDriverWithNonDiffableFields(FakeDriver):
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
+
+
 # Written to disk for tests that exercise load_driver()/ensure_driver_trusted()/
 # build_create_plan()/build_destroy_plan(), which dynamically import a real file.
 # Behavior is driven entirely by the `id`/`desired` values the orchestrator
@@ -118,6 +122,12 @@ class Driver(ResourceDriver):
         if id == "FAIL-DELETE":
             raise RuntimeError("simulated CSP delete failure")
 """
+
+
+FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS = FAKE_DRIVER_SOURCE.replace(
+    'LIKELY_REPLACE_FIELDS = ["image"]',
+    'LIKELY_REPLACE_FIELDS = ["image"]\n    NON_DIFFABLE_FIELDS = ["ssh_keys"]',
+)
 
 
 @pytest.fixture
@@ -457,6 +467,39 @@ class TestRefreshResource:
             orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
         assert exc_info.value.operation == "read"
 
+    def test_carries_forward_non_diffable_field_absent_from_fresh_read(self):
+        # ssh_keys can never be recovered by a real read() -- rather than
+        # letting the fresh (ssh_keys-less) response blank it out, the
+        # prior state's last-known value must survive the refresh, so an
+        # unchanged desired value still diffs as unchanged (and a genuine
+        # change is still detectable -- see TestBuildCreatePlan).
+        driver = FakeDriverWithNonDiffableFields(read_result={"id": "123", "region": "sfo3"})
+        entry = make_state_entry(id="123", attributes={"region": "sfo3", "ssh_keys": ["key-1"]})
+
+        attrs, drifted = orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        assert drifted is False
+        assert attrs["region"] == "sfo3"
+        assert attrs["ssh_keys"] == ["key-1"]
+
+    def test_does_not_carry_forward_when_fresh_read_already_includes_the_field(self):
+        driver = FakeDriverWithNonDiffableFields(
+            read_result={"id": "123", "region": "sfo3", "ssh_keys": ["fresh-value"]}
+        )
+        entry = make_state_entry(id="123", attributes={"region": "sfo3", "ssh_keys": ["key-1"]})
+
+        attrs, _ = orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        assert attrs["ssh_keys"] == ["fresh-value"]
+
+    def test_no_carry_forward_when_prior_state_never_had_the_field(self):
+        driver = FakeDriverWithNonDiffableFields(read_result={"id": "123", "region": "sfo3"})
+        entry = make_state_entry(id="123", attributes={"region": "sfo3"})
+
+        attrs, _ = orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        assert "ssh_keys" not in attrs
+
 
 class TestRefreshState:
     def test_updates_attributes_for_tracked_resources(
@@ -618,6 +661,81 @@ class TestBuildCreatePlan:
 
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(client.messages.calls) == 0
+
+    def test_non_diffable_field_mismatch_does_not_break_no_op(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # The driver's NON_DIFFABLE_FIELDS declares ssh_keys can never be
+        # recovered by read() -- refresh_resource() carries the prior
+        # state's value forward instead of letting it get blanked out
+        # (see TestRefreshResource), so an *unchanged* desired ssh_keys
+        # value must not force a categorization call just because the
+        # fake read() (like the real DO driver) never returns it.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir,
+            "digitalocean",
+            "compute",
+            source=FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS,
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(
+            aiform_md, params={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-1"]}
+        )
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-1"]},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
+
+    def test_genuine_non_diffable_field_change_is_still_detected_not_silently_dropped(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # The point of carrying the prior value forward (rather than
+        # excluding ssh_keys from the diff outright, an earlier -- wrong
+        # -- version of this fix) is that a *genuine* edit to ssh_keys in
+        # .aiform.md must still surface as a real diff and reach
+        # categorize_diff(), not silently report no-op with the user's
+        # intended key rotation never applied.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir,
+            "digitalocean",
+            "compute",
+            source=FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS,
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(
+            aiform_md, params={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-B"]}
+        )
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256="stale-hash-from-before-the-edit",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-A"]},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([categorization_response(action="update")])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.UPDATE
+        assert len(client.messages.calls) == 1
+        user_content = json.loads(client.messages.calls[0]["messages"][0]["content"])
+        assert user_content["diff"]["ssh_keys"] == {"current": ["key-A"], "desired": ["key-B"]}
 
     def test_existing_resource_diff_triggers_categorization(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch

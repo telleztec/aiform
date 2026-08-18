@@ -220,29 +220,28 @@ independent, in its own test function with its own `tmp_path`.
     error to diagnose it — never the credential's value itself," and
     this suite's own stdout/stderr can land in CI logs, so this is a
     real check, not a formality.
-11. **Known-gap coverage: a resource with `ssh_keys` configured** — a
-    separate, isolated test function (its own `tmp_path` and tracked
-    droplet, not sharing cases 1–9's), whose fixture sets a real
-    `ssh_keys` value in `params`. Create and apply it, then refresh and
-    run a second `plan create` the same way case 4 does. Unlike case 4,
-    **do not** assert a zero-call no-op here — `specs/digitalocean_compute.md`'s
-    Edge Cases section already documents that DO's `read()` can't
-    recover `ssh_keys` (they're write-only), so `attributes["ssh_keys"]`
-    comes back empty on refresh while `desired["ssh_keys"]` still has
-    the real value, producing a non-empty diff on every subsequent
-    `plan` — a real, already-known violation of the zero-Anthropic-call
-    guarantee for this configuration, not a bug this test is checking
-    for accidentally. Assert instead that this is exactly what happens:
-    the second `plan create`'s Anthropic call count is `>= 1` (the
-    `intent-orchestration-model` categorizes a real diff), and the diff
-    it categorizes names `ssh_keys`. This case exists so the suite
-    doesn't give false confidence that the no-op guarantee holds
-    universally when case 4's fixture (no `ssh_keys`) happens to dodge
-    the one configuration where it's already known not to — and so that
-    whenever this gap is eventually fixed (per
-    `specs/digitalocean_compute.md`'s named follow-up for `planner.py`),
-    this case starts failing as a visible signal to update it, rather
-    than the gap silently persisting unnoticed forever.
+11. **`ssh_keys` configured: the zero-Anthropic-call no-op guarantee
+    holds even here** — a separate, isolated test function (its own
+    `tmp_path` and tracked droplet, not sharing cases 1–9's), whose
+    fixture sets a real `ssh_keys` value in `params`. Create and apply
+    it, then refresh and run a second `plan create` the same way case 4
+    does. **This case originally existed to document the opposite** — a
+    real, then-unfixed gap where `read()`'s inability to recover
+    `ssh_keys` (write-only on DO's side) produced a non-empty diff, and
+    a real `intent-orchestration-model` call, on every subsequent `plan`
+    for any `ssh_keys`-configured resource. That gap is now closed
+    (`drivers/digitalocean/compute.py`'s `NON_DIFFABLE_FIELDS`,
+    `specs/digitalocean_compute.md`), so this case now asserts the same
+    thing case 4 does: `[verbose] 0 Anthropic API call(s) made` and a
+    `no-op` plan, this time with `ssh_keys` configured — proving the
+    guarantee holds universally, not just for case 4's fixture (which
+    happens not to set `ssh_keys`). Kept as its own case, not folded
+    into case 4, specifically so a regression that reintroduces this gap
+    (e.g. `NON_DIFFABLE_FIELDS` accidentally dropped, or a future field
+    with the same write-only shape added without the same exclusion)
+    starts failing here immediately, the same role this case always
+    played — just checking the opposite condition now that the gap it
+    watches for has actually been fixed.
 
 ## Orphan cleanup (leaked resources)
 

@@ -42,6 +42,7 @@ def make_droplet(
     image="ubuntu-24-04-x64",
     tags=None,
     monitoring_enabled=False,
+    backups_enabled=False,
     public_ip="203.0.113.10",
     private_ip="10.0.0.5",
     include_features_key=True,
@@ -61,7 +62,12 @@ def make_droplet(
         "networks": {"v4": networks_v4, "v6": []},
     }
     if include_features_key:
-        droplet["features"] = ["monitoring"] if monitoring_enabled else []
+        features = []
+        if backups_enabled:
+            features.append("backups")
+        if monitoring_enabled:
+            features.append("monitoring")
+        droplet["features"] = features
     return {"droplet": droplet}
 
 
@@ -445,13 +451,41 @@ class TestRead:
 
         assert result["monitoring"] is False
 
-    def test_ssh_keys_and_backups_are_not_included(self, driver, fake_urlopen):
+    def test_ssh_keys_is_not_included(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet()))
 
         result = driver.read("123", CREDENTIALS)
 
         assert "ssh_keys" not in result
-        assert "backups" not in result
+
+    def test_backups_recovered_from_features(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=True))
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is True
+
+    def test_backups_false_when_absent_from_features(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=False))
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is False
+
+    def test_missing_features_key_backups_does_not_raise(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(include_features_key=False)),
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is False
 
     def test_404_raises_resource_not_found_error_naming_id(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 404))

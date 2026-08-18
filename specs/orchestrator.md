@@ -417,7 +417,23 @@ the point is validating the contract, not consuming the return value. On
 last-known attributes, unchanged, plus the `drifted_missing` flag
 (`PLAN.md` §3's refresh mechanism, step 2), checked *before* the `"id"`
 popping above, since a resource that's gone has no response to validate
-in the first place. On success: returns `(attrs_without_id, False)`. Any
+in the first place. On success: for every key in
+`driver.NON_DIFFABLE_FIELDS` (`specs/driver.md`) absent from the fresh
+`attrs_without_id` but present in `state_entry.attributes`, copies the
+prior value forward into `attrs_without_id` before returning it —
+`read()`'s inability to verify a write-only field (DigitalOcean's
+`ssh_keys`, `specs/digitalocean_compute.md`) must not look like that
+field silently reverting to unset on every refresh. This is the actual
+fix for that gap; `planner.py`'s `diff_attributes()` (`specs/planner.md`)
+has no special-casing for these fields at all — by the time
+`current_attributes` reaches it, the carry-forward above has already
+made it correct, so an ordinary diff does the right thing on its own: an
+unchanged desired value diffs as unchanged, and a genuinely changed one
+still diffs against the last-known value and surfaces as a real change.
+(An earlier version of this fix excluded these fields from
+`diff_attributes()` directly instead — reverted after `/code-review`
+caught that it silently dropped genuine changes to the field, not just
+spurious ones.) Returns `(attrs_without_id, False)`. Any
 other exception from `driver.read()` is wrapped: `raise
 DriverExecutionError(state_entry.provider, state_entry.resource_type,
 "read", exc) from exc`.
@@ -503,6 +519,9 @@ next time `plan create` runs against that resource, not here.
      state_aiform_md_sha256=previous_hash,
      current_aiform_md_sha256=parsed.aiform_md_sha256,
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
+     `current_attributes` already reflects step 6's `NON_DIFFABLE_FIELDS`
+     carry-forward when `state_entry is not None` — `plan_resource()`
+     itself needs no awareness of that mechanism at all.
   8. **Structural cross-check** (judgment call 6): `entry.action ==
      PlanAction.UPDATE and state_entry is None`, or `entry.action ==
      PlanAction.CREATE and state_entry is not None and not
