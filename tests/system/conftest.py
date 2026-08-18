@@ -43,8 +43,64 @@ def live_token() -> RedactedToken:
     """The real DIGITALOCEAN_TOKEN, wrapped so it can't leak into a log.
 
     Always use this rather than reading os.environ directly in a test.
+    Note this only covers credentials *this suite* holds -- the code
+    under test resolves its own; see the scrubbing hook below.
     """
     return RedactedToken(os.environ["DIGITALOCEAN_TOKEN"])
+
+
+_SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
+
+
+def _scrub(text: str) -> str:
+    for var in _SECRET_ENV_VARS:
+        value = os.environ.get(var)
+        if value:
+            text = text.replace(value, f"<{var} redacted>")
+    return text
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Strip live credentials out of any failure report before it is written.
+
+    RedactedToken covers the token *this suite* passes around, but not
+    the one the code under test resolves for itself: cli.main() reads
+    os.environ via config.resolve_credentials(), stores a plain str in
+    PlannedResource.credentials, and hands it to apply_plan(planned,
+    ...) as a frame argument. cli.main only catches _HANDLED_EXCEPTIONS,
+    so anything else -- an anthropic 529 on the gate #2 review call is
+    the realistic one on a 7-minute live run -- propagates out as a
+    traceback, and pytest prints that frame's arguments verbatim,
+    credentials dict included.
+
+    No value-level wrapper can reach that path, because the value is
+    constructed inside the code under test. Scrubbing the rendered
+    report is the layer that actually covers every source at once, so
+    this is the backstop rather than the first line of defence
+    (RedactedToken still keeps the token out of the common assert-
+    introspection path, and keeps it readable when it does show).
+
+    Replacing longrepr with a plain string costs syntax highlighting and
+    the reprcrash the "short test summary info" line is built from (that
+    line falls back to showing the first source line rather than the
+    exception message). The full traceback in the FAILURES section is
+    unaffected, which is the part used to diagnose. That trade only
+    applies to a report that genuinely carried a secret -- every other
+    failure renders exactly as before.
+    """
+    report = yield
+
+    if report.longrepr is not None:
+        rendered = str(report.longrepr)
+        scrubbed = _scrub(rendered)
+        if scrubbed != rendered:
+            report.longrepr = scrubbed
+
+    if report.sections:
+        report.sections = [(name, _scrub(content)) for name, content in report.sections]
+
+    return report
 
 
 SYSTEM_TEST_TAG = "aiform-system-test"
@@ -151,7 +207,7 @@ def get_droplet_or_none(token: str, droplet_id: str) -> dict | None:
 
 
 def wait_until_droplet_gone(
-    token: str, droplet_id: str, *, timeout_seconds: int = 120, poll_seconds: int = 5
+    token: str, droplet_id: str, *, timeout_seconds: int = 300, poll_seconds: int = 5
 ) -> dict | None:
     """Poll until `droplet_id` 404s. Returns None once it's gone, or the
     still-live droplet if it outlasts the timeout.
@@ -164,18 +220,42 @@ def wait_until_droplet_gone(
     "is it actually gone" check that has to tolerate the lag, or it
     races DO's own convergence and fails a destroy that in fact worked.
 
+    The deadline is deliberately generous. All we actually know about
+    DO's convergence time is one observation -- a droplet still live at
+    the moment of the check and confirmed gone "minutes later" -- which
+    bounds it from *above*, not below. A too-short deadline reproduces
+    the exact failure this helper exists to prevent, and costs nothing
+    on the happy path since the loop returns on the first 404.
+
+    Transient errors do not end the poll, for the same reason:
+    get_droplet_or_none() re-raises every non-404, so without this a
+    single DO 500/429 or socket timeout on any one of ~60 GETs would
+    fail a destroy that had already succeeded. An error is only
+    surfaced if the deadline passes without ever observing a 404.
+
     Returns the droplet rather than raising so callers can assert on the
     result: passing `token` into an asserted expression puts the live
-    credential into pytest's assertion-introspection output, which is
-    written verbatim to .aiform/testlog/*.log.
+    credential into pytest's assertion-introspection output.
     """
     deadline = time.monotonic() + timeout_seconds
+    last_droplet: dict | None = None
+    last_error: Exception | None = None
+
     while True:
-        droplet = get_droplet_or_none(token, droplet_id)
-        if droplet is None:
-            return None
+        try:
+            droplet = get_droplet_or_none(token, droplet_id)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = exc
+        else:
+            if droplet is None:
+                return None
+            last_droplet, last_error = droplet, None
+
         if time.monotonic() >= deadline:
-            return droplet
+            if last_error is not None:
+                raise last_error
+            return last_droplet
+
         time.sleep(poll_seconds)
 
 
