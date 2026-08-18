@@ -45,13 +45,22 @@ class ResourceDriver(ABC):
     # PARAM_SCHEMA keys read() structurally cannot recover from the CSP
     # (a write-only field only accepted at creation time, never returned
     # by any subsequent GET) — authoritative, not advisory like
-    # LIKELY_REPLACE_FIELDS above: the orchestrator's diff engine must
-    # exclude every key named here from the current-vs-desired
-    # comparison entirely, rather than comparing against a value read()
-    # can never populate and treating the perpetual mismatch as a real
-    # diff. A driver's own update() must apply the same exclusion to
-    # whatever per-field diff it computes internally. Same shared-class-
-    # attribute reassign-don't-mutate rule as LIKELY_REPLACE_FIELDS.
+    # LIKELY_REPLACE_FIELDS above. This class itself does nothing with
+    # the list; it's read by orchestrator.py's refresh_resource(), which
+    # carries a prior state entry's value for such a key forward across
+    # every read()-driven refresh instead of letting the necessarily
+    # incomplete response blank it out. This is NOT a diff-exclusion
+    # mechanism: neither planner.py's diff_attributes() nor a driver's
+    # own update() should skip these keys in their comparisons — an
+    # earlier version did exactly that and it silently dropped a
+    # genuine, intended change to the field (reverted after /code-review
+    # caught it; see specs/driver.md and specs/digitalocean_compute.md).
+    # Carrying the value forward keeps the plain comparison correct on
+    # both sides: unchanged -> still matches -> no-op; changed -> diffs
+    # against the last-known value -> reaches update(), which then
+    # raises DriverUpdateNotSupported for a field it can't apply live.
+    # Same shared-class-attribute reassign-don't-mutate rule as
+    # LIKELY_REPLACE_FIELDS.
     NON_DIFFABLE_FIELDS: list[str] = []
 
     @abstractmethod

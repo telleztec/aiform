@@ -123,6 +123,17 @@ class Driver(ResourceDriver):
         return attrs
 
     def update(self, id, current, desired, credentials):
+        # Deliberately does NOT special-case NON_DIFFABLE_FIELDS
+        # (ssh_keys) out of this comparison. read() can never repopulate
+        # ssh_keys (DO's droplet GET has no such field), but the caller
+        # (aiform/orchestrator.py's refresh_resource()) carries the prior
+        # state's ssh_keys value forward into `current` before update()
+        # is ever invoked -- by the time this runs, an unchanged ssh_keys
+        # already matches desired, and a genuinely changed one already
+        # differs, exactly like any other field. Excluding it here
+        # instead would silently drop a real ssh_keys edit (this was
+        # tried and reverted -- see specs/digitalocean_compute.md's Edge
+        # cases and aiform/driver.py's NON_DIFFABLE_FIELDS docstring).
         diff_fields = [
             key
             for key in self.PARAM_SCHEMA["properties"]
