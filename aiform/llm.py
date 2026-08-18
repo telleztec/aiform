@@ -98,7 +98,7 @@ def _implementation_tier_call(
     user_content: str,
     *,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
@@ -108,7 +108,7 @@ def _implementation_tier_call(
         system_prompt,
         user_content,
         output_schema=output_schema,
-        max_tokens=max_tokens,
+        max_tokens=max_tokens if max_tokens is not None else role.max_tokens,
         client=client,
     )
 
@@ -118,7 +118,7 @@ def intent_orchestration_call(
     user_content: str,
     *,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
@@ -138,7 +138,7 @@ def code_generator_call(
     user_content: str,
     *,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str:
@@ -166,6 +166,7 @@ def review_driver(
         system_prompt,
         driver_source,
         output_schema=DRIVER_REVIEW_SCHEMA,
+        max_tokens=role.max_tokens,
         client=client,
     )
     data = json.loads(response_text)
@@ -191,6 +192,7 @@ def review_plan(
         system_prompt,
         plan_summary,
         output_schema=PLAN_REVIEW_SCHEMA,
+        max_tokens=role.max_tokens,
         client=client,
     )
     return PlanReview.model_validate_json(response_text)

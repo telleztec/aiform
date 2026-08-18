@@ -62,15 +62,29 @@ def make_llm_config(
     code_generator_model: str = "claude-sonnet-5",
     code_review_model: str = "claude-opus-5",
     review_orchestration_model: str = "claude-opus-5",
+    intent_orchestration_max_tokens: int = 4096,
+    code_generator_max_tokens: int = 4096,
+    code_review_max_tokens: int = 8192,
+    review_orchestration_max_tokens: int = 8192,
 ) -> LLMConfig:
     return LLMConfig(
         intent_orchestration=LLMRoleConfig(
-            source=ModelSource.ANTHROPIC, model=intent_orchestration_model
+            source=ModelSource.ANTHROPIC,
+            model=intent_orchestration_model,
+            max_tokens=intent_orchestration_max_tokens,
         ),
-        code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_generator_model),
-        code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_review_model),
+        code_generator=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC,
+            model=code_generator_model,
+            max_tokens=code_generator_max_tokens,
+        ),
+        code_review=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC, model=code_review_model, max_tokens=code_review_max_tokens
+        ),
         review_orchestration=LLMRoleConfig(
-            source=ModelSource.ANTHROPIC, model=review_orchestration_model
+            source=ModelSource.ANTHROPIC,
+            model=review_orchestration_model,
+            max_tokens=review_orchestration_max_tokens,
         ),
     )
 
@@ -156,6 +170,12 @@ class TestIntentOrchestrationCall:
         llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
         assert client.messages.calls[0]["max_tokens"] == 4096
 
+    def test_uses_role_configured_max_tokens_not_a_hardcoded_default(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(intent_orchestration_max_tokens=12345)
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=config)
+        assert client.messages.calls[0]["max_tokens"] == 12345
+
     def test_max_tokens_override(self):
         client = FakeClient("ignored")
         llm.intent_orchestration_call(
@@ -228,6 +248,12 @@ class TestCodeGeneratorCall:
         client = FakeClient("ignored")
         llm.code_generator_call("system", "user", client=client, llm_config=make_llm_config())
         assert client.messages.calls[0]["max_tokens"] == 4096
+
+    def test_uses_role_configured_max_tokens_not_a_hardcoded_default(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(code_generator_max_tokens=12345)
+        llm.code_generator_call("system", "user", client=client, llm_config=config)
+        assert client.messages.calls[0]["max_tokens"] == 12345
 
     def test_max_tokens_override(self):
         client = FakeClient("ignored")
@@ -304,6 +330,15 @@ class TestReviewDriver:
         assert call["system"] == (prompts_dir / "review_driver.md").read_text()
         assert call["messages"] == [{"role": "user", "content": "driver source code"}]
 
+    def test_uses_role_configured_max_tokens(self, prompts_dir: Path):
+        response_text = json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
+        client = FakeClient(response_text)
+        config = make_llm_config(code_review_max_tokens=12345)
+
+        llm.review_driver("driver source code", client=client, llm_config=config)
+
+        assert client.messages.calls[0]["max_tokens"] == 12345
+
     def test_raises_when_approved_with_blocking_issues(self, prompts_dir: Path):
         response_text = json.dumps(
             {"approved": True, "concerns": [], "blocking_issues": ["delete() is not idempotent"]}
@@ -357,6 +392,15 @@ class TestReviewPlan:
         call = client.messages.calls[0]
         assert call["system"] == (prompts_dir / "review_plan.md").read_text()
         assert call["messages"] == [{"role": "user", "content": "plan summary text"}]
+
+    def test_uses_role_configured_max_tokens(self, prompts_dir: Path):
+        response_text = json.dumps({"safe_to_proceed": True, "flags": []})
+        client = FakeClient(response_text)
+        config = make_llm_config(review_orchestration_max_tokens=12345)
+
+        llm.review_plan("plan summary text", client=client, llm_config=config)
+
+        assert client.messages.calls[0]["max_tokens"] == 12345
 
 
 class TestRealPromptFiles:

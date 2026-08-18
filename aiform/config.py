@@ -15,10 +15,16 @@ PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
 DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(
-    intent_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-    code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-    code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
-    review_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+    intent_orchestration=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+    ),
+    code_generator=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+    ),
+    code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192),
+    review_orchestration=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
+    ),
 )
 
 
@@ -67,9 +73,11 @@ def resolve_credentials(
 def _merge_role(default: LLMRoleConfig, override: dict) -> LLMRoleConfig:
     source = override.get("source")
     model = override.get("model")
+    max_tokens = override.get("max_tokens")
     return LLMRoleConfig(
         source=source if source is not None else default.source,
         model=model if model is not None else default.model,
+        max_tokens=max_tokens if max_tokens is not None else default.max_tokens,
     )
 
 

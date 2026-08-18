@@ -60,6 +60,7 @@ class ModelSource(str, Enum):
 class LLMRoleConfig(BaseModel):
     source: ModelSource
     model: str
+    max_tokens: int
 
 
 class LLMConfig(BaseModel):

@@ -39,10 +39,18 @@ def resolve_credentials(
 DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
-    intent_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-    code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-sonnet-5"),
-    code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
-    review_orchestration=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+    intent_orchestration=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+    ),
+    code_generator=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
+    ),
+    code_review=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
+    ),
+    review_orchestration=LLMRoleConfig(
+        source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
+    ),
 )
 
 
@@ -80,16 +88,30 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
     intent_orchestration:
       source: anthropic
       model: claude-sonnet-5
+      max_tokens: 4096
     code_generator:
       source: anthropic
       model: claude-sonnet-5
+      max_tokens: 4096
     code_review:
       source: anthropic
       model: claude-opus-5
+      max_tokens: 8192
     review_orchestration:
       source: anthropic
       model: claude-opus-5
+      max_tokens: 8192
   ```
+  `code_review`/`review_orchestration` default higher than the other
+  two roles: both are Opus-tier gates whose prompts ask for detailed
+  critique prose (`concerns`/`blocking_issues`, or a `flags[].concern`
+  per finding), and Opus's own (apparently automatic) extended-thinking
+  output competes with that prose for the same `max_tokens` budget —
+  a live system-test run caught `code_review`'s response getting
+  truncated mid-string when thinking alone consumed the majority of a
+  4096-token budget, verified directly against
+  `usage.output_tokens_details.thinking_tokens` on the actual API
+  response, not inferred from the error message alone.
 - File missing entirely → returns `DEFAULT_LLM_CONFIG` unchanged. Unlike
   `resolve_credentials()`, there is no error path for "nothing
   configured" — every field has a safe default, so an MVP user never
@@ -99,9 +121,12 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
   values; this is a shallow merge over `DEFAULT_LLM_CONFIG`, applied
   **per role independently** — not a replace-the-whole-role-object-if-
   any-key-is-present merge — setting `llm.code_review.model` alone must
-  not silently reset `llm.code_review.source` to some other value, and
-  must not touch `intent_orchestration`/`code_generator`/
-  `review_orchestration` at all.
+  not silently reset `llm.code_review.source`/`max_tokens` to some other
+  value, and must not touch `intent_orchestration`/`code_generator`/
+  `review_orchestration` at all. Same per-field independence applies to
+  overriding just `max_tokens` alone (e.g. a user who wants
+  `code_review`'s higher budget applied to `intent_orchestration` too,
+  without changing its `model`).
 - File present but empty, or present with no `llm:` key → same as
   missing: `DEFAULT_LLM_CONFIG`.
 - `source: bedrock` (or any string that isn't a valid `ModelSource`

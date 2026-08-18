@@ -125,6 +125,7 @@ class ModelSource(str, Enum):
 class LLMRoleConfig(BaseModel):
     source: ModelSource
     model: str
+    max_tokens: int
 
 
 class LLMConfig(BaseModel):
@@ -143,6 +144,24 @@ class LLMConfig(BaseModel):
 - `LLMRoleConfig.model` is a plain `str`, not its own enum — model
   *names* change far more often than model *sources*, and there's no
   fixed set to validate against.
+- `LLMRoleConfig.max_tokens` is required, no pydantic-level default —
+  same reasoning as `source`/`model`: every default value lives in
+  `config.py`'s `DEFAULT_LLM_CONFIG`, the single source of truth, not
+  duplicated here. Added after a live system-test run against
+  `code_review`'s gate #1 call surfaced that Opus's (apparently
+  automatic) extended-thinking output can consume most of a shared
+  `max_tokens` budget before the actual structured JSON response even
+  starts, occasionally truncating it mid-string — a real capacity bug,
+  not a hypothetical one, caught by directly inspecting a live
+  response's `usage.output_tokens_details.thinking_tokens` against the
+  budget. A single hardcoded `max_tokens` shared across all four roles
+  (the pre-existing design, still visible in `specs/llm.md`'s function
+  signatures) couldn't express that `code_review`/`review_orchestration`
+  need materially more headroom than `intent_orchestration`'s or
+  `code_generator`'s lighter, more routine calls — this is the same
+  "independently configurable per role, not a hardcoded constant"
+  principle `CLAUDE.md`'s model-tiering rules already apply to
+  `source`/`model`, extended to the token budget too.
 - `LLMConfig` has exactly four roles — `intent_orchestration`,
   `code_generator`, `code_review`, `review_orchestration` — matching
   `PLAN.md`'s "Model tiering" design one-to-one: `intent_orchestration`
@@ -262,13 +281,18 @@ implementation pass, not a deliberate asymmetry.
   `PlanReviewFlag` objects with `severity` as a `PlanReviewSeverity`
   member, not a raw string.
 - `LLMConfig(intent_orchestration={"source": "anthropic", "model":
-  "claude-sonnet-5"}, code_generator={"source": "anthropic", "model":
-  "claude-sonnet-5"}, code_review={"source": "anthropic", "model":
-  "claude-opus-5"}, review_orchestration={"source": "anthropic", "model":
-  "claude-opus-5"})` parses all four roles into `LLMRoleConfig` objects
-  with `source` as a `ModelSource` member, not a raw string.
-- `LLMRoleConfig(source="bedrock", model="...")` raises a validation
-  error today — `ModelSource` has exactly one member.
+  "claude-sonnet-5", "max_tokens": 4096}, code_generator={"source":
+  "anthropic", "model": "claude-sonnet-5", "max_tokens": 4096},
+  code_review={"source": "anthropic", "model": "claude-opus-5",
+  "max_tokens": 8192}, review_orchestration={"source": "anthropic",
+  "model": "claude-opus-5", "max_tokens": 8192})` parses all four roles
+  into `LLMRoleConfig` objects with `source` as a `ModelSource` member,
+  not a raw string.
+- `LLMRoleConfig(source="bedrock", model="...", max_tokens=4096)` raises
+  a validation error today — `ModelSource` has exactly one member.
+- `LLMRoleConfig(source="anthropic", model="...")` (omitting
+  `max_tokens`) raises a validation error — required, same as `source`
+  and `model`.
 
 ## Edge cases / errors
 

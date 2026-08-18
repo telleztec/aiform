@@ -82,6 +82,7 @@ class ModelSource(str, Enum):
 class LLMRoleConfig(BaseModel):
     source: ModelSource
     model: str
+    max_tokens: int
 
 
 class LLMConfig(BaseModel):
@@ -101,6 +102,10 @@ model *sources*, and there's no fixed set to validate against (Anthropic
 alone will presumably ship new model names over this project's
 lifetime). `LLMConfig`'s four fields are independent — see "Second
 revision" above for why they aren't collapsed back into two.
+`max_tokens` is the third independently configurable field per role
+(alongside `source`/`model`), added after a live system-test run
+surfaced that a single shared budget can't fit both roles' needs — see
+"`max_tokens` is per-role, not a shared constant" below.
 
 ## `aiform/config.py` needs a second resolver
 
@@ -118,15 +123,19 @@ llm:
   intent_orchestration:
     source: anthropic
     model: claude-sonnet-5
+    max_tokens: 4096
   code_generator:
     source: anthropic
     model: claude-sonnet-5
+    max_tokens: 4096
   code_review:
     source: anthropic
     model: claude-opus-5
+    max_tokens: 8192
   review_orchestration:
     source: anthropic
     model: claude-opus-5
+    max_tokens: 8192
 ```
 
 Defaults (used for any field the file omits, or for everything if the
@@ -140,6 +149,37 @@ A user who only wants to change one role (e.g. swap `code_generator` to
 a newer/cheaper model as pricing changes) overrides just that one field;
 the other three keep their defaults — see `resolve_llm_config()`'s
 per-field-default-merge behavior below.
+
+### `max_tokens` is per-role, not a shared constant
+
+Originally every one of the four public call functions below took its
+own `max_tokens: int = 4096` parameter, all defaulting to the same
+hardcoded value regardless of role. A live system-test run against
+`code_review`'s gate #1 call surfaced why that's wrong: the model
+Anthropic resolves for `code_review`/`review_orchestration` runs with
+adaptive thinking on by default (see `_anthropic_call`'s note below),
+and that thinking output shares the same `max_tokens` budget as the
+actual response text. Directly inspecting a live response's
+`usage.output_tokens_details.thinking_tokens` showed thinking alone
+consuming the majority of a 4096-token budget on one real call,
+occasionally leaving too little room for `code_review`'s verbose
+`concerns`/`blocking_issues` prose to finish generating — the JSON
+response gets cut off mid-string, and `json.loads()` fails downstream
+with a generic parse error that gives no hint the real cause is a token
+budget, not malformed output.
+
+`max_tokens` moved onto `LLMRoleConfig` (`specs/models.md`) so each role
+resolves its own configured budget instead of sharing one constant —
+`intent_orchestration`/`code_generator` keep the original `4096`
+(lighter, more routine calls; no observed need for more), `code_review`/
+`review_orchestration` default to `8192` (same model tier and prose-heavy
+schema shape as the one that was directly observed truncating).
+`intent_orchestration_call()`/`code_generator_call()` still accept an
+explicit `max_tokens` override parameter (now `None` by default, meaning
+"use the resolved role's own value" instead of a hardcoded literal);
+`review_driver()`/`review_plan()` don't expose one — they resolve their
+role's `max_tokens` internally, with no caller-facing override, matching
+their existing signatures which don't expose `output_schema` either.
 
 ## Interface
 
@@ -170,7 +210,7 @@ def intent_orchestration_call(
     user_content: str,
     *,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str: ...
@@ -181,7 +221,7 @@ def code_generator_call(
     user_content: str,
     *,
     output_schema: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> str: ...
@@ -230,26 +270,30 @@ role's `model` string. This one dict *is* the extensibility seam —
 nothing else about these four public functions needs to change to add a
 source.
 
-### `intent_orchestration_call(system_prompt, user_content, *, output_schema=None, max_tokens=4096, client=None, llm_config=None) -> str`
+### `intent_orchestration_call(system_prompt, user_content, *, output_schema=None, max_tokens=None, client=None, llm_config=None) -> str`
 
 Backs the `intent-orchestration-model` role: the one function reused by
 `parser.py`'s intent extraction and `planner.py`'s diff categorization
 — each supplies its own prompt and, when it wants structured output,
 its own schema. Resolves which model/source to use from
 `llm_config.intent_orchestration` (or `config.resolve_llm_config()` if
-`llm_config` isn't given) instead of a hardcoded constant. Always
-returns the raw response text as a plain `str` — parsing/validating it
-is the caller's job.
+`llm_config` isn't given) instead of a hardcoded constant. `max_tokens`
+defaults to `None`, meaning "use `llm_config.intent_orchestration.max_tokens`"
+— an explicit value overrides the resolved role's own budget for that
+one call, same override pattern as `output_schema`. Always returns the
+raw response text as a plain `str` — parsing/validating it is the
+caller's job.
 
-### `code_generator_call(system_prompt, user_content, *, output_schema=None, max_tokens=4096, client=None, llm_config=None) -> str`
+### `code_generator_call(system_prompt, user_content, *, output_schema=None, max_tokens=None, client=None, llm_config=None) -> str`
 
 Backs the `code-generator-model` role: `driver_gen.py`'s driver
 drafting, the one caller of this function in the MVP (deferred, not
 invoked by `plan`/`apply` — `PLAN.md`'s "Driver curation"). Same
 contract as `intent_orchestration_call()` — raw text out, caller
-parses/validates — resolving `llm_config.code_generator` instead.
-`driver_gen.py` calls this with no `output_schema`: Python source isn't
-a good fit for `output_config.format` (`PLAN.md` §5 step 3a).
+parses/validates, `max_tokens=None` meaning "use the resolved role's own
+value" — resolving `llm_config.code_generator` instead. `driver_gen.py`
+calls this with no `output_schema`: Python source isn't a good fit for
+`output_config.format` (`PLAN.md` §5 step 3a).
 
 Both functions above share an identical signature and differ only in
 which `LLMRoleConfig` they resolve — deliberately: a caller that needs
@@ -263,7 +307,10 @@ Backs the `code-review-model` role, gate #1. Loads
 `prompts/review_driver.md` from `PROMPTS_DIR` internally, constrains
 output to `DRIVER_REVIEW_SCHEMA`, stamps `reviewed_at`/`model` onto the
 raw `{approved, concerns, blocking_issues}` response to build the
-`DriverReview`. The model used for the call is
+`DriverReview`. Resolves and passes `llm_config.code_review.max_tokens`
+to the underlying call — no caller-facing override, unlike
+`intent_orchestration_call()`/`code_generator_call()`. The model used
+for the call is
 `llm_config.code_review.model` via `MODEL_SOURCES[llm_config.code_review.source]`,
 and the `model` field stamped onto the resulting `DriverReview` is that
 resolved model string — not a hardcoded `"claude-opus-5"`. If a
@@ -273,8 +320,8 @@ correctly reflects what actually reviewed it.
 ### `review_plan(plan_summary, *, client=None, llm_config=None) -> PlanReview`
 
 Backs the `review-orchestration-model` role, gate #2. Same shape as
-`review_driver()` — model resolved from `llm_config.review_orchestration`
-instead.
+`review_driver()` — model and `max_tokens` resolved from
+`llm_config.review_orchestration` instead.
 
 ### `llm_config` parameter (on all four public functions)
 
