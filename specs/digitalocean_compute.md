@@ -86,17 +86,28 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   contract), never a key inside `params`. See the former "Where does the
   droplet's `name` come from?" Edge case below, now resolved rather than
   left open.
-- **Exactly one API call** — per `PLAN.md` §8 step 3 ("Executes
-  `driver.create(name, params, credentials)` — one real DO API call"),
-  this method does **not** poll until the droplet reaches `status: "active"`.
-  DigitalOcean's create response is `202 Accepted` with the droplet
-  object already in the body, typically `status: "new"` and
-  `networks.v4: []` (no IP yet) — that's an acceptable return value.
-  Convergence to `"active"` (and a real IP) is picked up later by a
-  subsequent `read()` call during the next `plan`/`refresh`, per this
-  project's "state is a cache of live reality, refreshed via `read()`"
-  design — `create()` is not responsible for waiting out DO's own
-  asynchronous provisioning.
+- **One mutating call, plus polling GETs to convergence.** `PLAN.md` §9
+  step 3's "one real DO API call" describes this step of the MVP
+  walkthrough at the level of "this is a real CSP-side operation, not an
+  LLM-only step" — not a literal one-HTTP-request budget on `create()`
+  internally, the same way `update()`'s in-place resize already makes
+  several (power-off, poll, resize, poll, power-on, poll) without
+  violating that framing. DigitalOcean's create response is `202
+  Accepted` with the droplet object already in the body, typically
+  `status: "new"` and `networks.v4: []` (no IP yet) — `create()` takes
+  only the new `id` from that response and then polls `GET
+  /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
+  `update()` uses, bounded the same way: `max_attempts=20`,
+  `delay_seconds=2`, raising `TimeoutError` naming the droplet `id` on
+  exhaustion) until `status == "active"`, discarding the transient POST
+  body in favor of the converged GET response. This was originally
+  designed the other way (no polling, convergence picked up by a later
+  `plan`/`refresh`) but that left `create()` returning a permanently
+  wrong `status`/`ipv4_address` immediately after every `apply` and was
+  inconsistent with `update()`'s own convergence-polling — revised after
+  a live `code-review-model` run against the curated driver flagged the
+  missing convergence handling as a real correctness gap, not a false
+  positive.
 - Returns a **flattened** dict whose keys mirror `PARAM_SCHEMA`'s flat
   shape (plus `id`/`status`/`ipv4_address` — note that key name, not
   `ip_address`: it must match the field name `PLAN.md`'s worked
@@ -236,9 +247,10 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      drop those three keys from state on every successful resize, a
      worse, undisclosed version of the refresh-only gap Edge cases
      describes below.
-  This is the one path in this driver allowed more than one API call —
-  unlike `create`/`read`/`delete`, an in-place resize is a genuinely
-  multi-step DO operation, not a single request.
+  Alongside `create`'s own convergence-polling (see Behavior above),
+  this is one of the two paths in this driver that make more than one
+  API call — `read`/`delete` remain genuinely single-request. An
+  in-place resize is a multi-step DO operation, not a single request.
   **If any polling step (2, 5, or 6) exhausts its bounded attempt
   budget without reaching the target state**, raise a plain
   `TimeoutError` naming which step and the droplet `id` — don't retry
@@ -250,6 +262,24 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *unexpected* and should surface as a loud error for a human to
   investigate, not trigger an automatic destroy+recreate against a
   droplet that might still complete the resize a moment later.
+- **`create()`'s convergence poll timing out orphans a real droplet.**
+  If the `POST /v2/droplets` call already succeeded (the droplet exists
+  and is billing) but the subsequent poll to `status == "active"`
+  exhausts its bounded attempts (or hits a transient error), `create()`
+  raises `TimeoutError` and `aiform/orchestrator.py`'s `apply_plan()`
+  never gets a return value to write into `state.json` — the droplet
+  is real but untracked. This isn't specific to `create()`: `update()`'s
+  own poll timeout above has the same shape (a mutating action already
+  succeeded before the poll that follows it times out). Neither is
+  fixed here — `PLAN.md` §10's "Timeout/retry/failover orchestration
+  for driver network calls" entry tracks the general gap (no retry
+  layer, and no orchestrator-level recovery for a driver call that
+  fails after partially succeeding). What *is* addressed here: the
+  poll's bounded-attempt budget is sized generously enough
+  (`max_attempts=60`, `delay_seconds=3` — 180 seconds) that a
+  legitimately-provisioning droplet essentially never hits it in
+  practice; this remains a real but rare failure mode, not a
+  routinely-triggered one.
 - `PLAN.md` §8 step 2 itself anticipates a first-generation `update()`
   might be cruder than this (e.g. "resizes on *any* diff instead of
   scoping to `size`/`region`") and treats that as a
@@ -325,8 +355,6 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
 ## Out of scope
 
-- **Polling `create()` to `"active"`** — deliberately not done, per
-  `PLAN.md` §8's "one real DO API call" framing (see Behavior above).
 - **In-place update support for `ssh_keys`/`backups`/`monitoring`/`tags`**
   — DO likely exposes narrower endpoints for some of these (e.g.
   `enable_backups`/`disable_backups` actions), but supporting them is

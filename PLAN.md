@@ -1106,10 +1106,15 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    `intent-orchestration-model` categorization call).
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
-   `driver.create(name, params, credentials)` — one real DO API
-   call. `.aiform/state.json` written with the resource entry, including
-   `driver.sha256` and the `code_review` record recorded by step 2's
-   re-review call.
+   `driver.create(name, params, credentials)` — a real DO operation, as
+   opposed to the LLM-only steps around it (not a literal one-HTTP-request
+   budget: `create()` itself makes one mutating `POST` plus bounded
+   polling `GET`s until the droplet converges to `status: "active"`,
+   the same convergence-polling shape `update()`'s in-place resize
+   already uses — see `specs/digitalocean_compute.md`'s `create()`
+   Behavior section). `.aiform/state.json` written with the resource
+   entry, including `driver.sha256` and the `code_review` record
+   recorded by step 2's re-review call.
 4. **Second `aiform plan create`** — `driver.read(id, credentials)` refreshes
    attributes (one DO call), `aiform_md_sha256` matches the unchanged
    file, dict-diff empty → `no-op` reported with **zero Anthropic API
@@ -1283,10 +1288,16 @@ entry's own note below.
   is `drivers/digitalocean/compute.py`'s own `REQUEST_TIMEOUT_SECONDS`
   on each raw `urllib` call and `_poll_until`'s local
   convergence-polling loop (`max_attempts`/`delay_seconds`) for
-  resize/power actions — neither retries a failed request. A transient
-  DigitalOcean or Anthropic `5xx`/`429` today just propagates as a hard
-  failure (`DriverExecutionError`, or an uncaught `anthropic` error).
-  `specs/system_test.md`'s Edge Cases section names the consequence
+  `create`'s convergence-to-`"active"` wait and `update`'s
+  resize/power actions — neither retries a failed request, and neither
+  layer feeds back into `aiform/orchestrator.py`: if a poll loop times
+  out or hits a transient error *after* its mutating call already
+  succeeded (the droplet genuinely exists, or was already resized), the
+  exception still propagates as a hard failure and `state.json` is
+  never updated, leaving a real, billable resource untracked. A
+  transient DigitalOcean or Anthropic `5xx`/`429` today just propagates
+  as a hard failure (`DriverExecutionError`, or an uncaught `anthropic`
+  error). `specs/system_test.md`'s Edge Cases section names the consequence
   directly: a real transient error during the live system-test suite
   must surface as a visible test failure rather than being retried away
   by the test itself, precisely because there's no retry layer yet that
@@ -1296,7 +1307,32 @@ entry's own note below.
   configurable per-role/per-driver the same way model tiering is, and
   how it interacts with the review-gate LLM calls (a review-tier call
   retried mid-flow must not silently double-bill or re-trigger a gate
-  the user already confirmed).
+  the user already confirmed). **When this actually gets built, replace
+  the two hardcoded `_poll_until` budgets it's meant to supersede**,
+  both in `drivers/digitalocean/compute.py`: the default
+  (`max_attempts=20`, `delay_seconds=2` — 40s, used by `update`'s
+  power-off/resize/power-on actions) and `create`'s own override
+  (`max_attempts=60`, `delay_seconds=3` — 180s, widened specifically
+  because the default was tuned for `update` and timed out too eagerly
+  on full droplet provisioning). Both are guesses tuned against one
+  CSP's observed behavior, not a real policy — likely candidates for
+  whatever configurable retry/backoff mechanism this entry ends up
+  designing, rather than two more magic numbers to hand-tune again
+  later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
+  has no error tolerance at all today.** `drivers/digitalocean/compute.py`'s
+  `_get_droplet()` call inside that loop doesn't catch `HTTPError` — so
+  a single transient error on *any one* poll attempt (a `429` from the
+  exact rate-limit/quota mechanism a tight, fixed-interval polling
+  cadence risks triggering, or an ordinary `5xx`) aborts the entire
+  `create`/`update` operation immediately, rather than being tolerated
+  and retried on the next interval. This is a real risk today only at
+  the margins (a single resource's poll loop stays well under DO's
+  per-token rate limit on its own), but becomes materially sharper once
+  the "no dependency graph" gap above is closed and multiple resources
+  can be created/updated concurrently — N concurrent poll loops multiply
+  the aggregate request rate, and this loop's current all-or-nothing
+  behavior means a single rate-limit hit anywhere kills that resource's
+  entire operation rather than just slowing it down.
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two

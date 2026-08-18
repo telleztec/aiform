@@ -128,15 +128,22 @@ independent, in its own test function with its own `tmp_path`.
    review, not step 2's (step 2's result is discarded — `plan create`
    never persists a driver trust record on its own, only a
    resource-creating `apply` does). Beyond that: executes a real
-   `driver.create()` (one DO API call per
-   `specs/digitalocean_compute.md`'s "exactly one API call"); assert
-   the printed result includes an `id`; assert `.aiform/state.json` now
-   has one resource entry carrying `driver.sha256` and a `code_review`
-   record; assert `.aiform/state.json.backup` exists (written before
+   `driver.create()` (see the note below on its actual DO-call
+   footprint); assert the printed result includes an `id`; assert
+   `.aiform/state.json` now has one resource entry carrying
+   `driver.sha256` and a `code_review` record; assert
+   `.aiform/state.json.backup` exists (written before
    the overwrite, per CLAUDE.md's state-handling rule). From this point
    on — every case after this one — the driver's hash is trust-cached
    against this resource's state entry, so gate #1 does not fire again
    for the rest of this sequence (see case 7's note).
+
+   Note: `driver.create()` itself is no longer a single HTTP request —
+   per `specs/digitalocean_compute.md`'s `create()` Behavior section, it
+   now polls `GET /v2/droplets/{id}` until the droplet reaches
+   `status: "active"` before returning, so this step also blocks for as
+   long as that convergence takes (bounded by the driver's own poll
+   timeout). Don't assert a DO-call count of exactly `1` for this step.
 4. **Second `plan create`, file unchanged** — the concrete proof of the
    zero-Anthropic-call no-op guarantee (`PLAN.md` §9 step 4, CLAUDE.md's
    "must make zero Anthropic API calls" rule): run with `--verbose` and

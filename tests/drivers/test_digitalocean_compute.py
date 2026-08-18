@@ -177,10 +177,10 @@ class TestCreate:
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
 
         driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
-        assert len(fake_urlopen.calls) == 1
         call = fake_urlopen.calls[0]
         assert call["method"] == "POST"
         assert call["url"] == droplets_url()
@@ -192,6 +192,7 @@ class TestCreate:
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
 
         driver.create(NAME, params, CREDENTIALS)
 
@@ -204,7 +205,12 @@ class TestCreate:
         assert body["backups"] is True
         assert body["tags"] == params["tags"]
 
-    def test_returns_flattened_attributes_from_response(self, driver, fake_urlopen):
+    def test_returns_flattened_attributes_from_the_converged_poll_response(
+        self, driver, fake_urlopen
+    ):
+        # The initial POST response (still "new") is deliberately discarded
+        # by create() -- the returned attributes must reflect the final,
+        # converged GET, not DO's transient 202 body.
         fake_urlopen.script(
             "POST",
             droplets_url(),
@@ -222,23 +228,47 @@ class TestCreate:
                 ),
             ),
         )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
+            FakeHTTPResponse(
+                200,
+                make_droplet(
+                    id=555,
+                    status="active",
+                    region="sfo3",
+                    size="s-1vcpu-2gb",
+                    image="ubuntu-24-04-x64",
+                    tags=["aiform"],
+                    public_ip=None,
+                    private_ip=None,
+                ),
+            ),
+        )
 
         result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["id"] == "555"
-        assert result["status"] == "new"
+        assert result["status"] == "active"
         assert result["region"] == "sfo3"
         assert result["size"] == "s-1vcpu-2gb"
         assert result["image"] == "ubuntu-24-04-x64"
         assert result["tags"] == ["aiform"]
         assert result["ipv4_address"] is None
 
-    def test_ipv4_address_extracted_from_public_network_entry(self, driver, fake_urlopen):
+    def test_ipv4_address_extracted_once_assigned_during_polling(self, driver, fake_urlopen):
+        # A real public IP is often not yet assigned on DO's initial 202 --
+        # it shows up once the droplet finishes provisioning.
         fake_urlopen.script(
             "POST",
             droplets_url(),
+            FakeHTTPResponse(202, make_droplet(id=555, status="new", public_ip=None)),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
             FakeHTTPResponse(
-                202,
+                200,
                 make_droplet(
                     id=555, status="active", public_ip="203.0.113.10", private_ip="10.0.0.5"
                 ),
@@ -255,9 +285,14 @@ class TestCreate:
         fake_urlopen.script(
             "POST",
             droplets_url(),
+            FakeHTTPResponse(202, make_droplet(id=555, status="new", public_ip=None)),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
             FakeHTTPResponse(
-                202,
-                make_droplet(id=555, status="new", public_ip=None, private_ip="10.0.0.5"),
+                200,
+                make_droplet(id=555, status="active", public_ip=None, private_ip="10.0.0.5"),
             ),
         )
 
@@ -275,6 +310,7 @@ class TestCreate:
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
 
         result = driver.create(NAME, params, CREDENTIALS)
 
@@ -286,6 +322,7 @@ class TestCreate:
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
 
         result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
@@ -293,14 +330,50 @@ class TestCreate:
         assert result["backups"] is False
         assert result["monitoring"] is False
 
-    def test_makes_exactly_one_api_call(self, driver, fake_urlopen):
+    def test_makes_exactly_one_post_call(self, driver, fake_urlopen):
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
 
         driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
-        assert len(fake_urlopen.calls) == 1
+        post_calls = [c for c in fake_urlopen.calls if c["method"] == "POST"]
+        assert len(post_calls) == 1
+
+
+class TestCreatePollsUntilActive:
+    def test_polls_the_new_droplet_until_active_before_returning(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
+            FakeHTTPResponse(200, make_droplet(id=555, status="new")),
+            FakeHTTPResponse(200, make_droplet(id=555, status="new")),
+            FakeHTTPResponse(200, make_droplet(id=555, status="active")),
+        )
+
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        get_calls = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(get_calls) == 3
+        assert result["status"] == "active"
+
+    def test_poll_timeout_raises_timeout_error_naming_id(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        # Never transitions away from "new" -- the create poll can't succeed.
+        fake_urlopen.script(
+            "GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555, status="new"))
+        )
+
+        with pytest.raises(TimeoutError) as excinfo:
+            driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert "555" in str(excinfo.value)
 
 
 class TestRead:
