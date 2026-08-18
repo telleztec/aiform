@@ -156,6 +156,16 @@ def refresh_resource(
             state_entry.provider, state_entry.resource_type, "read", exc
         ) from exc
     _new_id, attrs = _pop_id(raw, state_entry.provider, state_entry.resource_type, "read")
+    # A driver's read() structurally cannot verify a NON_DIFFABLE_FIELDS
+    # key (e.g. ssh_keys -- write-only on the CSP side); carry the prior
+    # state's value forward instead of letting it get blanked out here,
+    # so planner.py's diff still correctly sees "unchanged" when nothing
+    # changed, and correctly sees a real diff when the desired value
+    # genuinely differs from what was last known -- never silently drops
+    # an intended change (see specs/digitalocean_compute.md).
+    for field in driver.NON_DIFFABLE_FIELDS:
+        if field not in attrs and field in state_entry.attributes:
+            attrs[field] = state_entry.attributes[field]
     return attrs, False
 
 
@@ -289,7 +299,6 @@ def build_create_plan(
             intent_notes=parsed.intent_notes,
             param_schema=driver.PARAM_SCHEMA,
             likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
-            non_diffable_fields=driver.NON_DIFFABLE_FIELDS,
             state_aiform_md_sha256=previous_hash,
             current_aiform_md_sha256=parsed.aiform_md_sha256,
             drifted_missing=drifted_missing,

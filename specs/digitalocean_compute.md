@@ -188,31 +188,38 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
 ### `update(id, current, desired, credentials)`
 
-- Compare `current` vs `desired`, **excluding any key in
-  `NON_DIFFABLE_FIELDS` (`ssh_keys`) from this comparison entirely** —
-  the same exclusion `planner.py`'s `diff_attributes()` applies at the
-  orchestrator level (`specs/planner.md`), duplicated here because
-  `update()` computes its own internal diff independently, on its own
-  `current`/`desired` arguments, not by reusing the orchestrator's
-  already-computed diff. Without this, `ssh_keys` being permanently
-  unrecoverable from `read()` (see Behavior's `read()` note) would make
-  `update()` see it as "changed" on every call where it's configured,
-  forcing a destroy+recreate for practically any droplet with SSH keys
-  set — not merely a spurious `plan`, but a real, unwanted resource
-  replacement. If the remaining diff (after that exclusion) touches
-  anything other than `size` alone (i.e. `region`, `image`, `backups`,
-  `monitoring`, or `tags` changed) → raise `DriverUpdateNotSupported`
-  naming the changed field(s) in `unsupported_fields`. `region` and
-  `image` genuinely cannot be changed in place on DigitalOcean (a region
-  move requires a snapshot+recreate; an image change requires a
-  destructive rebuild) — this matches `LIKELY_REPLACE_FIELDS` exactly.
-  `backups`/`monitoring`/`tags` are deliberately *not* attempted in
-  place either, even though DO likely exposes narrower endpoints for
-  some of them — out of scope for this MVP driver, see below. Unlike
-  `ssh_keys`, `backups`/`monitoring`/`tags` are all correctly diffable
-  (see Behavior's `read()` note) — they only show as "changed" when
-  they genuinely were, so leaving them un-updatable-in-place is a real
-  scoping choice, not a masked reliability gap.
+- Compare `current` vs `desired` — **plain comparison, no field
+  excluded** (an earlier version of this driver excluded `ssh_keys`
+  here, mirroring an equally-wrong exclusion in `planner.py`'s
+  `diff_attributes()`; both were reverted after `/code-review` caught
+  that excluding a field from the diff silently drops a *genuine* edit
+  to it, not just a spurious mismatch caused by `read()`'s own
+  limitations — see `specs/planner.md`'s judgment call 1 and
+  `specs/orchestrator.md`'s `refresh_resource()`). `ssh_keys`
+  specifically is kept diffable *and* correct here because the caller
+  (`orchestrator.py`'s `refresh_resource()`) already carries the prior
+  state's `ssh_keys` value forward before this method is ever called —
+  by the time `update()` sees `current`, an unchanged `ssh_keys` looks
+  unchanged and a genuinely changed one looks changed, the same as any
+  other field. If the diff touches anything other than `size` alone
+  (i.e. `region`, `image`, `ssh_keys`, `backups`, `monitoring`, or
+  `tags` changed) → raise `DriverUpdateNotSupported` naming the changed
+  field(s) in `unsupported_fields`. `region` and `image` genuinely
+  cannot be changed in place on DigitalOcean (a region move requires a
+  snapshot+recreate; an image change requires a destructive rebuild) —
+  this matches `LIKELY_REPLACE_FIELDS` exactly. `ssh_keys` also
+  genuinely cannot be changed in place — DigitalOcean has no API for it
+  at all, `ssh_keys` is accepted only at creation time — so a real
+  `ssh_keys` edit correctly falls back to destroy+recreate via this same
+  path, through the normal gate #2 review, rather than being silently
+  dropped. `backups`/`monitoring`/`tags` are deliberately *not*
+  attempted in place either, even though DO likely exposes narrower
+  endpoints for some of them — out of scope for this MVP driver, see
+  below. All six fields here are correctly diffable (see Behavior's
+  `read()` note, plus the carry-forward above for `ssh_keys`
+  specifically) — they only show as "changed" when they genuinely were,
+  so leaving them un-updatable-in-place is a real scoping choice, not a
+  masked reliability gap.
 - If the diff is `size` alone: DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —
   **low-medium confidence, verify against DO's docs if this fails**:
@@ -357,18 +364,31 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   - **`ssh_keys`**: genuinely cannot be recovered — confirmed against
     the same official schema, the droplet object has no `ssh_keys`
     field at all, on any response, at any time after creation. No
-    driver-level fix exists for this (it isn't a `read()`
-    implementation gap, the data isn't in DO's API), so the fix instead
-    lives in `NON_DIFFABLE_FIELDS = ["ssh_keys"]` (`specs/driver.md`):
-    `planner.py`'s `diff_attributes()` excludes it from the
-    orchestrator-level diff entirely, and `update()`'s own internal
-    diff (see Behavior above) applies the same exclusion, so a resource
-    with `ssh_keys` configured no longer manufactures a permanent,
-    spurious diff — or a spurious destroy+recreate proposal — on every
-    `plan` after the first `read()`-driven refresh. This is exactly the
-    "concrete, named follow-up for whoever specs `planner.py`" this
-    spec previously called out as necessary but not yet designed; it's
-    now designed and implemented, not still open.
+    `read()`-level fix exists for this (the data isn't in DO's API), so
+    the fix instead lives in `NON_DIFFABLE_FIELDS = ["ssh_keys"]`
+    (`specs/driver.md`) — but **not** as a diff exclusion.
+    `orchestrator.py`'s `refresh_resource()` (`specs/orchestrator.md`)
+    carries the prior state's `ssh_keys` value forward across every
+    `read()`-driven refresh, since `read()` itself can never supply it;
+    `planner.py`'s `diff_attributes()` and this driver's own `update()`
+    diff (see Behavior above) both do a completely ordinary comparison
+    with no special-casing at all. The first version of this fix
+    excluded `ssh_keys` from both diffs directly instead — reverted
+    after `/code-review` caught that it silently dropped a *genuine*
+    `ssh_keys` edit in `.aiform.md` (the diff never contained the key,
+    so a real change produced the same empty diff, and the same
+    `no-op` plan, as no change at all — worse than the original bug,
+    which was at least a visible, if spurious, failure). Carrying the
+    value forward instead means: unchanged `ssh_keys` → still matches
+    desired → correctly stays a no-op (fixes the original bug); changed
+    `ssh_keys` → correctly diffs against the last-known value → reaches
+    `update()`, which correctly can't apply it in place and falls back
+    to destroy+recreate through the normal gate #2 review (fixes the
+    regression, and reflects DO's real constraint — SSH keys really can
+    only be set at creation). This is exactly the "concrete, named
+    follow-up for whoever specs `planner.py`" this spec previously
+    called out as necessary but not yet designed; it's now designed and
+    implemented, not still open.
   - `create()` still echoes `ssh_keys`/`backups`/`monitoring` from
     `params` unchanged (see Behavior above) — that part of the original
     design was already correct; only the *ongoing, post-refresh*

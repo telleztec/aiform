@@ -23,18 +23,22 @@ neither.
    in `desired` and would otherwise show up as a permanent, un-resolvable
    diff entry forever. `diff_attributes()` therefore only ever compares
    keys present in `desired`; a key present only in `current` is ignored.
-   `non_diffable_fields` (new, `aiform/driver.py`'s
-   `ResourceDriver.NON_DIFFABLE_FIELDS`) is the same idea applied to a key
-   present in *both*: some `desired` keys name a field the driver's
-   `read()` can never populate at all (write-only at the CSP level, only
-   accepted at creation time) — comparing `current.get(key)` (always
-   missing/`None`) against a real `desired` value is always a mismatch,
-   manufacturing the same kind of permanent, un-resolvable diff entry
-   judgment call 1 already exists to prevent, just triggered from the
-   opposite side. `diff_attributes()` skips any key in
-   `non_diffable_fields` before comparing at all, regardless of either
-   side's value — see `specs/digitalocean_compute.md`'s `ssh_keys` case
-   for the live example that surfaced this.
+   **Not this module's concern, but worth knowing about here**: a
+   related problem — a `desired` key naming a field the driver's
+   `read()` can never populate at all (write-only at the CSP level, e.g.
+   a droplet's `ssh_keys`) — is deliberately *not* solved by excluding
+   the key from this diff. An earlier version of this fix did exactly
+   that, and it silently dropped genuine, intended changes to the field
+   (the diff never contained the key at all, so a real edit produced the
+   same empty diff as no edit) — caught by `/code-review` and reverted.
+   The actual fix lives one layer up, in `orchestrator.py`'s
+   `refresh_resource()` (`specs/orchestrator.md`,
+   `aiform/driver.py`'s `NON_DIFFABLE_FIELDS`): it carries a prior state
+   entry's value for such a field forward across a `read()` refresh
+   instead of letting the fresh response blank it out, so by the time
+   `current_attributes` reaches this module's `diff_attributes()`, it's
+   already correct — an ordinary, unmodified diff then does the right
+   thing on its own, with no special-casing needed here at all.
 2. **`destroy` is never derived from a diff or an `intent-orchestration-model` call — it's always
    an explicit instruction, constructed deterministically by
    `destroy_entry()`.** `PLAN.md`'s "Resource deletion" section fixes this:
@@ -64,7 +68,7 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry: ...
 
 
 def diff_attributes(
-    current: dict[str, Any], desired: dict[str, Any], *, non_diffable_fields: list[str] = ()
+    current: dict[str, Any], desired: dict[str, Any]
 ) -> dict[str, dict[str, Any]]: ...
 
 
@@ -94,7 +98,6 @@ def plan_resource(
     likely_replace_fields: list[str],
     state_aiform_md_sha256: str | None,
     current_aiform_md_sha256: str,
-    non_diffable_fields: list[str] = (),
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
@@ -120,16 +123,13 @@ this resource, or the specific `AIFORM-DELETE-` file that named it) and
 is expected to say so, the same way `categorize_diff()`'s rationale
 always names the field(s) that changed.
 
-### `diff_attributes(current, desired, *, non_diffable_fields=()) -> dict[str, dict[str, Any]]`
+### `diff_attributes(current, desired) -> dict[str, dict[str, Any]]`
 
-Deterministic, zero-LLM. For every key in `desired` **not present in
-`non_diffable_fields`**, compare against `current.get(key)`; if unequal,
-the result includes `key: {"current": <value or None>, "desired":
-<value>}`. Keys present only in `current` are never included (judgment
-call 1 above); keys in `non_diffable_fields` are skipped before the
-comparison happens at all, regardless of what either side's value is —
-not compared-and-found-equal, genuinely never examined. An empty result
-means every remaining `desired` key already matches `current`.
+Deterministic, zero-LLM. For every key in `desired`, compare against
+`current.get(key)`; if unequal, the result includes `key: {"current":
+<value or None>, "desired": <value>}`. Keys present only in `current`
+are never included (judgment call 1 above). An empty result means every
+`desired` key already matches `current`.
 
 ### `categorize_diff(...) -> PlanEntry`
 
@@ -152,8 +152,7 @@ duplicate that check.
 
 The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
 
-1. `diff = diff_attributes(current_attributes, desired_params,
-   non_diffable_fields=non_diffable_fields)`.
+1. `diff = diff_attributes(current_attributes, desired_params)`.
 2. If `diff` is empty, **and** `state_aiform_md_sha256 ==
    current_aiform_md_sha256`, **and** `drifted_missing` is `False` →
    return `PlanEntry(action=PlanAction.NO_OP, ...)` directly. **Zero

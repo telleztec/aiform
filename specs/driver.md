@@ -92,22 +92,32 @@ in Behavior below.
   the inherited empty list for every other driver that hasn't overridden
   it yet.
 - `NON_DIFFABLE_FIELDS` — same `[]` default, same shared-class-attribute
-  reassign-don't-mutate rule as `LIKELY_REPLACE_FIELDS` — but
-  **authoritative, not advisory**: unlike `LIKELY_REPLACE_FIELDS` (a UX
-  hint `update()` can freely override in practice), every key named here
-  is a hard instruction to `planner.py`'s `diff_attributes()` to skip
-  that key entirely, and to the driver's own `update()` to do the same
-  in whatever per-field diff it computes internally. Added after a live
-  system-test run showed `drivers/digitalocean/compute.py`'s `ssh_keys`
-  field — accepted by `PARAM_SCHEMA` but never returned by DigitalOcean's
-  `GET /v2/droplets/{id}` at all (write-only at creation time, verified
-  against DO's public OpenAPI schema, not merely asserted) — produced a
-  permanent, spurious diff on every `plan` after the first `read()`
-  refresh, since comparing a value `read()` can never populate against
-  any real `desired` value is always a mismatch. See
+  reassign-don't-mutate rule as `LIKELY_REPLACE_FIELDS`. Declares
+  `PARAM_SCHEMA` keys a driver's `read()` structurally cannot ever
+  populate (write-only at the CSP level, only accepted at creation
+  time) — `driver.py` itself does nothing with this list; it's read by
+  `orchestrator.py`'s `refresh_resource()` (`specs/orchestrator.md`),
+  which carries a prior state entry's value for such a key forward
+  across a `read()` refresh instead of letting the fresh (necessarily
+  incomplete) response blank it out. **This is not a diff-exclusion
+  mechanism** — an earlier version of this fix had `planner.py`'s
+  `diff_attributes()` skip these keys entirely, which silently dropped
+  a genuine, intended change to the field (a user editing
+  `ssh_keys` in `.aiform.md` got a `no-op` plan and no error, because
+  the diff never contained the changed key at all) — caught by a
+  `/code-review` pass and reverted before merge. Carrying the value
+  forward instead means the diff itself is untouched: an unchanged
+  desired value correctly diffs as unchanged (the field it was added to
+  fix), and a genuinely changed desired value still diffs against the
+  last-known one and correctly surfaces as a real change. Added after a
+  live system-test run showed `drivers/digitalocean/compute.py`'s
+  `ssh_keys` field — accepted by `PARAM_SCHEMA` but never returned by
+  DigitalOcean's `GET /v2/droplets/{id}` at all (verified against DO's
+  public OpenAPI schema, not merely asserted) — produced a permanent,
+  spurious diff on every `plan` after the first `read()` refresh. See
   `specs/digitalocean_compute.md` for the full worked case, including
   why `backups` — also affected, but for a different reason — is fixed
-  differently (in `read()` itself, not excluded from the diff).
+  differently (in `read()` itself, not via carry-forward).
 - `PARAM_SCHEMA` is a bare type annotation with no default — **not** an
   `@abstractmethod`, so Python's `abc` machinery does not enforce its
   presence at instantiation time. A subclass that omits it can still be

@@ -126,9 +126,7 @@ class Driver(ResourceDriver):
         diff_fields = [
             key
             for key in self.PARAM_SCHEMA["properties"]
-            if key in desired
-            and key not in self.NON_DIFFABLE_FIELDS
-            and current.get(key) != desired.get(key)
+            if key in desired and current.get(key) != desired.get(key)
         ]
         if not diff_fields:
             return dict(current)
