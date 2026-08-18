@@ -500,9 +500,13 @@ next time `plan create` runs against that resource, not here.
   7. `entry = planner.plan_resource(key, current_attributes, spec.params,
      intent_notes=parsed.intent_notes, param_schema=driver.PARAM_SCHEMA,
      likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
+     non_diffable_fields=driver.NON_DIFFABLE_FIELDS,
      state_aiform_md_sha256=previous_hash,
      current_aiform_md_sha256=parsed.aiform_md_sha256,
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
+     `non_diffable_fields` (`specs/driver.md`'s `NON_DIFFABLE_FIELDS`) is
+     resolved from the same `driver` object `PARAM_SCHEMA`/
+     `LIKELY_REPLACE_FIELDS` already come from — no separate lookup.
   8. **Structural cross-check** (judgment call 6): `entry.action ==
      PlanAction.UPDATE and state_entry is None`, or `entry.action ==
      PlanAction.CREATE and state_entry is not None and not

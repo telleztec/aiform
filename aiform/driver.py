@@ -42,6 +42,18 @@ class ResourceDriver(ABC):
     # base's empty list.
     LIKELY_REPLACE_FIELDS: list[str] = []
 
+    # PARAM_SCHEMA keys read() structurally cannot recover from the CSP
+    # (a write-only field only accepted at creation time, never returned
+    # by any subsequent GET) — authoritative, not advisory like
+    # LIKELY_REPLACE_FIELDS above: the orchestrator's diff engine must
+    # exclude every key named here from the current-vs-desired
+    # comparison entirely, rather than comparing against a value read()
+    # can never populate and treating the perpetual mismatch as a real
+    # diff. A driver's own update() must apply the same exclusion to
+    # whatever per-field diff it computes internally. Same shared-class-
+    # attribute reassign-don't-mutate rule as LIKELY_REPLACE_FIELDS.
+    NON_DIFFABLE_FIELDS: list[str] = []
+
     @abstractmethod
     def create(
         self, name: str, params: dict[str, Any], credentials: dict[str, str]

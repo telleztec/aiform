@@ -50,6 +50,7 @@ class DriverUpdateNotSupported(Exception):
 class ResourceDriver(ABC):
     PARAM_SCHEMA: dict[str, Any]
     LIKELY_REPLACE_FIELDS: list[str] = []
+    NON_DIFFABLE_FIELDS: list[str] = []
 
     @abstractmethod
     def create(
@@ -90,6 +91,23 @@ in Behavior below.
   reassign it, never mutate it in place (`.append(...)`), or it corrupts
   the inherited empty list for every other driver that hasn't overridden
   it yet.
+- `NON_DIFFABLE_FIELDS` — same `[]` default, same shared-class-attribute
+  reassign-don't-mutate rule as `LIKELY_REPLACE_FIELDS` — but
+  **authoritative, not advisory**: unlike `LIKELY_REPLACE_FIELDS` (a UX
+  hint `update()` can freely override in practice), every key named here
+  is a hard instruction to `planner.py`'s `diff_attributes()` to skip
+  that key entirely, and to the driver's own `update()` to do the same
+  in whatever per-field diff it computes internally. Added after a live
+  system-test run showed `drivers/digitalocean/compute.py`'s `ssh_keys`
+  field — accepted by `PARAM_SCHEMA` but never returned by DigitalOcean's
+  `GET /v2/droplets/{id}` at all (write-only at creation time, verified
+  against DO's public OpenAPI schema, not merely asserted) — produced a
+  permanent, spurious diff on every `plan` after the first `read()`
+  refresh, since comparing a value `read()` can never populate against
+  any real `desired` value is always a mismatch. See
+  `specs/digitalocean_compute.md` for the full worked case, including
+  why `backups` — also affected, but for a different reason — is fixed
+  differently (in `read()` itself, not excluded from the diff).
 - `PARAM_SCHEMA` is a bare type annotation with no default — **not** an
   `@abstractmethod`, so Python's `abc` machinery does not enforce its
   presence at instantiation time. A subclass that omits it can still be

@@ -50,6 +50,10 @@ class LikelyReplaceDriver(FullDriver):
     LIKELY_REPLACE_FIELDS = ["image", "region"]
 
 
+class NonDiffableFieldsDriver(FullDriver):
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
+
+
 class TestResourceDriverIsAbstract:
     def test_cannot_instantiate_base_class_directly(self):
         with pytest.raises(TypeError):
@@ -72,6 +76,16 @@ class TestLikelyReplaceFields:
     def test_subclass_can_override(self):
         driver = LikelyReplaceDriver()
         assert driver.LIKELY_REPLACE_FIELDS == ["image", "region"]
+
+
+class TestNonDiffableFields:
+    def test_defaults_to_empty_list_when_not_overridden(self):
+        driver = FullDriver()
+        assert driver.NON_DIFFABLE_FIELDS == []
+
+    def test_subclass_can_override(self):
+        driver = NonDiffableFieldsDriver()
+        assert driver.NON_DIFFABLE_FIELDS == ["ssh_keys"]
 
 
 class TestParamSchema:

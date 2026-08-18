@@ -42,6 +42,7 @@ def make_droplet(
     image="ubuntu-24-04-x64",
     tags=None,
     monitoring_enabled=False,
+    backups_enabled=False,
     public_ip="203.0.113.10",
     private_ip="10.0.0.5",
     include_features_key=True,
@@ -61,7 +62,12 @@ def make_droplet(
         "networks": {"v4": networks_v4, "v6": []},
     }
     if include_features_key:
-        droplet["features"] = ["monitoring"] if monitoring_enabled else []
+        features = []
+        if backups_enabled:
+            features.append("backups")
+        if monitoring_enabled:
+            features.append("monitoring")
+        droplet["features"] = features
     return {"droplet": droplet}
 
 
@@ -445,13 +451,41 @@ class TestRead:
 
         assert result["monitoring"] is False
 
-    def test_ssh_keys_and_backups_are_not_included(self, driver, fake_urlopen):
+    def test_ssh_keys_is_not_included(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet()))
 
         result = driver.read("123", CREDENTIALS)
 
         assert "ssh_keys" not in result
-        assert "backups" not in result
+
+    def test_backups_recovered_from_features(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=True))
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is True
+
+    def test_backups_false_when_absent_from_features(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=False))
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is False
+
+    def test_missing_features_key_backups_does_not_raise(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(include_features_key=False)),
+        )
+
+        result = driver.read("123", CREDENTIALS)
+
+        assert result["backups"] is False
 
     def test_404_raises_resource_not_found_error_naming_id(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 404))
@@ -509,7 +543,6 @@ class TestUpdateRejectsNonSizeDiffs:
         [
             ("region", "nyc3"),
             ("image", "ubuntu-22-04-x64"),
-            ("ssh_keys", ["a-different-key"]),
             ("backups", True),
             ("monitoring", False),
             ("tags", ["something-else"]),
@@ -550,6 +583,20 @@ class TestUpdateRejectsNonSizeDiffs:
         # expected to be called with a true no-op by the orchestrator, but
         # it shouldn't explode if it is.
         driver.update("123", current, desired, CREDENTIALS)
+
+    def test_ssh_keys_only_diff_is_excluded_does_not_raise_or_call(self, driver, fake_urlopen):
+        # ssh_keys can never be recovered by read(), so current almost
+        # never matches desired for it in practice -- NON_DIFFABLE_FIELDS
+        # means update() must not treat that mismatch as a real diff, the
+        # same way planner.py's diff_attributes() doesn't at the
+        # orchestrator level (specs/planner.md).
+        current = make_attrs(ssh_keys=[])
+        desired = make_attrs(ssh_keys=["a-different-key"])
+
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        assert result == current
+        assert fake_urlopen.calls == []
 
 
 class TestUpdateUnmodeledStatus:

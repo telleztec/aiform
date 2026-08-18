@@ -583,6 +583,20 @@ class ResourceDriver(ABC):
     # ForceNew does. Subclasses that don't override it get an empty list.
     LIKELY_REPLACE_FIELDS: list[str] = []
 
+    # PARAM_SCHEMA keys read() structurally cannot recover from the CSP
+    # (e.g. a write-only field only accepted at creation time, never
+    # returned by any subsequent GET) — authoritative, not advisory like
+    # LIKELY_REPLACE_FIELDS above: the orchestrator's diff engine
+    # (planner.py's diff_attributes()) MUST exclude every key named here
+    # from the current-vs-desired comparison entirely, regardless of
+    # value, rather than comparing against a value read() can never
+    # populate and treating the perpetual mismatch as a real diff. A
+    # driver's own update() must apply the same exclusion to whatever
+    # per-field diff it computes internally, for the same reason.
+    # Subclasses that don't override it get an empty list, same sharing
+    # rule as LIKELY_REPLACE_FIELDS (reassign, never mutate in place).
+    NON_DIFFABLE_FIELDS: list[str] = []
+
     # Concrete, not abstract -- a driver opts in by calling these from
     # its own create()/read()/update(), not by overriding a flag.
     # specs/resource_tagging.md.
@@ -680,6 +694,7 @@ class Driver(ResourceDriver):
         "additionalProperties": True,
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def create(self, name, params, credentials): ...
 
@@ -777,11 +792,15 @@ class Driver(ResourceDriver):
 
 4. **Refresh state** for any resource in the plan that already exists in state.
 5. **Diff, deterministically first**: compute a plain dict-diff
-   between refreshed `attributes` and the desired `params`. If the
-   diff is empty **and** `aiform_md_sha256` matches the current file
-   **and** no `drifted_missing` flag is set → the action is `no-op`,
-   decided with **zero LLM calls**. This is what makes the
-   second-and-later `plan` runs cheap.
+   between refreshed `attributes` and the desired `params`, excluding
+   any key in the driver's `NON_DIFFABLE_FIELDS` entirely — comparing
+   against a value `read()` structurally can never populate would
+   otherwise manufacture a permanent, spurious diff on every run for
+   any resource using that field. If the diff (after that exclusion) is
+   empty **and** `aiform_md_sha256` matches the current file **and** no
+   `drifted_missing` flag is set → the action is `no-op`, decided with
+   **zero LLM calls**. This is what makes the second-and-later `plan`
+   runs cheap.
 6. **Categorize with the `intent-orchestration-model`, only when
    there's something to interpret** (a real diff, a `drifted_missing`
    resource, or a changed aiform.md file): one call passing the raw

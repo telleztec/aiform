@@ -120,6 +120,12 @@ class Driver(ResourceDriver):
 """
 
 
+FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS = FAKE_DRIVER_SOURCE.replace(
+    'LIKELY_REPLACE_FIELDS = ["image"]',
+    'LIKELY_REPLACE_FIELDS = ["image"]\n    NON_DIFFABLE_FIELDS = ["ssh_keys"]',
+)
+
+
 @pytest.fixture
 def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
     directory = tmp_path / "prompts"
@@ -607,6 +613,42 @@ class TestBuildCreatePlan:
         file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         entry = make_state_entry(
             driver=make_driver_info(driver_sha256(driver_file)), aiform_md_sha256=file_hash
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
+
+    def test_non_diffable_field_mismatch_does_not_break_no_op(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # The driver's NON_DIFFABLE_FIELDS declares ssh_keys can never be
+        # recovered by read() -- state.json still says "ssh_keys": [...]
+        # from creation time, but the fake read() (like the real DO
+        # driver) never returns it, so current lacks the key entirely.
+        # That mismatch alone must not force a categorization call.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir,
+            "digitalocean",
+            "compute",
+            source=FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS,
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(
+            aiform_md, params={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-1"]}
+        )
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["key-1"]},
         )
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})

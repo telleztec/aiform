@@ -212,21 +212,20 @@ def test_bad_token_fails_cleanly_without_leaking_or_tracking(
     assert _resource_key(name) not in st.resources
 
 
-def test_ssh_keys_configured_breaks_the_no_op_guarantee(
-    project_dir, teardown_tracked_resources, capsys
-):
-    """Case 11: a known, already-documented gap
-    (specs/digitalocean_compute.md's Edge Cases) -- ssh_keys can't be
-    round-tripped through read() (write-only on DO's side), so a second
-    `plan create` against an ssh_keys-configured resource is never a
-    zero-Anthropic-call no-op. This case exists so a future fix to that
-    gap starts failing here as a visible signal to update it."""
+def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked_resources, capsys):
+    """Case 11: this case originally documented the opposite of what it
+    now asserts -- a real gap where ssh_keys (write-only on DO's side,
+    read() can never recover it) produced a non-empty diff, and a real
+    Anthropic call, on every plan after the first refresh. That gap is
+    now closed (drivers/digitalocean/compute.py's NON_DIFFABLE_FIELDS,
+    specs/digitalocean_compute.md) -- kept as its own case so a
+    regression that reintroduces it starts failing here immediately."""
     token = os.environ["DIGITALOCEAN_TOKEN"]
     fingerprints = list_account_ssh_key_fingerprints(token)
     if not fingerprints:
         pytest.skip(
             "no SSH keys registered in this DigitalOcean account -- case 11 needs at "
-            "least one to exercise the real ssh_keys diff gap"
+            "least one to exercise the real ssh_keys no-op guarantee"
         )
 
     state_path = project_dir / ".aiform" / "state.json"
@@ -243,8 +242,5 @@ def test_ssh_keys_configured_breaks_the_no_op_guarantee(
     code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
     captured = capsys.readouterr()
     assert code == 0
-    assert "[verbose] 0 Anthropic API call(s) made" not in captured.err
-
-    call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-    assert call_count >= 1
-    assert f"~ {key}: update" in captured.out or "ssh_keys" in captured.out
+    assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+    assert f"= {key}: no-op" in captured.out

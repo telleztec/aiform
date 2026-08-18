@@ -26,6 +26,7 @@ class Driver(ResourceDriver):
         "additionalProperties": True,
     }
     LIKELY_REPLACE_FIELDS = ["image", "region"]
+    NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def _request(self, method, url, credentials, body=None):
         data = None
@@ -118,13 +119,16 @@ class Driver(ResourceDriver):
             raise
         attrs = self._flatten(droplet)
         attrs["monitoring"] = "monitoring" in droplet.get("features", [])
+        attrs["backups"] = "backups" in droplet.get("features", [])
         return attrs
 
     def update(self, id, current, desired, credentials):
         diff_fields = [
             key
             for key in self.PARAM_SCHEMA["properties"]
-            if key in desired and current.get(key) != desired.get(key)
+            if key in desired
+            and key not in self.NON_DIFFABLE_FIELDS
+            and current.get(key) != desired.get(key)
         ]
         if not diff_fields:
             return dict(current)

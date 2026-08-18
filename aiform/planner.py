@@ -37,9 +37,13 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry:
     )
 
 
-def diff_attributes(current: dict[str, Any], desired: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def diff_attributes(
+    current: dict[str, Any], desired: dict[str, Any], *, non_diffable_fields: list[str] = ()
+) -> dict[str, dict[str, Any]]:
     diff: dict[str, dict[str, Any]] = {}
     for key, desired_value in desired.items():
+        if key in non_diffable_fields:
+            continue
         current_value = current.get(key)
         if current_value != desired_value:
             diff[key] = {"current": current_value, "desired": desired_value}
@@ -93,11 +97,14 @@ def plan_resource(
     likely_replace_fields: list[str],
     state_aiform_md_sha256: str | None,
     current_aiform_md_sha256: str,
+    non_diffable_fields: list[str] = (),
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> PlanEntry:
-    diff = diff_attributes(current_attributes, desired_params)
+    diff = diff_attributes(
+        current_attributes, desired_params, non_diffable_fields=non_diffable_fields
+    )
 
     if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
         return PlanEntry(

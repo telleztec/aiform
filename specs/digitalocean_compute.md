@@ -42,6 +42,7 @@ PARAM_SCHEMA = {
     "additionalProperties": True,
 }
 LIKELY_REPLACE_FIELDS = ["image", "region"]
+NON_DIFFABLE_FIELDS = ["ssh_keys"]
 ```
 
 `credentials` is always `{"DIGITALOCEAN_TOKEN": "<token>"}` (per
@@ -147,23 +148,34 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   defeating the no-op diff this echo-back exists to protect. DO's
   response doesn't confirm any of these three, but `create()` *knows*
   what it just requested, so echoing is accurate immediately after
-  creation — see Edge cases below for why `read()` can't do the same on
-  a later refresh, and what that means.
+  creation — see Edge cases below for `ssh_keys` specifically, the one
+  of the three `read()` can never recover on a later refresh, and what
+  that means for the diff.
 
 ### `read(id, credentials)`
 
 - `GET /v2/droplets/{id}`. **Exactly one API call.**
 - `404` → `aiform.exceptions.ResourceNotFoundError`, naming the `id` in
   the message.
-- Returns the same flattened attribute shape as `create()`, with one
-  partial exception: `monitoring` can be recovered from DO's response —
-  `"monitoring" in droplet.get("features", [])`, **always with `.get`,
+- Returns the same flattened attribute shape as `create()`, with two
+  partial exceptions: `monitoring` **and now `backups`** can both be
+  recovered from DO's response — `"monitoring" in droplet.get("features", [])`,
+  `"backups" in droplet.get("features", [])`, **always with `.get`,
   never `droplet["features"]` directly** (a response missing that key
-  entirely must not raise an unhandled `KeyError` out of `read()`;
-  medium confidence this is really how DO reports monitoring status on
-  a `GET`, same "verify docs on failure" stance as the rest of this
-  spec) — so `read()` *does* include it. `ssh_keys`/`backups` genuinely
-  cannot be recovered from a `GET` — see Edge cases.
+  entirely must not raise an unhandled `KeyError` out of `read()`) —
+  verified directly against DigitalOcean's official OpenAPI droplet
+  schema (`digitalocean/openapi` on GitHub): `features` is documented
+  as `["backups", "private_networking", "ipv6"]`-shaped, `"backups"` a
+  plain member exactly like `"monitoring"`. **This corrects this spec's
+  own earlier claim** that `backups` "doesn't map onto a clean boolean
+  the way `monitoring` does" — that was an explicit low-confidence
+  guess (see this file's git history), and a live `code-review-model`
+  run caught it as a real correctness gap during system testing;
+  checking the actual schema confirmed the guess was wrong, not the
+  reviewer. `ssh_keys` is the one field that genuinely cannot be
+  recovered from a `GET` — DigitalOcean's droplet object has no
+  `ssh_keys` field at all, on any response, confirmed against the same
+  official schema — see Edge cases for what that means for the diff.
 
 ### `delete(id, credentials)`
 
@@ -176,21 +188,31 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
 
 ### `update(id, current, desired, credentials)`
 
-- Compare `current` vs `desired`. If the diff touches anything other
-  than `size` alone (i.e. `region`, `image`, `ssh_keys`, `backups`,
+- Compare `current` vs `desired`, **excluding any key in
+  `NON_DIFFABLE_FIELDS` (`ssh_keys`) from this comparison entirely** —
+  the same exclusion `planner.py`'s `diff_attributes()` applies at the
+  orchestrator level (`specs/planner.md`), duplicated here because
+  `update()` computes its own internal diff independently, on its own
+  `current`/`desired` arguments, not by reusing the orchestrator's
+  already-computed diff. Without this, `ssh_keys` being permanently
+  unrecoverable from `read()` (see Behavior's `read()` note) would make
+  `update()` see it as "changed" on every call where it's configured,
+  forcing a destroy+recreate for practically any droplet with SSH keys
+  set — not merely a spurious `plan`, but a real, unwanted resource
+  replacement. If the remaining diff (after that exclusion) touches
+  anything other than `size` alone (i.e. `region`, `image`, `backups`,
   `monitoring`, or `tags` changed) → raise `DriverUpdateNotSupported`
   naming the changed field(s) in `unsupported_fields`. `region` and
   `image` genuinely cannot be changed in place on DigitalOcean (a region
   move requires a snapshot+recreate; an image change requires a
   destructive rebuild) — this matches `LIKELY_REPLACE_FIELDS` exactly.
-  `ssh_keys`/`backups`/`monitoring`/`tags` are deliberately *not*
-  attempted in place either, even though DO likely exposes narrower
-  endpoints for some of them — out of scope for this MVP driver, see
-  below. Note the asymmetry in how reliably this diff reflects reality:
-  `monitoring` is correctly diffable (see Behavior's `read()` note — it
-  only shows as "changed" when it genuinely was), but `ssh_keys`/
-  `backups` are not — see Edge cases for why that's a real gap, not
-  just a scoping choice.
+  `backups`/`monitoring`/`tags` are deliberately *not* attempted in
+  place either, even though DO likely exposes narrower endpoints for
+  some of them — out of scope for this MVP driver, see below. Unlike
+  `ssh_keys`, `backups`/`monitoring`/`tags` are all correctly diffable
+  (see Behavior's `read()` note) — they only show as "changed" when
+  they genuinely were, so leaving them un-updatable-in-place is a real
+  scoping choice, not a masked reliability gap.
 - If the diff is `size` alone: DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —
   **low-medium confidence, verify against DO's docs if this fails**:
@@ -317,41 +339,40 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *actions* (not instant) is why `update()`'s resize path needs polling
   at all, unlike the other three methods — this is a genuine DO API
   constraint, not a design choice made for its own sake.
-- **`ssh_keys`/`backups` can't be fully round-tripped through `read()`,
-  and this is a real, only-partially-mitigated gap in the non-negotiable
-  zero-Anthropic-API-call guarantee, not a minor cosmetic limitation.**
-  DO's droplet `GET` response doesn't return the
-  SSH keys used at creation at all (they're write-only), and `backups`
-  doesn't map onto a clean boolean the way `monitoring` does via
-  `features` (low confidence on this specific point, same "verify docs
-  on failure" stance). `PLAN.md` §5 step 5's no-op short-circuit is a
-  plain dict-diff between refreshed `attributes` (i.e. `read()`'s
-  return) and `desired` `params`, computed *before* `update()` is ever
-  called — so this isn't just an `update()`-scoping question, it's
-  whether the diff is empty at all:
-  - **Immediately after `create()`, before any refresh**: fine.
-    `create()` echoes `ssh_keys`/`backups`/`monitoring` from `params`
-    (see Behavior above), so the diff against unchanged `desired` is
-    empty and the no-op guarantee holds — this covers `PLAN.md` §8
-    step 4's exact walkthrough scenario.
-  - **After any `read()`-driven refresh** (a later `plan`/`refresh`
-    call): `read()` recovers `monitoring` (via `features`) but not
-    `ssh_keys`/`backups` — for any resource with `ssh_keys` configured
-    (the common case), the diff is non-empty on *every* subsequent
-    `plan`, forcing a real `intent-orchestration-model` categorization call and very likely a
-    spurious `DriverUpdateNotSupported` → destroy+recreate proposal,
-    each time. This genuinely violates the zero-API-call guarantee for
-    that case — not hidden here, but also not something this driver
-    alone can fully fix: `read()`'s contract (`id`, `credentials` only,
-    no access to prior state) gives it no way to know what `ssh_keys`
-    was previously set to, and DO's API gives it no way to ask. A real
-    fix needs a `planner.py`-level design decision (e.g. treating a key
-    absent from a driver's `read()` response as "unknown, don't diff"
-    rather than "removed, therefore changed," or state.json preserving
-    a driver's previously-known value for keys its `read()` doesn't
-    return) — out of scope for this driver spec, but a concrete,
-    named follow-up for whoever specs `planner.py`, not an
-    open-ended "solve it later."
+- **`ssh_keys`/`backups` used to both be unable to round-trip through
+  `read()`, violating the non-negotiable zero-Anthropic-API-call
+  guarantee for any resource that set them. Fixed, in two different
+  ways, after a live `code-review-model` run caught the consequence
+  directly** (gate #1 declined to trust this driver, citing exactly
+  this: *"forcing a destroy/recreate of a live droplet on every
+  run... for practically any droplet configured with SSH keys or
+  backups"*):
+  - **`backups`**: this spec previously claimed it "doesn't map onto a
+    clean boolean the way `monitoring` does via `features`" — an
+    explicit low-confidence guess, and checking DigitalOcean's actual
+    OpenAPI schema showed the guess was wrong: `backups` is a plain
+    member of `features`, exactly like `monitoring`. `read()` now
+    derives it the same way (see Behavior above); the round-trip gap
+    for `backups` is closed, not just mitigated.
+  - **`ssh_keys`**: genuinely cannot be recovered — confirmed against
+    the same official schema, the droplet object has no `ssh_keys`
+    field at all, on any response, at any time after creation. No
+    driver-level fix exists for this (it isn't a `read()`
+    implementation gap, the data isn't in DO's API), so the fix instead
+    lives in `NON_DIFFABLE_FIELDS = ["ssh_keys"]` (`specs/driver.md`):
+    `planner.py`'s `diff_attributes()` excludes it from the
+    orchestrator-level diff entirely, and `update()`'s own internal
+    diff (see Behavior above) applies the same exclusion, so a resource
+    with `ssh_keys` configured no longer manufactures a permanent,
+    spurious diff — or a spurious destroy+recreate proposal — on every
+    `plan` after the first `read()`-driven refresh. This is exactly the
+    "concrete, named follow-up for whoever specs `planner.py`" this
+    spec previously called out as necessary but not yet designed; it's
+    now designed and implemented, not still open.
+  - `create()` still echoes `ssh_keys`/`backups`/`monitoring` from
+    `params` unchanged (see Behavior above) — that part of the original
+    design was already correct; only the *ongoing, post-refresh*
+    comparison was the actual bug.
 
 ## Out of scope
 

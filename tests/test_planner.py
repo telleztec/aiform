@@ -122,6 +122,30 @@ class TestDiffAttributes:
             "tags": {"current": ["aiform", "production"], "desired": ["aiform"]}
         }
 
+    def test_non_diffable_field_excluded_even_when_mismatched(self):
+        current = {"region": "sfo3"}
+        desired = {"region": "sfo3", "ssh_keys": ["key-1"]}
+        assert planner.diff_attributes(current, desired, non_diffable_fields=["ssh_keys"]) == {}
+
+    def test_non_diffable_field_excluded_even_when_current_has_a_different_value(self):
+        current = {"region": "sfo3", "ssh_keys": []}
+        desired = {"region": "sfo3", "ssh_keys": ["key-1"]}
+        assert planner.diff_attributes(current, desired, non_diffable_fields=["ssh_keys"]) == {}
+
+    def test_non_diffable_fields_defaults_to_empty_tuple_no_exclusions(self):
+        current = {"region": "sfo3"}
+        desired = {"region": "sfo3", "ssh_keys": ["key-1"]}
+        assert planner.diff_attributes(current, desired) == {
+            "ssh_keys": {"current": None, "desired": ["key-1"]}
+        }
+
+    def test_other_fields_still_diffed_when_one_field_is_non_diffable(self):
+        current = {"region": "sfo3", "ssh_keys": []}
+        desired = {"region": "nyc3", "ssh_keys": ["key-1"]}
+        assert planner.diff_attributes(current, desired, non_diffable_fields=["ssh_keys"]) == {
+            "region": {"current": "sfo3", "desired": "nyc3"}
+        }
+
 
 class TestCategorizeDiff:
     def test_returns_plan_entry_with_resource_key_filled_in(self, prompts_dir: Path):
@@ -289,6 +313,28 @@ class TestPlanResource:
             current_aiform_md_sha256="abc123",
         )
         assert entry.action == PlanAction.NO_OP
+
+    def test_non_diffable_field_mismatch_alone_still_no_ops(self, prompts_dir: Path):
+        # ssh_keys can never be recovered by read(), so current lacking it
+        # while desired has it must not, by itself, force a categorization
+        # call -- the whole point of NON_DIFFABLE_FIELDS.
+        client = FakeClient([])
+
+        entry = planner.plan_resource(
+            RESOURCE_KEY,
+            {"region": "sfo3"},
+            {"region": "sfo3", "ssh_keys": ["key-1"]},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            non_diffable_fields=["ssh_keys"],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+            client=client,
+        )
+
+        assert entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
 
     def test_categorizes_when_diff_is_nonempty(self, prompts_dir: Path):
         client = FakeClient([categorization_response(action="update")])
