@@ -1278,7 +1278,23 @@ entry's own note below.
   calls and the LLM-driven steps (which role was called, with what
   resolved model, and what it decided), not ad hoc `print()`s. Not yet
   designed: the exact log line schema, log level conventions, and
-  where output goes by default vs. under `--verbose`.
+  where output goes by default vs. under `--verbose`. A concrete example
+  of the gap this needs to close: `aiform/llm.py`'s `review_driver()`/
+  `review_plan()` call `json.loads()`/`model_validate_json()` directly
+  on the model's response text with no `response.stop_reason` check —
+  when a response is truncated (e.g. `code_review`'s adaptive-thinking
+  output leaving too little of `max_tokens` for the actual JSON, the
+  bug behind the "`max_tokens` is per-role" change above), the failure
+  surfaces as a generic `JSONDecodeError`/`ValidationError` with no hint
+  the real cause is a token budget, not malformed output. Diagnosing the
+  live occurrence of this required a throwaway, uncommitted script
+  outside the normal test/log surface to directly inspect
+  `usage.output_tokens_details.thinking_tokens` on a live response —
+  something this project's own logging should surface on the first
+  occurrence, not require a one-off diagnostic script to discover.
+  Deliberately not fixed ad hoc here with a scattered `print()` at this
+  one call site — logging needs the single systematic pass this entry
+  already calls for, not a piecemeal addition per incident.
 - **Timeout/retry/failover orchestration for driver network calls.** §6's
   rationale for avoiding CSP SDKs ("SDKs are opinionated in error
   handling and retries, and we want to make sure our orchestrator can

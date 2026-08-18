@@ -172,14 +172,38 @@ class TestLLMConfig:
 
     def test_rejects_unknown_source(self):
         with pytest.raises(ValidationError):
-            LLMRoleConfig(source="bedrock", model="some-model")
+            LLMRoleConfig(source="bedrock", model="some-model", max_tokens=4096)
+
+    def test_rejects_missing_max_tokens(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model")
+
+    def test_rejects_zero_max_tokens(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model", max_tokens=0)
+
+    def test_rejects_negative_max_tokens(self):
+        with pytest.raises(ValidationError):
+            LLMRoleConfig(source=ModelSource.ANTHROPIC, model="some-model", max_tokens=-1)
 
     def test_parses_roles_into_objects(self):
         config = LLMConfig(
-            intent_orchestration={"source": "anthropic", "model": "claude-sonnet-5"},
-            code_generator={"source": "anthropic", "model": "claude-sonnet-5"},
-            code_review={"source": "anthropic", "model": "claude-opus-5"},
-            review_orchestration={"source": "anthropic", "model": "claude-opus-5"},
+            intent_orchestration={
+                "source": "anthropic",
+                "model": "claude-sonnet-5",
+                "max_tokens": 4096,
+            },
+            code_generator={
+                "source": "anthropic",
+                "model": "claude-sonnet-5",
+                "max_tokens": 4096,
+            },
+            code_review={"source": "anthropic", "model": "claude-opus-5", "max_tokens": 8192},
+            review_orchestration={
+                "source": "anthropic",
+                "model": "claude-opus-5",
+                "max_tokens": 8192,
+            },
         )
         assert isinstance(config.intent_orchestration, LLMRoleConfig)
         assert config.intent_orchestration.source is ModelSource.ANTHROPIC
@@ -191,12 +215,16 @@ class TestLLMConfig:
     def test_roles_are_independent(self):
         config = LLMConfig(
             intent_orchestration=LLMRoleConfig(
-                source=ModelSource.ANTHROPIC, model="claude-sonnet-5"
+                source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=4096
             ),
-            code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-haiku-4-5"),
-            code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5"),
+            code_generator=LLMRoleConfig(
+                source=ModelSource.ANTHROPIC, model="claude-haiku-4-5", max_tokens=4096
+            ),
+            code_review=LLMRoleConfig(
+                source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
+            ),
             review_orchestration=LLMRoleConfig(
-                source=ModelSource.ANTHROPIC, model="claude-opus-4-8"
+                source=ModelSource.ANTHROPIC, model="claude-opus-4-8", max_tokens=8192
             ),
         )
         assert config.intent_orchestration.model != config.code_generator.model

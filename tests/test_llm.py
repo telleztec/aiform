@@ -62,15 +62,29 @@ def make_llm_config(
     code_generator_model: str = "claude-sonnet-5",
     code_review_model: str = "claude-opus-5",
     review_orchestration_model: str = "claude-opus-5",
+    intent_orchestration_max_tokens: int = 4096,
+    code_generator_max_tokens: int = 4096,
+    code_review_max_tokens: int = 8192,
+    review_orchestration_max_tokens: int = 8192,
 ) -> LLMConfig:
     return LLMConfig(
         intent_orchestration=LLMRoleConfig(
-            source=ModelSource.ANTHROPIC, model=intent_orchestration_model
+            source=ModelSource.ANTHROPIC,
+            model=intent_orchestration_model,
+            max_tokens=intent_orchestration_max_tokens,
         ),
-        code_generator=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_generator_model),
-        code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model=code_review_model),
+        code_generator=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC,
+            model=code_generator_model,
+            max_tokens=code_generator_max_tokens,
+        ),
+        code_review=LLMRoleConfig(
+            source=ModelSource.ANTHROPIC, model=code_review_model, max_tokens=code_review_max_tokens
+        ),
         review_orchestration=LLMRoleConfig(
-            source=ModelSource.ANTHROPIC, model=review_orchestration_model
+            source=ModelSource.ANTHROPIC,
+            model=review_orchestration_model,
+            max_tokens=review_orchestration_max_tokens,
         ),
     )
 
@@ -87,6 +101,15 @@ class TestModelSources:
 
     def test_anthropic_source_dispatches_to_anthropic_call(self):
         assert llm.MODEL_SOURCES[ModelSource.ANTHROPIC] is llm._anthropic_call
+
+    def test_anthropic_call_requires_max_tokens_explicitly(self):
+        # No hardcoded fallback default -- every real call path resolves
+        # max_tokens from a role's own config and must pass it explicitly;
+        # a caller that forgets is a bug, not a silent revert to a shared
+        # constant.
+        client = FakeClient("ignored")
+        with pytest.raises(TypeError):
+            llm._anthropic_call("claude-sonnet-5", "system", "user", client=client)
 
 
 class TestIntentOrchestrationCall:
@@ -155,6 +178,12 @@ class TestIntentOrchestrationCall:
         client = FakeClient("ignored")
         llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
         assert client.messages.calls[0]["max_tokens"] == 4096
+
+    def test_uses_role_configured_max_tokens_not_a_hardcoded_default(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(intent_orchestration_max_tokens=12345)
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=config)
+        assert client.messages.calls[0]["max_tokens"] == 12345
 
     def test_max_tokens_override(self):
         client = FakeClient("ignored")
@@ -228,6 +257,12 @@ class TestCodeGeneratorCall:
         client = FakeClient("ignored")
         llm.code_generator_call("system", "user", client=client, llm_config=make_llm_config())
         assert client.messages.calls[0]["max_tokens"] == 4096
+
+    def test_uses_role_configured_max_tokens_not_a_hardcoded_default(self):
+        client = FakeClient("ignored")
+        config = make_llm_config(code_generator_max_tokens=12345)
+        llm.code_generator_call("system", "user", client=client, llm_config=config)
+        assert client.messages.calls[0]["max_tokens"] == 12345
 
     def test_max_tokens_override(self):
         client = FakeClient("ignored")
@@ -304,6 +339,15 @@ class TestReviewDriver:
         assert call["system"] == (prompts_dir / "review_driver.md").read_text()
         assert call["messages"] == [{"role": "user", "content": "driver source code"}]
 
+    def test_uses_role_configured_max_tokens(self, prompts_dir: Path):
+        response_text = json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
+        client = FakeClient(response_text)
+        config = make_llm_config(code_review_max_tokens=12345)
+
+        llm.review_driver("driver source code", client=client, llm_config=config)
+
+        assert client.messages.calls[0]["max_tokens"] == 12345
+
     def test_raises_when_approved_with_blocking_issues(self, prompts_dir: Path):
         response_text = json.dumps(
             {"approved": True, "concerns": [], "blocking_issues": ["delete() is not idempotent"]}
@@ -357,6 +401,15 @@ class TestReviewPlan:
         call = client.messages.calls[0]
         assert call["system"] == (prompts_dir / "review_plan.md").read_text()
         assert call["messages"] == [{"role": "user", "content": "plan summary text"}]
+
+    def test_uses_role_configured_max_tokens(self, prompts_dir: Path):
+        response_text = json.dumps({"safe_to_proceed": True, "flags": []})
+        client = FakeClient(response_text)
+        config = make_llm_config(review_orchestration_max_tokens=12345)
+
+        llm.review_plan("plan summary text", client=client, llm_config=config)
+
+        assert client.messages.calls[0]["max_tokens"] == 12345
 
 
 class TestRealPromptFiles:
