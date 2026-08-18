@@ -11,8 +11,10 @@ import pytest
 from aiform import cli
 from drivers.digitalocean import compute as do_compute
 
+_SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
 
-class RedactedToken(str):
+
+class RedactedSecret(str):
     """A `str` that carries a live credential but never renders it in a repr.
 
     pytest writes two things into the log verbatim on a failure: the
@@ -24,32 +26,49 @@ class RedactedToken(str):
     .aiform/testlog/*.log. That is exactly how the real token leaked
     once already.
 
-    Subclassing `str` keeps it usable everywhere a token is used
+    Subclassing `str` keeps it usable everywhere a credential is used
     (f-string interpolation into an Authorization header, dict values,
     equality) because those go through `__str__`/`__eq__`, while
     pytest's display path goes through `repr()` -- which this
-    overrides. Redacting at the value means every call site is covered
-    by construction, including ones added later that never think about
-    this.
+    overrides.
+
+    The env var name travels with the value rather than being baked into
+    `__repr__`, so the marker always names the credential actually
+    wrapped. A hardcoded name would mislabel every secret except one --
+    and a log claiming `<DIGITALOCEAN_TOKEN redacted>` where an Anthropic
+    key appeared sends whoever is triaging the leak after the wrong
+    credential, which is worse than an unlabelled marker.
+
+    No `__slots__`: `str` is a variable-length built-in, so a nonempty
+    `__slots__` on a subclass is a `TypeError`.
     """
 
-    __slots__ = ()
+    def __new__(cls, value: str, var_name: str) -> "RedactedSecret":
+        secret = super().__new__(cls, value)
+        secret.var_name = var_name
+        return secret
 
     def __repr__(self) -> str:
-        return "<DIGITALOCEAN_TOKEN redacted>"
+        return f"<{self.var_name} redacted>"
 
 
-def live_token() -> RedactedToken:
+def _redacted_env(var: str) -> RedactedSecret:
+    """Read `var` and wrap it labelled with that same name.
+
+    Reading and labelling in one place is what keeps the two from
+    drifting -- a caller cannot pass a name that doesn't match the value.
+    """
+    return RedactedSecret(os.environ[var], var)
+
+
+def live_token() -> RedactedSecret:
     """The real DIGITALOCEAN_TOKEN, wrapped so it can't leak into a log.
 
     Always use this rather than reading os.environ directly in a test.
     Note this only covers credentials *this suite* holds -- the code
     under test resolves its own; see the scrubbing hook below.
     """
-    return RedactedToken(os.environ["DIGITALOCEAN_TOKEN"])
-
-
-_SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
+    return _redacted_env("DIGITALOCEAN_TOKEN")
 
 
 def _scrub(text: str) -> str:
@@ -64,7 +83,7 @@ def _scrub(text: str) -> str:
 def pytest_runtest_makereport(item, call):
     """Strip live credentials out of any failure report before it is written.
 
-    RedactedToken covers the token *this suite* passes around, but not
+    RedactedSecret covers the credentials *this suite* passes around, but not
     the one the code under test resolves for itself: cli.main() reads
     os.environ via config.resolve_credentials(), stores a plain str in
     PlannedResource.credentials, and hands it to apply_plan(planned,
@@ -78,7 +97,7 @@ def pytest_runtest_makereport(item, call):
     constructed inside the code under test. Scrubbing the rendered
     report is the layer that actually covers every source at once, so
     this is the backstop rather than the first line of defence
-    (RedactedToken still keeps the token out of the common assert-
+    (RedactedSecret still keeps the token out of the common assert-
     introspection path, and keeps it readable when it does show).
 
     Replacing longrepr with a plain string costs syntax highlighting and
