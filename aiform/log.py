@@ -32,12 +32,21 @@ class _KeyValueFormatter(logging.Formatter):
 _installed_handler: logging.StreamHandler | None = None
 
 
-def configure(*, verbose: bool = False, stream: TextIO = sys.stderr) -> None:
+def configure(*, verbose: bool = False, stream: TextIO | None = None) -> None:
     global _installed_handler
     logger = logging.getLogger("aiform")
 
     if _installed_handler is not None:
         logger.removeHandler(_installed_handler)
+
+    # sys.stderr resolved here, not as a `= sys.stderr` default -- a
+    # default is bound once, at module-import time, to whatever object
+    # sys.stderr happened to be then. Anything that later swaps
+    # sys.stderr for a different object (pytest's capsys chief among
+    # them) would be silently invisible to this handler, since it would
+    # still be writing to the original, no-longer-current stream.
+    if stream is None:
+        stream = sys.stderr
 
     handler = logging.StreamHandler(stream)
     handler.setFormatter(_KeyValueFormatter())

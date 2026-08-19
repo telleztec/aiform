@@ -294,6 +294,21 @@ class TestPlanCreate:
         assert code == 2
         assert "Error:" in err
 
+    def test_operational_error_is_also_logged(self, project_dir, capsys):
+        # log.configure() (called by cli.main()) sets propagate=False on
+        # the "aiform" logger, which keeps caplog's root-attached handler
+        # from seeing these records -- asserting against the real stderr
+        # stream instead is what this feature actually promises, and
+        # sidesteps that plumbing detail entirely.
+        state_file = project_dir / ".aiform" / "state.json"
+
+        cli.main(["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert "ERROR" in err
+        assert "aiform.cli" in err
+        assert "exception_type=FileNotFoundError" in err
+
     def test_second_run_on_unchanged_project_makes_zero_llm_calls(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -384,6 +399,35 @@ class TestPlanApply:
         err = capsys.readouterr().err
         assert code == 0
         assert "[verbose] 2 Anthropic API call(s) made" in err
+
+    def test_verbose_promotes_structured_log_level_to_info(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
+
+        err = capsys.readouterr().err
+        assert "aiform.llm" in err
+        assert "role=code_review" in err
+
+    def test_without_verbose_structured_info_lines_are_suppressed(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert "aiform.llm" not in err
 
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys

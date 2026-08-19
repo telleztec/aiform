@@ -145,6 +145,21 @@ class TestConfigure:
 
         assert logging.getLogger("aiform").propagate is False
 
+    def test_default_stream_resolves_sys_stderr_at_call_time_not_import_time(self, monkeypatch):
+        # Regression: `stream: TextIO = sys.stderr` as a parameter default
+        # is bound once, when the module is imported -- long before this
+        # test (or pytest's own capsys) ever runs. configure() must read
+        # sys.stderr itself, inside the function, so a stream swapped in
+        # after import (exactly what capsys does every test) is the one
+        # actually used.
+        substitute = StringIO()
+        monkeypatch.setattr("sys.stderr", substitute)
+
+        log.configure()
+        logging.getLogger("aiform.orchestrator").warning("", extra={"marker": "routed-here"})
+
+        assert "routed-here" in substitute.getvalue()
+
     def test_second_configure_call_still_only_writes_to_its_own_stream(self):
         first_stream = StringIO()
         second_stream = StringIO()

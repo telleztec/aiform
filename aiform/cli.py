@@ -1,14 +1,17 @@
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 
 import anthropic
 
-from aiform import config, orchestrator, state
+from aiform import config, log, orchestrator, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
 from aiform.models import PlanAction
+
+logger = logging.getLogger(__name__)
 
 _GITIGNORE_ENTRIES = [
     ".aiform/credentials.env",
@@ -352,6 +355,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    log.configure(verbose=args.verbose)
 
     try:
         if args.command == "init":
@@ -369,5 +373,6 @@ def main(argv: list[str] | None = None) -> int:
                 _report_verbose_calls(args, client)
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
     except _HANDLED_EXCEPTIONS as exc:
+        logger.error(_format_error(exc), extra={"exception_type": type(exc).__name__})
         print(f"Error: {_format_error(exc)}", file=sys.stderr)
         return 2

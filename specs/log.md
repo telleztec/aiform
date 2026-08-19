@@ -28,7 +28,7 @@ entry — that set only guards spec filenames containing an underscore
 ## Interface
 
 ```python
-def configure(*, verbose: bool = False, stream: TextIO = sys.stderr) -> None: ...
+def configure(*, verbose: bool = False, stream: TextIO | None = None) -> None: ...
 ```
 
 One public function. Attaches a single `logging.StreamHandler(stream)`,
@@ -37,6 +37,18 @@ logger — every `aiform.*` child logger inherits it via normal stdlib
 logger-hierarchy propagation. Called exactly once, from `cli.py`'s
 `main()`, immediately after argument parsing, before any subcommand
 dispatch.
+
+`stream=None` (the default) resolves to `sys.stderr` **inside the
+function body**, not as a `= sys.stderr` parameter default — a default
+value is bound once, at module-import time, to whatever object
+`sys.stderr` happened to be at that moment. Anything that later
+replaces `sys.stderr` with a different object (pytest's `capsys` is
+the concrete case that surfaced this) would be writing to a stream
+this handler is no longer attached to, and the resulting output would
+be invisible to whatever captured the replacement — silently, since no
+exception occurs either way. Resolving it at call time inside
+`configure()` means it always picks up whichever `sys.stderr` is
+current when a command actually runs.
 
 ## Behavior
 
