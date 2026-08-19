@@ -240,6 +240,12 @@ response.
   discovery/globbing — `previous_aiform_md_sha256` is a plain argument
   the caller (`orchestrator.py`, not built yet) already resolved from
   state.
+- **Logging** (`specs/log.md`): `extract_intent_notes()` logs
+  `notes_count=<n>` at INFO after a real LLM call, and
+  `intent_prose_empty=true notes_count=0` at INFO on the zero-LLM
+  short-circuit (judgment call 4) — the "no LLM calls happened" path
+  gets its own visible signal rather than silence, symmetric with
+  `planner.py`'s no-op-path logging.
 
 ## Edge cases / errors
 

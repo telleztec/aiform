@@ -226,6 +226,11 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
   failure followed by one gate #1 block still exhausts `MAX_DRAFT_ATTEMPTS`
   and raises — there is no scenario with more than 2 total calls to
   `draft_driver()`.
+- **Logging** (`specs/log.md`): `generate_driver()` logs, per attempt,
+  `provider=... resource=... attempt=<n>/<MAX_DRAFT_ATTEMPTS>
+  outcome=validation_failed|review_rejected|approved` at INFO —
+  surfaces the retry loop's progress, previously silent until it either
+  succeeds or raises `DriverGenerationFailed`.
 
 ## Edge cases / errors
 

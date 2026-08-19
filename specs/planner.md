@@ -192,6 +192,13 @@ without a separate "is this new" branch.
   corresponds to a tracked resource, or that `rationale` is non-empty —
   `PlanEntry`'s own field constraints are the only validation applied;
   this function is a thin, trusted constructor, not a guard.
+- **Logging** (`specs/log.md`): `categorize_diff()` logs
+  `resource_key=... action=... likely_replace=...` at INFO after the
+  LLM decides. `plan_resource()`'s zero-diff no-op fast path (no LLM
+  call) logs `resource_key=... action=no-op reason=zero-diff` at
+  INFO — the concrete, independently-verifiable evidence for the
+  "second `plan create` run makes zero Anthropic API calls" claim
+  `PLAN.md`'s MVP walkthrough asks to actually verify, not just assume.
 
 ## Edge cases / errors
 

@@ -794,6 +794,36 @@ Returns the destination path.
   needed them regardless), `None` for every destroy target (resolved
   lazily inside `apply_plan()`, or never resolved at all for an
   untracked Mechanism-B destroy).
+- **Logging** (`specs/log.md`). `_call_driver()`'s existing callers —
+  `create`/`delete`, the only two operations that actually route
+  through it — log `provider=... resource_type=... operation=...
+  duration_ms=... outcome=success` at INFO on success, or
+  `outcome=error` at ERROR (naming the operation) immediately before
+  the caught exception is re-wrapped into `DriverExecutionError` and
+  re-raised. **`refresh_resource()`'s `driver.read(...)` call and
+  `apply_plan()`'s `update()` branch do *not* go through
+  `_call_driver()`** — each has its own inline `try`/`except` (the
+  `update()` branch specifically needs `DriverUpdateNotSupported` to
+  propagate unwrapped, which `_call_driver()`'s blanket
+  `DriverExecutionError` wrapping would swallow), so each logs
+  explicitly at its own site instead of relying on a generic wrapper
+  that doesn't cover it: `refresh_resource()` logs nothing on the
+  ordinary success path (would be redundant with a direct call) but a
+  **WARNING** specifically when it returns `drifted_missing=True` — a
+  resource vanished from the CSP side, genuinely new information;
+  `apply_plan()`'s `update()` branch logs INFO on success
+  (`provider=... resource_type=... operation=update duration_ms=...
+  outcome=success`, matching `_call_driver()`'s shape by hand) and logs
+  nothing at the `DriverUpdateNotSupported` catch itself (an expected,
+  handled fallback signal, not an error — the delete+create that
+  follows produces its own two `_call_driver()`-driven lines).
+  `ensure_driver_trusted()` logs the gate #1 outcome — `reused=true` on
+  the zero-LLM cache-hit fast path, `approved=<bool>` after a real
+  review. `apply_plan()` logs the gate #2 plan-review outcome
+  (`safe_to_proceed=<bool> flags_count=<n>`, WARNING when blocked)
+  before `_raise_if_review_blocked()` runs. No call site in this module
+  logs a raw `params`/`credentials`/`*args` dict — every field above is
+  a named scalar, a count, or a boolean.
 
 ## Edge cases / errors
 

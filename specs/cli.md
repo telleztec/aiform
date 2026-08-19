@@ -263,6 +263,34 @@ model calls did this invocation make" — and nothing broader):
   stdout output — stderr specifically so `--json --verbose` together
   still yield parseable stdout, and so `--verbose` never changes a
   command's exit code or its stdout contents.
+- **This mechanism is unchanged by, and stays completely separate
+  from, the structured logging described below** — it predates
+  `specs/log.md` and continues to answer its own one narrow question
+  ("how many model calls did this invocation make"), not folded into
+  the newer system.
+
+### Structured logging (`specs/log.md`)
+
+`main()` calls `log.configure(verbose=args.verbose)` immediately after
+argument parsing, before any subcommand dispatch — the only wiring this
+module does; every other module's own logger (`aiform.llm`,
+`aiform.orchestrator`, `aiform.planner`, `aiform.parser`,
+`aiform.driver_gen`) does its own logging independently once this is
+called. **Additive, not a replacement**, for this module's existing
+`print()`-based human-facing output (`_print_plan`/
+`_print_apply_result`/`_print_state`) and for the verbose Anthropic-call
+counter above — logging is a parallel stderr channel for
+debugging/operational visibility, not a UX replacement; nothing in this
+module's existing print-based output changes.
+
+One further, in-scope addition beyond pure wiring: `main()`'s own
+exception handler (see "Error formatting and exit codes" below) also
+calls `logger.error(...)` — naming the exception type and its
+formatted message — immediately alongside the existing `Error: ...`
+stderr `print`, not instead of it. This is the single most likely place
+a real user hits a failure during `plan`/`apply`/`destroy`/`refresh`,
+and structured logging covering it was part of the point of building
+this module at all.
 
 ### Error formatting and exit codes
 
@@ -312,10 +340,13 @@ than papering over it with a generic `except Exception`.
   banner; §10 confirms none of the interactive session shape is
   designed yet. Not part of this module.
 - **The fuller logging system** named in `PLAN.md` §10's "Logging" item
-  (structured log lines across all commands, log levels, output
-  routing) — genuinely not designed yet, as that section says outright.
-  This module's `--verbose` only ever does the one narrow thing
-  described above.
+  is now designed and wired (`specs/log.md`, "Structured logging"
+  above) — this bullet is left here, corrected, rather than deleted, so
+  the history of "this was once explicitly out of scope" isn't lost.
+  What remains genuinely out of scope: a third `DEBUG` output tier
+  (`specs/log.md`'s own Out of scope), and a `redact()`/`_redact()`
+  helper for dumping raw request/response payloads under `--verbose`
+  (`PLAN.md` §8) — no call site in this module logs one.
 - **Colorized/`--no-color` output beyond plain ANSI codes on the plan's
   action markers** (`+`/`~`/`-`/`=`) — no theming, no configurability
   beyond the on/off switch `PLAN.md` §7 already names.
