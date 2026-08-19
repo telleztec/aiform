@@ -1,9 +1,15 @@
 import logging
 import sys
+import time
 from datetime import UTC, datetime
 from typing import TextIO
 
 logging.addLevelName(logging.WARNING, "WARN")
+
+
+def elapsed_ms(start: float) -> int:
+    return round((time.monotonic() - start) * 1000)
+
 
 _RESERVED_RECORD_ATTRS = frozenset(vars(logging.makeLogRecord({})))
 

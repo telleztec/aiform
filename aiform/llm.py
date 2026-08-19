@@ -9,7 +9,7 @@ from typing import Any
 
 import anthropic
 
-from aiform import config
+from aiform import config, log
 from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, PlanReview
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def _anthropic_call(
 
     start = time.monotonic()
     response = client.messages.create(**kwargs)
-    duration_ms = round((time.monotonic() - start) * 1000)
+    duration_ms = log.elapsed_ms(start)
 
     text = None
     for block in response.content:
@@ -139,7 +139,7 @@ def _log_call(role_name: str, model: str, result: ModelCallResult) -> None:
 
 def _resolve_role(
     llm_config: LLMConfig | None, role_name: str
-) -> tuple[LLMRoleConfig, Callable[..., str]]:
+) -> tuple[LLMRoleConfig, Callable[..., ModelCallResult]]:
     if llm_config is None:
         llm_config = config.resolve_llm_config()
     role = getattr(llm_config, role_name)

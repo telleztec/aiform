@@ -13,7 +13,7 @@ from typing import Any
 
 import anthropic
 
-from aiform import config, llm, parser, planner, state
+from aiform import config, llm, log, parser, planner, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
@@ -49,7 +49,7 @@ def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, oper
                 "provider": provider,
                 "resource_type": resource_type,
                 "operation": operation,
-                "duration_ms": round((time.monotonic() - start) * 1000),
+                "duration_ms": log.elapsed_ms(start),
                 "outcome": "error",
             },
         )
@@ -60,7 +60,7 @@ def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, oper
             "provider": provider,
             "resource_type": resource_type,
             "operation": operation,
-            "duration_ms": round((time.monotonic() - start) * 1000),
+            "duration_ms": log.elapsed_ms(start),
             "outcome": "success",
         },
     )
@@ -608,6 +608,16 @@ def apply_plan(
                     pr.credentials,
                 )
             except Exception as exc:
+                logger.error(
+                    "",
+                    extra={
+                        "provider": pr.provider,
+                        "resource_type": pr.resource_type,
+                        "operation": "update",
+                        "duration_ms": log.elapsed_ms(update_start),
+                        "outcome": "error",
+                    },
+                )
                 raise DriverExecutionError(pr.provider, pr.resource_type, "update", exc) from exc
 
             if not replaced:
@@ -617,7 +627,7 @@ def apply_plan(
                         "provider": pr.provider,
                         "resource_type": pr.resource_type,
                         "operation": "update",
-                        "duration_ms": round((time.monotonic() - update_start) * 1000),
+                        "duration_ms": log.elapsed_ms(update_start),
                         "outcome": "success",
                     },
                 )

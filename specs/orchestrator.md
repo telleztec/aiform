@@ -816,7 +816,18 @@ Returns the destination path.
   outcome=success`, matching `_call_driver()`'s shape by hand) and logs
   nothing at the `DriverUpdateNotSupported` catch itself (an expected,
   handled fallback signal, not an error — the delete+create that
-  follows produces its own two `_call_driver()`-driven lines).
+  follows produces its own two `_call_driver()`-driven lines). A third
+  outcome — the shared `except Exception` covering the whole
+  `update()`-or-replace attempt, reached when `pr.driver.update()`
+  itself raises anything other than `DriverUpdateNotSupported` —
+  ERRORs with `operation=update outcome=error` (matching the
+  `operation="update"` label the existing `DriverExecutionError(...,
+  "update", exc)` it raises already used) before re-raising. Caught
+  during `/code-review`: the first pass of this logging only covered
+  the success and `DriverUpdateNotSupported` outcomes and missed this
+  one entirely, leaving a real driver failure on this path
+  structurally invisible to a `grep operation=update outcome=error`
+  the way `_call_driver()`'s own failures aren't.
   `ensure_driver_trusted()` logs the gate #1 outcome — `reused=true` on
   the zero-LLM cache-hit fast path, `approved=<bool>` after a real
   review. `apply_plan()` logs the gate #2 plan-review outcome

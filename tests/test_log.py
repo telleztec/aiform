@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import UTC, datetime
 from io import StringIO
 
@@ -15,6 +16,17 @@ def _make_record(*, level=logging.INFO, name="aiform.llm", msg="", extra=None, c
 
 def _ts(created: float) -> str:
     return datetime.fromtimestamp(created, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class TestElapsedMs:
+    def test_returns_nonnegative_int(self):
+        start = time.monotonic()
+        assert isinstance(log.elapsed_ms(start), int)
+        assert log.elapsed_ms(start) >= 0
+
+    def test_reflects_actual_elapsed_time(self):
+        start = time.monotonic() - 0.05
+        assert log.elapsed_ms(start) >= 40
 
 
 class TestFormatter:

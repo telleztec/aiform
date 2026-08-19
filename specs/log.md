@@ -29,14 +29,24 @@ entry — that set only guards spec filenames containing an underscore
 
 ```python
 def configure(*, verbose: bool = False, stream: TextIO | None = None) -> None: ...
+def elapsed_ms(start: float) -> int: ...
 ```
 
-One public function. Attaches a single `logging.StreamHandler(stream)`,
+`configure()`: attaches a single `logging.StreamHandler(stream)`,
 formatted by this module's private `Formatter`, to the `"aiform"`
 logger — every `aiform.*` child logger inherits it via normal stdlib
 logger-hierarchy propagation. Called exactly once, from `cli.py`'s
 `main()`, immediately after argument parsing, before any subcommand
 dispatch.
+
+`elapsed_ms(start)`: `round((time.monotonic() - start) * 1000)` — the
+one piece of arithmetic every `duration_ms=` field in this codebase
+computes, factored out after `/code-review` flagged it duplicated
+identically across five call sites (`llm.py`'s `_anthropic_call()`,
+`orchestrator.py`'s `_call_driver()` twice, and the `update()` branch's
+success/error paths). Each caller still calls `time.monotonic()` itself
+to capture `start` — this only removes the duplicated back half of the
+computation, not the timing itself.
 
 `stream=None` (the default) resolves to `sys.stderr` **inside the
 function body**, not as a `= sys.stderr` parameter default — a default

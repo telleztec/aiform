@@ -1249,6 +1249,35 @@ class TestApplyPlan:
         assert record.outcome == "success"
         assert record.provider == "digitalocean"
 
+    def test_update_generic_failure_logs_error_before_raising(self, tmp_path: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("CSP rate limited")
+
+        driver.update = boom
+        existing = make_state_entry(id="123", attributes={"region": "sfo3", "size": "s-1vcpu-2gb"})
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        record = next(r for r in caplog.records if getattr(r, "operation", None) == "update")
+        assert record.outcome == "error"
+        assert record.levelno == logging.ERROR
+
     def test_update_without_replace_corrects_stale_likely_replace_true_prediction(
         self, tmp_path: Path
     ):

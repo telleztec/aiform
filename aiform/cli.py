@@ -373,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
                 _report_verbose_calls(args, client)
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
     except _HANDLED_EXCEPTIONS as exc:
-        logger.error(_format_error(exc), extra={"exception_type": type(exc).__name__})
-        print(f"Error: {_format_error(exc)}", file=sys.stderr)
+        message = _format_error(exc)
+        logger.error(message, extra={"exception_type": type(exc).__name__})
+        print(f"Error: {message}", file=sys.stderr)
         return 2
