@@ -1,10 +1,13 @@
 import json
+import logging
 from typing import Any
 
 import anthropic
 
 from aiform import llm
 from aiform.models import LLMConfig, PlanAction, PlanEntry
+
+logger = logging.getLogger(__name__)
 
 # "destroy" is deliberately excluded from this enum, unlike PLAN.md §5
 # step 6's literal 4-value PlanAction list: a current-vs-desired diff has
@@ -75,12 +78,21 @@ def categorize_diff(
         llm_config=llm_config,
     )
     data = json.loads(response_text)
-    return PlanEntry(
+    entry = PlanEntry(
         resource_key=resource_key,
         action=PlanAction(data["action"]),
         rationale=data["rationale"],
         likely_replace=data["likely_replace"],
     )
+    logger.info(
+        "",
+        extra={
+            "resource_key": entry.resource_key,
+            "action": entry.action.value,
+            "likely_replace": entry.likely_replace,
+        },
+    )
+    return entry
 
 
 def plan_resource(
@@ -100,6 +112,10 @@ def plan_resource(
     diff = diff_attributes(current_attributes, desired_params)
 
     if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
+        logger.info(
+            "",
+            extra={"resource_key": resource_key, "action": "no-op", "reason": "zero-diff"},
+        )
         return PlanEntry(
             resource_key=resource_key,
             action=PlanAction.NO_OP,
