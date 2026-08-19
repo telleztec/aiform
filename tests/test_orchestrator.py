@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import types
 from datetime import UTC, datetime
 from pathlib import Path
@@ -422,6 +423,31 @@ class TestEnsureDriverTrusted:
             )
         assert "reads ANTHROPIC_API_KEY" in str(exc_info.value)
 
+    def test_cache_hit_logs_reused_true(self, drivers_dir: Path, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        path = write_driver(drivers_dir, "digitalocean", "compute")
+        entry = make_state_entry(driver=make_driver_info(driver_sha256(path)))
+        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+
+        orchestrator.ensure_driver_trusted("digitalocean", "compute", st, client=FakeClient([]))
+
+        record = caplog.records[0]
+        assert record.reused is True
+
+    def test_real_review_logs_reused_false_and_approved(
+        self, drivers_dir: Path, prompts_dir: Path, caplog
+    ):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        write_driver(drivers_dir, "digitalocean", "compute")
+
+        orchestrator.ensure_driver_trusted(
+            "digitalocean", "compute", state.State(), client=FakeClient([approve_response()])
+        )
+
+        record = caplog.records[0]
+        assert record.reused is False
+        assert record.approved is True
+
 
 class TestRefreshResource:
     def test_success_strips_id_and_reports_not_drifted(self):
@@ -442,6 +468,27 @@ class TestRefreshResource:
 
         assert drifted is True
         assert attrs == {"region": "sfo3"}
+
+    def test_resource_not_found_logs_a_drifted_missing_warning(self, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver(read_exception=ResourceNotFoundError("gone"))
+        entry = make_state_entry(id="123")
+
+        orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        record = caplog.records[0]
+        assert record.levelno == logging.WARNING
+        assert record.drifted_missing is True
+        assert record.id == "123"
+
+    def test_success_logs_nothing(self, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver(read_result={"id": "123", "region": "sfo3"})
+        entry = make_state_entry(id="123")
+
+        orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        assert caplog.records == []
 
     def test_other_exception_wrapped_in_driver_execution_error(self):
         driver = FakeDriver(read_exception=RuntimeError("connection reset"))
@@ -1121,6 +1168,40 @@ class TestApplyPlan:
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
         assert exc_info.value.operation == "create"
 
+    def test_create_success_logs_provider_operation_and_outcome(self, tmp_path: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver(create_result={"id": "new-1", "region": "sfo3"})
+        pr = make_planned_resource(driver=driver, state_entry=None)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        record = next(r for r in caplog.records if getattr(r, "operation", None) == "create")
+        assert record.provider == "digitalocean"
+        assert record.resource_type == "compute"
+        assert record.outcome == "success"
+        assert record.levelno == logging.INFO
+
+    def test_create_failure_logs_error_before_raising(self, tmp_path: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("CSP rate limited")
+
+        driver.create = boom
+        pr = make_planned_resource(driver=driver, state_entry=None)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        record = next(r for r in caplog.records if getattr(r, "operation", None) == "create")
+        assert record.outcome == "error"
+        assert record.levelno == logging.ERROR
+
     def test_update_without_replace_updates_existing_entry(self, tmp_path: Path):
         driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
         existing = make_state_entry(id="123", attributes={"region": "sfo3", "size": "s-1vcpu-2gb"})
@@ -1144,6 +1225,29 @@ class TestApplyPlan:
             "s-2vcpu-4gb"
         )
         assert result.executed == [pr.entry]
+
+    def test_update_without_replace_logs_success(self, tmp_path: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(id="123", attributes={"region": "sfo3", "size": "s-1vcpu-2gb"})
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        record = next(r for r in caplog.records if getattr(r, "operation", None) == "update")
+        assert record.outcome == "success"
+        assert record.provider == "digitalocean"
 
     def test_update_without_replace_corrects_stale_likely_replace_true_prediction(
         self, tmp_path: Path
@@ -1496,6 +1600,92 @@ class TestApplyPlan:
 
         assert len(result.review_flags) == 1
         assert result.review_flags[0].concern == "double check"
+
+    def test_gate2_non_blocking_review_logs_at_info(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch, caplog
+    ):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.DESTROY,
+            rationale="x",
+        )
+        pr = orchestrator.PlannedResource(
+            entry=entry,
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        warning_flag = {
+            "resource_key": pr.entry.resource_key,
+            "concern": "double check",
+            "severity": "warning",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        record = next(r for r in caplog.records if hasattr(r, "safe_to_proceed"))
+        assert record.safe_to_proceed is True
+        assert record.flags_count == 1
+        assert record.levelno == logging.INFO
+
+    def test_gate2_block_flag_logs_at_warning(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch, caplog
+    ):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.DESTROY,
+            rationale="x",
+        )
+        pr = orchestrator.PlannedResource(
+            entry=entry,
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        block_flag = {"resource_key": pr.entry.resource_key, "concern": "prod", "severity": "block"}
+        client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[block_flag])])
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        record = next(r for r in caplog.records if hasattr(r, "safe_to_proceed"))
+        assert record.safe_to_proceed is False
+        assert record.levelno == logging.WARNING
 
     def test_declined_confirmation_returns_aborted_with_empty_executed(self, tmp_path: Path):
         pr = make_planned_resource()
