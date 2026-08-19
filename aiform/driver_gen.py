@@ -1,5 +1,6 @@
 import ast
 import json
+import logging
 from pathlib import Path
 
 import anthropic
@@ -7,6 +8,8 @@ import anthropic
 from aiform import llm
 from aiform.config import PROVIDER_TOKEN_ENV_VARS
 from aiform.models import DriverReview, LLMConfig, ResourceSpec
+
+logger = logging.getLogger(__name__)
 
 SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 
@@ -210,6 +213,15 @@ def generate_driver(
         try:
             validate_driver_source(source)
         except DriverValidationError as e:
+            logger.info(
+                "",
+                extra={
+                    "provider": spec.provider,
+                    "resource": spec.resource,
+                    "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                    "outcome": "validation_failed",
+                },
+            )
             if attempt == MAX_DRAFT_ATTEMPTS:
                 raise DriverGenerationFailed(source, None, e.reasons) from e
             feedback = _format_feedback(e.reasons)
@@ -217,6 +229,15 @@ def generate_driver(
 
         review = llm.review_driver(source, client=client, llm_config=llm_config)
         if not review.approved:
+            logger.info(
+                "",
+                extra={
+                    "provider": spec.provider,
+                    "resource": spec.resource,
+                    "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                    "outcome": "review_rejected",
+                },
+            )
             reasons = (
                 review.blocking_issues or review.concerns or ["review did not approve the driver"]
             )
@@ -225,4 +246,13 @@ def generate_driver(
             feedback = _format_feedback(reasons)
             continue
 
+        logger.info(
+            "",
+            extra={
+                "provider": spec.provider,
+                "resource": spec.resource,
+                "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                "outcome": "approved",
+            },
+        )
         return source, review
