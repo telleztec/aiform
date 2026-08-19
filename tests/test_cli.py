@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,8 @@ class FakeTextBlock:
 class FakeResponse:
     def __init__(self, text: str):
         self.content = [FakeTextBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=0, output_tokens=0)
 
 
 class FakeMessages:

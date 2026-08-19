@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -21,30 +22,83 @@ class FakeTextBlock:
         self.text = text
 
 
+class FakeUsageDetails:
+    def __init__(self, thinking_tokens: int | None):
+        self.thinking_tokens = thinking_tokens
+
+
+class FakeUsage:
+    def __init__(
+        self,
+        *,
+        input_tokens: int = 10,
+        output_tokens: int = 20,
+        thinking_tokens: int | None = None,
+    ):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.output_tokens_details = (
+            FakeUsageDetails(thinking_tokens) if thinking_tokens is not None else None
+        )
+
+
 class FakeResponse:
-    def __init__(self, text: str | None, *, include_thinking_block: bool = False):
+    def __init__(
+        self,
+        text: str | None,
+        *,
+        include_thinking_block: bool = False,
+        stop_reason: str = "end_turn",
+        usage: FakeUsage | None = None,
+    ):
         content = [FakeThinkingBlock()] if include_thinking_block else []
         if text is not None:
             content.append(FakeTextBlock(text))
         self.content = content
+        self.stop_reason = stop_reason
+        self.usage = usage if usage is not None else FakeUsage()
 
 
 class FakeMessages:
-    def __init__(self, response_text: str | None, *, include_thinking_block: bool = False):
+    def __init__(
+        self,
+        response_text: str | None,
+        *,
+        include_thinking_block: bool = False,
+        stop_reason: str = "end_turn",
+        usage: FakeUsage | None = None,
+    ):
         self._response_text = response_text
         self._include_thinking_block = include_thinking_block
+        self._stop_reason = stop_reason
+        self._usage = usage
         self.calls: list[dict] = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
         return FakeResponse(
-            self._response_text, include_thinking_block=self._include_thinking_block
+            self._response_text,
+            include_thinking_block=self._include_thinking_block,
+            stop_reason=self._stop_reason,
+            usage=self._usage,
         )
 
 
 class FakeClient:
-    def __init__(self, response_text: str | None, *, include_thinking_block: bool = False):
-        self.messages = FakeMessages(response_text, include_thinking_block=include_thinking_block)
+    def __init__(
+        self,
+        response_text: str | None,
+        *,
+        include_thinking_block: bool = False,
+        stop_reason: str = "end_turn",
+        usage: FakeUsage | None = None,
+    ):
+        self.messages = FakeMessages(
+            response_text,
+            include_thinking_block=include_thinking_block,
+            stop_reason=stop_reason,
+            usage=usage,
+        )
 
 
 @pytest.fixture
@@ -110,6 +164,126 @@ class TestModelSources:
         client = FakeClient("ignored")
         with pytest.raises(TypeError):
             llm._anthropic_call("claude-sonnet-5", "system", "user", client=client)
+
+    def test_returns_model_call_result_with_response_metadata(self):
+        client = FakeClient(
+            "hello world",
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=100, output_tokens=42),
+        )
+
+        result = llm._anthropic_call(
+            "claude-sonnet-5", "system", "user", max_tokens=4096, client=client
+        )
+
+        assert result.text == "hello world"
+        assert result.stop_reason == "end_turn"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 42
+        assert result.thinking_tokens is None
+        assert result.duration_ms >= 0
+
+    def test_thinking_tokens_extracted_when_present(self):
+        client = FakeClient("hello world", usage=FakeUsage(thinking_tokens=777))
+
+        result = llm._anthropic_call(
+            "claude-sonnet-5", "system", "user", max_tokens=4096, client=client
+        )
+
+        assert result.thinking_tokens == 777
+
+
+class TestCallLogging:
+    def test_intent_orchestration_call_logs_role_model_and_response_metadata(self, caplog):
+        caplog.set_level("INFO", logger="aiform.llm")
+        client = FakeClient(
+            "ignored",
+            stop_reason="end_turn",
+            usage=FakeUsage(input_tokens=10, output_tokens=20, thinking_tokens=5),
+        )
+
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
+
+        record = next(r for r in caplog.records if r.role == "intent_orchestration")
+        assert record.model == "claude-sonnet-5"
+        assert record.stop_reason == "end_turn"
+        assert record.input_tokens == 10
+        assert record.output_tokens == 20
+        assert record.thinking_tokens == 5
+        assert record.levelname == "INFO"
+
+    def test_max_tokens_stop_reason_logs_a_warning(self, caplog):
+        caplog.set_level("INFO", logger="aiform.llm")
+        client = FakeClient("truncated json...", stop_reason="max_tokens")
+
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "truncated" in warnings[0].getMessage()
+        assert warnings[0].role == "intent_orchestration"
+
+    def test_end_turn_stop_reason_logs_no_warning(self, caplog):
+        caplog.set_level("INFO", logger="aiform.llm")
+        client = FakeClient("ignored", stop_reason="end_turn")
+
+        llm.intent_orchestration_call("system", "user", client=client, llm_config=make_llm_config())
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_review_driver_logs_decision_counts(self, caplog, prompts_dir: Path):
+        caplog.set_level("INFO", logger="aiform.llm")
+        response_text = json.dumps(
+            {"approved": False, "concerns": ["a", "b"], "blocking_issues": ["c"]}
+        )
+        client = FakeClient(response_text)
+
+        llm.review_driver("driver source code", client=client, llm_config=make_llm_config())
+
+        decision = next(r for r in caplog.records if hasattr(r, "approved"))
+        assert decision.approved is False
+        assert decision.concerns_count == 2
+        assert decision.blocking_issues_count == 1
+
+    def test_review_plan_logs_decision_counts(self, caplog, prompts_dir: Path):
+        caplog.set_level("INFO", logger="aiform.llm")
+        response_text = json.dumps(
+            {
+                "safe_to_proceed": False,
+                "flags": [
+                    {
+                        "resource_key": "digitalocean.compute.x",
+                        "concern": "unexpected destroy",
+                        "severity": "block",
+                    }
+                ],
+            }
+        )
+        client = FakeClient(response_text)
+
+        llm.review_plan("plan summary", client=client, llm_config=make_llm_config())
+
+        decision = next(r for r in caplog.records if hasattr(r, "safe_to_proceed"))
+        assert decision.safe_to_proceed is False
+        assert decision.flags_count == 1
+
+    def test_review_driver_never_logs_concern_text_only_counts(self, caplog, prompts_dir: Path):
+        caplog.set_level("INFO", logger="aiform.llm")
+        response_text = json.dumps(
+            {
+                "approved": False,
+                "concerns": [],
+                "blocking_issues": ["a very specific sensitive-looking finding"],
+            }
+        )
+        client = FakeClient(response_text)
+
+        llm.review_driver("driver source code", client=client, llm_config=make_llm_config())
+
+        all_text = " ".join(r.getMessage() for r in caplog.records)
+        assert "sensitive-looking finding" not in all_text
+        for record in caplog.records:
+            assert "sensitive-looking finding" not in str(record.__dict__)
 
 
 class TestIntentOrchestrationCall:

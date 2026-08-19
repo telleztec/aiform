@@ -1,5 +1,8 @@
 import json
+import logging
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -9,7 +12,19 @@ import anthropic
 from aiform import config
 from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, PlanReview
 
+logger = logging.getLogger(__name__)
+
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+@dataclass(frozen=True)
+class ModelCallResult:
+    text: str
+    stop_reason: str
+    input_tokens: int
+    output_tokens: int
+    thinking_tokens: int | None
+    duration_ms: int
 
 
 def load_prompt(name: str) -> str:
@@ -58,7 +73,7 @@ def _anthropic_call(
     max_tokens: int,
     output_schema: dict[str, Any] | None = None,
     client: anthropic.Anthropic | None = None,
-) -> str:
+) -> ModelCallResult:
     if client is None:
         client = anthropic.Anthropic()
 
@@ -71,16 +86,55 @@ def _anthropic_call(
     if output_schema is not None:
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
 
+    start = time.monotonic()
     response = client.messages.create(**kwargs)
+    duration_ms = round((time.monotonic() - start) * 1000)
+
+    text = None
     for block in response.content:
         if getattr(block, "type", None) == "text":
-            return block.text
-    raise RuntimeError("model response contained no text content block")
+            text = block.text
+            break
+    if text is None:
+        raise RuntimeError("model response contained no text content block")
+
+    usage = response.usage
+    details = getattr(usage, "output_tokens_details", None)
+    thinking_tokens = getattr(details, "thinking_tokens", None) if details is not None else None
+
+    return ModelCallResult(
+        text=text,
+        stop_reason=response.stop_reason,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        thinking_tokens=thinking_tokens,
+        duration_ms=duration_ms,
+    )
 
 
-MODEL_SOURCES: dict[ModelSource, Callable[..., str]] = {
+MODEL_SOURCES: dict[ModelSource, Callable[..., ModelCallResult]] = {
     ModelSource.ANTHROPIC: _anthropic_call,
 }
+
+
+def _log_call(role_name: str, model: str, result: ModelCallResult) -> None:
+    logger.info(
+        "",
+        extra={
+            "role": role_name,
+            "model": model,
+            "stop_reason": result.stop_reason,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "thinking_tokens": result.thinking_tokens,
+            "duration_ms": result.duration_ms,
+        },
+    )
+    if result.stop_reason == "max_tokens":
+        logger.warning(
+            "response likely truncated -- max_tokens reached before JSON completed",
+            extra={"role": role_name, "model": model, "output_tokens": result.output_tokens},
+        )
 
 
 def _resolve_role(
@@ -103,7 +157,7 @@ def _implementation_tier_call(
     llm_config: LLMConfig | None = None,
 ) -> str:
     role, call = _resolve_role(llm_config, role_name)
-    return call(
+    result = call(
         role.model,
         system_prompt,
         user_content,
@@ -111,6 +165,8 @@ def _implementation_tier_call(
         max_tokens=max_tokens if max_tokens is not None else role.max_tokens,
         client=client,
     )
+    _log_call(role_name, role.model, result)
+    return result.text
 
 
 def intent_orchestration_call(
@@ -161,7 +217,7 @@ def review_driver(
 ) -> DriverReview:
     role, call = _resolve_role(llm_config, "code_review")
     system_prompt = load_prompt("review_driver.md")
-    response_text = call(
+    result = call(
         role.model,
         system_prompt,
         driver_source,
@@ -169,14 +225,24 @@ def review_driver(
         max_tokens=role.max_tokens,
         client=client,
     )
-    data = json.loads(response_text)
-    return DriverReview(
+    _log_call("code_review", role.model, result)
+    data = json.loads(result.text)
+    review = DriverReview(
         approved=data["approved"],
         concerns=data["concerns"],
         blocking_issues=data["blocking_issues"],
         reviewed_at=datetime.now(UTC),
         model=role.model,
     )
+    logger.info(
+        "",
+        extra={
+            "approved": review.approved,
+            "concerns_count": len(review.concerns),
+            "blocking_issues_count": len(review.blocking_issues),
+        },
+    )
+    return review
 
 
 def review_plan(
@@ -187,7 +253,7 @@ def review_plan(
 ) -> PlanReview:
     role, call = _resolve_role(llm_config, "review_orchestration")
     system_prompt = load_prompt("review_plan.md")
-    response_text = call(
+    result = call(
         role.model,
         system_prompt,
         plan_summary,
@@ -195,4 +261,10 @@ def review_plan(
         max_tokens=role.max_tokens,
         client=client,
     )
-    return PlanReview.model_validate_json(response_text)
+    _log_call("review_orchestration", role.model, result)
+    review = PlanReview.model_validate_json(result.text)
+    logger.info(
+        "",
+        extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
+    )
+    return review

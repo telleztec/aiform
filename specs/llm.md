@@ -220,7 +220,14 @@ class ModelCallResult:
     input_tokens: int
     output_tokens: int
     thinking_tokens: int | None
+    duration_ms: int
 ```
+
+(This field list was written without `duration_ms` in the first pass of
+this revision, even though the `_anthropic_call` prose below already
+committed to measuring it around the `client.messages.create(...)`
+call — caught and fixed in the same PR that implements this, per
+"Specs are living docs.")
 
 `thinking_tokens` is `getattr(response.usage, "output_tokens_details",
 None)`-defensive (then `.thinking_tokens` off that, still
