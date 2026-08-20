@@ -819,8 +819,42 @@ class TestUpdateResizeInPlace:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert excinfo.value.code == 429
+        # DO's own diagnostic message is folded into the re-raised
+        # HTTPError's .msg, not silently dropped -- caught by /code-review.
+        assert "too many requests" in str(excinfo.value)
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
+
+    def test_resize_compounding_failure_raises_runtime_error_not_masked(self, driver, fake_urlopen):
+        # If the power-on restore call itself fails after the resize
+        # already failed, the restore's own exception must not silently
+        # replace/mask the original resize failure -- caught by
+        # /code-review.
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            http_error(actions_url("123"), 503, {"message": "service unavailable"}),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert "123" in message
+        assert "too many requests" in message
+        assert "service unavailable" in message
+        assert excinfo.value.__cause__ is not None
+        assert excinfo.value.__cause__.code == 429
 
     def test_resize_server_error_reraises_not_unsupported(self, driver, fake_urlopen):
         current = make_attrs(status="off", size="s-1vcpu-2gb")
@@ -836,6 +870,7 @@ class TestUpdateResizeInPlace:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert excinfo.value.code == 500
+        assert "internal error" in str(excinfo.value)
         # Started "off" -- no power-off/power-on calls should have happened.
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["resize"]

@@ -8,6 +8,12 @@ from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
+# DO's conventional statuses for "your request is well-formed but this
+# particular resize is invalid" -- anything else (429, 5xx, 401/403) is a
+# transient or unrelated CSP failure, not evidence the resize itself is
+# unsupported. Named as a constant, not an inline tuple, so there's one
+# place in the code to update -- flagged during /code-review.
+_RESIZE_REJECTED_STATUSES = (400, 422)
 
 
 class Driver(ResourceDriver):
@@ -188,19 +194,48 @@ class Driver(ResourceDriver):
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
         except urllib.error.HTTPError as exc:
+            do_message = self._do_error_message(exc)
+            if do_message:
+                # Folded into the *same* HTTPError object's .msg rather than
+                # wrapped in a new exception type -- keeps exc.code/isinstance
+                # intact for the re-raise path below, while still enriching
+                # what str(exc) shows. DO's own diagnostic text (e.g. "rate
+                # limit exceeded, retry after 30s") was previously extracted
+                # only for the DriverUpdateNotSupported branch, silently
+                # dropping it for exactly the transient failures a human
+                # would most want it for -- flagged during /code-review.
+                exc.msg = f"{exc.msg}: {do_message}"
+
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
             # resize, it doesn't get turned on as a side effect of the failure.
             # This restoration happens regardless of *why* the resize failed.
             if we_powered_off:
-                self._do_action_and_wait(
-                    id,
-                    credentials,
-                    {"type": "power_on"},
-                    lambda d: d["status"] == "active",
-                    "power-on",
-                )
-            if exc.code not in (400, 422):
+                try:
+                    self._do_action_and_wait(
+                        id,
+                        credentials,
+                        {"type": "power_on"},
+                        lambda d: d["status"] == "active",
+                        "power-on",
+                    )
+                except Exception as restore_exc:
+                    # If restoring power *also* fails, that failure must not
+                    # silently replace the original resize error -- flagged
+                    # during /code-review. A compounding failure like this
+                    # is unusual enough to warrant a loud, undisguised error
+                    # rather than a guess at classification either way.
+                    if isinstance(restore_exc, urllib.error.HTTPError):
+                        restore_message = self._do_error_message(restore_exc)
+                        if restore_message:
+                            restore_exc.msg = f"{restore_exc.msg}: {restore_message}"
+                    raise RuntimeError(
+                        f"droplet {id}: resize to {target_size!r} failed ({exc}) and "
+                        f"the power-on restore that followed also failed ({restore_exc}) "
+                        "-- droplet may still be powered off"
+                    ) from exc
+
+            if exc.code not in _RESIZE_REJECTED_STATUSES:
                 # Not DO telling us this specific resize is invalid -- a
                 # transient failure (429, 5xx) or an auth problem (401/403).
                 # Converting this into DriverUpdateNotSupported would
@@ -209,7 +244,6 @@ class Driver(ResourceDriver):
                 # destroy+recreate for a resize that might have succeeded
                 # on retry. Let it propagate as a real error instead.
                 raise
-            do_message = self._do_error_message(exc)
             reason = f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}"
             if do_message:
                 reason += f": {do_message}"

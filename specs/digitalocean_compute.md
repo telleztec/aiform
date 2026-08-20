@@ -247,25 +247,42 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      up/down move.
   4. The resize action can fail with an `HTTPError`, and **not every
      `HTTPError` here means "DO rejected this specific resize."** Only
-     `exc.code in (400, 422)` is treated as a genuine rejection (DO's
-     conventional status for "your request is well-formed but this
-     particular resize is invalid" — e.g. the target size requires a
-     disk-size change DO can't perform live, moving between families
-     with different bundled disk sizes). Any other status — `429`
-     (rate-limited), a `5xx`, `401`/`403` (auth) — is a transient or
-     unrelated CSP failure, **not** evidence this resize is unsupported,
-     and must **not** be converted into `DriverUpdateNotSupported`:
-     doing so would misclassify a retriable/transient failure as a
-     permanent one and trigger a destructive destroy+recreate for a
-     resize that might have succeeded on retry. Caught by `/code-review`
-     (gate #1) on the original version of this driver, which caught
-     *every* `HTTPError` unconditionally here.
+     `exc.code in _RESIZE_REJECTED_STATUSES` (a module-level constant,
+     `(400, 422)`) is treated as a genuine rejection (DO's conventional
+     status for "your request is well-formed but this particular resize
+     is invalid" — e.g. the target size requires a disk-size change DO
+     can't perform live, moving between families with different bundled
+     disk sizes). Named as a constant rather than an inline tuple
+     specifically so there's one place in the code to update it, not a
+     literal repeated at each call site — flagged during `/code-review`
+     on this same PR. Any other status — `429` (rate-limited), a `5xx`,
+     `401`/`403` (auth) — is a transient or unrelated CSP failure,
+     **not** evidence this resize is unsupported, and must **not** be
+     converted into `DriverUpdateNotSupported`: doing so would
+     misclassify a retriable/transient failure as a permanent one and
+     trigger a destructive destroy+recreate for a resize that might
+     have succeeded on retry. Caught by `/code-review` (gate #1) on the
+     original version of this driver, which caught *every* `HTTPError`
+     unconditionally here.
      - In **both** cases (genuine rejection or not), first **power the
        droplet back on** if this call itself powered it off
        (`POST .../actions {"type": "power_on"}`, poll until `status ==
        "active"`) — regardless of *why* the resize failed, a droplet
        this driver itself powered off shouldn't stay off as a side
-       effect of the failure.
+       effect of the failure. **This restore call is itself wrapped in
+       its own `try`/`except`**: if it *also* raises, the original
+       resize `exc` must not be silently replaced by the restore
+       failure (a second `/code-review` finding on this same PR — a
+       bare, unguarded restore call meant a failed restore would mask
+       the actual resize error and skip the classification below
+       entirely). On a compounding failure, raise a plain `RuntimeError`
+       naming the droplet `id`, the original resize failure, and the
+       restore failure, chained `from` the original resize `exc` (not
+       the restore failure) — both are visible in the message and the
+       traceback, and this case deliberately isn't classified into
+       `DriverUpdateNotSupported` either way (a compounding failure like
+       this is unusual enough to warrant a loud, undisguised error
+       rather than a guess).
      - **Only then**, branch: if the status was a genuine rejection
        (`400`/`422`), raise `DriverUpdateNotSupported` naming `size` in
        `unsupported_fields`, falling back to the normal destroy+recreate
@@ -287,14 +304,24 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
        `DriverExecutionError`), not a silent trigger for replace.
      - DO's JSON error body (when present) is extracted defensively (a
        malformed or already-consumed body must never raise a *new*
-       exception mid-error-handling) and included in
-       `DriverUpdateNotSupported`'s message when available, purely to
-       make a human's diagnosis faster — it plays no role in the
-       classification decision above, which is status-code-only: every
-       resize-action `HTTPError` at this point in the code is
-       unambiguously about *this* resize request (no concurrent request
-       shares this call site), so there's no genuine ambiguity for a
-       body-content heuristic to resolve.
+       exception mid-error-handling) on **both** branches, not just the
+       rejection one — a third `/code-review` finding: the original
+       version only extracted it for the `DriverUpdateNotSupported`
+       message, silently dropping DO's own diagnostic text (e.g. "rate
+       limit exceeded, retry after 30s") for exactly the transient
+       failures a human would most want it for. On the re-raise branch,
+       the message is folded into the *same* `HTTPError` object's `.msg`
+       (mutating it in place, e.g. `"Too Many Requests: rate limit
+       exceeded, retry after 30s"`) rather than wrapped in a new
+       exception type — this keeps `exc.code`/`isinstance(exc,
+       HTTPError)` intact for anything further up the stack that might
+       care, while still enriching what `str(exc)` shows. Message
+       extraction plays no role in the classification decision either
+       way, which is status-code-only: every resize-action `HTTPError`
+       at this point in the code is unambiguously about *this* resize
+       request (no concurrent request shares this call site), so
+       there's no genuine ambiguity for a body-content heuristic to
+       resolve.
   5. On success, poll until the resize action (or the droplet's
      `size_slug`) shows the new size.
   6. `POST .../actions {"type": "power_on"}`, poll until `status ==
