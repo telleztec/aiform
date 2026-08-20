@@ -4,7 +4,9 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -200,6 +202,23 @@ def _require_live_credentials():
 def project_dir(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.chdir(tmp_path)
     return tmp_path
+
+
+def unique_name(base: str) -> str:
+    """Append a run-scoped suffix to a fixture's base droplet name.
+
+    Two invocations of this suite can run in parallel (a local run
+    overlapping a CI run, or two CI jobs) and, before this, raced on the
+    literal same DO droplet name -- not a state-file collision (each run
+    already gets its own tmp_path/state.json), but a real, confusing
+    collision in DigitalOcean's own droplet list. The timestamp -- same
+    %Y%m%dT%H%M%SZ format scripts/run_system_tests.py already uses for
+    its log filenames -- makes a leaked droplet's age visible from its
+    name alone; the short random suffix covers two runs starting within
+    the same second, which the timestamp alone would still collide on.
+    """
+    now = datetime.now(UTC)
+    return f"{base}-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
 
 
 def write_aiform_md(
