@@ -4,6 +4,7 @@ import time
 import urllib.error
 import urllib.request
 
+from aiform import log
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
@@ -105,7 +106,7 @@ class Driver(ResourceDriver):
                         "id": id,
                         "step": step,
                         "attempts_used": attempt + 1,
-                        "duration_ms": round((time.monotonic() - start) * 1000),
+                        "duration_ms": log.elapsed_ms(start),
                         "outcome": "success",
                     },
                 )
@@ -118,7 +119,7 @@ class Driver(ResourceDriver):
                 "id": id,
                 "step": step,
                 "attempts_used": max_attempts,
-                "duration_ms": round((time.monotonic() - start) * 1000),
+                "duration_ms": log.elapsed_ms(start),
                 "outcome": "timeout",
             },
         )

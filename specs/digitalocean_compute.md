@@ -341,8 +341,14 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     the individual `GET`s inside its loop): INFO with
     `id`/`step`/`attempts_used`/`duration_ms`/`outcome=success` on
     success, ERROR with the same shape plus `outcome=timeout`
-    immediately before raising `TimeoutError`. Since `create()` also
-    calls `_poll_until()` (`step="create"`), it gets this too, for
+    immediately before raising `TimeoutError`. `duration_ms` is
+    `aiform.log.elapsed_ms(start)` — the same helper `llm.py`/
+    `orchestrator.py` use, not a hand-rolled `round((time.monotonic() -
+    start) * 1000)` — this driver imports `aiform.log` for it (caught
+    by `/code-review`: the original version reimplemented the formula
+    inline at both call sites instead of reusing the helper this same
+    PR introduced specifically to eliminate that duplication). Since
+    `create()` also calls `_poll_until()` (`step="create"`), it gets this too, for
     free — an added, not redundant, precision beyond
     `_call_driver()`'s own `operation=create` line, since
     `attempts_used` tells you how many `GET`s DO's convergence
