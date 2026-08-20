@@ -178,6 +178,35 @@ class TestValidateDriverSource:
             driver_gen.validate_driver_source(source)
         assert any("anthropic" in r.lower() for r in excinfo.value.reasons)
 
+    def test_get_logger_dunder_name_is_rejected(self):
+        source = "import logging\n\nlogger = logging.getLogger(__name__)\n\n" + VALID_DRIVER_SOURCE
+        with pytest.raises(driver_gen.DriverValidationError) as excinfo:
+            driver_gen.validate_driver_source(source)
+        reasons = " ".join(excinfo.value.reasons).lower()
+        assert "__name__" in reasons
+        assert "aiform.driver." in reasons
+
+    def test_get_logger_with_wrong_literal_prefix_is_rejected(self):
+        source = (
+            'import logging\n\nlogger = logging.getLogger("drivers.digitalocean.compute")\n\n'
+            + VALID_DRIVER_SOURCE
+        )
+        with pytest.raises(driver_gen.DriverValidationError) as excinfo:
+            driver_gen.validate_driver_source(source)
+        reasons = " ".join(excinfo.value.reasons).lower()
+        assert "drivers.digitalocean.compute" in reasons
+        assert "aiform.driver." in reasons
+
+    def test_get_logger_with_correct_literal_prefix_passes(self):
+        source = (
+            'import logging\n\nlogger = logging.getLogger("aiform.driver.digitalocean.compute")\n\n'
+            + VALID_DRIVER_SOURCE
+        )
+        assert driver_gen.validate_driver_source(source) is None
+
+    def test_no_get_logger_call_at_all_passes(self):
+        assert driver_gen.validate_driver_source(VALID_DRIVER_SOURCE) is None
+
     def test_multiple_failures_all_accumulate(self):
         source = "import anthropic\n\n\nclass Driver:\n    pass\n"
         with pytest.raises(driver_gen.DriverValidationError) as excinfo:
