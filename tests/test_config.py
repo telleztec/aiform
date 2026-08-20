@@ -3,14 +3,16 @@ from pathlib import Path
 import pytest
 
 from aiform.config import (
+    DEFAULT_CONFIG_PATH,
     DEFAULT_CREDENTIALS_PATH,
     DEFAULT_LLM_CONFIG,
-    DEFAULT_LLM_CONFIG_PATH,
+    DEFAULT_LOGGING_CONFIG,
     PROVIDER_TOKEN_ENV_VARS,
     resolve_credentials,
     resolve_llm_config,
+    resolve_logging_config,
 )
-from aiform.models import LLMConfig, LLMRoleConfig, ModelSource
+from aiform.models import LLMConfig, LLMRoleConfig, LoggingConfig, ModelSource
 
 
 class TestDefaults:
@@ -93,8 +95,8 @@ class TestResolveCredentials:
 
 
 class TestDefaultLLMConfig:
-    def test_default_llm_config_path_constant(self):
-        assert DEFAULT_LLM_CONFIG_PATH == Path(".aiform/config.yaml")
+    def test_default_config_path_constant(self):
+        assert DEFAULT_CONFIG_PATH == Path(".aiform/config.yaml")
 
     def test_default_llm_config_preserves_mvp_defaults(self):
         assert DEFAULT_LLM_CONFIG == LLMConfig(
@@ -289,6 +291,98 @@ class TestResolveLLMConfig:
         config = resolve_llm_config(config_path)
 
         assert config.code_review.model == "claude-opus-5-override"
+
+
+class TestDefaultLoggingConfig:
+    def test_default_logging_config_preserves_stated_defaults(self):
+        assert DEFAULT_LOGGING_CONFIG == LoggingConfig(level="INFO", max_files=10)
+
+
+class TestResolveLoggingConfig:
+    def test_missing_file_returns_default(self, tmp_path: Path):
+        config_path = tmp_path / "does-not-exist.yaml"
+
+        assert resolve_logging_config(config_path) == DEFAULT_LOGGING_CONFIG
+
+    def test_empty_file_returns_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("")
+
+        assert resolve_logging_config(config_path) == DEFAULT_LOGGING_CONFIG
+
+    def test_file_with_no_logging_key_returns_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("unrelated: true\n")
+
+        assert resolve_logging_config(config_path) == DEFAULT_LOGGING_CONFIG
+
+    def test_full_override(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging:\n  level: DEBUG\n  max_files: 3\n")
+
+        config = resolve_logging_config(config_path)
+
+        assert config.level == "DEBUG"
+        assert config.max_files == 3
+
+    def test_partial_field_override_keeps_sibling_field_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging:\n  max_files: 3\n")
+
+        config = resolve_logging_config(config_path)
+
+        assert config.max_files == 3
+        assert config.level == DEFAULT_LOGGING_CONFIG.level
+
+    def test_unknown_level_raises_validation_error(self, tmp_path: Path):
+        from pydantic import ValidationError
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging:\n  level: TRACE\n")
+
+        with pytest.raises(ValidationError):
+            resolve_logging_config(config_path)
+
+    def test_unknown_field_raises_clear_error(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging:\n  max_fiels: 3\n")
+
+        with pytest.raises(ValueError, match="max_fiels"):
+            resolve_logging_config(config_path)
+
+    def test_non_mapping_logging_key_raises(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging: verbose\n")
+
+        with pytest.raises(ValueError):
+            resolve_logging_config(config_path)
+
+    def test_explicit_null_logging_key_uses_default(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("logging:\n")
+
+        assert resolve_logging_config(config_path) == DEFAULT_LOGGING_CONFIG
+
+    def test_strips_leading_utf8_bom(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_bytes(b"\xef\xbb\xbflogging:\n  max_files: 3\n")
+
+        config = resolve_logging_config(config_path)
+
+        assert config.max_files == 3
+
+    def test_llm_and_logging_sections_resolve_independently(self, tmp_path: Path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "llm:\n  code_review:\n    model: claude-opus-5-override\nlogging:\n  max_files: 3\n"
+        )
+
+        llm_config = resolve_llm_config(config_path)
+        logging_config = resolve_logging_config(config_path)
+
+        assert llm_config.code_review.model == "claude-opus-5-override"
+        assert logging_config.max_files == 3
+        assert logging_config.level == DEFAULT_LOGGING_CONFIG.level
 
 
 class TestDotenvParsing:
