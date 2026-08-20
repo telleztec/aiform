@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -853,3 +854,141 @@ class TestUpdateResizeInPlace:
         assert "123" in str(excinfo.value)
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert "power_on" not in types
+
+
+class TestLogging:
+    def test_logger_is_a_real_descendant_of_the_aiform_logger(self):
+        # The actual hazard this whole class guards against: load_driver()
+        # execs this file with a synthetic module name that is NOT a
+        # dotted descendant of "aiform" -- logging.getLogger(__name__)
+        # would silently produce a logger aiform/log.py's configure()
+        # never attaches a handler to. Verified structurally here, not
+        # just by trusting the module-level logger's literal string.
+        from drivers.digitalocean.compute import logger as driver_logger
+
+        assert driver_logger.name == "aiform.driver.digitalocean.compute"
+        node = driver_logger
+        while node.parent is not None:
+            node = node.parent
+            if node.name == "aiform":
+                return
+        pytest.fail("driver logger is not a descendant of the 'aiform' logger")
+
+    def test_poll_success_logs_step_attempts_and_outcome(self, driver, fake_urlopen, caplog):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        resize_step = next(r for r in caplog.records if getattr(r, "step", None) == "resize")
+        assert resize_step.outcome == "success"
+        assert resize_step.attempts_used == 2
+        assert resize_step.id == "123"
+        assert resize_step.levelno == logging.INFO
+
+    def test_poll_timeout_logs_before_raising(self, driver, fake_urlopen, caplog):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(status="active"))
+        )
+
+        with pytest.raises(TimeoutError):
+            driver.update("123", current, desired, CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "step", None) == "power-off")
+        assert record.outcome == "timeout"
+        assert record.attempts_used == 20
+        assert record.levelno == logging.ERROR
+
+    def test_entering_resize_logs_current_and_target_context(self, driver, fake_urlopen, caplog):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "current_size", None) is not None)
+        assert record.status == "off"
+        assert record.current_size == "s-1vcpu-2gb"
+        assert record.target_size == "s-2vcpu-4gb"
+
+    def test_resize_rejection_logs_http_status_and_do_message(self, driver, fake_urlopen, caplog):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"}),
+            FakeHTTPResponse(201, {"action": {"id": 3, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(DriverUpdateNotSupported):
+            driver.update("123", current, desired, CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "http_status", None) is not None)
+        assert record.levelno == logging.WARNING
+        assert record.http_status == 422
+        assert record.do_message == "disk size cannot be decreased"
+        assert record.target_size == "s-2vcpu-4gb"
+        assert "falling back to destroy+recreate" in record.getMessage()
+
+    def test_do_error_message_returns_none_for_non_json_body(self, driver):
+        exc = http_error(actions_url("123"), 422, None)
+        exc.fp = io.BytesIO(b"not json at all")
+
+        assert driver._do_error_message(exc) is None
+
+    def test_do_error_message_returns_none_when_message_key_absent(self, driver):
+        exc = http_error(actions_url("123"), 422, {"id": "unprocessable_entity"})
+
+        assert driver._do_error_message(exc) is None
+
+    def test_do_error_message_extracts_message_field(self, driver):
+        exc = http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"})
+
+        assert driver._do_error_message(exc) == "disk size cannot be decreased"

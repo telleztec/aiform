@@ -252,6 +252,24 @@ whoever ran the command remembered to pass it.
 - `log_dir` containing fewer than `max_files - 1` existing `*.log`
   files is not an error — rotation's prune step is a no-op when
   there's nothing to prune.
+- **A driver logging via `logging.getLogger(__name__)` gets a logger
+  that is not a descendant of `"aiform"`, silently.**
+  `orchestrator.py`'s `load_driver()` execs a driver file via
+  `importlib.util.spec_from_file_location(f"aiform_driver_{provider}_{resource_type}",
+  ...)`, so `__name__` inside a driver module at runtime is a synthetic
+  name like `"aiform_driver_digitalocean_compute"` — sharing a string
+  *prefix* with `"aiform"` but not a dotted *descendant* of it in
+  `logging`'s hierarchy (`"aiform_foo"` and `"aiform"` are siblings
+  under root, not parent/child). A logger built from that name never
+  reaches either handler `configure()` installs — no exception, no
+  warning, just missing output. Confirmed empirically
+  (`drivers/digitalocean/compute.py`'s own test suite asserts the
+  fix's logger is a real descendant, not just that the string looks
+  right). **Any driver that wants to log must hardcode an explicit
+  `"aiform.driver.<provider>.<resource>"` name** — see
+  `drivers/digitalocean/compute.py`/`specs/digitalocean_compute.md`
+  for the first (and, at time of writing, only) instance of this
+  pattern.
 
 ## Out of scope
 

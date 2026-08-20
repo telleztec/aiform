@@ -318,6 +318,51 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   non-updatable fields raise `DriverUpdateNotSupported`, never attempt a
   destructive call) without being so strict about the *exact* internal
   call sequence that a reasonable first-draft variation fails outright.
+- **Logging** (`specs/log.md`). This is the first driver to log at all
+  — every other driver-visible log line comes from `orchestrator.py`'s
+  `_call_driver()` wrapper, which only sees this driver's *outer*
+  boundary (`operation=update duration_ms=<total> outcome=success`,
+  covering the whole `power-off → resize → poll → power-on` sequence
+  as one opaque span). Found insufficient after a real diagnostic
+  session: a slow or stuck resize gives no way to tell *which* of the
+  four steps it's stuck in from that one line alone.
+  - `logger = logging.getLogger("aiform.driver.digitalocean.compute")`
+    — a hardcoded literal, **not** `logging.getLogger(__name__)`.
+    `orchestrator.py`'s `load_driver()` execs this file via
+    `importlib.util.spec_from_file_location(f"aiform_driver_{provider}_{resource_type}",
+    ...)`, so `__name__` inside this module at runtime is
+    `"aiform_driver_digitalocean_compute"` — not a dotted descendant of
+    the `"aiform"` logger `aiform/log.py`'s `configure()` attaches
+    handlers to. Confirmed empirically before writing this (not
+    assumed): a logger built from that synthetic name never reaches
+    either handler, silently — no exception, just missing output.
+  - `_poll_until()` logs once per call (not per poll attempt — the
+    existing busy-wait exclusion in `specs/log.md` still applies to
+    the individual `GET`s inside its loop): INFO with
+    `id`/`step`/`attempts_used`/`duration_ms`/`outcome=success` on
+    success, ERROR with the same shape plus `outcome=timeout`
+    immediately before raising `TimeoutError`. Since `create()` also
+    calls `_poll_until()` (`step="create"`), it gets this too, for
+    free — an added, not redundant, precision beyond
+    `_call_driver()`'s own `operation=create` line, since
+    `attempts_used` tells you how many `GET`s DO's convergence
+    actually took.
+  - `update()`'s resize path logs once, INFO, on entering the sequence
+    (`id`/`status`/`current_size`/`target_size`) — the context every
+    subsequent step-level line needs but doesn't itself carry.
+  - The resize-rejection branch (`except urllib.error.HTTPError`)
+    logs WARNING — expected, handled fallback, not a bug, same
+    treatment `llm.py`'s `max_tokens`-truncation case already gets —
+    naming `http_status` (`exc.code`) and, best-effort, `do_message`:
+    DO's own `{"message": "..."}` JSON body, extracted via a new
+    `_do_error_message()` helper. This is the single highest-value
+    diagnostic line this change adds — DO's own stated reason a resize
+    was rejected (e.g. a disk-size-class mismatch) is exactly the
+    detail an operator, or an LLM reviewing the log afterward, needs to
+    tell "this needs a destroy+recreate because X" apart from "this
+    driver has a bug." Never raises on a malformed/absent body — the
+    field is just omitted (per `_KeyValueFormatter`'s existing `None`
+    handling) rather than crashing error handling itself.
 
 ## Edge cases / errors
 

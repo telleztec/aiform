@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -8,6 +9,17 @@ from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
+
+# Named explicitly rather than via logging.getLogger(__name__).
+# orchestrator.py's load_driver() execs this file as a module with a
+# synthetic name ("aiform_driver_digitalocean_compute", via
+# importlib.util.spec_from_file_location), not "drivers.digitalocean.compute"
+# -- that name is not a dotted descendant of the "aiform" logger
+# aiform/log.py's configure() attaches handlers to, so __name__ here
+# would silently produce a logger with no handler and no propagation to
+# either sink. Not an error, just missing output -- confirmed empirically
+# before writing this, not assumed.
+logger = logging.getLogger("aiform.driver.digitalocean.compute")
 
 
 class Driver(ResourceDriver):
@@ -64,13 +76,52 @@ class Driver(ResourceDriver):
     def _action(self, id, credentials, body):
         self._request("POST", f"{BASE_URL}/droplets/{id}/actions", credentials, body=body)
 
+    def _do_error_message(self, exc: urllib.error.HTTPError) -> str | None:
+        # Best-effort: DO's error responses are typically {"id": "...",
+        # "message": "..."} JSON, and that message is usually the single
+        # most useful diagnostic string available -- it names the actual
+        # reason (e.g. a disk-size-class mismatch) that a bare HTTP 422
+        # doesn't. Never let extraction itself raise; a malformed or
+        # already-consumed body just means no do_message field gets
+        # logged, not a crash in the middle of error handling.
+        try:
+            body = exc.read()
+        except Exception:
+            return None
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return data.get("message") if isinstance(data, dict) else None
+
     def _poll_until(self, id, credentials, predicate, step, max_attempts=20, delay_seconds=2):
+        start = time.monotonic()
         for attempt in range(max_attempts):
             droplet = self._get_droplet(id, credentials)
             if predicate(droplet):
+                logger.info(
+                    "",
+                    extra={
+                        "id": id,
+                        "step": step,
+                        "attempts_used": attempt + 1,
+                        "duration_ms": round((time.monotonic() - start) * 1000),
+                        "outcome": "success",
+                    },
+                )
                 return droplet
             if attempt < max_attempts - 1:
                 time.sleep(delay_seconds)
+        logger.error(
+            "",
+            extra={
+                "id": id,
+                "step": step,
+                "attempts_used": max_attempts,
+                "duration_ms": round((time.monotonic() - start) * 1000),
+                "outcome": "timeout",
+            },
+        )
         raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
 
     def _do_action_and_wait(self, id, credentials, body, predicate, step):
@@ -163,6 +214,16 @@ class Driver(ResourceDriver):
                 unsupported_fields=["size"],
             )
 
+        logger.info(
+            "",
+            extra={
+                "id": id,
+                "status": status,
+                "current_size": current.get("size"),
+                "target_size": target_size,
+            },
+        )
+
         we_powered_off = status == "active"
         if we_powered_off:
             self._do_action_and_wait(
@@ -172,6 +233,15 @@ class Driver(ResourceDriver):
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
         except urllib.error.HTTPError as exc:
+            logger.warning(
+                "DigitalOcean rejected the in-place resize; falling back to destroy+recreate",
+                extra={
+                    "id": id,
+                    "target_size": target_size,
+                    "http_status": exc.code,
+                    "do_message": self._do_error_message(exc),
+                },
+            )
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
             # resize, it doesn't get turned on as a side effect of the failure.
