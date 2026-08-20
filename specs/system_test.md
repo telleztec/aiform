@@ -64,7 +64,16 @@ concept. That variant is not designed here; see Out of scope.
 - **Isolation**: every test runs inside a `tmp_path`-backed working
   directory (`monkeypatch.chdir(tmp_path)`), so `.aiform/state.json` and
   `.aiform/credentials.env` never touch the real repo checkout or collide
-  across parallel runs.
+  across parallel runs. `tmp_path` isolation is local-only, though — it
+  says nothing about DigitalOcean's own droplet namespace, which every
+  concurrent run shares. Each fixture's base name (`"aiform-system-test-lifecycle"`,
+  `"aiform-system-test-bad-token"`, `"aiform-system-test-ssh-keys"`) is
+  passed through `tests/system/conftest.py`'s `unique_name()` before use,
+  appending a `%Y%m%dT%H%M%SZ` timestamp (matching `scripts/run_system_tests.py`'s
+  own log-filename convention) plus a short random suffix, so two runs
+  overlapping in DO's droplet list never collide on name and a leaked
+  droplet's age is legible from its name alone without needing to cross-
+  reference `state.json` or the sweep script's own timestamp field.
 - **Driving the CLI**: calls `aiform.cli.main([...])` in-process (same
   entry point `tests/test_cli.py` already uses), not a subprocess — so
   stdout/stderr capture and exit codes are asserted the same way the

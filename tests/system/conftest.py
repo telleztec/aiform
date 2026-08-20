@@ -4,7 +4,9 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 import warnings
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -202,16 +204,40 @@ def project_dir(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+def unique_name(base: str) -> str:
+    """Append a run-scoped suffix to a fixture's base droplet name.
+
+    Two invocations of this suite can run in parallel (a local run
+    overlapping a CI run, or two CI jobs) and, before this, raced on the
+    literal same DO droplet name -- not a state-file collision (each run
+    already gets its own tmp_path/state.json), but a real, confusing
+    collision in DigitalOcean's own droplet list. The timestamp -- same
+    %Y%m%dT%H%M%SZ format scripts/run_system_tests.py already uses for
+    its log filenames -- makes a leaked droplet's age visible from its
+    name alone; the short random suffix covers two runs starting within
+    the same second, which the timestamp alone would still collide on.
+    """
+    now = datetime.now(UTC)
+    return f"{base}-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
+
+
 def write_aiform_md(
     project_dir: Path,
     *,
-    name: str = "aiform-system-test-droplet",
+    name: str | None = None,
     region: str = REGION,
     size: str = SIZE,
     image: str = IMAGE,
     ssh_keys: list[str] | None = None,
     filename: str = "compute.aiform.md",
 ) -> Path:
+    # A plain string default would be evaluated once, at def time, and
+    # then shared by every caller that omits name= -- silently
+    # reintroducing the cross-run DO-namespace collision unique_name()
+    # exists to prevent. None + a per-call fallback keeps
+    # specs/system_test.md's Isolation guarantee universal, not just
+    # true of today's five call sites (which all pass name= explicitly).
+    name = name or unique_name("aiform-system-test-droplet")
     params_lines = [
         f"  region: {region}",
         f"  size: {size}",

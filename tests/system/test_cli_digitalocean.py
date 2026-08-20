@@ -21,6 +21,7 @@ from tests.system.conftest import (
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
     live_token,
+    unique_name,
     wait_until_droplet_gone,
     write_aiform_md,
 )
@@ -80,7 +81,7 @@ class TestFullLifecycleSequence:
 
     def test_full_lifecycle(self, project_dir, teardown_tracked_resources, monkeypatch, capsys):
         state_path = project_dir / ".aiform" / "state.json"
-        name = "aiform-system-test-lifecycle"
+        name = unique_name("aiform-system-test-lifecycle")
         key = _resource_key(name)
         token = live_token()
 
@@ -216,7 +217,7 @@ def test_bad_token_fails_cleanly_without_leaking_or_tracking(
     monkeypatch.setenv("DIGITALOCEAN_TOKEN", bad_token)
 
     state_path = project_dir / ".aiform" / "state.json"
-    name = "aiform-system-test-bad-token"
+    name = unique_name("aiform-system-test-bad-token")
     write_aiform_md(project_dir, name=name)
 
     code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
@@ -248,7 +249,7 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
         )
 
     state_path = project_dir / ".aiform" / "state.json"
-    name = "aiform-system-test-ssh-keys"
+    name = unique_name("aiform-system-test-ssh-keys")
     key = _resource_key(name)
     write_aiform_md(project_dir, name=name, ssh_keys=[fingerprints[0]])
 
