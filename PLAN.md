@@ -1159,6 +1159,10 @@ discovered after the fact. Each item below is either a scoping decision
 made in this doc (§ "MVP scope (locked)") or a piece of net-new
 functionality this project is committing to build later.
 
+- **Use short lived tokens instead of API Keys** Use identity-based authorization instead
+Static API keys are long-lived secrets you store and rotate by hand. Workload identity
+federation uses short-lived tokens issued by your cloud or CI provider. No keys in env vars,
+config files, or secret managers Tokens rotate automatically and expire in minutes
 - **Driver set is curated and closed in the MVP.** Only `(provider,
   resource)` pairs aiform's own maintainers have hand-built via
   `PROCESS.md`'s dev loop are usable — `digitalocean`/`compute` is the only
