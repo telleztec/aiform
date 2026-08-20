@@ -147,10 +147,14 @@ Two ways a driver gets added:
    wiring this mechanism into the live `plan`/`apply` flow is
    deliberately sequenced to happen only *after* the primary
    orchestration flow (plan/diff/apply against curated drivers) is
-   stable and proven — see "MVP scope (locked)" above, and note that
-   neither is true yet as of this writing (`orchestrator.py` doesn't
-   exist; see `CLAUDE.md`'s status) — with the interactive/OpenAPI-driven
-   target shape (§7) sequenced after *that* baseline pipeline in turn.
+   stable and proven — see "MVP scope (locked)" above. `aiform/orchestrator.py`
+   and `aiform/cli.py` are both now written and wired into a working
+   `plan create`/`apply`/`destroy`/`refresh`/`show` command surface (§7),
+   exercised by both the unit suite and the live `tests/system/` suite —
+   but `driver_gen.py`'s pipeline is still not called from anywhere in
+   that flow, so the sequencing precondition itself is satisfied without
+   this mechanism having been wired in yet; the interactive/OpenAPI-driven
+   target shape (§7) remains sequenced after that baseline pipeline in turn.
    Not yet implemented; see §10.
 
 `aiform plan create` against a `(provider, resource)` pair with no driver on disk
@@ -305,6 +309,7 @@ aiform/
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
 │   ├── driver_gen.py                # draft/validate/review pipeline; built, not yet wired into plan/apply (deferred on-the-fly generation, see "Driver curation")
+│   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
 │   └── exceptions.py               # DriverUpdateNotSupported, ResourceNotFoundError, DriverExecutionError, PlanBlockedError
 ├── drivers/
@@ -1301,29 +1306,23 @@ entry's own note below.
   model above — this item and "centralized servers" below are related
   but not the same thing; a status URL doesn't by itself require the
   centralized multi-source server described there.
-- **Logging.** All aiform operations will emit clear, consistent log lines
-  suitable for debugging — one predictable format across
+- ~~**Logging.**~~ **Built.** `aiform/log.py` (`specs/log.md`) closes this
+  item: one predictable `key=value` log-line format across
   `plan`/`apply`/`destroy`/`refresh`, covering both the mechanical driver
-  calls and the LLM-driven steps (which role was called, with what
-  resolved model, and what it decided), not ad hoc `print()`s. Not yet
-  designed: the exact log line schema, log level conventions, and
-  where output goes by default vs. under `--verbose`. A concrete example
-  of the gap this needs to close: `aiform/llm.py`'s `review_driver()`/
-  `review_plan()` call `json.loads()`/`model_validate_json()` directly
-  on the model's response text with no `response.stop_reason` check —
-  when a response is truncated (e.g. `code_review`'s adaptive-thinking
-  output leaving too little of `max_tokens` for the actual JSON, the
-  bug behind the "`max_tokens` is per-role" change above), the failure
-  surfaces as a generic `JSONDecodeError`/`ValidationError` with no hint
-  the real cause is a token budget, not malformed output. Diagnosing the
-  live occurrence of this required a throwaway, uncommitted script
-  outside the normal test/log surface to directly inspect
-  `usage.output_tokens_details.thinking_tokens` on a live response —
-  something this project's own logging should surface on the first
-  occurrence, not require a one-off diagnostic script to discover.
-  Deliberately not fixed ad hoc here with a scattered `print()` at this
-  one call site — logging needs the single systematic pass this entry
-  already calls for, not a piecemeal addition per incident.
+  calls and the LLM-driven steps, via two independent handlers on the
+  `"aiform"` logger — an always-on rotating file sink
+  (`.aiform/logs/aiform-<timestamp>.log`) and a `--verbose`-gated stderr
+  echo. The concrete gap that motivated this (`aiform/llm.py` calling
+  `json.loads()`/`model_validate_json()` on a possibly-truncated response
+  with no `response.stop_reason` check, surfacing as an opaque
+  `JSONDecodeError` instead of naming the real cause) is fixed:
+  `llm.py`'s `_anthropic_call()` now returns `stop_reason` and
+  `thinking_tokens` alongside the response text, and callers check
+  `stop_reason == "max_tokens"` before parsing. Left as a real, open
+  follow-up: no third `DEBUG` output tier yet (no call site emits one),
+  and no `redact()` helper for `--verbose` payload dumps (no call site
+  yet logs a raw dict that could carry credentials — see `specs/log.md`'s
+  "Out of scope" section for both).
 - **Timeout/retry/failover orchestration for driver network calls.** §6's
   rationale for avoiding CSP SDKs ("SDKs are opinionated in error
   handling and retries, and we want to make sure our orchestrator can
