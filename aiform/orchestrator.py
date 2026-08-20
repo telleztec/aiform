@@ -38,31 +38,42 @@ def resource_key(provider: str, resource_type: str, name: str) -> str:
     return f"{provider}.{resource_type}.{name}"
 
 
-def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, operation: str, *args):
-    start = time.monotonic()
-    try:
-        result = fn(*args)
-    except Exception as exc:
-        logger.error(
-            "",
-            extra={
-                "provider": provider,
-                "resource_type": resource_type,
-                "operation": operation,
-                "duration_ms": log.elapsed_ms(start),
-                "outcome": "error",
-            },
-        )
-        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
-    logger.info(
+def _log_driver_outcome(
+    provider: str, resource_type: str, operation: str, duration_ms: int, *, outcome: str
+) -> None:
+    # Shared by _call_driver() and apply_plan()'s UPDATE branch, which
+    # can't route through _call_driver() itself -- its blanket
+    # DriverExecutionError wrapping would swallow DriverUpdateNotSupported,
+    # a signal that branch needs unwrapped to decide on a delete+create
+    # fallback. Only the logging *shape* is shared; each site keeps its
+    # own exception handling. Factored out after /code-review: the two
+    # copies had already drifted once (the update branch's first pass
+    # missed the outcome=error case entirely -- see specs/orchestrator.md).
+    level = logging.INFO if outcome == "success" else logging.ERROR
+    logger.log(
+        level,
         "",
         extra={
             "provider": provider,
             "resource_type": resource_type,
             "operation": operation,
-            "duration_ms": log.elapsed_ms(start),
-            "outcome": "success",
+            "duration_ms": duration_ms,
+            "outcome": outcome,
         },
+    )
+
+
+def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, operation: str, *args):
+    start = time.monotonic()
+    try:
+        result = fn(*args)
+    except Exception as exc:
+        _log_driver_outcome(
+            provider, resource_type, operation, log.elapsed_ms(start), outcome="error"
+        )
+        raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+    _log_driver_outcome(
+        provider, resource_type, operation, log.elapsed_ms(start), outcome="success"
     )
     return result
 
@@ -186,6 +197,7 @@ def ensure_driver_trusted(
 def refresh_resource(
     driver: ResourceDriver, state_entry: StateEntry, credentials: dict[str, str]
 ) -> tuple[dict[str, Any], bool]:
+    start = time.monotonic()
     try:
         raw = driver.read(state_entry.id, credentials)
     except ResourceNotFoundError:
@@ -200,6 +212,13 @@ def refresh_resource(
         )
         return state_entry.attributes, True
     except Exception as exc:
+        _log_driver_outcome(
+            state_entry.provider,
+            state_entry.resource_type,
+            "read",
+            log.elapsed_ms(start),
+            outcome="error",
+        )
         raise DriverExecutionError(
             state_entry.provider, state_entry.resource_type, "read", exc
         ) from exc
@@ -608,28 +627,22 @@ def apply_plan(
                     pr.credentials,
                 )
             except Exception as exc:
-                logger.error(
-                    "",
-                    extra={
-                        "provider": pr.provider,
-                        "resource_type": pr.resource_type,
-                        "operation": "update",
-                        "duration_ms": log.elapsed_ms(update_start),
-                        "outcome": "error",
-                    },
+                _log_driver_outcome(
+                    pr.provider,
+                    pr.resource_type,
+                    "update",
+                    log.elapsed_ms(update_start),
+                    outcome="error",
                 )
                 raise DriverExecutionError(pr.provider, pr.resource_type, "update", exc) from exc
 
             if not replaced:
-                logger.info(
-                    "",
-                    extra={
-                        "provider": pr.provider,
-                        "resource_type": pr.resource_type,
-                        "operation": "update",
-                        "duration_ms": log.elapsed_ms(update_start),
-                        "outcome": "success",
-                    },
+                _log_driver_outcome(
+                    pr.provider,
+                    pr.resource_type,
+                    "update",
+                    log.elapsed_ms(update_start),
+                    outcome="success",
                 )
 
             operation = "create" if replaced else "update"

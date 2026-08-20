@@ -490,6 +490,22 @@ class TestRefreshResource:
 
         assert caplog.records == []
 
+    def test_driver_read_failure_logs_an_error_before_reraising(self, caplog):
+        caplog.set_level("INFO", logger="aiform.orchestrator")
+        driver = FakeDriver(read_exception=RuntimeError("network blip"))
+        entry = make_state_entry(id="123")
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.refresh_resource(driver, entry, {"DIGITALOCEAN_TOKEN": "x"})
+
+        record = caplog.records[0]
+        assert record.levelno == logging.ERROR
+        assert record.provider == entry.provider
+        assert record.resource_type == entry.resource_type
+        assert record.operation == "read"
+        assert record.outcome == "error"
+        assert isinstance(record.duration_ms, int)
+
     def test_other_exception_wrapped_in_driver_execution_error(self):
         driver = FakeDriver(read_exception=RuntimeError("connection reset"))
         entry = make_state_entry(id="123")
