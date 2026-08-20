@@ -1097,7 +1097,7 @@ class TestLogging:
 
         record = next(r for r in caplog.records if getattr(r, "step", None) == "power-off")
         assert record.outcome == "timeout"
-        assert record.attempts_used == 20
+        assert record.attempts_used == 30
         assert record.levelno == logging.ERROR
 
     def test_entering_resize_logs_current_and_target_context(self, driver, fake_urlopen, caplog):

@@ -98,10 +98,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `status: "new"` and `networks.v4: []` (no IP yet) — `create()` takes
   only the new `id` from that response and then polls `GET
   /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
-  `update()` uses, bounded the same way: `max_attempts=20`,
-  `delay_seconds=2`, raising `TimeoutError` naming the droplet `id` on
-  exhaustion) until `status == "active"`, discarding the transient POST
-  body in favor of the converged GET response. This was originally
+  `update()` uses, but with its own wider budget — `max_attempts=60`,
+  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=30`,
+  `delay_seconds=2` (60s) — because full provisioning from scratch
+  commonly takes longer than reconciling an already-existing droplet;
+  either way, exhaustion raises `TimeoutError` naming the droplet `id`)
+  until `status == "active"`, discarding the transient POST body in
+  favor of the converged GET response. **Corrected here**: this
+  paragraph previously claimed `create()` was "bounded the same way" as
+  `update()`'s default budget — stale relative to the code, which has
+  always given `create()` its own wider override; found while touching
+  this area for an unrelated reason, not a new change. This was originally
   designed the other way (no polling, convergence picked up by a later
   `plan`/`refresh`) but that left `create()` returning a permanently
   wrong `status`/`ipv4_address` immediately after every `apply` and was

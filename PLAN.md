@@ -1355,15 +1355,16 @@ entry's own note below.
   the user already confirmed). **When this actually gets built, replace
   the two hardcoded `_poll_until` budgets it's meant to supersede**,
   both in `drivers/digitalocean/compute.py`: the default
-  (`max_attempts=20`, `delay_seconds=2` — 40s, used by `update`'s
-  power-off/resize/power-on actions) and `create`'s own override
-  (`max_attempts=60`, `delay_seconds=3` — 180s, widened specifically
-  because the default was tuned for `update` and timed out too eagerly
-  on full droplet provisioning). Both are guesses tuned against one
-  CSP's observed behavior, not a real policy — likely candidates for
-  whatever configurable retry/backoff mechanism this entry ends up
-  designing, rather than two more magic numbers to hand-tune again
-  later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
+  (`max_attempts=30`, `delay_seconds=2` — 60s, used by `update`'s
+  power-off/resize/power-on actions; raised from an original 20/40s
+  after a live system-test run hit DO taking longer than 40s to power
+  off a droplet) and `create`'s own override (`max_attempts=60`,
+  `delay_seconds=3` — 180s, widened specifically because the default
+  was tuned for `update` and timed out too eagerly on full droplet
+  provisioning). Both are guesses tuned against one CSP's observed
+  behavior, not a real policy — likely candidates for whatever
+  configurable retry/backoff mechanism this entry ends up designing,
+  rather than two more magic numbers to hand-tune again later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
   has no error tolerance at all today.** `drivers/digitalocean/compute.py`'s
   `_get_droplet()` call inside that loop doesn't catch `HTTPError` — so
   a single transient error on *any one* poll attempt (a `429` from the
