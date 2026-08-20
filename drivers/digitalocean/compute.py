@@ -77,6 +77,22 @@ class Driver(ResourceDriver):
         self._action(id, credentials, body)
         return self._poll_until(id, credentials, predicate, step)
 
+    def _do_error_message(self, exc: urllib.error.HTTPError) -> str | None:
+        # Best-effort: DO's error responses are typically {"id": "...",
+        # "message": "..."} JSON, and that message is usually the single
+        # most useful diagnostic string available. Never let extraction
+        # itself raise; a malformed or already-consumed body just means
+        # no message gets included, not a crash in error handling.
+        try:
+            body = exc.read()
+        except Exception:
+            return None
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return data.get("message") if isinstance(data, dict) else None
+
     def create(self, name, params, credentials):
         body = {
             "name": name,
@@ -175,6 +191,7 @@ class Driver(ResourceDriver):
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
             # resize, it doesn't get turned on as a side effect of the failure.
+            # This restoration happens regardless of *why* the resize failed.
             if we_powered_off:
                 self._do_action_and_wait(
                     id,
@@ -183,10 +200,20 @@ class Driver(ResourceDriver):
                     lambda d: d["status"] == "active",
                     "power-on",
                 )
-            raise DriverUpdateNotSupported(
-                f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}",
-                unsupported_fields=["size"],
-            ) from exc
+            if exc.code not in (400, 422):
+                # Not DO telling us this specific resize is invalid -- a
+                # transient failure (429, 5xx) or an auth problem (401/403).
+                # Converting this into DriverUpdateNotSupported would
+                # misclassify a retriable/unrelated failure as "this
+                # resize is unsupported" and trigger a destructive
+                # destroy+recreate for a resize that might have succeeded
+                # on retry. Let it propagate as a real error instead.
+                raise
+            do_message = self._do_error_message(exc)
+            reason = f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}"
+            if do_message:
+                reason += f": {do_message}"
+            raise DriverUpdateNotSupported(reason, unsupported_fields=["size"]) from exc
 
         # Unlike the rejection path above, a *successful* resize always powers
         # the droplet back on, even if it started "off" -- this driver has now

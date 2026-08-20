@@ -767,6 +767,7 @@ class TestUpdateResizeInPlace:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert "size" in excinfo.value.unsupported_fields
+        assert "disk size cannot be decreased" in str(excinfo.value)
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
 
@@ -790,6 +791,54 @@ class TestUpdateResizeInPlace:
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["resize"]
         assert fake_urlopen.calls == action_calls(fake_urlopen, "123")
+
+    def test_resize_transient_error_powers_back_on_then_reraises(self, driver, fake_urlopen):
+        # A 429/5xx/401 isn't DO telling us the resize itself is invalid --
+        # it's a transient or unrelated CSP failure. Misclassifying it as
+        # DriverUpdateNotSupported would trigger a destructive
+        # destroy+recreate for a resize that might have succeeded on
+        # retry. Caught by /code-review (gate #1).
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            FakeHTTPResponse(201, {"action": {"id": 3, "status": "in-progress"}}),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 429
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["power_off", "resize", "power_on"]
+
+    def test_resize_server_error_reraises_not_unsupported(self, driver, fake_urlopen):
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            http_error(actions_url("123"), 500, {"message": "internal error"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 500
+        # Started "off" -- no power-off/power-on calls should have happened.
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["resize"]
 
     def test_resize_with_falsy_size_value_in_desired_raises_unsupported(self, driver, fake_urlopen):
         # `size` present with a falsy value (e.g. an explicit `size:` with no

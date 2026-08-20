@@ -245,23 +245,56 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      default — it works between sizes that share the same underlying
      disk allotment, which is the common case for a same-family
      up/down move.
-  4. If DO rejects the `disk: false` resize (the target size requires a
-     disk-size change DO can't perform live — moving between families
-     with different bundled disk sizes): **power the droplet back on
-     first** (`POST .../actions {"type": "power_on"}`, poll until
-     `status == "active"`), *then* raise `DriverUpdateNotSupported`
-     naming `size` in `unsupported_fields`, falling back to the normal
-     destroy+recreate path. Restoring power state before raising matters:
-     `size` is deliberately not in `LIKELY_REPLACE_FIELDS`, so this
-     specific `DriverUpdateNotSupported` triggers the orchestrator's
-     single-resource `review-orchestration-model` safety-gate pause
-     (`aiform/driver.py`'s own docstring) before any destroy+recreate
-     proceeds — the entire point of that gate is a human/
-     `review-orchestration-model` veto *before* anything destructive
-     happens, which is defeated if the droplet is already sitting
-     powered off while the gate is being evaluated. Don't retry the
-     resize itself with `disk: true` — only restore power state, then
-     raise.
+  4. The resize action can fail with an `HTTPError`, and **not every
+     `HTTPError` here means "DO rejected this specific resize."** Only
+     `exc.code in (400, 422)` is treated as a genuine rejection (DO's
+     conventional status for "your request is well-formed but this
+     particular resize is invalid" — e.g. the target size requires a
+     disk-size change DO can't perform live, moving between families
+     with different bundled disk sizes). Any other status — `429`
+     (rate-limited), a `5xx`, `401`/`403` (auth) — is a transient or
+     unrelated CSP failure, **not** evidence this resize is unsupported,
+     and must **not** be converted into `DriverUpdateNotSupported`:
+     doing so would misclassify a retriable/transient failure as a
+     permanent one and trigger a destructive destroy+recreate for a
+     resize that might have succeeded on retry. Caught by `/code-review`
+     (gate #1) on the original version of this driver, which caught
+     *every* `HTTPError` unconditionally here.
+     - In **both** cases (genuine rejection or not), first **power the
+       droplet back on** if this call itself powered it off
+       (`POST .../actions {"type": "power_on"}`, poll until `status ==
+       "active"`) — regardless of *why* the resize failed, a droplet
+       this driver itself powered off shouldn't stay off as a side
+       effect of the failure.
+     - **Only then**, branch: if the status was a genuine rejection
+       (`400`/`422`), raise `DriverUpdateNotSupported` naming `size` in
+       `unsupported_fields`, falling back to the normal destroy+recreate
+       path. Restoring power state *before* raising matters here: `size`
+       is deliberately not in `LIKELY_REPLACE_FIELDS`, so this specific
+       `DriverUpdateNotSupported` triggers the orchestrator's
+       single-resource `review-orchestration-model` safety-gate pause
+       (`aiform/driver.py`'s own docstring) before any destroy+recreate
+       proceeds — the entire point of that gate is a human/
+       `review-orchestration-model` veto *before* anything destructive
+       happens, which is defeated if the droplet is already sitting
+       powered off while the gate is being evaluated. Don't retry the
+       resize itself with `disk: true` — only restore power state, then
+       raise.
+     - Otherwise (any other status), **re-raise the original
+       `HTTPError`** after the power-state restore — it propagates as a
+       genuine failure (through `aiform/orchestrator.py`'s `apply_plan()`
+       update branch's own `except Exception`, wrapped into
+       `DriverExecutionError`), not a silent trigger for replace.
+     - DO's JSON error body (when present) is extracted defensively (a
+       malformed or already-consumed body must never raise a *new*
+       exception mid-error-handling) and included in
+       `DriverUpdateNotSupported`'s message when available, purely to
+       make a human's diagnosis faster — it plays no role in the
+       classification decision above, which is status-code-only: every
+       resize-action `HTTPError` at this point in the code is
+       unambiguously about *this* resize request (no concurrent request
+       shares this call site), so there's no genuine ambiguity for a
+       body-content heuristic to resolve.
   5. On success, poll until the resize action (or the droplet's
      `size_slug`) shows the new size.
   6. `POST .../actions {"type": "power_on"}`, poll until `status ==
