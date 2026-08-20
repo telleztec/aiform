@@ -224,13 +224,20 @@ def unique_name(base: str) -> str:
 def write_aiform_md(
     project_dir: Path,
     *,
-    name: str = "aiform-system-test-droplet",
+    name: str | None = None,
     region: str = REGION,
     size: str = SIZE,
     image: str = IMAGE,
     ssh_keys: list[str] | None = None,
     filename: str = "compute.aiform.md",
 ) -> Path:
+    # A plain string default would be evaluated once, at def time, and
+    # then shared by every caller that omits name= -- silently
+    # reintroducing the cross-run DO-namespace collision unique_name()
+    # exists to prevent. None + a per-call fallback keeps
+    # specs/system_test.md's Isolation guarantee universal, not just
+    # true of today's five call sites (which all pass name= explicitly).
+    name = name or unique_name("aiform-system-test-droplet")
     params_lines = [
         f"  region: {region}",
         f"  size: {size}",
