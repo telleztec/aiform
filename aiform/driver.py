@@ -120,6 +120,19 @@ class ResourceDriver(ABC):
             — if this wasn't already flagged as a likely replace
             during planning — pauses for the single-resource Opus
             safety gate before proceeding.
+
+            Other exceptions may legitimately propagate uncaught, and
+            must NOT be converted into DriverUpdateNotSupported: a
+            transient CSP failure (rate limiting, a 5xx, an auth
+            problem) is not evidence that this diff is unsupported, and
+            misclassifying it as such would trigger a destructive
+            replace for an update that might have succeeded on retry.
+            Only an error that specifically means "the CSP rejected
+            this diff as invalid" (not "the request failed for some
+            other reason") should become DriverUpdateNotSupported — see
+            drivers/digitalocean/compute.py's update() for a worked
+            example (caught by /code-review after an earlier version
+            of that driver got this wrong).
         """
 
     @abstractmethod

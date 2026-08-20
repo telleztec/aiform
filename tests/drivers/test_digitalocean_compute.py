@@ -767,6 +767,7 @@ class TestUpdateResizeInPlace:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert "size" in excinfo.value.unsupported_fields
+        assert "disk size cannot be decreased" in str(excinfo.value)
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
 
@@ -790,6 +791,182 @@ class TestUpdateResizeInPlace:
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["resize"]
         assert fake_urlopen.calls == action_calls(fake_urlopen, "123")
+
+    def test_resize_rejected_with_no_body_omits_message_suffix(self, driver, fake_urlopen):
+        # No DO JSON body to extract a message from -- the reason string
+        # must not append a bare ": <HTTP reason phrase>" suffix just
+        # because exc.msg always has *some* value. A fix for an earlier
+        # /code-review finding (reuse the already-enriched exc.msg
+        # instead of re-extracting) accidentally made this unconditional;
+        # caught by a second /code-review pass.
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            http_error(actions_url("123"), 422, body=None),
+        )
+
+        with pytest.raises(DriverUpdateNotSupported) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert message == "DigitalOcean rejected an in-place resize of droplet 123 to 's-2vcpu-4gb'"
+        assert ":" not in message
+
+    def test_resize_transient_error_powers_back_on_then_reraises(self, driver, fake_urlopen):
+        # A 429/5xx/401 isn't DO telling us the resize itself is invalid --
+        # it's a transient or unrelated CSP failure. Misclassifying it as
+        # DriverUpdateNotSupported would trigger a destructive
+        # destroy+recreate for a resize that might have succeeded on
+        # retry. Caught by /code-review (gate #1).
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            FakeHTTPResponse(201, {"action": {"id": 3, "status": "in-progress"}}),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 429
+        # DO's own diagnostic message is folded into the re-raised
+        # HTTPError's .msg, not silently dropped -- caught by /code-review.
+        assert "too many requests" in str(excinfo.value)
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["power_off", "resize", "power_on"]
+
+    def test_resize_compounding_failure_raises_runtime_error_not_masked(self, driver, fake_urlopen):
+        # If the power-on restore call itself fails after the resize
+        # already failed, the restore's own exception must not silently
+        # replace/mask the original resize failure -- caught by
+        # /code-review.
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            http_error(actions_url("123"), 503, {"message": "service unavailable"}),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert "123" in message
+        assert "too many requests" in message
+        assert "service unavailable" in message
+        assert excinfo.value.__cause__ is not None
+        assert excinfo.value.__cause__.code == 429
+
+    def test_resize_restore_unexpected_exception_type_propagates_unwrapped(
+        self, driver, fake_urlopen
+    ):
+        # The restore-after-failure except clause is scoped to
+        # (URLError, TimeoutError, http.client.HTTPException, OSError,
+        # JSONDecodeError) -- matching tests/system/conftest.py's
+        # wait_until_droplet_gone() for the identical urlopen/read/
+        # json.loads call shape (fc2dd1d) -- not bare Exception. A
+        # genuinely unexpected exception type (anything else) must
+        # propagate immediately, not get folded into the generic
+        # "restore also failed" RuntimeError, which would make an
+        # unrelated bug harder to distinguish from a real DO-API
+        # restore failure. Caught by /code-review.
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            ValueError("something unrelated broke"),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(ValueError, match="something unrelated broke"):
+            driver.update("123", current, desired, CREDENTIALS)
+
+    def test_resize_restore_url_error_is_folded_into_compounding_failure(
+        self, driver, fake_urlopen
+    ):
+        # URLError, http.client.HTTPException, OSError, and
+        # JSONDecodeError all propagate unwrapped from the same
+        # urlopen/read/json.loads shape _request() uses (established
+        # against this same DO API in fc2dd1d) -- an earlier version of
+        # this except clause only caught (HTTPError, TimeoutError),
+        # which would have let a restore-time URLError silently lose
+        # the original resize failure's context, same as the bare
+        # except Exception this whole fix replaced. Caught by
+        # /code-review (second pass).
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            urllib.error.URLError("connection refused"),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert "123" in message
+        assert "too many requests" in message
+        assert "connection refused" in message
+        assert excinfo.value.__cause__ is not None
+        assert excinfo.value.__cause__.code == 429
+
+    def test_resize_server_error_reraises_not_unsupported(self, driver, fake_urlopen):
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            http_error(actions_url("123"), 500, {"message": "internal error"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 500
+        assert "internal error" in str(excinfo.value)
+        # Started "off" -- no power-off/power-on calls should have happened.
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["resize"]
 
     def test_resize_with_falsy_size_value_in_desired_raises_unsupported(self, driver, fake_urlopen):
         # `size` present with a falsy value (e.g. an explicit `size:` with no

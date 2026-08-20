@@ -1,3 +1,4 @@
+import http.client
 import json
 import time
 import urllib.error
@@ -8,6 +9,19 @@ from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
+# DO's conventional statuses for "your request is well-formed but this
+# particular resize is invalid" -- anything else (429, 5xx, 401/403) is a
+# transient or unrelated CSP failure, not evidence the resize itself is
+# unsupported. Named as a constant, not an inline tuple, so there's one
+# place in the code to update -- flagged during /code-review.
+# Deliberately NOT expanded to 403/409/423 despite a later /code-review
+# suggestion: 403 reads as a permission/credential problem, not "this
+# resize is invalid" -- misclassifying that into a destroy+recreate is
+# exactly the dangerous pattern this fix exists to prevent. 409/423 read
+# as "droplet locked/busy," which is transient (retry later), not a
+# permanent rejection either. Left as-is unless a concrete, observed DO
+# status code demonstrates otherwise.
+_RESIZE_REJECTED_STATUSES = (400, 422)
 
 
 class Driver(ResourceDriver):
@@ -76,6 +90,35 @@ class Driver(ResourceDriver):
     def _do_action_and_wait(self, id, credentials, body, predicate, step):
         self._action(id, credentials, body)
         return self._poll_until(id, credentials, predicate, step)
+
+    def _do_error_message(self, exc: urllib.error.HTTPError) -> str | None:
+        # Best-effort: DO's error responses are typically {"id": "...",
+        # "message": "..."} JSON, and that message is usually the single
+        # most useful diagnostic string available. Never let extraction
+        # itself raise; a malformed or already-consumed body just means
+        # no message gets included, not a crash in error handling.
+        try:
+            body = exc.read()
+        except Exception:
+            return None
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return data.get("message") if isinstance(data, dict) else None
+
+    def _fold_do_error_into_exc(self, exc: urllib.error.HTTPError) -> bool:
+        # Shared by both the resize exc and the power-on-restore
+        # restore_exc in update() -- was copy-pasted separately for each,
+        # flagged during /code-review. Returns whether a DO message was
+        # actually found and folded in, so a caller can tell "nothing to
+        # add" apart from "added" rather than assuming exc.msg always
+        # gained something -- caught by a second /code-review pass.
+        do_message = self._do_error_message(exc)
+        if do_message:
+            exc.msg = f"{exc.msg}: {do_message}"
+            return True
+        return False
 
     def create(self, name, params, credentials):
         body = {
@@ -172,21 +215,89 @@ class Driver(ResourceDriver):
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
         except urllib.error.HTTPError as exc:
+            # DO's own diagnostic text (e.g. "rate limit exceeded, retry
+            # after 30s") folded into exc.msg in place -- keeps
+            # exc.code/isinstance intact for the re-raise path below,
+            # while still enriching what str(exc) shows. Previously
+            # extracted only for the DriverUpdateNotSupported branch,
+            # silently dropping it for exactly the transient failures a
+            # human would most want it for -- flagged during /code-review.
+            resize_enriched = self._fold_do_error_into_exc(exc)
+
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
             # resize, it doesn't get turned on as a side effect of the failure.
+            # This restoration happens regardless of *why* the resize failed.
             if we_powered_off:
-                self._do_action_and_wait(
-                    id,
-                    credentials,
-                    {"type": "power_on"},
-                    lambda d: d["status"] == "active",
-                    "power-on",
-                )
-            raise DriverUpdateNotSupported(
-                f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}",
-                unsupported_fields=["size"],
-            ) from exc
+                try:
+                    self._do_action_and_wait(
+                        id,
+                        credentials,
+                        {"type": "power_on"},
+                        lambda d: d["status"] == "active",
+                        "power-on",
+                    )
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    http.client.HTTPException,
+                    OSError,
+                    json.JSONDecodeError,
+                ) as restore_exc:
+                    # Matches tests/system/conftest.py's
+                    # wait_until_droplet_gone() exactly, for the identical
+                    # urlopen/read/json.loads shape against the same DO
+                    # API (established in fc2dd1d). An earlier version of
+                    # this clause narrowed to just (HTTPError, TimeoutError)
+                    # on the mistaken belief those were the only exceptions
+                    # _do_action_and_wait/_poll_until can raise -- flagged
+                    # during a second /code-review pass: an uncaught
+                    # URLError/OSError/JSONDecodeError here would silently
+                    # lose the original resize failure's context, the same
+                    # way the bare except Exception this replaced could.
+                    # HTTPError is a URLError subclass, so it's still
+                    # covered without listing it separately. A genuinely
+                    # unexpected type (never observed against this API)
+                    # still propagates immediately rather than being folded
+                    # into a generic "restore also failed" message that
+                    # would make an unrelated bug harder to distinguish
+                    # from a real DO-API restore failure.
+                    #
+                    # If restoring power *also* fails, that failure must not
+                    # silently replace the original resize error -- flagged
+                    # during /code-review. A compounding failure like this
+                    # is unusual enough to warrant a loud, undisguised error
+                    # rather than a guess at classification either way.
+                    if isinstance(restore_exc, urllib.error.HTTPError):
+                        self._fold_do_error_into_exc(restore_exc)
+                    raise RuntimeError(
+                        f"droplet {id}: resize to {target_size!r} failed ({exc}) and "
+                        f"the power-on restore that followed also failed ({restore_exc}) "
+                        "-- droplet may still be powered off"
+                    ) from exc
+
+            if exc.code not in _RESIZE_REJECTED_STATUSES:
+                # Not DO telling us this specific resize is invalid -- a
+                # transient failure (429, 5xx) or an auth problem (401/403).
+                # Converting this into DriverUpdateNotSupported would
+                # misclassify a retriable/unrelated failure as "this
+                # resize is unsupported" and trigger a destructive
+                # destroy+recreate for a resize that might have succeeded
+                # on retry. Let it propagate as a real error instead.
+                raise
+            # Built from the already-enriched exc.msg when there's
+            # something to add (see _fold_do_error_into_exc above),
+            # rather than re-appending the DO message a second time
+            # through an independent check -- flagged during /code-review:
+            # the same diagnostic text was threaded through two
+            # unsynchronized `if do_message:` blocks. Not unconditional,
+            # though -- flagged on a second pass: always appending exc.msg
+            # would add urllib's bare HTTP reason phrase even with no DO
+            # message to add, changing output for the no-body case.
+            reason = f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}"
+            if resize_enriched:
+                reason += f": {exc.msg}"
+            raise DriverUpdateNotSupported(reason, unsupported_fields=["size"]) from exc
 
         # Unlike the rejection path above, a *successful* resize always powers
         # the droplet back on, even if it started "off" -- this driver has now

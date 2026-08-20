@@ -29,6 +29,18 @@ Check specifically for:
    `aiform.driver.DriverUpdateNotSupported` (with a clear `reason`) for
    any diff it can't actually apply in place — not silently no-op, not
    attempt an unsafe operation, not swallow the unsupported case.
+   **Specifically watch for a CSP API error being converted into
+   `DriverUpdateNotSupported` too broadly**: catching every exception
+   from an update-related API call and treating all of them as "this
+   diff is unsupported" misclassifies a transient failure (rate
+   limiting, a 5xx, an auth problem) as a permanent one, triggering a
+   destructive replace for an update that might have succeeded on
+   retry. Only an error that specifically means "the CSP rejected this
+   diff as invalid" should become `DriverUpdateNotSupported` — anything
+   else should propagate as a real error. This is a blocking issue, not
+   a style concern: a real driver shipped this exact bug (caught live
+   by an earlier gate #1 review, not caught by this checklist item
+   until it was added after that incident).
 5. **Error handling raises rather than swallows.** CSP API errors should
    propagate (or be re-raised with context), not be caught and silently
    ignored. A bare `except: pass` anywhere is a blocking issue.
