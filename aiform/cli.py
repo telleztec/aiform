@@ -379,7 +379,18 @@ def _dispatch(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    log.configure(verbose=args.verbose, logging_config=config.resolve_logging_config())
+    try:
+        logging_config = config.resolve_logging_config()
+    except _HANDLED_EXCEPTIONS as exc:
+        # log.configure() hasn't run yet -- the very config that would
+        # tell it what to do is what failed to resolve -- so this one
+        # narrow failure mode can't produce a log file. It can still
+        # exit the same clean way every other _HANDLED_EXCEPTIONS case
+        # does, instead of an uncaught traceback.
+        message = _format_error(exc)
+        print(f"Error: {message}", file=sys.stderr)
+        return 2
+    log.configure(verbose=args.verbose, logging_config=logging_config)
     logger.info("invoked: %s", " ".join(argv if argv is not None else sys.argv[1:]))
 
     code = _dispatch(args)

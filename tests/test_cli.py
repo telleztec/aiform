@@ -310,6 +310,25 @@ class TestPlanCreate:
         assert "aiform.cli" in err
         assert "exception_type=FileNotFoundError" in err
 
+    def test_bad_logging_config_fails_cleanly_instead_of_a_raw_traceback(self, project_dir, capsys):
+        # resolve_logging_config() runs before log.configure() -- it has
+        # to, configure() needs its result -- so a bad logging: section
+        # can't go through the normal logged-error path. It must still
+        # exit the same clean way every other _HANDLED_EXCEPTIONS case
+        # does, not crash with an uncaught ValidationError traceback.
+        config_path = project_dir / ".aiform" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("logging:\n  level: NOT_A_REAL_LEVEL\n")
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(["plan", "show", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
+        assert "Traceback" not in err
+        assert not (project_dir / ".aiform" / "logs").exists()
+
     def test_second_run_on_unchanged_project_makes_zero_llm_calls(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):

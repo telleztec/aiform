@@ -327,12 +327,21 @@ with no drift, a `plan destroy` finding nothing left to destroy (see
 genuinely empty (0-byte) files with no way to tell, after the fact,
 which command produced them or whether it succeeded.
 
-One case stays outside this guarantee, unavoidably: `argparse`'s own
+Two cases stay outside this guarantee, unavoidably: `argparse`'s own
 error handling (missing subcommand, unknown flag) calls `sys.exit(2)`
 from inside `parser.parse_args()`, before `log.configure()` has even
 run — no log file exists yet at that point, exactly as before this
-addition. Likewise, an exception outside the `_HANDLED_EXCEPTIONS` set
-propagates uncaught past the exit-line log call — consistent with this
+addition. A malformed `.aiform/config.yaml` `logging:` section is the
+same shape of problem one step later: `main()` calls
+`config.resolve_logging_config()` *before* `log.configure()` (it has
+to — the config is what tells `configure()` what to do), so a
+`ValueError`/`ValidationError` there is caught by `main()`'s own
+narrow `try`/`except _HANDLED_EXCEPTIONS` and formatted/printed exactly
+like `_dispatch()`'s handling does, exit code 2 — but, same as the
+`argparse` case, no log file is created, since the config controlling
+where and how to log is itself what failed to resolve. Likewise, an
+exception outside the `_HANDLED_EXCEPTIONS` set propagates uncaught past
+the exit-line log call — consistent with this
 module's existing "let it fail loudly" stance (see below), not a gap
 this addition tries to paper over.
 
