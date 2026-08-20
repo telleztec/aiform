@@ -1,6 +1,58 @@
 import logging
+import os
+from pathlib import Path
 
 import pytest
+
+from aiform import log as aiform_log
+
+_SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
+
+# Snapshotted at import, before any test can monkeypatch these -- a test
+# that sets a fake value over one of these vars (e.g. a bad-token system
+# test) must not blind this check to the *real* value for its duration.
+# Mirrors tests/system/conftest.py's identical _SECRETS snapshot.
+_SECRETS = {var: os.environ.get(var) for var in _SECRET_ENV_VARS}
+
+
+def find_leaked_credential(secrets: dict[str, str | None], haystacks: list[str]) -> str | None:
+    for var, value in secrets.items():
+        if value and any(value in haystack for haystack in haystacks):
+            return var
+    return None
+
+
+def _log_file_haystacks() -> list[str]:
+    # aiform.log._installed_file_handler's baseFilename is resolved to an
+    # absolute path by the stdlib FileHandler at configure()-call time --
+    # deliberately not a Path(".aiform/logs") glob relative to cwd here,
+    # since this fixture (autouse, no deps) is torn down *after*
+    # tests/system/conftest.py's project_dir fixture, whose chdir has
+    # already been reverted by the time this code runs. See
+    # specs/conftest.md.
+    #
+    # Consumes (resets to None) the handler it reads, mirroring
+    # capsys.readouterr()'s own drain-on-read behavior: _reset_aiform_logger
+    # clears the *logger's* handler list every test but never touches this
+    # module-level global, so without this reset a test that never calls
+    # configure() would still have this function re-read -- and
+    # potentially misattribute a leak to -- the previous test's already-
+    # checked log directory.
+    file_handler = aiform_log._installed_file_handler
+    if file_handler is None:
+        return []
+    aiform_log._installed_file_handler = None
+    log_dir = Path(file_handler.baseFilename).parent
+    return [path.read_text(encoding="utf-8", errors="replace") for path in log_dir.glob("*.log")]
+
+
+@pytest.fixture(autouse=True)
+def _scan_for_leaked_credentials(capsys):
+    yield
+    captured = capsys.readouterr()
+    haystacks = [captured.out, captured.err, *_log_file_haystacks()]
+    leaked = find_leaked_credential(_SECRETS, haystacks)
+    assert leaked is None, f"{leaked} value leaked into test output or .aiform/logs/*.log"
 
 
 @pytest.fixture(autouse=True)
