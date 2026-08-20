@@ -1159,6 +1159,10 @@ discovered after the fact. Each item below is either a scoping decision
 made in this doc (§ "MVP scope (locked)") or a piece of net-new
 functionality this project is committing to build later.
 
+- **Use short lived tokens instead of API Keys** Use identity-based authorization instead
+Static API keys are long-lived secrets you store and rotate by hand. Workload identity
+federation uses short-lived tokens issued by your cloud or CI provider. No keys in env vars,
+config files, or secret managers Tokens rotate automatically and expire in minutes
 - **Driver set is curated and closed in the MVP.** Only `(provider,
   resource)` pairs aiform's own maintainers have hand-built via
   `PROCESS.md`'s dev loop are usable — `digitalocean`/`compute` is the only
@@ -1374,6 +1378,28 @@ entry's own note below.
   the aggregate request rate, and this loop's current all-or-nothing
   behavior means a single rate-limit hit anywhere kills that resource's
   entire operation rather than just slowing it down.
+  **Concretely surfaced a second time, in the classification decision
+  itself, not just the retry mechanics**: `drivers/digitalocean/compute.py`'s
+  `update()` originally caught *every* `HTTPError` from its resize
+  action and treated it as "DO rejected this resize" —
+  misclassifying a transient `429`/`5xx`/`401` as a permanent,
+  unsupported diff and triggering a destructive destroy+recreate for a
+  resize that might have succeeded on retry. Fixed for this one driver
+  by scoping the classification to DO's actual rejection statuses
+  (`400`/`422`) and re-raising everything else. That fix is a one-off,
+  inline status-code allowlist local to this single driver — flagged
+  during `/code-review` on PR #56 as valid but premature to generalize
+  with only one driver in the codebase (`aiform/driver_gen.py`'s
+  generation pipeline, the path that would produce a second/third
+  driver, is itself still deferred). When a second or third driver
+  actually gets built, this "which HTTPError statuses mean 'genuinely
+  rejected' vs. 'transient, don't misclassify'" judgment call should
+  move out of each driver's own `update()`/`create()` and into whatever
+  shared retry/failover mechanism this entry designs — otherwise every
+  future driver (hand-written or LLM-generated, the latter with no
+  shared reference implementation for gate #1's `code-review-model` to
+  check against) has to independently reinvent the same distinction to
+  avoid the identical bug recurring.
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two

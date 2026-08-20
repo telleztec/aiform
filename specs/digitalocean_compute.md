@@ -245,23 +245,148 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      default — it works between sizes that share the same underlying
      disk allotment, which is the common case for a same-family
      up/down move.
-  4. If DO rejects the `disk: false` resize (the target size requires a
-     disk-size change DO can't perform live — moving between families
-     with different bundled disk sizes): **power the droplet back on
-     first** (`POST .../actions {"type": "power_on"}`, poll until
-     `status == "active"`), *then* raise `DriverUpdateNotSupported`
-     naming `size` in `unsupported_fields`, falling back to the normal
-     destroy+recreate path. Restoring power state before raising matters:
-     `size` is deliberately not in `LIKELY_REPLACE_FIELDS`, so this
-     specific `DriverUpdateNotSupported` triggers the orchestrator's
-     single-resource `review-orchestration-model` safety-gate pause
-     (`aiform/driver.py`'s own docstring) before any destroy+recreate
-     proceeds — the entire point of that gate is a human/
-     `review-orchestration-model` veto *before* anything destructive
-     happens, which is defeated if the droplet is already sitting
-     powered off while the gate is being evaluated. Don't retry the
-     resize itself with `disk: true` — only restore power state, then
-     raise.
+  4. The resize action can fail with an `HTTPError`, and **not every
+     `HTTPError` here means "DO rejected this specific resize."** Only
+     `exc.code in _RESIZE_REJECTED_STATUSES` (a module-level constant,
+     `(400, 422)`) is treated as a genuine rejection (DO's conventional
+     status for "your request is well-formed but this particular resize
+     is invalid" — e.g. the target size requires a disk-size change DO
+     can't perform live, moving between families with different bundled
+     disk sizes). Named as a constant rather than an inline tuple
+     specifically so there's one place in the code to update it, not a
+     literal repeated at each call site — flagged during `/code-review`
+     on this same PR. Any other status — `429` (rate-limited), a `5xx`,
+     `401`/`403` (auth) — is a transient or unrelated CSP failure,
+     **not** evidence this resize is unsupported, and must **not** be
+     converted into `DriverUpdateNotSupported`: doing so would
+     misclassify a retriable/transient failure as a permanent one and
+     trigger a destructive destroy+recreate for a resize that might
+     have succeeded on retry. Caught by `/code-review` (gate #1) on the
+     original version of this driver, which caught *every* `HTTPError`
+     unconditionally here. **Deliberately not expanded to `403`/`409`/
+     `423`** despite a later `/code-review` suggestion on this same PR:
+     `403` reads as a permission/credential problem, not "this resize is
+     invalid" — misclassifying *that* into a destroy+recreate is exactly
+     the dangerous pattern this fix exists to prevent, since a
+     permission problem doesn't go away by destroying the droplet.
+     `409`/`423` read as "droplet locked/busy with another action,"
+     which is transient (retry once the lock clears), not a permanent
+     rejection either. Left as `(400, 422)` unless a concrete, observed
+     DO status code demonstrates otherwise — not expanded speculatively.
+     - In **both** cases (genuine rejection or not), first **power the
+       droplet back on** if this call itself powered it off
+       (`POST .../actions {"type": "power_on"}`, poll until `status ==
+       "active"`) — regardless of *why* the resize failed, a droplet
+       this driver itself powered off shouldn't stay off as a side
+       effect of the failure. **This restore call is itself wrapped in
+       its own `try`/`except (urllib.error.URLError, TimeoutError,
+       http.client.HTTPException, OSError, json.JSONDecodeError)`** —
+       matching exactly the tuple `tests/system/conftest.py`'s
+       `wait_until_droplet_gone()` already uses for the identical
+       `urlopen()` → `response.read()` → `json.loads()` call shape
+       against the same DigitalOcean droplet-polling API (established
+       and tested in an earlier commit, `fc2dd1d`: "urllib only wraps
+       `OSError` from the request itself into `URLError`;
+       `RemoteDisconnected`/`IncompleteRead` from `getresponse()`/
+       `read()`, and a truncated body, propagate unwrapped"). An
+       earlier version of this PR narrowed the catch to just
+       `(urllib.error.HTTPError, TimeoutError)`, on the mistaken belief
+       those were "the only exceptions `_do_action_and_wait`/
+       `_poll_until` can actually raise" — a second `/code-review` pass
+       caught that this directly contradicts `fc2dd1d`'s own tested
+       finding against the identical pattern, and that an uncaught
+       `URLError`/`OSError`/`JSONDecodeError` here would silently lose
+       the original resize failure's context exactly the way the bare
+       `except Exception` this replaced originally could — just via a
+       different exception type. `urllib.error.HTTPError` is a subclass
+       of `URLError`, so it's still covered without listing it
+       separately. A *genuinely* unexpected type (never observed
+       against this API, unlike the five above) still propagates
+       immediately rather than being folded into a generic "restore
+       also failed" message that would make an unrelated bug harder to
+       distinguish from a real DO-API restore failure. If the restore
+       *does* raise one of the five, the original resize `exc` must
+       not be silently replaced by the restore failure (a second
+       `/code-review` finding on this same PR — a bare, unguarded
+       restore call meant a failed restore would mask the actual resize
+       error and skip the classification below entirely). On a
+       compounding failure, raise a plain `RuntimeError` naming the
+       droplet `id`, the original resize failure, and the restore
+       failure, chained `from` the original resize `exc` (not the
+       restore failure) — both are visible in the message and the
+       traceback, and this case deliberately isn't classified into
+       `DriverUpdateNotSupported` either way (a compounding failure like
+       this is unusual enough to warrant a loud, undisguised error
+       rather than a guess).
+     - **Only then**, branch: if the status was a genuine rejection
+       (`400`/`422`), raise `DriverUpdateNotSupported` naming `size` in
+       `unsupported_fields`, falling back to the normal destroy+recreate
+       path. Restoring power state *before* raising matters here: `size`
+       is deliberately not in `LIKELY_REPLACE_FIELDS`, so this specific
+       `DriverUpdateNotSupported` triggers the orchestrator's
+       single-resource `review-orchestration-model` safety-gate pause
+       (`aiform/driver.py`'s own docstring) before any destroy+recreate
+       proceeds — the entire point of that gate is a human/
+       `review-orchestration-model` veto *before* anything destructive
+       happens, which is defeated if the droplet is already sitting
+       powered off while the gate is being evaluated. Don't retry the
+       resize itself with `disk: true` — only restore power state, then
+       raise.
+     - Otherwise (any other status), **re-raise the original
+       `HTTPError`** after the power-state restore — it propagates as a
+       genuine failure (through `aiform/orchestrator.py`'s `apply_plan()`
+       update branch's own `except Exception`, wrapped into
+       `DriverExecutionError`), not a silent trigger for replace.
+     - DO's JSON error body (when present) is extracted defensively (a
+       malformed or already-consumed body must never raise a *new*
+       exception mid-error-handling) on **both** branches, not just the
+       rejection one — a third `/code-review` finding: the original
+       version only extracted it for the `DriverUpdateNotSupported`
+       message, silently dropping DO's own diagnostic text (e.g. "rate
+       limit exceeded, retry after 30s") for exactly the transient
+       failures a human would most want it for. On the re-raise branch
+       *and* the compounding-failure branch above, the message is
+       folded into the relevant `HTTPError` object's own `.msg`
+       (mutating it in place, e.g. `"Too Many Requests: rate limit
+       exceeded, retry after 30s"`) via one shared private helper,
+       `_fold_do_error_into_exc()`, rather than each call site
+       re-extracting and re-mutating separately — a fourth `/code-review`
+       finding: the extract-and-mutate pattern was originally copy-pasted
+       for the resize `exc` and the restore `restore_exc` instead of
+       factored out. Mutating in place (rather than wrapping in a new
+       exception type) keeps `exc.code`/`isinstance(exc, HTTPError)`
+       intact for anything further up the stack that might care, while
+       still enriching what `str(exc)` shows. `_fold_do_error_into_exc()`
+       returns the extracted DO message itself (`str | None`), not a
+       bare bool — a caller needs the message's own text too (e.g. this
+       driver's structured-logging `do_message` extra field, added
+       merging this driver's logging work into the resize-classification
+       fix; re-deriving it via a second `_do_error_message()` call
+       instead would read the already-consumed body again and silently
+       get `None`) as well as the true/false signal, and the string's
+       own truthiness already serves as that signal. On the rejection
+       branch, `DriverUpdateNotSupported`'s `reason` string uses that
+       return value's truthiness to decide whether to append `exc.msg`
+       at all —
+       still built from the now-enriched `exc.msg` when there's
+       something to add, rather than re-appending the same DO message a
+       second time through an independent extraction (a fifth
+       `/code-review` finding: the same diagnostic text was threaded
+       through two unsynchronized `if do_message:` blocks, one place to
+       drift out of sync with the other on a future change) — but *not*
+       unconditionally: a sixth `/code-review` finding, on the fix for
+       the fifth, caught that reusing `exc.msg` unconditionally changed
+       behavior for a 400/422 with no parseable DO body, which
+       previously omitted the `: ...` suffix entirely and would
+       otherwise silently start including urllib's bare HTTP reason
+       phrase (e.g. `": Unprocessable Entity"`) instead — untested,
+       and not what the fifth finding's fix was meant to change. Message
+       extraction plays no role in the classification decision either
+       way, which is status-code-only: every resize-action `HTTPError`
+       at this point in the code is unambiguously about *this* resize
+       request (no concurrent request shares this call site), so
+       there's no genuine ambiguity for a body-content heuristic to
+       resolve.
   5. On success, poll until the resize action (or the droplet's
      `size_slug`) shows the new size.
   6. `POST .../actions {"type": "power_on"}`, poll until `status ==
@@ -356,19 +481,50 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   - `update()`'s resize path logs once, INFO, on entering the sequence
     (`id`/`status`/`current_size`/`target_size`) — the context every
     subsequent step-level line needs but doesn't itself carry.
-  - The resize-rejection branch (`except urllib.error.HTTPError`)
-    logs WARNING — expected, handled fallback, not a bug, same
-    treatment `llm.py`'s `max_tokens`-truncation case already gets —
-    naming `http_status` (`exc.code`) and, best-effort, `do_message`:
-    DO's own `{"message": "..."}` JSON body, extracted via a new
-    `_do_error_message()` helper. This is the single highest-value
-    diagnostic line this change adds — DO's own stated reason a resize
-    was rejected (e.g. a disk-size-class mismatch) is exactly the
-    detail an operator, or an LLM reviewing the log afterward, needs to
-    tell "this needs a destroy+recreate because X" apart from "this
-    driver has a bug." Never raises on a malformed/absent body — the
-    field is just omitted (per `_KeyValueFormatter`'s existing `None`
-    handling) rather than crashing error handling itself.
+  - The `except urllib.error.HTTPError` block around the resize action
+    logs WARNING **once**, but the message and meaning depend on which
+    of the two classification branches (`specs/digitalocean_compute.md`'s
+    "Behavior" section above, step 4) is actually taken — this split
+    exists because the classification itself (genuine rejection vs.
+    transient/unrelated failure) didn't exist yet when this logging was
+    first written; merging the two together kept only one, now-wrong
+    unconditional message ("falling back to destroy+recreate") that no
+    longer held once the re-raise branch existed too:
+    - **Genuine rejection** (`exc.code in _RESIZE_REJECTED_STATUSES`):
+      `"DigitalOcean rejected the in-place resize; falling back to
+      destroy+recreate"` — accurate here, since this branch really does
+      lead to `DriverUpdateNotSupported` and the orchestrator's
+      destroy+recreate fallback.
+    - **Everything else** (transient/unrelated, re-raised as a real
+      error): `"DigitalOcean's resize action failed with an unrecognized
+      status; propagating as a genuine driver error, no replace
+      triggered"` — deliberately avoids reusing the phrase "falling
+      back to destroy+recreate" even in negated form (a first version
+      wrote "...rather than falling back to destroy+recreate", which
+      still contains that exact substring — caught by the regression
+      test asserting the phrase's absence, which failed against that
+      wording). This is a real driver-execution failure with no further
+      handling above it, and the log file is the only durable record
+      once it propagates.
+    Both share the same `extra` shape — `id`, `target_size`,
+    `http_status` (`exc.code`), and best-effort `do_message`: DO's own
+    `{"message": "..."}` JSON body, extracted via `_do_error_message()`
+    and threaded through `_fold_do_error_into_exc()` (which returns the
+    extracted message itself, not just a bool, specifically so a caller
+    has the bare text for a structured field like this one — reusing
+    the now-prefixed `exc.msg` instead would have logged `"Unprocessable
+    Entity: disk size cannot be decreased"` rather than the bare `"disk
+    size cannot be decreased"` a consumer of this field expects; caught
+    merging this driver's structured-logging work into the
+    resize-classification fix). `do_message` is the single
+    highest-value diagnostic field either warning carries — DO's own
+    stated reason (e.g. a disk-size-class mismatch, or a rate-limit
+    message) is exactly the detail an operator, or an LLM reviewing the
+    log afterward, needs to tell "this needs a destroy+recreate because
+    X" (or "this was transient, safe to retry") apart from "this driver
+    has a bug." Never raises on a malformed/absent body — the field is
+    just omitted (per `_KeyValueFormatter`'s existing `None` handling)
+    rather than crashing error handling itself.
 
 ## Edge cases / errors
 
