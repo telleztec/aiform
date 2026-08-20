@@ -279,15 +279,33 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
        "active"`) — regardless of *why* the resize failed, a droplet
        this driver itself powered off shouldn't stay off as a side
        effect of the failure. **This restore call is itself wrapped in
-       its own `try`/`except (urllib.error.HTTPError, TimeoutError)`**
-       — narrowed to those two types specifically (not bare
-       `Exception`, flagged during `/code-review`) since they're the
-       only exceptions `_do_action_and_wait`/`_poll_until` can actually
-       raise; a genuinely unexpected exception type still propagates
+       its own `try`/`except (urllib.error.URLError, TimeoutError,
+       http.client.HTTPException, OSError, json.JSONDecodeError)`** —
+       matching exactly the tuple `tests/system/conftest.py`'s
+       `wait_until_droplet_gone()` already uses for the identical
+       `urlopen()` → `response.read()` → `json.loads()` call shape
+       against the same DigitalOcean droplet-polling API (established
+       and tested in an earlier commit, `fc2dd1d`: "urllib only wraps
+       `OSError` from the request itself into `URLError`;
+       `RemoteDisconnected`/`IncompleteRead` from `getresponse()`/
+       `read()`, and a truncated body, propagate unwrapped"). An
+       earlier version of this PR narrowed the catch to just
+       `(urllib.error.HTTPError, TimeoutError)`, on the mistaken belief
+       those were "the only exceptions `_do_action_and_wait`/
+       `_poll_until` can actually raise" — a second `/code-review` pass
+       caught that this directly contradicts `fc2dd1d`'s own tested
+       finding against the identical pattern, and that an uncaught
+       `URLError`/`OSError`/`JSONDecodeError` here would silently lose
+       the original resize failure's context exactly the way the bare
+       `except Exception` this replaced originally could — just via a
+       different exception type. `urllib.error.HTTPError` is a subclass
+       of `URLError`, so it's still covered without listing it
+       separately. A *genuinely* unexpected type (never observed
+       against this API, unlike the five above) still propagates
        immediately rather than being folded into a generic "restore
        also failed" message that would make an unrelated bug harder to
        distinguish from a real DO-API restore failure. If the restore
-       *does* raise one of those two, the original resize `exc` must
+       *does* raise one of the five, the original resize `exc` must
        not be silently replaced by the restore failure (a second
        `/code-review` finding on this same PR — a bare, unguarded
        restore call meant a failed restore would mask the actual resize
@@ -338,13 +356,24 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
        factored out. Mutating in place (rather than wrapping in a new
        exception type) keeps `exc.code`/`isinstance(exc, HTTPError)`
        intact for anything further up the stack that might care, while
-       still enriching what `str(exc)` shows. On the rejection branch,
-       `DriverUpdateNotSupported`'s `reason` string is built directly
-       from the now-enriched `exc.msg` rather than re-appending the same
-       DO message a second time through an independent check — a fifth
+       still enriching what `str(exc)` shows. `_fold_do_error_into_exc()`
+       returns `True` iff it actually found and folded in a DO message
+       (`False` on a missing/malformed/empty body). On the rejection
+       branch, `DriverUpdateNotSupported`'s `reason` string uses that
+       return value to decide whether to append `exc.msg` at all —
+       still built from the now-enriched `exc.msg` when there's
+       something to add, rather than re-appending the same DO message a
+       second time through an independent extraction (a fifth
        `/code-review` finding: the same diagnostic text was threaded
        through two unsynchronized `if do_message:` blocks, one place to
-       drift out of sync with the other on a future change. Message
+       drift out of sync with the other on a future change) — but *not*
+       unconditionally: a sixth `/code-review` finding, on the fix for
+       the fifth, caught that reusing `exc.msg` unconditionally changed
+       behavior for a 400/422 with no parseable DO body, which
+       previously omitted the `: ...` suffix entirely and would
+       otherwise silently start including urllib's bare HTTP reason
+       phrase (e.g. `": Unprocessable Entity"`) instead — untested,
+       and not what the fifth finding's fix was meant to change. Message
        extraction plays no role in the classification decision either
        way, which is status-code-only: every resize-action `HTTPError`
        at this point in the code is unambiguously about *this* resize
