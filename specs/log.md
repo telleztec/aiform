@@ -128,9 +128,14 @@ whoever ran the command remembered to pass it.
   installed (tracked via module-level references, not by scanning
   `logger.handlers` for a type match, so a handler installed by
   something else entirely is never accidentally removed) before
-  attaching new ones. A second `configure()` call also creates a
-  *new* log file (see rotation below) — it does not reopen or append
-  to the file the first call created.
+  attaching new ones. The previous `FileHandler` is also **closed**,
+  not just detached — `removeHandler()` alone doesn't release its OS
+  file descriptor, and `configure()` is called once per CLI invocation
+  in a long-lived process (e.g. a test suite driving `cli.main()`
+  repeatedly), so a bare detach would leak one fd per call. Caught by
+  `/code-review`. A second `configure()` call also creates a *new* log
+  file (see rotation below) — it does not reopen or append to the file
+  the first call created.
 - **File sink: always attached, level from config, never gated on
   `verbose`.** Default `logging_config.level` is `INFO` — deliberately
   generous, not `WARNING`: these operations spend their time waiting
@@ -172,7 +177,12 @@ whoever ran the command remembered to pass it.
     file is written there are exactly `max_files` total (barring a
     concurrent writer — no locking, matching `PLAN.md` §10's existing
     "single local state file, no locking" MVP stance applied here
-    too).
+    too). "Oldest" is by **mtime**, not filename — a plain
+    lexicographic sort of filenames would put a same-second collision
+    suffix (`aiform-<ts>-2.log`) *before* the unsuffixed file it
+    collided with, since `-` (0x2D) sorts before `.` (0x2E), inverting
+    which of the two is actually older. Caught by `/code-review`:
+    `_rotate_logs()` originally did sort by filename.
   - `log_dir` (default `.aiform/logs/`) is created
     (`mkdir(parents=True, exist_ok=True)`) if it doesn't exist yet.
   - The file is created **unconditionally**, even for an invocation
@@ -201,19 +211,34 @@ whoever ran the command remembered to pass it.
     else in this codebase. Multiple lines sharing a timestamp is
     expected and fine; each line's own `duration_ms` field (where
     present) disambiguates ordering/duration within that second.
-  - `LEVEL`: stdlib's real levelno/levelname are untouched — only the
-    *displayed* text for `WARNING` is remapped to `WARN` via
-    `logging.addLevelName(logging.WARNING, "WARN")`, so all four
-    displayed level strings (`INFO`, `WARN`, `ERROR`, `DEBUG`) are ≤5
-    characters. Left-justified to width 5.
+  - `LEVEL`: stdlib's real levelno/levelname are untouched — the
+    *displayed* text for `WARNING` is remapped to `WARN` (so all four
+    displayed level strings — `INFO`, `WARN`, `ERROR`, `DEBUG` — are ≤5
+    characters), but purely locally, inside `_KeyValueFormatter.format()`
+    (`"WARN" if record.levelno == logging.WARNING else record.levelname`),
+    **not** via `logging.addLevelName(logging.WARNING, "WARN")`. That
+    function was tried first and reverted: it mutates a process-wide
+    stdlib table as a side effect of merely *importing* this module —
+    changing how `WARNING` renders for every logger in the process,
+    including third-party ones, even when `configure()` is never
+    called — caught by `/code-review`. Left-justified to width 5.
   - `logger_name`: left-justified to width 20 (fits
     `aiform.orchestrator`, the longest of this project's logger names,
     plus a separating space).
   - Extra fields (passed via a logging call's `extra={...}`) render as
-    bare `key=value`, space-separated, in the order given. A `None`
-    value **omits the key entirely** — `grep thinking_tokens=` then
-    always means a real number when it matches, never a stringified
-    `None`.
+    bare `key=value`, space-separated, in the order given, **as long as
+    the value's string form has no whitespace and no embedded `"`** —
+    that's the common case (numbers, bools, identifiers, hashes) and
+    stays exactly bare. A value that does contain whitespace or a `"`
+    (e.g. a driver forwarding a CSP's raw free-text error message, like
+    DigitalOcean's rejection reason) is quoted and escaped the same way
+    `msg` is escaped below, so the one-token-per-field contract always
+    holds for anything that whitespace-splits or greps the format —
+    caught by `/code-review`: the original version never escaped
+    `extra` values at all, so a multi-word value silently broke that
+    contract. A `None` value **omits the key entirely** — `grep
+    thinking_tokens=` then always means a real number when it matches,
+    never a stringified `None`.
   - `msg`: `record.getMessage()`, double-quoted, appended last, and
     **omitted entirely when empty** — most log calls in this codebase
     pass `""` and put everything into `extra=`; only a genuinely

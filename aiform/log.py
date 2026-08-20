@@ -8,8 +8,6 @@ from typing import TextIO
 from aiform import config
 from aiform.models import LoggingConfig
 
-logging.addLevelName(logging.WARNING, "WARN")
-
 
 def elapsed_ms(start: float) -> int:
     return round((time.monotonic() - start) * 1000)
@@ -18,13 +16,32 @@ def elapsed_ms(start: float) -> int:
 _RESERVED_RECORD_ATTRS = frozenset(vars(logging.makeLogRecord({})))
 
 
+def _format_extra_value(value: object) -> str:
+    text = str(value)
+    # Bare key=value only holds as a one-token-per-field contract when
+    # the value itself has no whitespace to split on -- quote/escape it
+    # the same way msg is escaped below, otherwise leave scalars
+    # (numbers, bools, identifiers) exactly as they render today.
+    if any(ch.isspace() for ch in text) or '"' in text:
+        escaped = text.replace('"', '\\"').replace("\n", " ")
+        return f'"{escaped}"'
+    return text
+
+
 class _KeyValueFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         timestamp = datetime.fromtimestamp(record.created, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        parts = [timestamp, f"{record.levelname:<5}", f"{record.name:<20}"]
+        # Computed locally rather than via logging.addLevelName(WARNING,
+        # "WARN") -- that mutates a process-wide stdlib table as a side
+        # effect of merely importing this module, changing how WARNING
+        # renders for every logger in the process, including third-party
+        # ones, even when configure() is never called. Caught by
+        # /code-review.
+        levelname = "WARN" if record.levelno == logging.WARNING else record.levelname
+        parts = [timestamp, f"{levelname:<5}", f"{record.name:<20}"]
 
         extra_fields = [
-            f"{key}={value}"
+            f"{key}={_format_extra_value(value)}"
             for key, value in record.__dict__.items()
             if key not in _RESERVED_RECORD_ATTRS and value is not None
         ]
@@ -42,7 +59,11 @@ class _KeyValueFormatter(logging.Formatter):
 def _rotate_logs(log_dir: Path, *, keep: int) -> None:
     if not log_dir.is_dir():
         return
-    existing = sorted(log_dir.glob("*.log"))
+    # mtime, not filename: a plain lexicographic sort puts a same-second
+    # collision suffix ("aiform-<ts>-2.log") before the unsuffixed file
+    # it collided with ('-' is 0x2D, '.' is 0x2E), inverting which one
+    # is actually older.
+    existing = sorted(log_dir.glob("*.log"), key=lambda path: path.stat().st_mtime)
     overflow = len(existing) - (keep - 1)
     for path in existing[: max(overflow, 0)]:
         path.unlink()
@@ -79,6 +100,10 @@ def configure(
 
     if _installed_file_handler is not None:
         logger.removeHandler(_installed_file_handler)
+        # removeHandler() alone doesn't release the FileHandler's OS file
+        # descriptor -- only close() does (see tests/conftest.py's own
+        # teardown fixture, which exists for the identical reason).
+        _installed_file_handler.close()
     if _installed_stream_handler is not None:
         logger.removeHandler(_installed_stream_handler)
 

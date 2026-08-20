@@ -1,4 +1,7 @@
 import logging
+import os
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from io import StringIO
@@ -102,6 +105,27 @@ class TestFormatter:
 
         assert formatted.endswith('msg="bad \\"value\\" second line"')
 
+    def test_multiword_extra_value_is_quoted_and_escaped(self):
+        # Reproduces a real /code-review finding: an unquoted multi-word
+        # extra value (e.g. DigitalOcean's raw rejection text) breaks
+        # the one-token-per-field key=value contract for any
+        # whitespace-splitting parser or grep-based tooling.
+        record = _make_record(
+            extra={"do_message": 'disk size cannot be decreased "live"', "http_status": 422}
+        )
+
+        formatted = log._KeyValueFormatter().format(record)
+
+        assert 'do_message="disk size cannot be decreased \\"live\\""' in formatted
+        assert "http_status=422" in formatted
+
+    def test_single_word_extra_value_stays_bare(self):
+        record = _make_record(extra={"outcome": "success"})
+
+        formatted = log._KeyValueFormatter().format(record)
+
+        assert formatted.endswith("outcome=success")
+
     def test_empty_extra_and_empty_msg_produces_no_trailing_field(self):
         record = _make_record()
 
@@ -115,6 +139,21 @@ class TestFormatter:
         formatted = log._KeyValueFormatter().format(record)
 
         assert formatted == f"{_ts(0)} {'INFO':<5} {'aiform.llm':<20} role=code_review"
+
+    def test_importing_the_module_does_not_mutate_the_global_level_name_table(self):
+        # Reproduces a real /code-review finding: logging.addLevelName()
+        # mutates a process-wide stdlib table. Run in a fresh
+        # interpreter -- this process's table may already be mutated by
+        # an earlier test in this same session -- to check that merely
+        # importing aiform.log has no such effect on a process that
+        # never calls configure().
+        result = subprocess.run(
+            [sys.executable, "-c", "import aiform.log, logging; print(logging.getLevelName(30))"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "WARNING"
 
 
 class TestConfigure:
@@ -285,6 +324,28 @@ class TestConfigureFileSink:
 
         assert len(list(tmp_path.glob("*.log"))) == 2
 
+    def test_second_configure_call_closes_the_previous_file_handler(self, tmp_path: Path):
+        # configure() is documented as safe to call repeatedly. Detaching
+        # the previous FileHandler via removeHandler() alone doesn't
+        # release its OS file descriptor -- only close() does.
+        log.configure(
+            stream=StringIO(), logging_config=_logging_config(max_files=10), log_dir=tmp_path
+        )
+        first_handler = log._installed_file_handler
+        assert first_handler is not None
+        first_stream = first_handler.stream
+        assert first_stream is not None
+        assert not first_stream.closed
+
+        log.configure(
+            stream=StringIO(), logging_config=_logging_config(max_files=10), log_dir=tmp_path
+        )
+
+        # close() sets FileHandler.stream to None -- the captured
+        # reference to the underlying file object is what still shows
+        # whether the fd was actually released.
+        assert first_stream.closed
+
     def test_log_dir_created_if_missing(self, tmp_path: Path):
         log_dir = tmp_path / "does" / "not" / "exist" / "yet"
 
@@ -308,8 +369,10 @@ class TestRotateLogs:
 
     def test_prunes_oldest_first_down_to_keep_minus_one(self, tmp_path: Path):
         names = [f"aiform-2026081{i}T000000Z.log" for i in range(5)]
-        for name in names:
-            (tmp_path / name).write_text("")
+        for i, name in enumerate(names):
+            path = tmp_path / name
+            path.write_text("")
+            os.utime(path, (i, i))  # explicit mtimes: creation order is the test's point
 
         log._rotate_logs(tmp_path, keep=3)
 
@@ -323,6 +386,26 @@ class TestRotateLogs:
         log._rotate_logs(tmp_path, keep=1)
 
         assert (tmp_path / "notes.txt").exists()
+
+    def test_same_second_collision_suffix_does_not_invert_prune_order(self, tmp_path: Path):
+        # Reproduces a real /code-review finding: '-' (0x2D) sorts before
+        # '.' (0x2E), so a naive lexicographic filename sort puts
+        # "...-2.log" before the unsuffixed file it collided with, even
+        # though "-2.log" (created on the *second* invocation within the
+        # same UTC second, per _new_log_path()'s own collision handling)
+        # is actually the newer file -- inverting which one rotation
+        # treats as "oldest" and prunes.
+        older = tmp_path / "aiform-20260819T120000Z.log"
+        older.write_text("")
+        os.utime(older, (1000, 1000))
+        newer = tmp_path / "aiform-20260819T120000Z-2.log"
+        newer.write_text("")
+        os.utime(newer, (2000, 2000))
+
+        log._rotate_logs(tmp_path, keep=2)
+
+        assert not older.exists()
+        assert newer.exists()
 
 
 class TestNewLogPath:
