@@ -856,6 +856,36 @@ class TestUpdateResizeInPlace:
         assert excinfo.value.__cause__ is not None
         assert excinfo.value.__cause__.code == 429
 
+    def test_resize_restore_unexpected_exception_type_propagates_unwrapped(
+        self, driver, fake_urlopen
+    ):
+        # The restore-after-failure except clause is scoped to
+        # (HTTPError, TimeoutError) -- the only exceptions
+        # _do_action_and_wait/_poll_until can actually raise -- not bare
+        # Exception. A genuinely unexpected exception type (anything
+        # else) must propagate immediately, not get folded into the
+        # generic "restore also failed" RuntimeError, which would make
+        # an unrelated bug harder to distinguish from a real DO-API
+        # restore failure. Caught by /code-review.
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),  # power_off
+            http_error(actions_url("123"), 429, {"message": "too many requests"}),
+            ValueError("something unrelated broke"),  # power_on
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+        )
+
+        with pytest.raises(ValueError, match="something unrelated broke"):
+            driver.update("123", current, desired, CREDENTIALS)
+
     def test_resize_server_error_reraises_not_unsupported(self, driver, fake_urlopen):
         current = make_attrs(status="off", size="s-1vcpu-2gb")
         desired = make_attrs(size="s-2vcpu-4gb")

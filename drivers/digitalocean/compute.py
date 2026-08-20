@@ -13,6 +13,13 @@ REQUEST_TIMEOUT_SECONDS = 30
 # transient or unrelated CSP failure, not evidence the resize itself is
 # unsupported. Named as a constant, not an inline tuple, so there's one
 # place in the code to update -- flagged during /code-review.
+# Deliberately NOT expanded to 403/409/423 despite a later /code-review
+# suggestion: 403 reads as a permission/credential problem, not "this
+# resize is invalid" -- misclassifying that into a destroy+recreate is
+# exactly the dangerous pattern this fix exists to prevent. 409/423 read
+# as "droplet locked/busy," which is transient (retry later), not a
+# permanent rejection either. Left as-is unless a concrete, observed DO
+# status code demonstrates otherwise.
 _RESIZE_REJECTED_STATUSES = (400, 422)
 
 
@@ -98,6 +105,14 @@ class Driver(ResourceDriver):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
         return data.get("message") if isinstance(data, dict) else None
+
+    def _fold_do_error_into_exc(self, exc: urllib.error.HTTPError) -> None:
+        # Shared by both the resize exc and the power-on-restore
+        # restore_exc in update() -- was copy-pasted separately for each,
+        # flagged during /code-review.
+        do_message = self._do_error_message(exc)
+        if do_message:
+            exc.msg = f"{exc.msg}: {do_message}"
 
     def create(self, name, params, credentials):
         body = {
@@ -194,17 +209,14 @@ class Driver(ResourceDriver):
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
         except urllib.error.HTTPError as exc:
-            do_message = self._do_error_message(exc)
-            if do_message:
-                # Folded into the *same* HTTPError object's .msg rather than
-                # wrapped in a new exception type -- keeps exc.code/isinstance
-                # intact for the re-raise path below, while still enriching
-                # what str(exc) shows. DO's own diagnostic text (e.g. "rate
-                # limit exceeded, retry after 30s") was previously extracted
-                # only for the DriverUpdateNotSupported branch, silently
-                # dropping it for exactly the transient failures a human
-                # would most want it for -- flagged during /code-review.
-                exc.msg = f"{exc.msg}: {do_message}"
+            # DO's own diagnostic text (e.g. "rate limit exceeded, retry
+            # after 30s") folded into exc.msg in place -- keeps
+            # exc.code/isinstance intact for the re-raise path below,
+            # while still enriching what str(exc) shows. Previously
+            # extracted only for the DriverUpdateNotSupported branch,
+            # silently dropping it for exactly the transient failures a
+            # human would most want it for -- flagged during /code-review.
+            self._fold_do_error_into_exc(exc)
 
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
@@ -219,16 +231,22 @@ class Driver(ResourceDriver):
                         lambda d: d["status"] == "active",
                         "power-on",
                     )
-                except Exception as restore_exc:
+                except (urllib.error.HTTPError, TimeoutError) as restore_exc:
+                    # Narrowed to what _do_action_and_wait/_poll_until can
+                    # actually raise, not bare Exception -- flagged during
+                    # /code-review: a genuinely unexpected exception type
+                    # should still propagate immediately, not be folded
+                    # into a generic "restore also failed" message that
+                    # would make an unrelated bug harder to distinguish
+                    # from a real DO-API restore failure.
+                    #
                     # If restoring power *also* fails, that failure must not
                     # silently replace the original resize error -- flagged
                     # during /code-review. A compounding failure like this
                     # is unusual enough to warrant a loud, undisguised error
                     # rather than a guess at classification either way.
                     if isinstance(restore_exc, urllib.error.HTTPError):
-                        restore_message = self._do_error_message(restore_exc)
-                        if restore_message:
-                            restore_exc.msg = f"{restore_exc.msg}: {restore_message}"
+                        self._fold_do_error_into_exc(restore_exc)
                     raise RuntimeError(
                         f"droplet {id}: resize to {target_size!r} failed ({exc}) and "
                         f"the power-on restore that followed also failed ({restore_exc}) "
@@ -244,10 +262,16 @@ class Driver(ResourceDriver):
                 # destroy+recreate for a resize that might have succeeded
                 # on retry. Let it propagate as a real error instead.
                 raise
-            reason = f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}"
-            if do_message:
-                reason += f": {do_message}"
-            raise DriverUpdateNotSupported(reason, unsupported_fields=["size"]) from exc
+            # Built from the already-enriched exc.msg (see
+            # _fold_do_error_into_exc above) rather than re-appending the
+            # DO message a second time through an independent check --
+            # flagged during /code-review: the same diagnostic text was
+            # threaded through two unsynchronized `if do_message:` blocks.
+            raise DriverUpdateNotSupported(
+                f"DigitalOcean rejected an in-place resize of droplet {id} "
+                f"to {target_size!r}: {exc.msg}",
+                unsupported_fields=["size"],
+            ) from exc
 
         # Unlike the rejection path above, a *successful* resize always powers
         # the droplet back on, even if it started "off" -- this driver has now

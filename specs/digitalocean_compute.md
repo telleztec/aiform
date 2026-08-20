@@ -263,22 +263,39 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      trigger a destructive destroy+recreate for a resize that might
      have succeeded on retry. Caught by `/code-review` (gate #1) on the
      original version of this driver, which caught *every* `HTTPError`
-     unconditionally here.
+     unconditionally here. **Deliberately not expanded to `403`/`409`/
+     `423`** despite a later `/code-review` suggestion on this same PR:
+     `403` reads as a permission/credential problem, not "this resize is
+     invalid" — misclassifying *that* into a destroy+recreate is exactly
+     the dangerous pattern this fix exists to prevent, since a
+     permission problem doesn't go away by destroying the droplet.
+     `409`/`423` read as "droplet locked/busy with another action,"
+     which is transient (retry once the lock clears), not a permanent
+     rejection either. Left as `(400, 422)` unless a concrete, observed
+     DO status code demonstrates otherwise — not expanded speculatively.
      - In **both** cases (genuine rejection or not), first **power the
        droplet back on** if this call itself powered it off
        (`POST .../actions {"type": "power_on"}`, poll until `status ==
        "active"`) — regardless of *why* the resize failed, a droplet
        this driver itself powered off shouldn't stay off as a side
        effect of the failure. **This restore call is itself wrapped in
-       its own `try`/`except`**: if it *also* raises, the original
-       resize `exc` must not be silently replaced by the restore
-       failure (a second `/code-review` finding on this same PR — a
-       bare, unguarded restore call meant a failed restore would mask
-       the actual resize error and skip the classification below
-       entirely). On a compounding failure, raise a plain `RuntimeError`
-       naming the droplet `id`, the original resize failure, and the
-       restore failure, chained `from` the original resize `exc` (not
-       the restore failure) — both are visible in the message and the
+       its own `try`/`except (urllib.error.HTTPError, TimeoutError)`**
+       — narrowed to those two types specifically (not bare
+       `Exception`, flagged during `/code-review`) since they're the
+       only exceptions `_do_action_and_wait`/`_poll_until` can actually
+       raise; a genuinely unexpected exception type still propagates
+       immediately rather than being folded into a generic "restore
+       also failed" message that would make an unrelated bug harder to
+       distinguish from a real DO-API restore failure. If the restore
+       *does* raise one of those two, the original resize `exc` must
+       not be silently replaced by the restore failure (a second
+       `/code-review` finding on this same PR — a bare, unguarded
+       restore call meant a failed restore would mask the actual resize
+       error and skip the classification below entirely). On a
+       compounding failure, raise a plain `RuntimeError` naming the
+       droplet `id`, the original resize failure, and the restore
+       failure, chained `from` the original resize `exc` (not the
+       restore failure) — both are visible in the message and the
        traceback, and this case deliberately isn't classified into
        `DriverUpdateNotSupported` either way (a compounding failure like
        this is unusual enough to warrant a loud, undisguised error
@@ -309,13 +326,25 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
        version only extracted it for the `DriverUpdateNotSupported`
        message, silently dropping DO's own diagnostic text (e.g. "rate
        limit exceeded, retry after 30s") for exactly the transient
-       failures a human would most want it for. On the re-raise branch,
-       the message is folded into the *same* `HTTPError` object's `.msg`
+       failures a human would most want it for. On the re-raise branch
+       *and* the compounding-failure branch above, the message is
+       folded into the relevant `HTTPError` object's own `.msg`
        (mutating it in place, e.g. `"Too Many Requests: rate limit
-       exceeded, retry after 30s"`) rather than wrapped in a new
-       exception type — this keeps `exc.code`/`isinstance(exc,
-       HTTPError)` intact for anything further up the stack that might
-       care, while still enriching what `str(exc)` shows. Message
+       exceeded, retry after 30s"`) via one shared private helper,
+       `_fold_do_error_into_exc()`, rather than each call site
+       re-extracting and re-mutating separately — a fourth `/code-review`
+       finding: the extract-and-mutate pattern was originally copy-pasted
+       for the resize `exc` and the restore `restore_exc` instead of
+       factored out. Mutating in place (rather than wrapping in a new
+       exception type) keeps `exc.code`/`isinstance(exc, HTTPError)`
+       intact for anything further up the stack that might care, while
+       still enriching what `str(exc)` shows. On the rejection branch,
+       `DriverUpdateNotSupported`'s `reason` string is built directly
+       from the now-enriched `exc.msg` rather than re-appending the same
+       DO message a second time through an independent check — a fifth
+       `/code-review` finding: the same diagnostic text was threaded
+       through two unsynchronized `if do_message:` blocks, one place to
+       drift out of sync with the other on a future change. Message
        extraction plays no role in the classification decision either
        way, which is status-code-only: every resize-action `HTTPError`
        at this point in the code is unambiguously about *this* resize
