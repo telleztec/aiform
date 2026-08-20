@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,8 @@ import yaml
 
 from aiform import llm
 from aiform.models import LLMConfig, ParsedResource, ResourceSpec
+
+logger = logging.getLogger(__name__)
 
 INTENT_NOTES_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -129,6 +132,7 @@ def extract_intent_notes(
     llm_config: LLMConfig | None = None,
 ) -> list[dict[str, str]]:
     if not prose_intent_text.strip():
+        logger.info("", extra={"intent_prose_empty": True, "notes_count": 0})
         return []
 
     system_prompt = llm.load_prompt("parse_intent.md")
@@ -139,7 +143,9 @@ def extract_intent_notes(
         client=client,
         llm_config=llm_config,
     )
-    return json.loads(response_text)["intent_notes"]
+    notes = json.loads(response_text)["intent_notes"]
+    logger.info("", extra={"notes_count": len(notes)})
+    return notes
 
 
 def parse_file(

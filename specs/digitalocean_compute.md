@@ -98,10 +98,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `status: "new"` and `networks.v4: []` (no IP yet) — `create()` takes
   only the new `id` from that response and then polls `GET
   /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
-  `update()` uses, bounded the same way: `max_attempts=20`,
-  `delay_seconds=2`, raising `TimeoutError` naming the droplet `id` on
-  exhaustion) until `status == "active"`, discarding the transient POST
-  body in favor of the converged GET response. This was originally
+  `update()` uses, but with its own wider budget — `max_attempts=60`,
+  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=30`,
+  `delay_seconds=2` (60s) — because full provisioning from scratch
+  commonly takes longer than reconciling an already-existing droplet;
+  either way, exhaustion raises `TimeoutError` naming the droplet `id`)
+  until `status == "active"`, discarding the transient POST body in
+  favor of the converged GET response. **Corrected here**: this
+  paragraph previously claimed `create()` was "bounded the same way" as
+  `update()`'s default budget — stale relative to the code, which has
+  always given `create()` its own wider override; found while touching
+  this area for an unrelated reason, not a new change. This was originally
   designed the other way (no polling, convergence picked up by a later
   `plan`/`refresh`) but that left `create()` returning a permanently
   wrong `status`/`ipv4_address` immediately after every `apply` and was
@@ -357,10 +364,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
        exception type) keeps `exc.code`/`isinstance(exc, HTTPError)`
        intact for anything further up the stack that might care, while
        still enriching what `str(exc)` shows. `_fold_do_error_into_exc()`
-       returns `True` iff it actually found and folded in a DO message
-       (`False` on a missing/malformed/empty body). On the rejection
+       returns the extracted DO message itself (`str | None`), not a
+       bare bool — a caller needs the message's own text too (e.g. this
+       driver's structured-logging `do_message` extra field, added
+       merging this driver's logging work into the resize-classification
+       fix; re-deriving it via a second `_do_error_message()` call
+       instead would read the already-consumed body again and silently
+       get `None`) as well as the true/false signal, and the string's
+       own truthiness already serves as that signal. On the rejection
        branch, `DriverUpdateNotSupported`'s `reason` string uses that
-       return value to decide whether to append `exc.msg` at all —
+       return value's truthiness to decide whether to append `exc.msg`
+       at all —
        still built from the now-enriched `exc.msg` when there's
        something to add, rather than re-appending the same DO message a
        second time through an independent extraction (a fifth
@@ -436,6 +450,88 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   non-updatable fields raise `DriverUpdateNotSupported`, never attempt a
   destructive call) without being so strict about the *exact* internal
   call sequence that a reasonable first-draft variation fails outright.
+- **Logging** (`specs/log.md`). This is the first driver to log at all
+  — every other driver-visible log line comes from `orchestrator.py`'s
+  `_call_driver()` wrapper, which only sees this driver's *outer*
+  boundary (`operation=update duration_ms=<total> outcome=success`,
+  covering the whole `power-off → resize → poll → power-on` sequence
+  as one opaque span). Found insufficient after a real diagnostic
+  session: a slow or stuck resize gives no way to tell *which* of the
+  four steps it's stuck in from that one line alone.
+  - `logger = logging.getLogger("aiform.driver.digitalocean.compute")`
+    — a hardcoded literal, **not** `logging.getLogger(__name__)`.
+    `orchestrator.py`'s `load_driver()` execs this file via
+    `importlib.util.spec_from_file_location(f"aiform_driver_{provider}_{resource_type}",
+    ...)`, so `__name__` inside this module at runtime is
+    `"aiform_driver_digitalocean_compute"` — not a dotted descendant of
+    the `"aiform"` logger `aiform/log.py`'s `configure()` attaches
+    handlers to. Confirmed empirically before writing this (not
+    assumed): a logger built from that synthetic name never reaches
+    either handler, silently — no exception, just missing output.
+  - `_poll_until()` logs once per call (not per poll attempt — the
+    existing busy-wait exclusion in `specs/log.md` still applies to
+    the individual `GET`s inside its loop): INFO with
+    `id`/`step`/`attempts_used`/`duration_ms`/`outcome=success` on
+    success, ERROR with the same shape plus `outcome=timeout`
+    immediately before raising `TimeoutError`. `duration_ms` is
+    `aiform.log.elapsed_ms(start)` — the same helper `llm.py`/
+    `orchestrator.py` use, not a hand-rolled `round((time.monotonic() -
+    start) * 1000)` — this driver imports `aiform.log` for it (caught
+    by `/code-review`: the original version reimplemented the formula
+    inline at both call sites instead of reusing the helper this same
+    PR introduced specifically to eliminate that duplication). Since
+    `create()` also calls `_poll_until()` (`step="create"`), it gets this too, for
+    free — an added, not redundant, precision beyond
+    `_call_driver()`'s own `operation=create` line, since
+    `attempts_used` tells you how many `GET`s DO's convergence
+    actually took.
+  - `update()`'s resize path logs once, INFO, on entering the sequence
+    (`id`/`status`/`current_size`/`target_size`) — the context every
+    subsequent step-level line needs but doesn't itself carry.
+  - The `except urllib.error.HTTPError` block around the resize action
+    logs WARNING **once**, but the message and meaning depend on which
+    of the two classification branches (`specs/digitalocean_compute.md`'s
+    "Behavior" section above, step 4) is actually taken — this split
+    exists because the classification itself (genuine rejection vs.
+    transient/unrelated failure) didn't exist yet when this logging was
+    first written; merging the two together kept only one, now-wrong
+    unconditional message ("falling back to destroy+recreate") that no
+    longer held once the re-raise branch existed too:
+    - **Genuine rejection** (`exc.code in _RESIZE_REJECTED_STATUSES`):
+      `"DigitalOcean rejected the in-place resize; falling back to
+      destroy+recreate"` — accurate here, since this branch really does
+      lead to `DriverUpdateNotSupported` and the orchestrator's
+      destroy+recreate fallback.
+    - **Everything else** (transient/unrelated, re-raised as a real
+      error): `"DigitalOcean's resize action failed with an unrecognized
+      status; propagating as a genuine driver error, no replace
+      triggered"` — deliberately avoids reusing the phrase "falling
+      back to destroy+recreate" even in negated form (a first version
+      wrote "...rather than falling back to destroy+recreate", which
+      still contains that exact substring — caught by the regression
+      test asserting the phrase's absence, which failed against that
+      wording). This is a real driver-execution failure with no further
+      handling above it, and the log file is the only durable record
+      once it propagates.
+    Both share the same `extra` shape — `id`, `target_size`,
+    `http_status` (`exc.code`), and best-effort `do_message`: DO's own
+    `{"message": "..."}` JSON body, extracted via `_do_error_message()`
+    and threaded through `_fold_do_error_into_exc()` (which returns the
+    extracted message itself, not just a bool, specifically so a caller
+    has the bare text for a structured field like this one — reusing
+    the now-prefixed `exc.msg` instead would have logged `"Unprocessable
+    Entity: disk size cannot be decreased"` rather than the bare `"disk
+    size cannot be decreased"` a consumer of this field expects; caught
+    merging this driver's structured-logging work into the
+    resize-classification fix). `do_message` is the single
+    highest-value diagnostic field either warning carries — DO's own
+    stated reason (e.g. a disk-size-class mismatch, or a rate-limit
+    message) is exactly the detail an operator, or an LLM reviewing the
+    log afterward, needs to tell "this needs a destroy+recreate because
+    X" (or "this was transient, safe to retry") apart from "this driver
+    has a bug." Never raises on a malformed/absent body — the field is
+    just omitted (per `_KeyValueFormatter`'s existing `None` handling)
+    rather than crashing error handling itself.
 
 ## Edge cases / errors
 

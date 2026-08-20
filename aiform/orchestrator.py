@@ -2,7 +2,9 @@ import dataclasses
 import hashlib
 import importlib.util
 import json
+import logging
 import shutil
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,7 +13,7 @@ from typing import Any
 
 import anthropic
 
-from aiform import config, llm, parser, planner, state
+from aiform import config, llm, log, parser, planner, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
@@ -26,6 +28,8 @@ from aiform.models import (
 )
 from aiform.state import State
 
+logger = logging.getLogger(__name__)
+
 DRIVERS_DIR = Path(__file__).resolve().parent.parent / "drivers"
 TRASH_DIR = Path(".aiform/trash")
 
@@ -34,11 +38,44 @@ def resource_key(provider: str, resource_type: str, name: str) -> str:
     return f"{provider}.{resource_type}.{name}"
 
 
+def _log_driver_outcome(
+    provider: str, resource_type: str, operation: str, duration_ms: int, *, outcome: str
+) -> None:
+    # Shared by _call_driver() and apply_plan()'s UPDATE branch, which
+    # can't route through _call_driver() itself -- its blanket
+    # DriverExecutionError wrapping would swallow DriverUpdateNotSupported,
+    # a signal that branch needs unwrapped to decide on a delete+create
+    # fallback. Only the logging *shape* is shared; each site keeps its
+    # own exception handling. Factored out after /code-review: the two
+    # copies had already drifted once (the update branch's first pass
+    # missed the outcome=error case entirely -- see specs/orchestrator.md).
+    level = logging.INFO if outcome == "success" else logging.ERROR
+    logger.log(
+        level,
+        "",
+        extra={
+            "provider": provider,
+            "resource_type": resource_type,
+            "operation": operation,
+            "duration_ms": duration_ms,
+            "outcome": outcome,
+        },
+    )
+
+
 def _call_driver(fn: Callable[..., Any], provider: str, resource_type: str, operation: str, *args):
+    start = time.monotonic()
     try:
-        return fn(*args)
+        result = fn(*args)
     except Exception as exc:
+        _log_driver_outcome(
+            provider, resource_type, operation, log.elapsed_ms(start), outcome="error"
+        )
         raise DriverExecutionError(provider, resource_type, operation, exc) from exc
+    _log_driver_outcome(
+        provider, resource_type, operation, log.elapsed_ms(start), outcome="success"
+    )
+    return result
 
 
 def _pop_id(
@@ -126,10 +163,23 @@ def ensure_driver_trusted(
             and entry.resource_type == resource_type
             and entry.driver.sha256 == on_disk_sha256
         ):
+            logger.info(
+                "",
+                extra={"provider": provider, "resource_type": resource_type, "reused": True},
+            )
             return entry.driver
 
     source_text = path.read_text(encoding="utf-8")
     review = llm.review_driver(source_text, client=client, llm_config=llm_config)
+    logger.info(
+        "",
+        extra={
+            "provider": provider,
+            "resource_type": resource_type,
+            "reused": False,
+            "approved": review.approved,
+        },
+    )
     if not review.approved:
         raise PlanBlockedError(
             f"driver {path} failed code-review-model review: "
@@ -147,11 +197,28 @@ def ensure_driver_trusted(
 def refresh_resource(
     driver: ResourceDriver, state_entry: StateEntry, credentials: dict[str, str]
 ) -> tuple[dict[str, Any], bool]:
+    start = time.monotonic()
     try:
         raw = driver.read(state_entry.id, credentials)
     except ResourceNotFoundError:
+        logger.warning(
+            "",
+            extra={
+                "provider": state_entry.provider,
+                "resource_type": state_entry.resource_type,
+                "id": state_entry.id,
+                "drifted_missing": True,
+            },
+        )
         return state_entry.attributes, True
     except Exception as exc:
+        _log_driver_outcome(
+            state_entry.provider,
+            state_entry.resource_type,
+            "read",
+            log.elapsed_ms(start),
+            outcome="error",
+        )
         raise DriverExecutionError(
             state_entry.provider, state_entry.resource_type, "read", exc
         ) from exc
@@ -469,6 +536,13 @@ def apply_plan(
     )
     if needs_review:
         review = llm.review_plan(build_plan_summary(planned), client=client, llm_config=llm_config)
+        blocked = not review.safe_to_proceed or any(
+            flag.severity == PlanReviewSeverity.BLOCK for flag in review.flags
+        )
+        (logger.warning if blocked else logger.info)(
+            "",
+            extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
+        )
         _raise_if_review_blocked(review)
         review_flags.extend(
             flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK
@@ -500,6 +574,7 @@ def apply_plan(
 
         elif pr.entry.action == PlanAction.UPDATE:
             replaced = False
+            update_start = time.monotonic()
             try:
                 raw = pr.driver.update(
                     pr.state_entry.id, pr.state_entry.attributes, pr.desired_params, pr.credentials
@@ -552,7 +627,23 @@ def apply_plan(
                     pr.credentials,
                 )
             except Exception as exc:
+                _log_driver_outcome(
+                    pr.provider,
+                    pr.resource_type,
+                    "update",
+                    log.elapsed_ms(update_start),
+                    outcome="error",
+                )
                 raise DriverExecutionError(pr.provider, pr.resource_type, "update", exc) from exc
+
+            if not replaced:
+                _log_driver_outcome(
+                    pr.provider,
+                    pr.resource_type,
+                    "update",
+                    log.elapsed_ms(update_start),
+                    outcome="success",
+                )
 
             operation = "create" if replaced else "update"
             new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, operation)

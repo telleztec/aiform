@@ -191,6 +191,66 @@ explicit `max_tokens` override parameter (now `None` by default, meaning
 role's `max_tokens` internally, with no caller-facing override, matching
 their existing signatures which don't expose `output_schema` either.
 
+## Fourth revision: logging needs the response metadata `_anthropic_call` used to discard
+
+`PLAN.md` §10's "Logging" item (`specs/log.md`) names this file's own
+gap as its concrete motivating example: `_anthropic_call()` extracted
+only the response text and threw away `response.stop_reason`/
+`response.usage`, so a response truncated by hitting `max_tokens`
+mid-JSON (the exact failure the `max_tokens`-is-per-role change above
+was written to reduce, not eliminate) surfaced only as an opaque
+`JSONDecodeError`/`ValidationError` downstream, with no hint the real
+cause was a token budget.
+
+**Rejected fix**: adding a `role_name` parameter to `_anthropic_call()`
+itself, so it could log `role=<role_name>` directly. Every one of this
+function's current parameters is justified above as "how do I talk to
+Anthropic" — role name is a pure observability concern with no reason
+to live on this specific, vendor-scoped function, and every caller
+already knows its own role name without needing to hand it back in.
+
+**Actual fix**: `_anthropic_call()`'s return type widens from `str` to
+a small frozen result carrying what logging needs:
+
+```python
+@dataclass(frozen=True)
+class ModelCallResult:
+    text: str
+    stop_reason: str
+    input_tokens: int
+    output_tokens: int
+    thinking_tokens: int | None
+    duration_ms: int
+```
+
+(This field list was written without `duration_ms` in the first pass of
+this revision, even though the `_anthropic_call` prose below already
+committed to measuring it around the `client.messages.create(...)`
+call — caught and fixed in the same PR that implements this, per
+"Specs are living docs.")
+
+`thinking_tokens` is `getattr(response.usage, "output_tokens_details",
+None)`-defensive (then `.thinking_tokens` off that, still
+`getattr`-defensive) — not every response shape is guaranteed to carry
+it, and this function must not crash just because the field it wants
+to log is absent. `MODEL_SOURCES: dict[ModelSource, Callable[...,
+str]]` becomes `Callable[..., ModelCallResult]` accordingly — the one
+dispatch seam this spec already protects (see "Scope discipline"
+above) stays exactly that: one seam, an updated contract, no plugin
+system, no second seam introduced for logging.
+
+The three places that already know their own role name —
+`_implementation_tier_call()` (shared by `intent_orchestration_call()`/
+`code_generator_call()`), `review_driver()`, `review_plan()` — each
+log the call-level metadata (`role`, `model`, `stop_reason`, token
+counts, `duration_ms`) at INFO, and specifically WARNING (with a
+free-text `msg`) when `stop_reason == "max_tokens"`, then unwrap
+`result.text` before doing whatever they already did with it. **Every
+public function's own signature and return type is unchanged** —
+`intent_orchestration_call()`/`code_generator_call()` still return
+`str`; every existing caller in `parser.py`/`planner.py`/
+`driver_gen.py` needs no change. Full behavior list: `specs/log.md`.
+
 ## Interface
 
 ```python
@@ -202,10 +262,10 @@ def _anthropic_call(
     max_tokens: int,
     output_schema: dict[str, Any] | None = None,
     client: anthropic.Anthropic | None = None,
-) -> str: ...
+) -> ModelCallResult: ...
 
 
-MODEL_SOURCES: dict[ModelSource, Callable[..., str]] = {
+MODEL_SOURCES: dict[ModelSource, Callable[..., ModelCallResult]] = {
     ModelSource.ANTHROPIC: _anthropic_call,
 }
 
@@ -256,10 +316,14 @@ def review_plan(
 ### `_anthropic_call(...)` (private)
 
 Exactly what the old `sonnet_call()`/the shared `_call()` helper did —
-the actual `client.messages.create(...)` invocation and response-text
+the actual `client.messages.create(...)` invocation and response
 extraction — renamed and scoped to be specifically the Anthropic-source
 implementation, not a generic "the-only-vendor" helper. This is the
 function a hypothetical `_bedrock_call(...)` would sit next to later.
+Returns a `ModelCallResult` (see "Fourth revision" above), not a bare
+`str` — timed with `time.monotonic()` around the `client.messages.create(...)`
+call itself, so `duration_ms` reflects only the network/inference time,
+not any surrounding setup.
 
 Text extraction scans `response.content` for the first block with
 `type == "text"`, not `response.content[0].text`. Every configured
@@ -383,6 +447,24 @@ filesystem for anything that isn't the specific thing being tested.
   review-gate schemas (`DRIVER_REVIEW_SCHEMA`, `PLAN_REVIEW_SCHEMA`) are
   all unchanged from the original draft — this revision only touches
   *how the model/source is chosen*, not the calling contract's shape.
+- **Logging** (`specs/log.md`), per the "Fourth revision" above:
+  - `_implementation_tier_call()` logs `role=<role_name>
+    model=<model> stop_reason=<...> input_tokens=<...>
+    output_tokens=<...> duration_ms=<...>` at INFO after every call —
+    WARNING instead, with `msg="response likely truncated -- max_tokens
+    reached before JSON completed"`, when `result.stop_reason ==
+    "max_tokens"`.
+  - `review_driver()`/`review_plan()` log the same call-level line
+    (their own hardcoded role name), plus a separate decision-level
+    line after building their return value: `review_driver` logs
+    `approved=<bool> concerns_count=<n> blocking_issues_count=<n>`;
+    `review_plan` logs `safe_to_proceed=<bool> flags_count=<n>`. Never
+    the free-text `concerns`/`blocking_issues`/`flag.concern` content
+    itself — counts only, per `specs/log.md`'s Out of scope.
+  - `"credentials"` still does not appear anywhere in this file's
+    source text (see Behavior's first bullet above) — `ModelCallResult`
+    and every logged field are built from response metadata and
+    resolved role/model names, never from anything credential-shaped.
 
 ## Edge cases / errors
 

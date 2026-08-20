@@ -184,6 +184,36 @@ class LLMConfig(BaseModel):
   without touching the other three as model capability and pricing
   change over time.
 
+### `LoggingConfig`
+
+Added alongside `specs/log.md`'s dual-handler design and
+`specs/config.md`'s `resolve_logging_config()`. Same reasoning as
+`LLMConfig`: produced by `config.py`, consumed by `log.py`, so the
+shared shape lives here.
+
+```python
+class LoggingConfig(BaseModel):
+    level: str
+    max_files: int = Field(gt=0)
+```
+
+- `level` is validated against the four names `aiform/log.py`'s
+  `_KeyValueFormatter` actually knows how to display —
+  `{"DEBUG", "INFO", "WARNING", "ERROR"}` — via a `field_validator`, not
+  left as an open string. A typo (`"INOF"`) or a level this codebase
+  doesn't use (`"CRITICAL"`, stdlib's fifth level) fails fast at
+  config-load time with a clear message naming the valid set, the same
+  "reject at the boundary, don't let a typo silently no-op" stance
+  `LLMConfig`'s unknown-field rejection already takes.
+- `max_files` mirrors `LLMRoleConfig.max_tokens`'s `Field(gt=0)` —
+  `0` would mean "delete every log file including the one just
+  written," which isn't a meaningful "keep zero" setting so much as a
+  configuration error; rejected the same way a zero/negative
+  `max_tokens` is.
+- No `source`-style discriminator — unlike `LLMRoleConfig`, logging has
+  exactly one destination shape (a rotating file), so there's nothing
+  to select between.
+
 ### `DriverReview`
 
 The persisted record of a gate #1 (`code-review-model`) review (`PLAN.md`
@@ -300,6 +330,10 @@ implementation pass, not a deliberate asymmetry.
 - `LLMRoleConfig(source="anthropic", model="...")` (omitting
   `max_tokens`) raises a validation error — required, same as `source`
   and `model`.
+- `LoggingConfig(level="INFO", max_files=10)` constructs cleanly;
+  `LoggingConfig(level="TRACE", max_files=10)` and
+  `LoggingConfig(level="INFO", max_files=0)` both raise a validation
+  error.
 
 ## Edge cases / errors
 

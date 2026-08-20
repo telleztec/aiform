@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RESOURCE_OR_PROVIDER_PATTERN = r"^[a-z][a-z0-9_]*$"
 
@@ -68,6 +68,21 @@ class LLMConfig(BaseModel):
     code_generator: LLMRoleConfig
     code_review: LLMRoleConfig
     review_orchestration: LLMRoleConfig
+
+
+_VALID_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
+
+
+class LoggingConfig(BaseModel):
+    level: str
+    max_files: int = Field(gt=0)
+
+    @field_validator("level")
+    @classmethod
+    def _level_must_be_known(cls, value: str) -> str:
+        if value not in _VALID_LOG_LEVELS:
+            raise ValueError(f"level must be one of {sorted(_VALID_LOG_LEVELS)}, got {value!r}")
+        return value
 
 
 class DriverReview(BaseModel):

@@ -1,19 +1,23 @@
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 
 import anthropic
 
-from aiform import config, orchestrator, state
+from aiform import config, log, orchestrator, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
 from aiform.models import PlanAction
+
+logger = logging.getLogger(__name__)
 
 _GITIGNORE_ENTRIES = [
     ".aiform/credentials.env",
     ".aiform/state.json",
     ".aiform/state.json.backup",
+    ".aiform/logs/",
     ".env",
     "__pycache__/",
     "*.pyc",
@@ -349,10 +353,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
+def _dispatch(args: argparse.Namespace) -> int:
     try:
         if args.command == "init":
             return _cmd_init(args)
@@ -369,5 +370,30 @@ def main(argv: list[str] | None = None) -> int:
                 _report_verbose_calls(args, client)
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
     except _HANDLED_EXCEPTIONS as exc:
-        print(f"Error: {_format_error(exc)}", file=sys.stderr)
+        message = _format_error(exc)
+        logger.error(message, extra={"exception_type": type(exc).__name__})
+        print(f"Error: {message}", file=sys.stderr)
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        logging_config = config.resolve_logging_config()
+    except _HANDLED_EXCEPTIONS as exc:
+        # log.configure() hasn't run yet -- the very config that would
+        # tell it what to do is what failed to resolve -- so this one
+        # narrow failure mode can't produce a log file. It can still
+        # exit the same clean way every other _HANDLED_EXCEPTIONS case
+        # does, instead of an uncaught traceback.
+        message = _format_error(exc)
+        print(f"Error: {message}", file=sys.stderr)
+        return 2
+    log.configure(verbose=args.verbose, logging_config=logging_config)
+    logger.info("invoked: %s", " ".join(argv if argv is not None else sys.argv[1:]))
+
+    code = _dispatch(args)
+    level = logging.INFO if code == 0 else logging.ERROR
+    logger.log(level, "", extra={"exit_code": code, "outcome": "success" if code == 0 else "error"})
+    return code

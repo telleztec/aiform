@@ -58,12 +58,12 @@ which never reads or writes state.
   section): the user creates that file by hand.
 - Appends the standard entries (`PLAN.md` §8) to the repo-root
   `.gitignore` if missing — `.aiform/credentials.env`,
-  `.aiform/state.json`, `.aiform/state.json.backup`, `.env`,
-  `__pycache__/`, `*.pyc`. Idempotent: a line already present (exact
-  string match) is not duplicated on a second `init` run. Creates
-  `.gitignore` if it doesn't exist yet. Deliberately **excludes**
-  `.aiform/trash/` — `PLAN.md`'s "Trash directory" section states it is
-  "Not gitignored."
+  `.aiform/state.json`, `.aiform/state.json.backup`, `.aiform/logs/`
+  (`specs/log.md`), `.env`, `__pycache__/`, `*.pyc`. Idempotent: a line
+  already present (exact string match) is not duplicated on a second
+  `init` run. Creates `.gitignore` if it doesn't exist yet.
+  Deliberately **excludes** `.aiform/trash/` — `PLAN.md`'s "Trash
+  directory" section states it is "Not gitignored."
 - Writes `examples/compute.aiform.md` (creating `examples/`) **only**
   when it doesn't already exist — never overwrites a user's edited
   starter file on a repeat `init`. Only written for `--provider
@@ -263,6 +263,93 @@ model calls did this invocation make" — and nothing broader):
   stdout output — stderr specifically so `--json --verbose` together
   still yield parseable stdout, and so `--verbose` never changes a
   command's exit code or its stdout contents.
+- **This mechanism is unchanged by, and stays completely separate
+  from, the structured logging described below** — it predates
+  `specs/log.md` and continues to answer its own one narrow question
+  ("how many model calls did this invocation make"), not folded into
+  the newer system.
+
+### Structured logging (`specs/log.md`)
+
+`main()` resolves `config.resolve_logging_config()` and calls
+`log.configure(verbose=args.verbose, logging_config=...)` immediately
+after argument parsing, before any subcommand dispatch — the only
+wiring this module does; every other module's own logger (`aiform.llm`,
+`aiform.orchestrator`, `aiform.planner`, `aiform.parser`,
+`aiform.driver_gen`) does its own logging independently once this is
+called. `--verbose` only ever affects the live stderr echo — the
+`.aiform/logs/` file always captures at `logging_config.level`
+regardless of the flag; see `specs/log.md`'s "Two handlers, one
+logger". **Additive, not a replacement**, for this module's existing
+`print()`-based human-facing output (`_print_plan`/
+`_print_apply_result`/`_print_state`) and for the verbose Anthropic-call
+counter above — logging is a parallel channel for debugging/operational
+visibility, not a UX replacement; nothing in this module's existing
+print-based output changes.
+
+One further, in-scope addition beyond pure wiring: `main()`'s own
+exception handler (see "Error formatting and exit codes" below) also
+calls `logger.error(...)` — naming the exception type and its
+formatted message — immediately alongside the existing `Error: ...`
+stderr `print`, not instead of it. This is the single most likely place
+a real user hits a failure during `plan`/`apply`/`destroy`/`refresh`,
+and structured logging covering it was part of the point of building
+this module at all.
+
+**Every invocation that reaches `log.configure()` logs at least two
+lines, unconditionally** — an entry line immediately after `configure()`
+returns, before any subcommand dispatch, and an exit line immediately
+after dispatch returns, wrapping whatever the invoked subcommand itself
+does (or doesn't) log in between:
+
+- Entry: `logger.info("invoked: %s", " ".join(argv))`, where `argv` is
+  exactly what `main()` resolved for `parser.parse_args()` (`argv if
+  argv is not None else sys.argv[1:]`). This goes through the log
+  *message*, not a `key=value` extra field — an argv element (e.g. a
+  `--state-file` path) can contain spaces, and `specs/log.md`'s
+  Formatter only quotes/escapes `msg`, not `extra` values. Safe to log
+  verbatim: `_build_parser()` defines no credential-bearing flag
+  anywhere (`DIGITALOCEAN_TOKEN`/`ANTHROPIC_API_KEY` are both
+  env-var-only, per `CLAUDE.md`'s Credentials rules), so nothing
+  sensitive can appear in argv.
+- Exit: `logger.log(level, "", extra={"exit_code": <n>, "outcome":
+  "success" | "error"})`, where `<n>` is exactly the value `main()`
+  returns to its caller, `outcome` is a bare derived convenience
+  (`"success"` iff `exit_code == 0`), and `level` is `logging.INFO` on
+  success or `logging.ERROR` otherwise — the same outcome-driven
+  severity `aiform/orchestrator.py`'s `_log_driver_outcome()`
+  (`specs/orchestrator.md`) already uses, so a `grep ERROR
+  .aiform/logs/` sweep for "any failure" also catches a failed
+  invocation's own top-level exit line, not just the driver-level ones.
+  Caught by `/code-review`: the first version of this line always
+  logged at INFO regardless of outcome, inconsistent with that
+  convention.
+
+This guarantees every `.aiform/logs/<...>.log` file traces back to a
+specific command line and a specific result even when the invoked
+subcommand logs nothing on its own path — `plan show`, `plan refresh`
+with no drift, a `plan destroy` finding nothing left to destroy (see
+`specs/log.md`'s file-per-invocation design). Previously these produced
+genuinely empty (0-byte) files with no way to tell, after the fact,
+which command produced them or whether it succeeded.
+
+Two cases stay outside this guarantee, unavoidably: `argparse`'s own
+error handling (missing subcommand, unknown flag) calls `sys.exit(2)`
+from inside `parser.parse_args()`, before `log.configure()` has even
+run — no log file exists yet at that point, exactly as before this
+addition. A malformed `.aiform/config.yaml` `logging:` section is the
+same shape of problem one step later: `main()` calls
+`config.resolve_logging_config()` *before* `log.configure()` (it has
+to — the config is what tells `configure()` what to do), so a
+`ValueError`/`ValidationError` there is caught by `main()`'s own
+narrow `try`/`except _HANDLED_EXCEPTIONS` and formatted/printed exactly
+like `_dispatch()`'s handling does, exit code 2 — but, same as the
+`argparse` case, no log file is created, since the config controlling
+where and how to log is itself what failed to resolve. Likewise, an
+exception outside the `_HANDLED_EXCEPTIONS` set propagates uncaught past
+the exit-line log call — consistent with this
+module's existing "let it fail loudly" stance (see below), not a gap
+this addition tries to paper over.
 
 ### Error formatting and exit codes
 
@@ -312,10 +399,13 @@ than papering over it with a generic `except Exception`.
   banner; §10 confirms none of the interactive session shape is
   designed yet. Not part of this module.
 - **The fuller logging system** named in `PLAN.md` §10's "Logging" item
-  (structured log lines across all commands, log levels, output
-  routing) — genuinely not designed yet, as that section says outright.
-  This module's `--verbose` only ever does the one narrow thing
-  described above.
+  is now designed and wired (`specs/log.md`, "Structured logging"
+  above) — this bullet is left here, corrected, rather than deleted, so
+  the history of "this was once explicitly out of scope" isn't lost.
+  What remains genuinely out of scope: a third `DEBUG` output tier
+  (`specs/log.md`'s own Out of scope), and a `redact()`/`_redact()`
+  helper for dumping raw request/response payloads under `--verbose`
+  (`PLAN.md` §8) — no call site in this module logs one.
 - **Colorized/`--no-color` output beyond plain ANSI codes on the plan's
   action markers** (`+`/`~`/`-`/`=`) — no theming, no configurability
   beyond the on/off switch `PLAN.md` §7 already names.

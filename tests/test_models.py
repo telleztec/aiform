@@ -8,6 +8,7 @@ from aiform.models import (
     DriverReview,
     LLMConfig,
     LLMRoleConfig,
+    LoggingConfig,
     ModelSource,
     ParsedResource,
     PlanAction,
@@ -229,6 +230,28 @@ class TestLLMConfig:
         )
         assert config.intent_orchestration.model != config.code_generator.model
         assert config.code_review.model != config.review_orchestration.model
+
+
+class TestLoggingConfig:
+    def test_accepts_all_four_known_levels(self):
+        for level in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            assert LoggingConfig(level=level, max_files=10).level == level
+
+    def test_rejects_unknown_level(self):
+        with pytest.raises(ValidationError):
+            LoggingConfig(level="TRACE", max_files=10)
+
+    def test_rejects_stdlib_critical_not_in_this_codebase_s_set(self):
+        with pytest.raises(ValidationError):
+            LoggingConfig(level="CRITICAL", max_files=10)
+
+    def test_rejects_zero_max_files(self):
+        with pytest.raises(ValidationError):
+            LoggingConfig(level="INFO", max_files=0)
+
+    def test_rejects_negative_max_files(self):
+        with pytest.raises(ValidationError):
+            LoggingConfig(level="INFO", max_files=-1)
 
 
 class TestDriverReview:

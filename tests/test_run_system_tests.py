@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -66,15 +67,40 @@ class TestRotateLogs:
 
         assert len(list(log_dir.glob("*.log"))) == 9
 
-    def test_deletes_oldest_first_by_filename(self, tmp_path):
+    def test_deletes_oldest_first_by_mtime(self, tmp_path):
         log_dir = tmp_path / "testlog"
         names = [f"system-test-{i:02d}.log" for i in range(12)]
         self._make_logs(log_dir, names)
+        for i, name in enumerate(names):
+            os.utime(log_dir / name, (i, i))  # explicit mtimes: creation order is the point
 
         run_system_tests.rotate_logs(log_dir, keep=10)
 
         remaining = {p.name for p in log_dir.glob("*.log")}
         assert remaining == {f"system-test-{i:02d}.log" for i in range(3, 12)}
+
+    def test_same_second_collision_suffix_does_not_invert_prune_order(self, tmp_path):
+        # Reproduces a real /code-review finding on this script's own
+        # rotate_logs(): a plain lexicographic filename sort puts
+        # "...-2.log" before the unsuffixed file it collided with,
+        # since '-' (0x2D) sorts before '.' (0x2E) -- even though the
+        # "-2" file (created on the *second* invocation within the same
+        # UTC second, per new_log_path()'s own collision handling) is
+        # actually the newer file. This inverts which one rotate_logs
+        # treats as "oldest" and prunes.
+        log_dir = tmp_path / "testlog"
+        log_dir.mkdir(parents=True)
+        older = log_dir / "system-test-20260819T120000Z.log"
+        older.write_text("x")
+        os.utime(older, (1000, 1000))
+        newer = log_dir / "system-test-20260819T120000Z-2.log"
+        newer.write_text("x")
+        os.utime(newer, (2000, 2000))
+
+        run_system_tests.rotate_logs(log_dir, keep=2)
+
+        assert not older.exists()
+        assert newer.exists()
 
     def test_ignores_non_log_files(self, tmp_path):
         log_dir = tmp_path / "testlog"

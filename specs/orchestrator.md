@@ -794,6 +794,64 @@ Returns the destination path.
   needed them regardless), `None` for every destroy target (resolved
   lazily inside `apply_plan()`, or never resolved at all for an
   untracked Mechanism-B destroy).
+- **Logging** (`specs/log.md`). The `provider=... resource_type=...
+  operation=... duration_ms=... outcome=success|error` shape — INFO on
+  success, ERROR on failure — is centralized in one helper,
+  `_log_driver_outcome(provider, resource_type, operation, duration_ms,
+  *, outcome)`, rather than written out at each call site. `_call_driver()`
+  (its existing callers — `create`/`delete`, the only two operations
+  that actually route through it) calls it once on success and once
+  in its `except Exception` before re-wrapping into
+  `DriverExecutionError` and re-raising. **`refresh_resource()`'s
+  `driver.read(...)` call and `apply_plan()`'s `update()` branch do
+  *not* go through `_call_driver()`** — each has its own inline
+  `try`/`except` (the `update()` branch specifically needs
+  `DriverUpdateNotSupported` to propagate unwrapped, which
+  `_call_driver()`'s blanket `DriverExecutionError` wrapping would
+  swallow) — but both call the *same* `_log_driver_outcome()` helper
+  at their own site instead of hand-copying the dict-literal shape:
+  `refresh_resource()` logs nothing on the ordinary success path
+  (would be redundant with a direct call) but a **WARNING** (not
+  through the shared helper — a different shape entirely, see below)
+  specifically when it returns `drifted_missing=True` — a resource
+  vanished from the CSP side, genuinely new information — and calls
+  `_log_driver_outcome(..., operation="read", outcome="error")` on its
+  own `except Exception` — a genuine driver failure during `read()` (a
+  transient CSP auth or network error, say) that isn't
+  `ResourceNotFoundError` — immediately before re-wrapping into
+  `DriverExecutionError` and re-raising; without this, that failure
+  left zero trace in `.aiform/logs/`, undermining the file sink's whole
+  non-interactive/CI diagnosis purpose for exactly the path most likely
+  to need it. `apply_plan()`'s `update()` branch calls
+  `_log_driver_outcome(..., operation="update", outcome="success")` on
+  success and logs nothing at the `DriverUpdateNotSupported` catch
+  itself (an expected, handled fallback signal, not an error — the
+  delete+create that follows produces its own two
+  `_call_driver()`-driven lines). A third outcome — the shared `except
+  Exception` covering the whole `update()`-or-replace attempt, reached
+  when `pr.driver.update()` itself raises anything other than
+  `DriverUpdateNotSupported` — calls
+  `_log_driver_outcome(..., operation="update", outcome="error")`
+  before re-raising (matching the `operation="update"` label the
+  existing `DriverExecutionError(..., "update", exc)` it raises already
+  used). Caught during `/code-review`, twice, on two separate passes:
+  the first pass of this logging only covered the success and
+  `DriverUpdateNotSupported` outcomes and missed this one entirely,
+  leaving a real driver failure on this path structurally invisible to
+  a `grep operation=update outcome=error` the way `_call_driver()`'s
+  own failures aren't; the second pass flagged that the fix for the
+  first gap had been hand-copied into three separate call sites
+  (`_call_driver()`'s two branches plus this one) instead of sharing
+  one helper — exactly the kind of drift that let the first gap happen
+  in the first place — which is what `_log_driver_outcome()` now
+  prevents structurally rather than by vigilance.
+  `ensure_driver_trusted()` logs the gate #1 outcome — `reused=true` on
+  the zero-LLM cache-hit fast path, `approved=<bool>` after a real
+  review. `apply_plan()` logs the gate #2 plan-review outcome
+  (`safe_to_proceed=<bool> flags_count=<n>`, WARNING when blocked)
+  before `_raise_if_review_blocked()` runs. No call site in this module
+  logs a raw `params`/`credentials`/`*args` dict — every field above is
+  a named scalar, a count, or a boolean.
 
 ## Edge cases / errors
 

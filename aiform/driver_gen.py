@@ -1,5 +1,6 @@
 import ast
 import json
+import logging
 from pathlib import Path
 
 import anthropic
@@ -7,6 +8,8 @@ import anthropic
 from aiform import llm
 from aiform.config import PROVIDER_TOKEN_ENV_VARS
 from aiform.models import DriverReview, LLMConfig, ResourceSpec
+
+logger = logging.getLogger(__name__)
 
 SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 
@@ -108,6 +111,43 @@ def _references_anthropic_string(tree: ast.Module) -> bool:
     return False
 
 
+def _logger_name_reasons(tree: ast.Module) -> list[str]:
+    # load_driver() execs a generated driver under a synthetic module
+    # name (importlib.util.spec_from_file_location) that is not a
+    # dotted descendant of the "aiform" logger aiform/log.py's
+    # configure() attaches handlers to -- the idiomatic
+    # logging.getLogger(__name__) a generated driver would otherwise
+    # use produces a logger whose output silently never reaches either
+    # sink. See drivers/digitalocean/compute.py's own logger-name
+    # comment for the same hazard, worked around by hand there.
+    reasons: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_get_logger = (isinstance(func, ast.Attribute) and func.attr == "getLogger") or (
+            isinstance(func, ast.Name) and func.id == "getLogger"
+        )
+        if not is_get_logger or not node.args:
+            continue
+        arg = node.args[0]
+        if isinstance(arg, ast.Name) and arg.id == "__name__":
+            reasons.append(
+                "calls logging.getLogger(__name__) -- load_driver() execs this module "
+                "under a synthetic name that isn't a descendant of the 'aiform' logger, "
+                "so this logger's output would silently never reach either log sink; use "
+                "a literal 'aiform.driver.<provider>.<resource>' name instead"
+            )
+        elif isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            if not arg.value.startswith("aiform.driver."):
+                reasons.append(
+                    f"calls logging.getLogger({arg.value!r}) -- must start with "
+                    "'aiform.driver.' to be a descendant of the 'aiform' logger "
+                    "aiform/log.py's configure() attaches handlers to"
+                )
+    return reasons
+
+
 def validate_driver_source(source: str) -> None:
     try:
         tree = ast.parse(source)
@@ -143,6 +183,7 @@ def validate_driver_source(source: str) -> None:
         reasons.append("imports the 'anthropic' package")
     if _references_anthropic_string(tree):
         reasons.append("references 'ANTHROPIC' in a string literal")
+    reasons.extend(_logger_name_reasons(tree))
 
     if reasons:
         raise DriverValidationError(reasons)
@@ -210,6 +251,15 @@ def generate_driver(
         try:
             validate_driver_source(source)
         except DriverValidationError as e:
+            logger.info(
+                "",
+                extra={
+                    "provider": spec.provider,
+                    "resource": spec.resource,
+                    "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                    "outcome": "validation_failed",
+                },
+            )
             if attempt == MAX_DRAFT_ATTEMPTS:
                 raise DriverGenerationFailed(source, None, e.reasons) from e
             feedback = _format_feedback(e.reasons)
@@ -217,6 +267,15 @@ def generate_driver(
 
         review = llm.review_driver(source, client=client, llm_config=llm_config)
         if not review.approved:
+            logger.info(
+                "",
+                extra={
+                    "provider": spec.provider,
+                    "resource": spec.resource,
+                    "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                    "outcome": "review_rejected",
+                },
+            )
             reasons = (
                 review.blocking_issues or review.concerns or ["review did not approve the driver"]
             )
@@ -225,4 +284,13 @@ def generate_driver(
             feedback = _format_feedback(reasons)
             continue
 
+        logger.info(
+            "",
+            extra={
+                "provider": spec.provider,
+                "resource": spec.resource,
+                "attempt": f"{attempt}/{MAX_DRAFT_ATTEMPTS}",
+                "outcome": "approved",
+            },
+        )
         return source, review

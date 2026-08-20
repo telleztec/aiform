@@ -1,9 +1,11 @@
 import http.client
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 
+from aiform import log
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
@@ -22,6 +24,17 @@ REQUEST_TIMEOUT_SECONDS = 30
 # permanent rejection either. Left as-is unless a concrete, observed DO
 # status code demonstrates otherwise.
 _RESIZE_REJECTED_STATUSES = (400, 422)
+
+# Named explicitly rather than via logging.getLogger(__name__).
+# orchestrator.py's load_driver() execs this file as a module with a
+# synthetic name ("aiform_driver_digitalocean_compute", via
+# importlib.util.spec_from_file_location), not "drivers.digitalocean.compute"
+# -- that name is not a dotted descendant of the "aiform" logger
+# aiform/log.py's configure() attaches handlers to, so __name__ here
+# would silently produce a logger with no handler and no propagation to
+# either sink. Not an error, just missing output -- confirmed empirically
+# before writing this, not assumed.
+logger = logging.getLogger("aiform.driver.digitalocean.compute")
 
 
 class Driver(ResourceDriver):
@@ -78,25 +91,14 @@ class Driver(ResourceDriver):
     def _action(self, id, credentials, body):
         self._request("POST", f"{BASE_URL}/droplets/{id}/actions", credentials, body=body)
 
-    def _poll_until(self, id, credentials, predicate, step, max_attempts=20, delay_seconds=2):
-        for attempt in range(max_attempts):
-            droplet = self._get_droplet(id, credentials)
-            if predicate(droplet):
-                return droplet
-            if attempt < max_attempts - 1:
-                time.sleep(delay_seconds)
-        raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
-
-    def _do_action_and_wait(self, id, credentials, body, predicate, step):
-        self._action(id, credentials, body)
-        return self._poll_until(id, credentials, predicate, step)
-
     def _do_error_message(self, exc: urllib.error.HTTPError) -> str | None:
         # Best-effort: DO's error responses are typically {"id": "...",
         # "message": "..."} JSON, and that message is usually the single
-        # most useful diagnostic string available. Never let extraction
-        # itself raise; a malformed or already-consumed body just means
-        # no message gets included, not a crash in error handling.
+        # most useful diagnostic string available -- it names the actual
+        # reason (e.g. a disk-size-class mismatch) that a bare HTTP 422
+        # doesn't. Never let extraction itself raise; a malformed or
+        # already-consumed body just means no do_message field gets
+        # logged, not a crash in the middle of error handling.
         try:
             body = exc.read()
         except Exception:
@@ -107,18 +109,55 @@ class Driver(ResourceDriver):
             return None
         return data.get("message") if isinstance(data, dict) else None
 
-    def _fold_do_error_into_exc(self, exc: urllib.error.HTTPError) -> bool:
+    def _poll_until(self, id, credentials, predicate, step, max_attempts=30, delay_seconds=2):
+        start = time.monotonic()
+        for attempt in range(max_attempts):
+            droplet = self._get_droplet(id, credentials)
+            if predicate(droplet):
+                logger.info(
+                    "",
+                    extra={
+                        "id": id,
+                        "step": step,
+                        "attempts_used": attempt + 1,
+                        "duration_ms": log.elapsed_ms(start),
+                        "outcome": "success",
+                    },
+                )
+                return droplet
+            if attempt < max_attempts - 1:
+                time.sleep(delay_seconds)
+        logger.error(
+            "",
+            extra={
+                "id": id,
+                "step": step,
+                "attempts_used": max_attempts,
+                "duration_ms": log.elapsed_ms(start),
+                "outcome": "timeout",
+            },
+        )
+        raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
+
+    def _do_action_and_wait(self, id, credentials, body, predicate, step):
+        self._action(id, credentials, body)
+        return self._poll_until(id, credentials, predicate, step)
+
+    def _fold_do_error_into_exc(self, exc: urllib.error.HTTPError) -> str | None:
         # Shared by both the resize exc and the power-on-restore
         # restore_exc in update() -- was copy-pasted separately for each,
-        # flagged during /code-review. Returns whether a DO message was
-        # actually found and folded in, so a caller can tell "nothing to
-        # add" apart from "added" rather than assuming exc.msg always
-        # gained something -- caught by a second /code-review pass.
+        # flagged during /code-review. Returns the extracted DO message
+        # (or None) rather than a bare bool -- a caller needs the actual
+        # text for its own structured logging (e.g. a "do_message" extra
+        # field distinct from the now-prefixed exc.msg) as well as the
+        # true/false signal, and re-deriving it via a second
+        # _do_error_message(exc) call would read exc's already-consumed
+        # body a second time and silently get None back -- found merging
+        # this driver's structured-logging work in.
         do_message = self._do_error_message(exc)
         if do_message:
             exc.msg = f"{exc.msg}: {do_message}"
-            return True
-        return False
+        return do_message
 
     def create(self, name, params, credentials):
         body = {
@@ -133,12 +172,18 @@ class Driver(ResourceDriver):
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
         new_id = payload["droplet"]["id"]
-        # _poll_until's default budget (20 attempts * 2s = 40s) is tuned for
+        # _poll_until's default budget (30 attempts * 2s = 60s) is tuned for
         # update()'s power-off/resize/power-on actions against an already-
         # existing droplet -- full provisioning from scratch commonly takes
         # longer than that per DO's own docs, so this uses a wider budget
         # (60 * 3s = 180s) to avoid spuriously timing out a create that
-        # would have converged moments later.
+        # would have converged moments later. The default itself was
+        # raised from 20 to 30 attempts (40s -> 60s) after a live system
+        # test run hit a genuine DO power-off slowdown right at the old
+        # budget's edge -- a real, observed timing adjustment per
+        # PLAN.md's own "guesses tuned against one CSP's observed
+        # behavior, not a real policy" framing for these two constants,
+        # not a fix for a code defect.
         droplet = self._poll_until(
             new_id,
             credentials,
@@ -206,6 +251,16 @@ class Driver(ResourceDriver):
                 unsupported_fields=["size"],
             )
 
+        logger.info(
+            "",
+            extra={
+                "id": id,
+                "status": status,
+                "current_size": current.get("size"),
+                "target_size": target_size,
+            },
+        )
+
         we_powered_off = status == "active"
         if we_powered_off:
             self._do_action_and_wait(
@@ -222,7 +277,7 @@ class Driver(ResourceDriver):
             # extracted only for the DriverUpdateNotSupported branch,
             # silently dropping it for exactly the transient failures a
             # human would most want it for -- flagged during /code-review.
-            resize_enriched = self._fold_do_error_into_exc(exc)
+            resize_do_message = self._fold_do_error_into_exc(exc)
 
             # Only restore power state we ourselves changed -- a droplet that
             # started "off" (the user's own choice) stays off on a rejected
@@ -284,7 +339,37 @@ class Driver(ResourceDriver):
                 # resize is unsupported" and trigger a destructive
                 # destroy+recreate for a resize that might have succeeded
                 # on retry. Let it propagate as a real error instead.
+                #
+                # Logged (not just raised) specifically because this is a
+                # real driver-execution failure with no further handling
+                # above it -- the log file is the only durable record of
+                # what happened once this propagates. Doesn't claim
+                # "falling back to destroy+recreate" the way the rejection
+                # branch below does -- that would be wrong here, no replace
+                # is triggered on this path. Split into two log calls (was
+                # one unconditional call before this branch existed) when
+                # merging the resize-classification fix in.
+                logger.warning(
+                    "DigitalOcean's resize action failed with an unrecognized "
+                    "status; propagating as a genuine driver error, no replace "
+                    "triggered",
+                    extra={
+                        "id": id,
+                        "target_size": target_size,
+                        "http_status": exc.code,
+                        "do_message": resize_do_message,
+                    },
+                )
                 raise
+            logger.warning(
+                "DigitalOcean rejected the in-place resize; falling back to destroy+recreate",
+                extra={
+                    "id": id,
+                    "target_size": target_size,
+                    "http_status": exc.code,
+                    "do_message": resize_do_message,
+                },
+            )
             # Built from the already-enriched exc.msg when there's
             # something to add (see _fold_do_error_into_exc above),
             # rather than re-appending the DO message a second time
@@ -295,7 +380,7 @@ class Driver(ResourceDriver):
             # would add urllib's bare HTTP reason phrase even with no DO
             # message to add, changing output for the no-body case.
             reason = f"DigitalOcean rejected an in-place resize of droplet {id} to {target_size!r}"
-            if resize_enriched:
+            if resize_do_message:
                 reason += f": {exc.msg}"
             raise DriverUpdateNotSupported(reason, unsupported_fields=["size"]) from exc
 

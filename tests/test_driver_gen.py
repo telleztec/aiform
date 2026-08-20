@@ -1,4 +1,5 @@
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,8 @@ class FakeTextBlock:
 class FakeResponse:
     def __init__(self, text: str):
         self.content = [FakeTextBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=0, output_tokens=0)
 
 
 class FakeMessages:
@@ -174,6 +177,35 @@ class TestValidateDriverSource:
         with pytest.raises(driver_gen.DriverValidationError) as excinfo:
             driver_gen.validate_driver_source(source)
         assert any("anthropic" in r.lower() for r in excinfo.value.reasons)
+
+    def test_get_logger_dunder_name_is_rejected(self):
+        source = "import logging\n\nlogger = logging.getLogger(__name__)\n\n" + VALID_DRIVER_SOURCE
+        with pytest.raises(driver_gen.DriverValidationError) as excinfo:
+            driver_gen.validate_driver_source(source)
+        reasons = " ".join(excinfo.value.reasons).lower()
+        assert "__name__" in reasons
+        assert "aiform.driver." in reasons
+
+    def test_get_logger_with_wrong_literal_prefix_is_rejected(self):
+        source = (
+            'import logging\n\nlogger = logging.getLogger("drivers.digitalocean.compute")\n\n'
+            + VALID_DRIVER_SOURCE
+        )
+        with pytest.raises(driver_gen.DriverValidationError) as excinfo:
+            driver_gen.validate_driver_source(source)
+        reasons = " ".join(excinfo.value.reasons).lower()
+        assert "drivers.digitalocean.compute" in reasons
+        assert "aiform.driver." in reasons
+
+    def test_get_logger_with_correct_literal_prefix_passes(self):
+        source = (
+            'import logging\n\nlogger = logging.getLogger("aiform.driver.digitalocean.compute")\n\n'
+            + VALID_DRIVER_SOURCE
+        )
+        assert driver_gen.validate_driver_source(source) is None
+
+    def test_no_get_logger_call_at_all_passes(self):
+        assert driver_gen.validate_driver_source(VALID_DRIVER_SOURCE) is None
 
     def test_multiple_failures_all_accumulate(self):
         source = "import anthropic\n\n\nclass Driver:\n    pass\n"
@@ -316,6 +348,50 @@ class TestGenerateDriver:
         assert source == VALID_DRIVER_SOURCE
         assert review.approved is True
         assert len(client.messages.calls) == 2
+
+    def test_happy_path_logs_the_approved_attempt(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.driver_gen")
+        client = FakeClient([VALID_DRIVER_SOURCE, approve_response()])
+
+        driver_gen.generate_driver(
+            make_spec(provider="digitalocean", resource="compute"), client=client
+        )
+
+        record = caplog.records[0]
+        assert record.provider == "digitalocean"
+        assert record.resource == "compute"
+        assert record.attempt == "1/2"
+        assert record.outcome == "approved"
+
+    def test_static_failure_logs_validation_failed_then_approved_on_retry(
+        self, prompts_dir: Path, caplog
+    ):
+        caplog.set_level("INFO", logger="aiform.driver_gen")
+        broken_source = "class Driver:\n    pass\n"
+        client = FakeClient([broken_source, VALID_DRIVER_SOURCE, approve_response()])
+
+        driver_gen.generate_driver(make_spec(), client=client)
+
+        outcomes = [r.outcome for r in caplog.records]
+        assert outcomes == ["validation_failed", "approved"]
+        assert caplog.records[0].attempt == "1/2"
+        assert caplog.records[1].attempt == "2/2"
+
+    def test_review_rejection_logs_review_rejected(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.driver_gen")
+        client = FakeClient(
+            [
+                VALID_DRIVER_SOURCE,
+                block_response(["delete() is not idempotent"]),
+                VALID_DRIVER_SOURCE,
+                approve_response(),
+            ]
+        )
+
+        driver_gen.generate_driver(make_spec(), client=client)
+
+        outcomes = [r.outcome for r in caplog.records]
+        assert outcomes == ["review_rejected", "approved"]
 
     def test_static_failure_then_success_retries_once_with_feedback(self, prompts_dir: Path):
         broken_source = "class Driver:\n    pass\n"

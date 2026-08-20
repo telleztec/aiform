@@ -193,7 +193,35 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      `os.environ["ANTHROPIC_API_KEY"]` and similar, matching `PLAN.md`'s
      own literal phrasing ("no ... `os.environ.get("ANTHROPIC` pattern")
      rather than deep call-graph analysis of every way to read an env var.
-  Checks 2–7 all run and accumulate into one `DriverValidationError` when
+  8. Every `logging.getLogger(...)`/`getLogger(...)` call anywhere in the
+     module either passes a string literal starting with
+     `"aiform.driver."`, or is flagged: `getLogger(__name__)` specifically
+     (`"calls logging.getLogger(__name__) -- ..."`), any other literal
+     string not starting with `"aiform.driver."` (`"calls
+     logging.getLogger(<repr>) -- must start with 'aiform.driver.' ..."`).
+     A driver that never calls `getLogger` at all passes this check
+     trivially — logging is encouraged, not mandated. This exists because
+     `load_driver()` execs a generated driver's source under a synthetic
+     module name (`importlib.util.spec_from_file_location`) that is
+     *not* a dotted descendant of the `"aiform"` logger
+     `aiform/log.py`'s `configure()` attaches handlers to — the
+     idiomatic `logging.getLogger(__name__)` a generated driver would
+     otherwise use produces a logger whose output silently never reaches
+     either sink, no exception, just missing lines (see
+     `drivers/digitalocean/compute.py`'s own `logger =
+     logging.getLogger("aiform.driver.digitalocean.compute")` comment,
+     which documents the same hazard for the one hand-written driver).
+     Caught by `/code-review`: this check didn't exist when that
+     workaround first shipped, so it only protected the hand-written
+     driver — a generated one would have silently hit the exact same
+     hazard with nothing in the automated pipeline positioned to catch
+     it. Not a full enforcement of the *exact* expected
+     `"aiform.driver.<provider>.<resource>"` name (that would need
+     `validate_driver_source()` to take `spec.provider`/`spec.resource`
+     as parameters, a signature change judged disproportionate to what
+     this check needs to prevent) — just the invariant that actually
+     matters for reaching the logger hierarchy: the literal prefix.
+  Checks 2–8 all run and accumulate into one `DriverValidationError` when
   the class exists (even if malformed) — the only short-circuit is a
   parse failure, since there's no tree left to inspect after that.
 - `generate_driver()`'s loop, for `attempt` in `1..MAX_DRAFT_ATTEMPTS`:
@@ -226,6 +254,11 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
   failure followed by one gate #1 block still exhausts `MAX_DRAFT_ATTEMPTS`
   and raises — there is no scenario with more than 2 total calls to
   `draft_driver()`.
+- **Logging** (`specs/log.md`): `generate_driver()` logs, per attempt,
+  `provider=... resource=... attempt=<n>/<MAX_DRAFT_ATTEMPTS>
+  outcome=validation_failed|review_rejected|approved` at INFO —
+  surfaces the retry loop's progress, previously silent until it either
+  succeeds or raises `DriverGenerationFailed`.
 
 ## Edge cases / errors
 

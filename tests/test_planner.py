@@ -1,4 +1,5 @@
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ class FakeTextBlock:
 class FakeResponse:
     def __init__(self, text: str):
         self.content = [FakeTextBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=0, output_tokens=0)
 
 
 class FakeMessages:
@@ -140,6 +143,24 @@ class TestCategorizeDiff:
         assert entry.resource_key == RESOURCE_KEY
         assert entry.action == PlanAction.UPDATE
         assert entry.rationale == "size changed"
+
+    def test_logs_the_categorization_decision(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.planner")
+        client = FakeClient([categorization_response(action="update", likely_replace=True)])
+
+        planner.categorize_diff(
+            RESOURCE_KEY,
+            {"region": {"current": "sfo3", "desired": "nyc3"}},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=["region"],
+            client=client,
+        )
+
+        record = next(r for r in caplog.records if hasattr(r, "action"))
+        assert record.resource_key == RESOURCE_KEY
+        assert record.action == "update"
+        assert record.likely_replace is True
 
     def test_uses_diff_plan_prompt_as_system(self, prompts_dir: Path):
         client = FakeClient([categorization_response()])
@@ -271,6 +292,27 @@ class TestPlanResource:
         assert entry.action == PlanAction.NO_OP
         assert entry.resource_key == RESOURCE_KEY
         assert len(client.messages.calls) == 0
+
+    def test_no_op_path_logs_zero_diff_reason(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.planner")
+        client = FakeClient([])
+
+        planner.plan_resource(
+            RESOURCE_KEY,
+            {"region": "sfo3"},
+            {"region": "sfo3"},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+            client=client,
+        )
+
+        record = caplog.records[0]
+        assert record.resource_key == RESOURCE_KEY
+        assert record.action == "no-op"
+        assert record.reason == "zero-diff"
 
     def test_no_op_path_makes_zero_llm_calls_even_with_no_client(self, prompts_dir: Path):
         # A real anthropic.Anthropic() client would be constructed if the

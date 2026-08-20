@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import types
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,6 +20,8 @@ class FakeTextBlock:
 class FakeResponse:
     def __init__(self, text: str):
         self.content = [FakeTextBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=0, output_tokens=0)
 
 
 class FakeMessages:
@@ -185,6 +188,7 @@ class TestInit:
         assert lines.count(".aiform/credentials.env") == 1
         assert lines.count(".aiform/state.json") == 1
         assert lines.count(".aiform/state.json.backup") == 1
+        assert lines.count(".aiform/logs/") == 1
         assert "__pycache__/" in lines
 
     def test_does_not_gitignore_trash(self, project_dir: Path):
@@ -291,6 +295,40 @@ class TestPlanCreate:
         assert code == 2
         assert "Error:" in err
 
+    def test_operational_error_is_also_logged(self, project_dir, capsys):
+        # log.configure() (called by cli.main()) sets propagate=False on
+        # the "aiform" logger, which keeps caplog's root-attached handler
+        # from seeing these records -- asserting against the real stderr
+        # stream instead is what this feature actually promises, and
+        # sidesteps that plumbing detail entirely.
+        state_file = project_dir / ".aiform" / "state.json"
+
+        cli.main(["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert "ERROR" in err
+        assert "aiform.cli" in err
+        assert "exception_type=FileNotFoundError" in err
+
+    def test_bad_logging_config_fails_cleanly_instead_of_a_raw_traceback(self, project_dir, capsys):
+        # resolve_logging_config() runs before log.configure() -- it has
+        # to, configure() needs its result -- so a bad logging: section
+        # can't go through the normal logged-error path. It must still
+        # exit the same clean way every other _HANDLED_EXCEPTIONS case
+        # does, not crash with an uncaught ValidationError traceback.
+        config_path = project_dir / ".aiform" / "config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("logging:\n  level: NOT_A_REAL_LEVEL\n")
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(["plan", "show", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
+        assert "Traceback" not in err
+        assert not (project_dir / ".aiform" / "logs").exists()
+
     def test_second_run_on_unchanged_project_makes_zero_llm_calls(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -381,6 +419,117 @@ class TestPlanApply:
         err = capsys.readouterr().err
         assert code == 0
         assert "[verbose] 2 Anthropic API call(s) made" in err
+
+    def test_verbose_promotes_structured_log_level_to_info(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
+
+        err = capsys.readouterr().err
+        assert "aiform.llm" in err
+        assert "role=code_review" in err
+
+    def test_without_verbose_structured_info_lines_are_suppressed(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert "aiform.llm" not in err
+
+    def test_log_file_captures_the_full_trail_even_without_verbose(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # The whole point of the file sink: it must not depend on -v at
+        # all. Same scenario as test_without_verbose_structured_info_lines_are_suppressed
+        # (stderr stays quiet), but the .aiform/logs/ file must have
+        # captured everything anyway.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        content = log_files[0].read_text()
+        assert "aiform.llm" in content
+        assert "role=code_review" in content
+
+    def test_log_file_has_entry_and_exit_lines_for_every_invocation(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Every invocation gets a bracketing entry/exit pair, even one
+        # (like this successful apply) that already logs plenty on its
+        # own -- the point is the guarantee holds unconditionally, not
+        # just for the otherwise-empty-file cases.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+
+        assert code == 0
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().splitlines()
+        assert "aiform.cli" in lines[0]
+        assert "invoked: plan apply --yes --state-file" in lines[0]
+        assert "aiform.cli" in lines[-1]
+        assert "exit_code=0" in lines[-1]
+        assert "outcome=success" in lines[-1]
+        assert "INFO" in lines[-1]
+
+    def test_log_file_exit_line_escalates_to_error_on_a_failed_exit_code(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(
+            ["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)]
+        )
+        capsys.readouterr()
+
+        assert code == 2
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        lines = log_files[0].read_text().splitlines()
+        assert "exit_code=2" in lines[-1]
+        assert "outcome=error" in lines[-1]
+        assert lines[-1].split()[1] == "ERROR"
+
+    def test_log_file_exit_line_reflects_an_error_exit_code(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(
+            ["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)]
+        )
+        capsys.readouterr()
+
+        assert code == 2
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().splitlines()
+        assert "aiform.cli" in lines[0]
+        assert "invoked: plan create does-not-exist.aiform.md" in lines[0]
+        assert "aiform.cli" in lines[-1]
+        assert "exit_code=2" in lines[-1]
+        assert "outcome=error" in lines[-1]
 
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys

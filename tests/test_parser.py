@@ -1,4 +1,5 @@
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,8 @@ class FakeTextBlock:
 class FakeResponse:
     def __init__(self, text: str):
         self.content = [FakeTextBlock(text)]
+        self.stop_reason = "end_turn"
+        self.usage = types.SimpleNamespace(input_tokens=0, output_tokens=0)
 
 
 class FakeMessages:
@@ -290,6 +293,29 @@ class TestExtractIntentNotes:
     def test_returns_empty_list_when_model_reports_no_notes(self, prompts_dir: Path):
         client = FakeClient([intent_notes_response([])])
         assert parser.extract_intent_notes(INTENT_PROSE, client=client) == []
+
+    def test_empty_prose_logs_zero_calls_signal(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.parser")
+
+        parser.extract_intent_notes("")
+
+        record = caplog.records[0]
+        assert record.intent_prose_empty is True
+        assert record.notes_count == 0
+
+    def test_nonempty_prose_logs_notes_count(self, prompts_dir: Path, caplog):
+        caplog.set_level("INFO", logger="aiform.parser")
+        notes = [
+            {"concerns_field": "size", "guidance": "a"},
+            {"concerns_field": "region", "guidance": "b"},
+        ]
+        client = FakeClient([intent_notes_response(notes)])
+
+        parser.extract_intent_notes(INTENT_PROSE, client=client)
+
+        record = caplog.records[0]
+        assert record.notes_count == 2
+        assert not hasattr(record, "intent_prose_empty")
 
 
 class TestParseFile:

@@ -4,7 +4,7 @@ from typing import Any
 
 import yaml
 
-from aiform.models import LLMConfig, LLMRoleConfig, ModelSource
+from aiform.models import LLMConfig, LLMRoleConfig, LoggingConfig, ModelSource
 
 DEFAULT_CREDENTIALS_PATH = Path(".aiform/credentials.env")
 
@@ -12,7 +12,7 @@ PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
     "digitalocean": "DIGITALOCEAN_TOKEN",
 }
 
-DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
+DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(
     intent_orchestration=LLMRoleConfig(
@@ -87,7 +87,7 @@ def _require_mapping(value: Any, key: str, config_path: Path) -> dict:
     return value
 
 
-def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig:
+def resolve_llm_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LLMConfig:
     try:
         content = config_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
@@ -127,3 +127,35 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
         roles[role_name] = _merge_role(getattr(DEFAULT_LLM_CONFIG, role_name), role_override)
 
     return LLMConfig(**roles)
+
+
+DEFAULT_LOGGING_CONFIG = LoggingConfig(level="INFO", max_files=100)
+
+
+def resolve_logging_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LoggingConfig:
+    try:
+        content = config_path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return DEFAULT_LOGGING_CONFIG
+
+    data = yaml.safe_load(content)
+    if data is None:
+        data = {}
+    data = _require_mapping(data, "<top level>", config_path)
+
+    logging_data = data.get("logging")
+    if logging_data is None:
+        logging_data = {}
+    logging_data = _require_mapping(logging_data, "logging", config_path)
+
+    unknown_fields = set(logging_data) - set(LoggingConfig.model_fields)
+    if unknown_fields:
+        raise ValueError(
+            f"{config_path}: logging has unknown field(s): {sorted(unknown_fields)} -- "
+            f"valid fields are {sorted(LoggingConfig.model_fields)}"
+        )
+
+    return LoggingConfig(
+        level=logging_data.get("level", DEFAULT_LOGGING_CONFIG.level),
+        max_files=logging_data.get("max_files", DEFAULT_LOGGING_CONFIG.max_files),
+    )
