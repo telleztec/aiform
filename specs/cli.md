@@ -296,6 +296,46 @@ a real user hits a failure during `plan`/`apply`/`destroy`/`refresh`,
 and structured logging covering it was part of the point of building
 this module at all.
 
+**Every invocation that reaches `log.configure()` logs at least two
+lines, unconditionally** — an entry line immediately after `configure()`
+returns, before any subcommand dispatch, and an exit line immediately
+after dispatch returns, wrapping whatever the invoked subcommand itself
+does (or doesn't) log in between:
+
+- Entry: `logger.info("invoked: %s", " ".join(argv))`, where `argv` is
+  exactly what `main()` resolved for `parser.parse_args()` (`argv if
+  argv is not None else sys.argv[1:]`). This goes through the log
+  *message*, not a `key=value` extra field — an argv element (e.g. a
+  `--state-file` path) can contain spaces, and `specs/log.md`'s
+  Formatter only quotes/escapes `msg`, not `extra` values. Safe to log
+  verbatim: `_build_parser()` defines no credential-bearing flag
+  anywhere (`DIGITALOCEAN_TOKEN`/`ANTHROPIC_API_KEY` are both
+  env-var-only, per `CLAUDE.md`'s Credentials rules), so nothing
+  sensitive can appear in argv.
+- Exit: `logger.info("", extra={"exit_code": <n>, "outcome": "success"
+  | "error"})`, where `<n>` is exactly the value `main()` returns to its
+  caller and `outcome` is a bare derived convenience (`"success"` iff
+  `exit_code == 0`), matching the `outcome=` vocabulary `_call_driver()`/
+  `_poll_until()` already use elsewhere in this codebase rather than
+  introducing a new one.
+
+This guarantees every `.aiform/logs/<...>.log` file traces back to a
+specific command line and a specific result even when the invoked
+subcommand logs nothing on its own path — `plan show`, `plan refresh`
+with no drift, a `plan destroy` finding nothing left to destroy (see
+`specs/log.md`'s file-per-invocation design). Previously these produced
+genuinely empty (0-byte) files with no way to tell, after the fact,
+which command produced them or whether it succeeded.
+
+One case stays outside this guarantee, unavoidably: `argparse`'s own
+error handling (missing subcommand, unknown flag) calls `sys.exit(2)`
+from inside `parser.parse_args()`, before `log.configure()` has even
+run — no log file exists yet at that point, exactly as before this
+addition. Likewise, an exception outside the `_HANDLED_EXCEPTIONS` set
+propagates uncaught past the exit-line log call — consistent with this
+module's existing "let it fail loudly" stance (see below), not a gap
+this addition tries to paper over.
+
 ### Error formatting and exit codes
 
 `main()` wraps subcommand dispatch in one `try`/`except` over a fixed,

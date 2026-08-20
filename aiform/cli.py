@@ -353,11 +353,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-    log.configure(verbose=args.verbose, logging_config=config.resolve_logging_config())
-
+def _dispatch(args: argparse.Namespace) -> int:
     try:
         if args.command == "init":
             return _cmd_init(args)
@@ -378,3 +374,14 @@ def main(argv: list[str] | None = None) -> int:
         logger.error(message, extra={"exception_type": type(exc).__name__})
         print(f"Error: {message}", file=sys.stderr)
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    log.configure(verbose=args.verbose, logging_config=config.resolve_logging_config())
+    logger.info("invoked: %s", " ".join(argv if argv is not None else sys.argv[1:]))
+
+    code = _dispatch(args)
+    logger.info("", extra={"exit_code": code, "outcome": "success" if code == 0 else "error"})
+    return code

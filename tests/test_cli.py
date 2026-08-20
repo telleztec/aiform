@@ -452,6 +452,50 @@ class TestPlanApply:
         assert "aiform.llm" in content
         assert "role=code_review" in content
 
+    def test_log_file_has_entry_and_exit_lines_for_every_invocation(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Every invocation gets a bracketing entry/exit pair, even one
+        # (like this successful apply) that already logs plenty on its
+        # own -- the point is the guarantee holds unconditionally, not
+        # just for the otherwise-empty-file cases.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+
+        assert code == 0
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().splitlines()
+        assert "aiform.cli" in lines[0]
+        assert "invoked: plan apply --yes --state-file" in lines[0]
+        assert "aiform.cli" in lines[-1]
+        assert "exit_code=0" in lines[-1]
+        assert "outcome=success" in lines[-1]
+
+    def test_log_file_exit_line_reflects_an_error_exit_code(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(
+            ["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)]
+        )
+        capsys.readouterr()
+
+        assert code == 2
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().splitlines()
+        assert "aiform.cli" in lines[0]
+        assert "invoked: plan create does-not-exist.aiform.md" in lines[0]
+        assert "aiform.cli" in lines[-1]
+        assert "exit_code=2" in lines[-1]
+        assert "outcome=error" in lines[-1]
+
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
