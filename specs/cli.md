@@ -58,12 +58,12 @@ which never reads or writes state.
   section): the user creates that file by hand.
 - Appends the standard entries (`PLAN.md` §8) to the repo-root
   `.gitignore` if missing — `.aiform/credentials.env`,
-  `.aiform/state.json`, `.aiform/state.json.backup`, `.env`,
-  `__pycache__/`, `*.pyc`. Idempotent: a line already present (exact
-  string match) is not duplicated on a second `init` run. Creates
-  `.gitignore` if it doesn't exist yet. Deliberately **excludes**
-  `.aiform/trash/` — `PLAN.md`'s "Trash directory" section states it is
-  "Not gitignored."
+  `.aiform/state.json`, `.aiform/state.json.backup`, `.aiform/logs/`
+  (`specs/log.md`), `.env`, `__pycache__/`, `*.pyc`. Idempotent: a line
+  already present (exact string match) is not duplicated on a second
+  `init` run. Creates `.gitignore` if it doesn't exist yet.
+  Deliberately **excludes** `.aiform/trash/` — `PLAN.md`'s "Trash
+  directory" section states it is "Not gitignored."
 - Writes `examples/compute.aiform.md` (creating `examples/`) **only**
   when it doesn't already exist — never overwrites a user's edited
   starter file on a repeat `init`. Only written for `--provider
@@ -271,17 +271,21 @@ model calls did this invocation make" — and nothing broader):
 
 ### Structured logging (`specs/log.md`)
 
-`main()` calls `log.configure(verbose=args.verbose)` immediately after
-argument parsing, before any subcommand dispatch — the only wiring this
-module does; every other module's own logger (`aiform.llm`,
+`main()` resolves `config.resolve_logging_config()` and calls
+`log.configure(verbose=args.verbose, logging_config=...)` immediately
+after argument parsing, before any subcommand dispatch — the only
+wiring this module does; every other module's own logger (`aiform.llm`,
 `aiform.orchestrator`, `aiform.planner`, `aiform.parser`,
 `aiform.driver_gen`) does its own logging independently once this is
-called. **Additive, not a replacement**, for this module's existing
+called. `--verbose` only ever affects the live stderr echo — the
+`.aiform/logs/` file always captures at `logging_config.level`
+regardless of the flag; see `specs/log.md`'s "Two handlers, one
+logger". **Additive, not a replacement**, for this module's existing
 `print()`-based human-facing output (`_print_plan`/
 `_print_apply_result`/`_print_state`) and for the verbose Anthropic-call
-counter above — logging is a parallel stderr channel for
-debugging/operational visibility, not a UX replacement; nothing in this
-module's existing print-based output changes.
+counter above — logging is a parallel channel for debugging/operational
+visibility, not a UX replacement; nothing in this module's existing
+print-based output changes.
 
 One further, in-scope addition beyond pure wiring: `main()`'s own
 exception handler (see "Error formatting and exit codes" below) also

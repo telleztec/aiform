@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Two independent resolvers, both pure — no scaffolding, no prompting:
+Three independent resolvers, all pure — no scaffolding, no prompting:
 
 1. `resolve_credentials()` — the DigitalOcean API token per `PLAN.md`
    §8's resolution order (env var, then `.aiform/credentials.env`), so
@@ -20,6 +20,14 @@ Two independent resolvers, both pure — no scaffolding, no prompting:
    model name isn't a secret, so there's no shell-history/echo concern
    motivating a hand-edit-only fallback file here, and this file is safe
    to have a working default with no user setup at all.
+3. `resolve_logging_config()` — the structured-logging file sink's
+   severity threshold and retention count (`specs/log.md`), read from
+   the same non-secret `.aiform/config.yaml` file as `resolve_llm_config()`,
+   under a separate top-level `logging:` key — not its own file; there's
+   no reason to fragment configuration across more files than the
+   credentials/non-credentials split already requires. `DEFAULT_LLM_CONFIG_PATH`
+   is renamed `DEFAULT_CONFIG_PATH` to reflect that the file now backs
+   two unrelated config sections, not just LLM roles.
 
 ## Interface
 
@@ -36,7 +44,7 @@ def resolve_credentials(
 ) -> dict[str, str]: ...
 
 
-DEFAULT_LLM_CONFIG_PATH = Path(".aiform/config.yaml")
+DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
     intent_orchestration=LLMRoleConfig(
@@ -54,7 +62,13 @@ DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
 )
 
 
-def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig: ...
+def resolve_llm_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LLMConfig: ...
+
+
+DEFAULT_LOGGING_CONFIG: LoggingConfig = LoggingConfig(level="INFO", max_files=10)
+
+
+def resolve_logging_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LoggingConfig: ...
 ```
 
 ### `resolve_credentials(provider, credentials_path=DEFAULT_CREDENTIALS_PATH) -> dict[str, str]`
@@ -79,7 +93,7 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
   consistent with `specs/state.md`'s choice to leave custom exception
   types to `exceptions.py`, which isn't built yet.
 
-### `resolve_llm_config(config_path=DEFAULT_LLM_CONFIG_PATH) -> LLMConfig`
+### `resolve_llm_config(config_path=DEFAULT_CONFIG_PATH) -> LLMConfig`
 
 - `config_path` points at an optional YAML file:
   ```yaml
@@ -168,6 +182,42 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
   be opaque to a user who just made a YAML typo, where `ValueError`
   reads as an actual configuration error.
 
+### `resolve_logging_config(config_path=DEFAULT_CONFIG_PATH) -> LoggingConfig`
+
+- Same file as `resolve_llm_config()`, a different top-level key:
+  ```yaml
+  # .aiform/config.yaml — optional; every field has a default
+  logging:
+    level: INFO        # DEBUG | INFO | WARNING | ERROR
+    max_files: 10
+  ```
+- File missing entirely, present but empty, or present with no
+  `logging:` key → `DEFAULT_LOGGING_CONFIG` (`level="INFO",
+  max_files=10`) unchanged — identical fallback behavior to
+  `resolve_llm_config()`, for the identical reason: every field has a
+  safe default, so an MVP user never has to create this section.
+- File present but overriding only one field (e.g. just
+  `logging.max_files`) → the other field keeps its default — a shallow,
+  per-field merge over `DEFAULT_LOGGING_CONFIG`, same as
+  `resolve_llm_config()`'s per-role merge, just flat instead of nested
+  (there's no per-role structure here to merge independently — see
+  `specs/models.md`'s `LoggingConfig`).
+- **An unrecognized key under `logging:` raises a plain `ValueError`**
+  naming the config path and the exact unrecognized key(s) — same
+  "typo must not silently no-op" stance as `resolve_llm_config()`'s
+  equivalent check, using the same `LoggingConfig.model_fields`
+  comparison technique.
+- `logging.level` set to anything outside `{"DEBUG", "INFO", "WARNING",
+  "ERROR"}` raises a Pydantic `ValidationError` from `LoggingConfig`
+  construction — this module doesn't catch or wrap it, same stance as
+  `resolve_llm_config()`'s `source: bedrock` case.
+- `logging.max_files` set to `0` or negative raises the same way, from
+  `LoggingConfig`'s `Field(gt=0)`.
+- Malformed YAML, a non-mapping `logging:` value, and BOM handling all
+  follow `resolve_llm_config()`'s identical rules above — one shared
+  YAML document, two independent sections, same parsing/validation
+  discipline applied to both.
+
 ## Behavior
 
 - Env var set (non-empty) → returned as-is; the credentials file is
@@ -233,12 +283,13 @@ def resolve_llm_config(config_path: Path = DEFAULT_LLM_CONFIG_PATH) -> LLMConfig
   (`cli.py`) prints instructions and the expected filename but never
   writes a value into it or prompts interactively (`CLAUDE.md`,
   non-negotiable).
-- **The `--verbose` output redaction helper** (`PLAN.md` §8's `_redact(d)`,
-  blanking `*_TOKEN`/`*_KEY`/`credentials` keys before printing
-  request/response payloads) — that operates on arbitrary payload
-  dicts for verbose logging, which doesn't exist yet in this codebase.
-  Belongs to whichever module ends up doing that logging (likely
-  `cli.py` or `orchestrator.py`), not `config.py`.
+- **A `redact()`/`_redact(d)` helper** (`PLAN.md` §8, blanking
+  `*_TOKEN`/`*_KEY`/`credentials` keys before printing request/response
+  payloads) — structured logging exists now (`specs/log.md`), but no
+  call site anywhere logs a raw dict that could carry credentials or
+  params; see `specs/log.md`'s Out of scope for why this stays deferred
+  rather than built speculatively. Would belong to `log.py` if it's
+  ever needed, not `config.py` either way.
 - **Providers beyond `digitalocean`** in `PROVIDER_TOKEN_ENV_VARS` —
   MVP is single-provider; adding an `aws`/`vmware` entry later is a
   small, isolated addition to the dict, not a redesign of this module.
