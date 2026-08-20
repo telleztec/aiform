@@ -98,7 +98,7 @@ To do this, follow these steps precisely:
    and `git diff <resolved-sha>..<head-sha>`** (not `gh pr diff`, which
    always returns the full base..head diff regardless of the resolved
    SHA).
-4. Then, launch 5 parallel Sonnet agents to independently code review the
+4. Then, launch 5 parallel Opus agents to independently code review the
    change, each explicitly told their diff is `git diff <resolved-sha>..
    <head-sha>`, not the PR's full diff. The agents should do the
    following, then return a list of issues and the reason each issue was
@@ -121,7 +121,7 @@ To do this, follow these steps precisely:
    e. Agent #5: Read code comments in the files modified since the
       resolved SHA, and make sure the changes comply with any guidance in
       the comments.
-5. For each issue found in #4, launch a parallel Haiku agent that takes the
+5. For each issue found in #4, launch a parallel Sonnet agent that takes the
    PR, issue description, and list of CLAUDE.md files (from step 2), and
    returns a score to indicate the agent's level of confidence for whether
    the issue is real or false positive. To do that, the agent should score
