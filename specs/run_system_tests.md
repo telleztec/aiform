@@ -69,8 +69,15 @@ def main(argv: list[str] | None = None) -> int:
 - Log rotation keeps at most `MAX_LOG_FILES` (10) `*.log` files in
   `LOG_DIR` *including* the run just started — i.e. it trims down to at
   most 9 existing files before creating the 10th. Oldest-first, by
-  filename (the `system-test-<UTC timestamp>.log` naming sorts
-  lexically = chronologically, no `mtime` dependency).
+  **mtime**, not filename. Plain filenames (`system-test-<UTC
+  timestamp>.log`) do sort lexically = chronologically, but a
+  same-second collision suffix doesn't: `-2.log` sorts *before* the
+  unsuffixed file it collided with (`-` is `0x2D`, `.` is `0x2E`),
+  even though the `-2` file is the newer of the two — inverting which
+  one rotation treats as oldest. Caught by `/code-review` on
+  `aiform/log.py`'s twin implementation of this same rotation scheme
+  (`specs/log.md`) and backported here so the "mirrors ... exactly"
+  claim above stays true.
 
 ## Edge cases / errors
 

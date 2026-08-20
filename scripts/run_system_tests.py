@@ -18,7 +18,11 @@ def missing_credentials(env: Mapping[str, str] | None = None) -> list[str]:
 def rotate_logs(log_dir: Path, *, keep: int = MAX_LOG_FILES) -> None:
     if not log_dir.is_dir():
         return
-    existing = sorted(log_dir.glob("*.log"))
+    # mtime, not filename: a plain lexicographic sort puts a same-second
+    # collision suffix ("system-test-<ts>-2.log") before the unsuffixed
+    # file it collided with ('-' is 0x2D, '.' is 0x2E), inverting which
+    # one is actually older. Mirrors aiform/log.py's _rotate_logs().
+    existing = sorted(log_dir.glob("*.log"), key=lambda path: path.stat().st_mtime)
     overflow = len(existing) - (keep - 1)
     for path in existing[: max(overflow, 0)]:
         path.unlink()
