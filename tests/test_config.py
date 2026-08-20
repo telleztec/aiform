@@ -295,7 +295,7 @@ class TestResolveLLMConfig:
 
 class TestDefaultLoggingConfig:
     def test_default_logging_config_preserves_stated_defaults(self):
-        assert DEFAULT_LOGGING_CONFIG == LoggingConfig(level="INFO", max_files=10)
+        assert DEFAULT_LOGGING_CONFIG == LoggingConfig(level="INFO", max_files=100)
 
 
 class TestResolveLoggingConfig:

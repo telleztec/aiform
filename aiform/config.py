@@ -129,7 +129,7 @@ def resolve_llm_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LLMConfig:
     return LLMConfig(**roles)
 
 
-DEFAULT_LOGGING_CONFIG = LoggingConfig(level="INFO", max_files=10)
+DEFAULT_LOGGING_CONFIG = LoggingConfig(level="INFO", max_files=100)
 
 
 def resolve_logging_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LoggingConfig:

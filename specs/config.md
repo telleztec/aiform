@@ -65,7 +65,7 @@ DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
 def resolve_llm_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LLMConfig: ...
 
 
-DEFAULT_LOGGING_CONFIG: LoggingConfig = LoggingConfig(level="INFO", max_files=10)
+DEFAULT_LOGGING_CONFIG: LoggingConfig = LoggingConfig(level="INFO", max_files=100)
 
 
 def resolve_logging_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LoggingConfig: ...
@@ -189,11 +189,11 @@ def resolve_logging_config(config_path: Path = DEFAULT_CONFIG_PATH) -> LoggingCo
   # .aiform/config.yaml — optional; every field has a default
   logging:
     level: INFO        # DEBUG | INFO | WARNING | ERROR
-    max_files: 10
+    max_files: 100
   ```
 - File missing entirely, present but empty, or present with no
   `logging:` key → `DEFAULT_LOGGING_CONFIG` (`level="INFO",
-  max_files=10`) unchanged — identical fallback behavior to
+  max_files=100`) unchanged — identical fallback behavior to
   `resolve_llm_config()`, for the identical reason: every field has a
   safe default, so an MVP user never has to create this section.
 - File present but overriding only one field (e.g. just
