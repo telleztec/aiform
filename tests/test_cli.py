@@ -496,6 +496,22 @@ class TestPlanApply:
         assert "aiform.cli" in lines[-1]
         assert "exit_code=0" in lines[-1]
         assert "outcome=success" in lines[-1]
+        assert "INFO" in lines[-1]
+
+    def test_log_file_exit_line_escalates_to_error_on_a_failed_exit_code(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(
+            ["plan", "create", "does-not-exist.aiform.md", "--state-file", str(state_file)]
+        )
+        capsys.readouterr()
+
+        assert code == 2
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        lines = log_files[0].read_text().splitlines()
+        assert "exit_code=2" in lines[-1]
+        assert "outcome=error" in lines[-1]
+        assert lines[-1].split()[1] == "ERROR"
 
     def test_log_file_exit_line_reflects_an_error_exit_code(self, project_dir, capsys):
         state_file = project_dir / ".aiform" / "state.json"

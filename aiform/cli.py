@@ -394,5 +394,6 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("invoked: %s", " ".join(argv if argv is not None else sys.argv[1:]))
 
     code = _dispatch(args)
-    logger.info("", extra={"exit_code": code, "outcome": "success" if code == 0 else "error"})
+    level = logging.INFO if code == 0 else logging.ERROR
+    logger.log(level, "", extra={"exit_code": code, "outcome": "success" if code == 0 else "error"})
     return code

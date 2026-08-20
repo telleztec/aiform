@@ -312,12 +312,18 @@ does (or doesn't) log in between:
   anywhere (`DIGITALOCEAN_TOKEN`/`ANTHROPIC_API_KEY` are both
   env-var-only, per `CLAUDE.md`'s Credentials rules), so nothing
   sensitive can appear in argv.
-- Exit: `logger.info("", extra={"exit_code": <n>, "outcome": "success"
-  | "error"})`, where `<n>` is exactly the value `main()` returns to its
-  caller and `outcome` is a bare derived convenience (`"success"` iff
-  `exit_code == 0`), matching the `outcome=` vocabulary `_call_driver()`/
-  `_poll_until()` already use elsewhere in this codebase rather than
-  introducing a new one.
+- Exit: `logger.log(level, "", extra={"exit_code": <n>, "outcome":
+  "success" | "error"})`, where `<n>` is exactly the value `main()`
+  returns to its caller, `outcome` is a bare derived convenience
+  (`"success"` iff `exit_code == 0`), and `level` is `logging.INFO` on
+  success or `logging.ERROR` otherwise — the same outcome-driven
+  severity `aiform/orchestrator.py`'s `_log_driver_outcome()`
+  (`specs/orchestrator.md`) already uses, so a `grep ERROR
+  .aiform/logs/` sweep for "any failure" also catches a failed
+  invocation's own top-level exit line, not just the driver-level ones.
+  Caught by `/code-review`: the first version of this line always
+  logged at INFO regardless of outcome, inconsistent with that
+  convention.
 
 This guarantees every `.aiform/logs/<...>.log` file traces back to a
 specific command line and a specific result even when the invoked
