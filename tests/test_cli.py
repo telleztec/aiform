@@ -188,6 +188,7 @@ class TestInit:
         assert lines.count(".aiform/credentials.env") == 1
         assert lines.count(".aiform/state.json") == 1
         assert lines.count(".aiform/state.json.backup") == 1
+        assert lines.count(".aiform/logs/") == 1
         assert "__pycache__/" in lines
 
     def test_does_not_gitignore_trash(self, project_dir: Path):
@@ -428,6 +429,28 @@ class TestPlanApply:
 
         err = capsys.readouterr().err
         assert "aiform.llm" not in err
+
+    def test_log_file_captures_the_full_trail_even_without_verbose(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # The whole point of the file sink: it must not depend on -v at
+        # all. Same scenario as test_without_verbose_structured_info_lines_are_suppressed
+        # (stderr stays quiet), but the .aiform/logs/ file must have
+        # captured everything anyway.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+
+        cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        content = log_files[0].read_text()
+        assert "aiform.llm" in content
+        assert "role=code_review" in content
 
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys

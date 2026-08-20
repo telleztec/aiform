@@ -17,6 +17,7 @@ _GITIGNORE_ENTRIES = [
     ".aiform/credentials.env",
     ".aiform/state.json",
     ".aiform/state.json.backup",
+    ".aiform/logs/",
     ".env",
     "__pycache__/",
     "*.pyc",
@@ -355,7 +356,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    log.configure(verbose=args.verbose)
+    log.configure(verbose=args.verbose, logging_config=config.resolve_logging_config())
 
     try:
         if args.command == "init":
