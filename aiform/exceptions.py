@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Juan Tellez
+# SPDX-License-Identifier: Apache-2.0
+
+
 class ResourceNotFoundError(Exception):
     """Raised by a ResourceDriver's read() when the resource no longer
     exists on the provider's side (PLAN.md §4/§5) — the orchestrator's
