@@ -60,8 +60,10 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      Then merge with `gh pr merge <PR> --merge --match-head-commit <sha>`, so
      it fails rather than merging something that landed in between.
 
-     If `llm-review` is missing, run `/code-review` yourself — that gate is
-     yours to satisfy. If CI completed non-`success`, do not merge; report
+     If `llm-review` is missing from head, that gate is yours to satisfy, not
+     the human's. Use `/code-review-since <PR>` when an earlier commit on the
+     branch already carries the status — it reviews only what changed since —
+     and `/code-review <PR>` when none does. If CI completed non-`success`, do not merge; report
      which check failed. If CI is `queued`/`in_progress`, or no run exists yet,
      it is *unfinished*, not failing — wait and re-check, but bound the wait
      and report `no test run was ever created` rather than looping forever on

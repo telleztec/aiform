@@ -190,8 +190,10 @@ neither waits on the other:
 
 1. **Start the watch loop immediately** (`/review-watch <PR>`). The human may
    approve at any time, including before the LLM review has run.
-2. **Run `/code-review <PR>` yourself.** You can: the command carries
-   `disable-model-invocation: false`. Do not ask the human to trigger it.
+2. **Run `/code-review <PR>` yourself**, then `/code-review-since <PR>` over
+   each round of fixes until head is covered — see "Satisfying `llm-review`"
+   below for the loop. You can launch both: they carry
+   `disable-model-invocation: false`. Do not ask the human to trigger either.
    The one exception is `/code-review ultra`, which is user-triggered and
    billed — never launch that.
 
@@ -203,25 +205,49 @@ PR instead of reviewing yourself.
 
 ### Satisfying `llm-review`
 
-Run the review, address what it finds — fix it, or state on the PR why a
-finding is out of scope — then post the status **on the SHA whose content was
-actually examined**, including any fix commits you made in response.
+**The status means "this SHA's content has been read by a reviewer."** Post it
+on a SHA the moment that becomes true, and never on a SHA containing code no
+pass has read — that is a false attestation however small the change looks.
 
-If head has moved for a reason you did not author or inspect, examine that
-delta before posting. The status attests that *this commit* was reviewed;
-posting it over a commit you never read is a false attestation, however
-small the change looks.
+Because your own fix commits are code no pass has read, one review round is
+usually not enough. The loop:
+
+1. Run `/code-review <PR>` on the current head `R`. Post `llm-review` on `R` —
+   it *was* reviewed, and the status records that, not that it was flawless.
+2. Address the findings. If that produced no commits, `R` is head and you are
+   done.
+3. Otherwise head is now `H`, and `R..H` is unread. Run
+   `/code-review-since <PR>` — its default `last-review` checkpoint resolves
+   to `R`, so it reviews exactly your fixes and not the whole diff again.
+4. Clean? Post `llm-review` on `H`; head is now fully covered — `R` by the
+   full pass, `R..H` by the incremental one. Otherwise set `R = H` and repeat
+   from step 2.
+
+This terminates when a pass produces no commits, and it is what keeps
+`/code-review-since` usable: its checkpoint walk looks for the newest commit
+carrying `llm-review`, so posting the status on each reviewed SHA — rather
+than only on head — is what makes the default resolve correctly instead of
+finding head and diffing nothing.
 
 ```sh
-gh api repos/{owner}/{repo}/statuses/<head-sha> \
+gh api repos/{owner}/{repo}/statuses/<reviewed-sha> \
   -f state=success \
   -f context=llm-review \
   -f description="/code-review pass; N findings addressed"   # or "nothing to fix"
+# incremental rounds:
+#   -f description="/code-review-since <R>; fixes reviewed, nothing further"
 ```
 
 Say in the description what actually happened, including which model ran if it
-wasn't the default. This status is the durable record of what review this
-commit received; a description that overstates it is worse than none.
+wasn't the default and whether the pass was full or incremental. This status
+is the durable record of what review this commit received; a description that
+overstates it is worse than none.
+
+Only head carrying `llm-review` satisfies the merge gate — the statuses on
+earlier SHAs are review history and checkpoints, not gates.
+
+If head moved for a reason you did not author, treat it exactly the same way:
+`R..H` is unread, so review that delta before posting anything on `H`.
 
 There is **no skip path.** If a review is genuinely impossible (model
 unavailable), say so on the PR and stop — do not invent a bypass.
