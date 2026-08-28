@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Juan Tellez
+# SPDX-License-Identifier: Apache-2.0
+
 """Live end-to-end system test against real DigitalOcean and Anthropic
 APIs, per specs/system_test.md. Excluded from the default `pytest` run
 (see pyproject.toml's `addopts`); run explicitly with:

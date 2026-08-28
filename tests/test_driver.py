@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Juan Tellez
+# SPDX-License-Identifier: Apache-2.0
+
 import pytest
 
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
