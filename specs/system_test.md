@@ -281,8 +281,10 @@ backstop actually being independent.
 (it's an ops tool, not something pytest should ever collect):
 
 ```python
-def list_tagged_droplets(token: str, tag: str) -> list[dict]:
-    ...  # GET /v2/droplets?tag_name={tag}, urllib.request, no aiform import
+def list_tagged_droplets(
+    token: str, tag: str
+) -> list[dict]: ...  # GET /v2/droplets?tag_name={tag}, urllib.request, no aiform import
+
 
 def sweep(
     token: str,
@@ -291,13 +293,14 @@ def sweep(
     dry_run: bool = False,
 ) -> list[dict]:
     ...  # filters list_tagged_droplets() to created_at older than the
-         # threshold, DELETEs each match directly unless dry_run,
-         # returns what was (or would be) removed
+    # threshold, DELETEs each match directly unless dry_run,
+    # returns what was (or would be) removed
+
 
 def main(argv: list[str] | None = None) -> int:
     ...  # CLI: --dry-run, --min-age-minutes, --tag; reads
-         # DIGITALOCEAN_TOKEN from env the same way the driver does;
-         # prints a summary; exits non-zero if anything was swept
+    # DIGITALOCEAN_TOKEN from env the same way the driver does;
+    # prints a summary; exits non-zero if anything was swept
 ```
 
 - **`min_age_minutes=60` default**: this suite never legitimately runs
