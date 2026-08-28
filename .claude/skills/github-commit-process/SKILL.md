@@ -28,9 +28,9 @@ approval is per-PR, not standing.
 all required — a `/claude-merge` signal, a passing `opus-review` commit
 status on the PR's current head SHA, and a green `test` CI check on that
 same SHA. No two of them are sufficient without the third. 
-Critically, **both signals are always external, GitHub-visible
+Critically, **all three are always external, GitHub-visible
 artifacts — never something inferred from conversation history alone**,
-including when either requirement is explicitly waived (see the two
+including when a waivable requirement is explicitly waived (see the two
 override paths below). This is deliberate: relying on "I remember the
 human said to skip it" is exactly the failure mode this whole mechanism
 exists to replace — a long conversation, a context compaction, or a
