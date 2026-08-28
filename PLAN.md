@@ -147,10 +147,14 @@ Two ways a driver gets added:
    wiring this mechanism into the live `plan`/`apply` flow is
    deliberately sequenced to happen only *after* the primary
    orchestration flow (plan/diff/apply against curated drivers) is
-   stable and proven — see "MVP scope (locked)" above, and note that
-   neither is true yet as of this writing (`orchestrator.py` doesn't
-   exist; see `CLAUDE.md`'s status) — with the interactive/OpenAPI-driven
-   target shape (§7) sequenced after *that* baseline pipeline in turn.
+   stable and proven — see "MVP scope (locked)" above. `aiform/orchestrator.py`
+   and `aiform/cli.py` are both now written and wired into a working
+   `plan create`/`apply`/`destroy`/`refresh`/`show` command surface (§7),
+   exercised by both the unit suite and the live `tests/system/` suite —
+   but `driver_gen.py`'s pipeline is still not called from anywhere in
+   that flow, so the sequencing precondition itself is satisfied without
+   this mechanism having been wired in yet; the interactive/OpenAPI-driven
+   target shape (§7) remains sequenced after that baseline pipeline in turn.
    Not yet implemented; see §10.
 
 `aiform plan create` against a `(provider, resource)` pair with no driver on disk
@@ -292,7 +296,15 @@ writing a new driver file, not touching the orchestrator.
 aiform/
 ├── pyproject.toml
 ├── README.md
-├── .gitignore                      # .aiform/credentials.env, .aiform/state.json, __pycache__/, *.pyc
+├── LICENSE                         # Apache-2.0; every .py file carries the matching SPDX header
+├── CLAUDE.md                       # working agreement for the next agent; points here as source of truth
+├── PROCESS.md                      # development workflow spec (spec-first, test-first, reviewed)
+├── .gitignore                      # credentials.env, state.json*, .aiform/logs/, .aiform/testlog/*.log, __pycache__/, *.pyc, .venv/, caches
+├── .github/
+│   └── workflows/tests.yml         # CI: ruff check, ruff format --check, pytest
+├── specs/                          # one spec per module (18 files) — see specs/README.md
+├── scripts/
+│   └── run_system_tests.py         # credential-checked runner for the live tests/system/ suite
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
@@ -305,6 +317,7 @@ aiform/
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
 │   ├── driver_gen.py                # draft/validate/review pipeline; built, not yet wired into plan/apply (deferred on-the-fly generation, see "Driver curation")
+│   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
 │   └── exceptions.py               # DriverUpdateNotSupported, ResourceNotFoundError, DriverExecutionError, PlanBlockedError
 ├── drivers/
@@ -322,13 +335,21 @@ aiform/
 │   ├── credentials.env             # DIGITALOCEAN_TOKEN=... (hand-edited, never scaffolded with a value)
 │   ├── state.json                  # default state file location
 │   ├── state.json.backup           # written before every overwrite
+│   ├── logs/                       # rotating aiform-<timestamp>.log files written by log.py; gitignored
 │   └── trash/                      # destroyed resources' .aiform.md files, moved (not deleted) here — see "Resource deletion"
-├── examples/
+├── examples/                       # also created by `aiform init`, not tracked in git
 │   └── compute.aiform.md           # MVP example
-└── tests/
-    ├── test_state.py
-    ├── test_planner.py
-    └── drivers/test_digitalocean_compute.py
+└── tests/                          # a real package (__init__.py at each level) so `pytest` can import tests.*
+    ├── __init__.py
+    ├── conftest.py                 # autouse credential-leak scan + logger reset, applied to every test
+    ├── test_<module>.py            # one per aiform/ module (14 of them: state, planner, llm, cli, ...)
+    ├── drivers/
+    │   ├── __init__.py
+    │   └── test_digitalocean_compute.py
+    └── system/                     # live end-to-end tests, `system` marker, excluded from the default run
+        ├── __init__.py
+        ├── conftest.py
+        └── test_cli_digitalocean.py
 ```
 
 **Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system curates and reuses — everything else in `aiform/` is hand-written, static orchestration code, and in the MVP the driver itself is hand-authored too (see "Driver curation" above), not generated.
@@ -1301,29 +1322,26 @@ entry's own note below.
   model above — this item and "centralized servers" below are related
   but not the same thing; a status URL doesn't by itself require the
   centralized multi-source server described there.
-- **Logging.** All aiform operations will emit clear, consistent log lines
-  suitable for debugging — one predictable format across
+- ~~**Logging.**~~ **Built.** `aiform/log.py` (`specs/log.md`) closes this
+  item: one predictable `key=value` log-line format across
   `plan`/`apply`/`destroy`/`refresh`, covering both the mechanical driver
-  calls and the LLM-driven steps (which role was called, with what
-  resolved model, and what it decided), not ad hoc `print()`s. Not yet
-  designed: the exact log line schema, log level conventions, and
-  where output goes by default vs. under `--verbose`. A concrete example
-  of the gap this needs to close: `aiform/llm.py`'s `review_driver()`/
-  `review_plan()` call `json.loads()`/`model_validate_json()` directly
-  on the model's response text with no `response.stop_reason` check —
-  when a response is truncated (e.g. `code_review`'s adaptive-thinking
-  output leaving too little of `max_tokens` for the actual JSON, the
-  bug behind the "`max_tokens` is per-role" change above), the failure
-  surfaces as a generic `JSONDecodeError`/`ValidationError` with no hint
-  the real cause is a token budget, not malformed output. Diagnosing the
-  live occurrence of this required a throwaway, uncommitted script
-  outside the normal test/log surface to directly inspect
-  `usage.output_tokens_details.thinking_tokens` on a live response —
-  something this project's own logging should surface on the first
-  occurrence, not require a one-off diagnostic script to discover.
-  Deliberately not fixed ad hoc here with a scattered `print()` at this
-  one call site — logging needs the single systematic pass this entry
-  already calls for, not a piecemeal addition per incident.
+  calls and the LLM-driven steps, via two independent handlers on the
+  `"aiform"` logger — an always-on rotating file sink
+  (`.aiform/logs/aiform-<timestamp>.log`) and a `--verbose`-gated stderr
+  echo. The concrete gap that motivated this (`aiform/llm.py` calling
+  `json.loads()`/`model_validate_json()` on a possibly-truncated response
+  with no `response.stop_reason` check, surfacing as an opaque
+  `JSONDecodeError` instead of naming the real cause) is addressed:
+  `llm.py`'s `_anthropic_call()` now returns `stop_reason` and
+  `thinking_tokens` alongside the response text, and `_log_call()` emits a
+  warning naming the token budget when `stop_reason == "max_tokens"`,
+  before the parse runs. Note this is a diagnostic, not a guard — a
+  truncated response still fails as a `JSONDecodeError`, but the log line
+  above it now says why. Left as a real, open
+  follow-up: no third `DEBUG` output tier yet (no call site emits one),
+  and no `redact()` helper for `--verbose` payload dumps (no call site
+  yet logs a raw dict that could carry credentials — see `specs/log.md`'s
+  "Out of scope" section for both).
 - **Timeout/retry/failover orchestration for driver network calls.** §6's
   rationale for avoiding CSP SDKs ("SDKs are opinionated in error
   handling and retries, and we want to make sure our orchestrator can

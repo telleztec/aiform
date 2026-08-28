@@ -21,12 +21,20 @@ before green), then reviewed by Opus via `/code-review` before it's a PR.
 whenever starting or resuming work on a module. Per-module specs live in
 `specs/`, one file per module — see `specs/README.md` for the format.
 
-Current status: **implementation in progress.** `pyproject.toml`,
-`aiform/models.py`, `state.py`, `config.py`, `llm.py`, `driver.py`,
-`driver_gen.py`, `parser.py`, `planner.py`, and
-`drivers/digitalocean/compute.py` are all written. Still missing:
-`aiform/orchestrator.py`, `cli.py`, and the `python -m aiform` entry point
-— see the "Suggested implementation order" below for what's left.
+Current status: **MVP walkthrough end to end.** `pyproject.toml`,
+`aiform/models.py`, `state.py`, `config.py`, `llm.py`, `log.py`,
+`exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,
+`orchestrator.py`, `cli.py`, `__main__.py`, and
+`drivers/digitalocean/compute.py` are all written, and `python -m aiform`
+exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
+The "Suggested implementation order" below is now a record of how it was
+built, not a list of what's left.
+
+The one piece of `PLAN.md` still unbuilt is the **on-the-fly driver
+generation pipeline**: `driver_gen.py` itself exists and is tested, but
+nothing in the `plan`/`apply` path calls it — a missing driver is an error
+today, not a trigger to generate one. See `PLAN.md`'s "Driver curation"
+section.
 
 ## Non-negotiable design rules
 
@@ -141,10 +149,13 @@ to make something easier to build.
   the full layout, including `tests/drivers/test_digitalocean_compute.py`
   for the first generated driver.
 
-## Suggested implementation order
+## Implementation order (historical)
 
-Roughly bottom-up, so each piece can be tested without needing the LLM-driven
-parts to exist yet:
+The order these were actually built in — roughly bottom-up, so each piece
+could be tested without needing the LLM-driven parts to exist yet. All of
+it is done; kept because the rationale still explains why the modules
+depend on each other the way they do, and because a new resource driver or
+provider follows the same shape:
 
 1. `aiform/models.py`, `aiform/state.py`, `aiform/config.py` — no LLM
    involvement, pure data/IO, easiest to get right and test first.
