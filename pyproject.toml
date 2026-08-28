@@ -21,9 +21,11 @@ markers = [
     "system: live end-to-end tests against real DigitalOcean/Anthropic APIs (specs/system_test.md); excluded by default, run explicitly with `pytest -m system tests/system/`",
 ]
 addopts = "-m 'not system'"
-# Several test modules import `tests.*` (e.g. tests/test_conftest.py). Bare
-# `pytest` -- what CI runs -- does not put the rootdir on sys.path, unlike
-# `python -m pytest`, so those imports fail without this.
+# Some test modules import `tests.*` (tests/test_conftest.py) and some import
+# `scripts.*` (tests/test_run_system_tests.py); neither package is installed by
+# [tool.setuptools.packages.find]. Bare `pytest` -- what CI runs -- does not put
+# the rootdir on sys.path, unlike `python -m pytest`, so both fail without this.
+# Note this means adding tests/__init__.py alone would NOT be a sufficient fix.
 pythonpath = ["."]
 
 [build-system]
