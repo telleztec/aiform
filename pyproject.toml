@@ -21,6 +21,10 @@ markers = [
     "system: live end-to-end tests against real DigitalOcean/Anthropic APIs (specs/system_test.md); excluded by default, run explicitly with `pytest -m system tests/system/`",
 ]
 addopts = "-m 'not system'"
+# Several test modules import `tests.*` (e.g. tests/test_conftest.py). Bare
+# `pytest` -- what CI runs -- does not put the rootdir on sys.path, unlike
+# `python -m pytest`, so those imports fail without this.
+pythonpath = ["."]
 
 [build-system]
 requires = ["setuptools>=68"]
