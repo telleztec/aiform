@@ -78,15 +78,23 @@ may be re-posted onto a new SHA when the delta since the approved SHA is
 *provably* cosmetic:
 
 ```sh
-# Prints nothing iff every changed path is a .md file.
-git diff --name-only <approved-sha> HEAD | awk '!/\.md$/'
+# Prints nothing iff every changed path is prose. Both ends pinned to real
+# SHAs -- never local HEAD, which can lag or diverge from the PR head.
+git diff --name-only <approved-sha> <pr-head-sha> \
+  | awk '!/\.md$/ || /^\.claude\// || /^prompts\// || $0=="CLAUDE.md" || $0=="PROCESS.md"'
 ```
 
-Empty output means cosmetic. Use `awk`, **not** `grep -qv '\.md$'` — `grep`
-on this machine is `ugrep`, whose `-qv` does not invert the way GNU grep's
-does, and it reports "no non-.md files" for a diff that plainly contains
-them. A misclassification here carries a human approval forward onto a code
-change, so verify the check itself before trusting its answer.
+Empty output means cosmetic. **`.md` alone is not the test in this repo.**
+`.claude/**`, `prompts/**`, `CLAUDE.md` and `PROCESS.md` are markdown that
+agents execute — this very process lives in them — so a "docs-only" edit
+there can rewrite the merge rules themselves. They are excluded above and
+always require fresh approval.
+
+Use `awk`, **not** `grep -qv '\.md$'` — `grep` on this machine is `ugrep`,
+whose `-qv` does not invert the way GNU grep's does, and it reports "no
+non-.md files" for a diff that plainly contains them. A misclassification
+here carries a human approval onto a change they never saw, so verify the
+check itself before trusting its answer.
 
 Put the prior approved SHA in the new status's `description` so the
 carry-forward is auditable rather than asserted. If the check doesn't pass
@@ -188,14 +196,21 @@ neither waits on the other:
    billed — never launch that.
 
 The reviewer must be **Opus 5 or newer, and never you**. An author reviewing
-its own diff satisfies the letter of the gate and none of its purpose.
+its own diff satisfies the letter of the gate and none of its purpose. The
+mechanism: launch it as a subagent with an explicit `model` override rather
+than inheriting yours. If you cannot select a different model, say so on the
+PR instead of reviewing yourself.
 
 ### Satisfying `llm-review`
 
 Run the review, address what it finds — fix it, or state on the PR why a
-finding is out of scope — then post the status on the *current* head SHA
-(fix commits move it, so re-read the SHA rather than reusing the one you
-reviewed):
+finding is out of scope — then post the status **on the SHA whose content was
+actually examined**, including any fix commits you made in response.
+
+If head has moved for a reason you did not author or inspect, examine that
+delta before posting. The status attests that *this commit* was reviewed;
+posting it over a commit you never read is a false attestation, however
+small the change looks.
 
 ```sh
 gh api repos/{owner}/{repo}/statuses/<head-sha> \
@@ -261,11 +276,20 @@ before the turn ends.
 
 ### On `MERGE_APPROVED`
 
-Post the human's approval as a status, then verify all three gates against the
-**current** head SHA — re-read it, since commits may have landed:
+**Post `human-approval` on the SHA the loop was watching — never on a newer
+head.** The loop's watermark is that SHA's commit date, so the trigger it
+caught approves *that* commit and nothing after it. If head has moved since,
+the approval is **cleared**: run the cosmetic check, and if it doesn't pass,
+ask for a fresh `/claude-merge-approved` and restart the loop. Re-reading head
+and stamping the approval onto it would launder an unapproved commit through
+a human artifact — the exact thing all three gates exist to prevent.
 
 ```sh
+WATCHED_SHA=<the SHA the loop was started against>
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+
+# If these differ, STOP and resolve per the paragraph above before posting.
+[ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
 
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
@@ -326,8 +350,12 @@ watch loop.
 
 ### If the human says "just merge it" in chat
 
-Skip the polling and go straight to the gate checks above — but **all three
-gates still apply**. A chat remark satisfies none of them: `llm-review` needs
-a real review, `human-approval` needs the GitHub trigger, and nothing anyone
-can type makes CI green. This override waives the *waiting*, never the gates,
-and it is the path most in need of them since it skips the loop entirely.
+Skip the *polling* only. Go to the three **verification queries** above — not
+to the `human-approval` post that precedes them; a chat remark is not the
+trigger and never authorizes stamping that status.
+
+`human-approval` still requires a real `/claude-merge-approved` on the PR. If
+one already exists and is newer than the head commit, verify it yourself with
+the same jq the loop uses, then post the status on the SHA it covers. If none
+exists, ask for one — this override waives the waiting, never the gates, and
+it is the path most in need of them since it skips the loop entirely.

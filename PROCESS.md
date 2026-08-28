@@ -169,9 +169,12 @@ new commit mints a new one. That single rule covers every restart case: the
 author fixing review findings, the human pushing their own commits, or a
 branch update to catch up with `main`. The lone exception is that
 `human-approval` may be carried forward onto a new SHA when the delta since
-the approved commit is provably cosmetic — `*.md` files, or comment and
-docstring lines only. `llm-review` is never carried forward; it re-runs,
-which now costs no round-trip.
+the approved commit is provably prose — `*.md` files **excluding**
+`.claude/**`, `prompts/**`, `CLAUDE.md` and `PROCESS.md`, which are markdown
+that agents execute and can therefore rewrite the rules themselves. The check
+is path-based; if it doesn't pass cleanly the change is not cosmetic, however
+small it looks. `llm-review` is never carried forward; it re-runs, which now
+costs no round-trip.
 
 All three are required by branch protection (`strict: true`,
 `enforce_admins: true`), so even the repo owner cannot merge past a missing

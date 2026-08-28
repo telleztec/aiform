@@ -41,10 +41,15 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
 7. **On the eventual notification**, follow SKILL.md's post-loop steps — this
    is the part that matters, not the polling.
 
-   - `MERGE_APPROVED`: post the `human-approval` status, then verify **all
-     three gates against the current head SHA** (re-read it; commits may have
-     landed):
-     1. `human-approval` — just posted, on that SHA.
+   - `MERGE_APPROVED`: re-read the current head SHA first — commits may have
+     landed while the loop ran — then satisfy **all three gates on one and
+     the same SHA**:
+     1. `human-approval` — post it on **the SHA the loop was watching**, not
+        on a newer head. The loop's watermark is that commit's date, so the
+        trigger approves that commit and nothing after it. If head has moved,
+        the approval is cleared: run the cosmetic check, and failing that ask
+        for a fresh approval and restart. Stamping it onto a newer head
+        launders an unapproved commit through a human artifact.
      2. `llm-review` is `success` — `/commits/<sha>/status`.
      3. The `test` check-run is `status: completed`, `conclusion: success` —
         `/commits/<sha>/check-runs`. Actions results are check-runs and do
@@ -108,8 +113,8 @@ done
 ```
 
 Note the JSON is fetched and piped to real `jq`: `gh pr view --jq` does **not**
-accept `--arg` (that is a `gh api` flag), so passing the watermark inline fails
-with `accepts at most 1 arg(s)`.
+accept `--arg` (that is a `gh api` flag), so passing the watermark inline
+fails with `unknown flag: --arg`.
 
 `juanman2` is hardcoded because it is hardcoded the same way in
 `github-commit-process/SKILL.md`, as the repo owner's literal GitHub login. If
