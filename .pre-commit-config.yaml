@@ -9,6 +9,5 @@ repos:
         # `ruff format --check .` over the whole tree -- and ruff formats
         # Python code blocks inside markdown. Without `markdown` here, a
         # docs-only commit is invisible to this hook and still fails CI:
-        # that is exactly how specs/system_test.md broke main for 10 days
-        # (2026-08-17 .. 2026-08-27). Keep this list matching what CI checks.
+        #  Keep this list matching what CI checks.
         types_or: [python, pyi, jupyter, markdown]
