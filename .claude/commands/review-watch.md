@@ -64,10 +64,27 @@ process treats as required, not optional).
    steps exactly — this is the part that actually matters, not the
    polling itself:
    - `MERGE_APPROVED`: re-fetch the PR's **current** head SHA (commits may
-     have landed since the loop started) and verify the latest
-     `opus-review` status on *that exact SHA* is `success` before running
-     `gh pr merge`. If it isn't, do not merge — explain why and what's
-     needed (a fresh `/code-review`, or a `/claude-skip-review`).
+     have landed since the loop started) and verify **all three** gates
+     against *that exact SHA* before merging:
+     1. `opus-review` status is `success` (legacy `/status` endpoint).
+     2. The `test` check-run is `status: completed`, `conclusion: success`
+        (`/commits/<sha>/check-runs` — Actions results are check-runs and
+        do **not** appear in `/status`, so querying only the former silently
+        looks like a pass).
+     3. Merge with `gh pr merge <PR> --merge --match-head-commit <sha>` so
+        it fails rather than merging something that landed in between.
+
+     If `opus-review` isn't `success`, do not merge — explain what's needed
+     (a fresh `/code-review`, or a `/claude-skip-review`). If CI has
+     completed non-`success`, do not merge and report which check failed.
+     If CI is still `queued`/`in_progress`, it is *unfinished*, not
+     failing — wait and re-check rather than reporting a failure.
+
+     Do not treat this list as a paraphrase you can trim: the reason it is
+     spelled out here rather than delegated to SKILL.md is that this file
+     previously restated the gate incompletely (checking `opus-review`
+     only), which is how thirteen red commits reached `main`. If SKILL.md's
+     gates change, change them here in the same commit.
    - `REJECTED`: do not merge. Read the PR's actual comments/reviews for
      what needs fixing and act on that instead of re-polling.
 
@@ -118,9 +135,11 @@ ever changes, update both together.)
 
 - This command only starts the loop and defines how to react to its
   result; it never merges anything itself outside of step 7, and never
-  treats a chat-only "go ahead and merge" as satisfying either required
-  signal — both `/claude-merge` and `opus-review: success` must be real,
-  GitHub-visible artifacts, per the skill.
+  treats a chat-only "go ahead and merge" as satisfying any required
+  signal — `/claude-merge` and `opus-review: success` must be real,
+  GitHub-visible artifacts, per the skill, and the `test` check must be
+  genuinely green. Nothing a human can type substitutes for that last one;
+  it has no override path.
 - One loop per PR. Poll interval is fixed at 30s, matching the skill's
   explicit instruction ("fast enough that the merge feels immediate...
   without being a true busy-loop").

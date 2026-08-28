@@ -18,9 +18,13 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-04**: **two independent things**,
-both required — a `/claude-merge` signal, and a passing `opus-review` commit
-status on the PR's current head SHA. Neither alone is sufficient.
+**What counts as approval, as of 2026-08-28**: **three independent things**,
+all required — a `/claude-merge` signal, a passing `opus-review` commit
+status on the PR's current head SHA, and a green `test` CI check on that
+same SHA. No two of them are sufficient without the third. The CI gate was
+added after a review-approved, human-approved, *red* commit landed on
+`main` thirteen times in a row (2026-08-17 .. 2026-08-27) — every one of
+them satisfying the then-two-signal rule exactly.
 Critically, **both signals are always external, GitHub-visible
 artifacts — never something inferred from conversation history alone**,
 including when either requirement is explicitly waived (see the two
@@ -43,10 +47,19 @@ merge without waiting for this GitHub signal, skip starting/polling the
 watch loop and proceed straight to the merge-time check below — but this
 override only ever waives the *polling step*, never the `opus-review`
 status requirement (that has its own, separate, GitHub-based override —
-see next).
+see next) and never the `test` CI requirement (which has no override at
+all — see below).
 
 **The `opus-review` status**: how it gets posted, and its own override
 via a `/claude-skip-review` signal, are covered in "After the PR is open" below.
+
+**The `test` CI check**: green on the head SHA being merged. Unlike the
+other two, this one has **no override path** — there is deliberately no
+comment a human can post to waive it, because a red `main` is not
+something anyone should be able to authorize in passing. It is also the
+only one of the three enforced server-side: `main` carries branch
+protection requiring it (`strict: true`, `enforce_admins: true`), so a red
+merge now fails at GitHub rather than relying on an agent to check.
 
 **Rejection**: a comment or review body that's exactly `/claude-reject` stops
 the watch loop without merging — go read the PR's actual comments/review
@@ -250,15 +263,36 @@ Once `opus-review` is handled (either path above), start watching:
   gh api repos/{owner}/{repo}/commits/<current-head-sha>/status \
     --jq '.statuses[] | select(.context=="opus-review") | .state'
 
-  # gate B: CI is actually green
-  gh pr view <number> --json statusCheckRollup \
-    --jq '[.statusCheckRollup[] | select((.name // .context)=="test")
-           | (.conclusion // .state)] | .[0]'
+  # gate B: CI is actually green ON THAT SHA
+  gh api repos/{owner}/{repo}/commits/<current-head-sha>/check-runs \
+    --jq '[.check_runs[] | select(.name=="test")
+           | {status, conclusion}] | .[0] // "no run yet"'
   ```
-  Gate B must print `SUCCESS`. Use `statusCheckRollup`, **not** the
-  `/status` endpoint used for gate A — GitHub Actions results are
-  *check-runs*, and the legacy status API does not report them at all, so
-  a `/status` query will silently show nothing and look like a pass.
+  Gate B must report `status: "completed"` **and** `conclusion: "success"`.
+  Use the **check-runs** endpoint, not the `/status` endpoint gate A uses —
+  GitHub Actions results are check-runs, and the legacy status API does not
+  report them at all, so a `/status` query returns nothing and reads as a
+  pass. Do not "simplify" the two queries into one: they hit different APIs
+  on purpose.
+
+  Query gate B **by SHA**, not with `gh pr view --json statusCheckRollup`.
+  The rollup reports whatever the head is at query time, so gate A could
+  validate SHA `X` while gate B reports a newer `Y` — and the merge would
+  take `Y`, which gate A never checked. For the same reason, pin the merge
+  itself:
+  ```sh
+  gh pr merge <number> --merge --match-head-commit <current-head-sha>
+  ```
+  It fails rather than merging if anything landed between the checks and
+  the merge.
+
+  **Three outcomes, not two.** If gate B reports `status` of `queued` or
+  `in_progress` — or `"no run yet"` for a just-pushed commit — CI is
+  *unfinished*, not failing. Do not report a failure and do not merge:
+  wait and re-check (a background `until` loop on the same query is the
+  right shape). This case is common, not exotic — the watch loop polls
+  every 30s and humans usually post `/claude-merge` right after a push, so
+  the gate is frequently evaluated mid-run.
 
   If `opus-review` for that SHA isn't `success` — this covers *every*
   case, including an explicit skip, since that's always posted as a status
@@ -268,17 +302,28 @@ Once `opus-review` is handled (either path above), start watching:
   addressed, ask for `/code-review` to run, or ask for
   `/claude-skip-review`.
 
-  If CI isn't `SUCCESS` — **do not merge**, and say so plainly rather than
-  merging on the human's `/claude-merge` alone. `/claude-merge` is approval
-  of the *change*; it is not a statement that the build passes, and the
-  human generally cannot see CI state from the comment box they typed it
-  in. Report which check is failing and whether it's caused by this PR or
-  pre-existing on `main`. **This gate is why `main` was red from
-  2026-08-17 to 2026-08-27**: the check above verified only `opus-review`,
-  so thirteen red merges each satisfied the documented process exactly.
+  If CI has *completed* with any conclusion other than `success` — **do
+  not merge**, and say so plainly rather than merging on the human's
+  `/claude-merge` alone. `/claude-merge` is approval of the *change*; it is
+  not a statement that the build passes, and the human generally cannot see
+  CI state from the comment box they typed it in. Report which check is
+  failing and whether it's caused by this PR or pre-existing on `main`.
+  **This gate is why `main` was red from 2026-08-17 to 2026-08-27**: the
+  check above verified only `opus-review`, so thirteen red merges each
+  satisfied the documented process exactly.
 
-  Otherwise, merge (`gh pr merge`) — the `/claude-merge` signal plus both
-  gates together *are* the explicit human approval the hard rule requires.
+  If `gh pr merge` is rejected because the branch is **behind** `main`,
+  that is `strict: true` doing its job, not an error to force past. Update
+  the branch — which produces a **new head SHA**, so both gates must be
+  re-satisfied on it: `opus-review` re-posted, and CI re-run to green. If
+  the update is a mechanical merge/rebase with no content change, say so
+  when asking for the re-approval rather than treating it as a fresh
+  review. Post `/claude-skip-review` *before* the new `/claude-merge` if
+  that's the route, since only the latest trigger comment counts.
+
+  Otherwise, merge (with `--match-head-commit`, above) — the
+  `/claude-merge` signal plus both gates together *are* the explicit human
+  approval the hard rule requires.
   Report that it merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
@@ -289,7 +334,11 @@ Once `opus-review` is handled (either path above), start watching:
   something that needs to resolve before the turn ends.
 - If the human explicitly says in *chat* to merge without waiting for
   the `/claude-merge` GitHub signal, skip starting/polling this loop and go
-  straight to the `MERGE_APPROVED` step above — but the `opus-review`
-  status check there still applies unconditionally; a chat-only remark
-  never satisfies it by itself, only a real `/code-review` pass or a
-  `/claude-skip-review` GitHub signal does.
+  straight to the `MERGE_APPROVED` step above — but **both** gate A
+  (`opus-review`) and gate B (green `test` CI) there still apply
+  unconditionally. A chat-only remark satisfies neither: only a real
+  `/code-review` pass or a `/claude-skip-review` GitHub signal satisfies
+  gate A, and nothing a human can type satisfies gate B — only a green
+  run does. This override waives the *polling*, never the gates, and it
+  is the path most in need of them, since it is the one that skips the
+  loop entirely.
