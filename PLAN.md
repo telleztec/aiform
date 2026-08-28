@@ -296,7 +296,15 @@ writing a new driver file, not touching the orchestrator.
 aiform/
 ├── pyproject.toml
 ├── README.md
-├── .gitignore                      # .aiform/credentials.env, .aiform/state.json, __pycache__/, *.pyc
+├── LICENSE                         # Apache-2.0; every .py file carries the matching SPDX header
+├── CLAUDE.md                       # working agreement for the next agent; points here as source of truth
+├── PROCESS.md                      # development workflow spec (spec-first, test-first, reviewed)
+├── .gitignore                      # credentials.env, state.json*, .aiform/logs/, .aiform/testlog/*.log, __pycache__/, *.pyc, .venv/, caches
+├── .github/
+│   └── workflows/tests.yml         # CI: ruff check, ruff format --check, pytest
+├── specs/                          # one spec per module (18 files) — see specs/README.md
+├── scripts/
+│   └── run_system_tests.py         # credential-checked runner for the live tests/system/ suite
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
@@ -327,13 +335,21 @@ aiform/
 │   ├── credentials.env             # DIGITALOCEAN_TOKEN=... (hand-edited, never scaffolded with a value)
 │   ├── state.json                  # default state file location
 │   ├── state.json.backup           # written before every overwrite
+│   ├── logs/                       # rotating aiform-<timestamp>.log files written by log.py; gitignored
 │   └── trash/                      # destroyed resources' .aiform.md files, moved (not deleted) here — see "Resource deletion"
-├── examples/
+├── examples/                       # also created by `aiform init`, not tracked in git
 │   └── compute.aiform.md           # MVP example
-└── tests/
-    ├── test_state.py
-    ├── test_planner.py
-    └── drivers/test_digitalocean_compute.py
+└── tests/                          # a real package (__init__.py at each level) so `pytest` can import tests.*
+    ├── __init__.py
+    ├── conftest.py                 # autouse credential-leak scan + logger reset, applied to every test
+    ├── test_<module>.py            # one per aiform/ module (14 of them: state, planner, llm, cli, ...)
+    ├── drivers/
+    │   ├── __init__.py
+    │   └── test_digitalocean_compute.py
+    └── system/                     # live end-to-end tests, `system` marker, excluded from the default run
+        ├── __init__.py
+        ├── conftest.py
+        └── test_cli_digitalocean.py
 ```
 
 **Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system curates and reuses — everything else in `aiform/` is hand-written, static orchestration code, and in the MVP the driver itself is hand-authored too (see "Driver curation" above), not generated.
@@ -1315,10 +1331,13 @@ entry's own note below.
   echo. The concrete gap that motivated this (`aiform/llm.py` calling
   `json.loads()`/`model_validate_json()` on a possibly-truncated response
   with no `response.stop_reason` check, surfacing as an opaque
-  `JSONDecodeError` instead of naming the real cause) is fixed:
+  `JSONDecodeError` instead of naming the real cause) is addressed:
   `llm.py`'s `_anthropic_call()` now returns `stop_reason` and
-  `thinking_tokens` alongside the response text, and callers check
-  `stop_reason == "max_tokens"` before parsing. Left as a real, open
+  `thinking_tokens` alongside the response text, and `_log_call()` emits a
+  warning naming the token budget when `stop_reason == "max_tokens"`,
+  before the parse runs. Note this is a diagnostic, not a guard — a
+  truncated response still fails as a `JSONDecodeError`, but the log line
+  above it now says why. Left as a real, open
   follow-up: no third `DEBUG` output tier yet (no call site emits one),
   and no `redact()` helper for `--verbose` payload dumps (no call site
   yet logs a raw dict that could carry credentials — see `specs/log.md`'s
