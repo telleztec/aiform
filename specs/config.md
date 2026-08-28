@@ -53,9 +53,7 @@ DEFAULT_LLM_CONFIG: LLMConfig = LLMConfig(
     code_generator=LLMRoleConfig(
         source=ModelSource.ANTHROPIC, model="claude-sonnet-5", max_tokens=8192
     ),
-    code_review=LLMRoleConfig(
-        source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
-    ),
+    code_review=LLMRoleConfig(source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192),
     review_orchestration=LLMRoleConfig(
         source=ModelSource.ANTHROPIC, model="claude-opus-5", max_tokens=8192
     ),

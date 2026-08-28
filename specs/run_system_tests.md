@@ -23,24 +23,28 @@ scripts/run_system_tests.py`) or via `.venv/bin/python
 scripts/run_system_tests.py`. No CLI arguments.
 
 ```python
-REQUIRED_ENV_VARS: tuple[str, ...]        # ("ANTHROPIC_API_KEY", "DIGITALOCEAN_TOKEN")
-LOG_DIR: Path                              # .aiform/testlog
-MAX_LOG_FILES: int                         # 10
+REQUIRED_ENV_VARS: tuple[str, ...]  # ("ANTHROPIC_API_KEY", "DIGITALOCEAN_TOKEN")
+LOG_DIR: Path  # .aiform/testlog
+MAX_LOG_FILES: int  # 10
+
 
 def missing_credentials(env: Mapping[str, str] | None = None) -> list[str]:
     """REQUIRED_ENV_VARS entries absent or empty in `env` (defaults to
     os.environ), in REQUIRED_ENV_VARS order."""
+
 
 def rotate_logs(log_dir: Path, *, keep: int = MAX_LOG_FILES) -> None:
     """Deletes the oldest *.log files in log_dir, if needed, so that at
     most keep - 1 remain -- leaving room for exactly one new log file to
     bring the total back up to keep."""
 
+
 def new_log_path(log_dir: Path, *, now: datetime | None = None) -> Path:
     """log_dir / f"system-test-{now:%Y%m%dT%H%M%SZ}.log", UTC. On a
     same-second collision (a file already exists at that path), appends
     a "-2", "-3", ... counter suffix until the path is free -- mirrors
     aiform/orchestrator.py's move_to_trash()."""
+
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point; returns the process exit code (see Behavior)."""

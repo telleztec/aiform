@@ -86,6 +86,7 @@ AIFORM_MANAGED_TAG = "aiform-managed"
 
 class ResourceDriver(ABC):
     ...
+
     def _tags_for_create(self, requested_tags: list[str]) -> list[str]:
         """Call from create() (and, on the replace path, the create()
         that follows a delete()) when building the CSP request body:
