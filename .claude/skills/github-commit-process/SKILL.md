@@ -161,17 +161,32 @@ below only ever has to look at one thing, and "was review skipped" is
 never something to infer from earlier in the conversation — a long
 conversation, a context compaction, or a fresh agent instance resuming
 this PR could all lose a chat-only override. This status is
-**self-enforced**, not GitHub-blocked — this repo is private and branch
-protection / required status checks need GitHub Pro on a private repo
-(confirmed 2026-08-04: both the classic protection API and the newer
-rulesets API return 403 "Upgrade to GitHub Pro or make this repository
-public"). The human has since upgraded to Pro but plans to transfer this
-repo to a new organization first — true GitHub-side branch protection
-requiring this status is a planned follow-up once that move happens, not
-built yet. Use the literal `{owner}/{repo}` placeholders in both `gh
-api` calls above — they're filled in from the current directory's git
-remote automatically, so this keeps working after the org transfer
-without anyone needing to remember to edit this file.
+**self-enforced**, not GitHub-blocked. The `test` CI check, by contrast,
+*is* GitHub-blocked as of 2026-08-28: `main` now has branch protection
+requiring it, with `strict: true` (the branch must be up to date with
+`main`) and `enforce_admins: true`.
+
+That `enforce_admins` setting is load-bearing, not incidental — every PR
+here is merged by the repo owner, who is an admin, so with it disabled the
+protection would be bypassed on literally every merge and would enforce
+nothing. Note also that required *pull request reviews* are deliberately
+**not** enabled: GitHub blocks authors from approving their own PRs, every
+PR here is self-authored, so requiring them would deadlock merges
+permanently. That constraint is the whole reason the `/claude-merge`
+comment convention exists.
+
+(Historical note: this was previously impossible — on 2026-08-04 both the
+classic protection API and the rulesets API returned 403 "Upgrade to
+GitHub Pro or make this repository public", because the repo was private.
+The repo is public now, which makes branch protection free; that blocker
+had been resolved for some time before anyone revisited this paragraph.
+When something here says a thing can't be done, re-check it rather than
+inheriting the assumption.)
+
+Use the literal `{owner}/{repo}` placeholders in both `gh api` calls above
+— they're filled in from the current directory's git remote automatically,
+so this keeps working after an org transfer without anyone needing to
+remember to edit this file.
 
 Once `opus-review` is handled (either path above), start watching:
 
@@ -228,21 +243,43 @@ Once `opus-review` is handled (either path above), start watching:
   `/claude-merge` is seen as the latest comment.)
 - On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
   PR's *current* head SHA (not whatever it was when the watch loop
-  started — new commits may have landed) and check:
+  started — new commits may have landed) and check **both** gates against
+  that exact SHA:
   ```sh
+  # gate A: the review status
   gh api repos/{owner}/{repo}/commits/<current-head-sha>/status \
     --jq '.statuses[] | select(.context=="opus-review") | .state'
+
+  # gate B: CI is actually green
+  gh pr view <number> --json statusCheckRollup \
+    --jq '[.statusCheckRollup[] | select((.name // .context)=="test")
+           | (.conclusion // .state)] | .[0]'
   ```
-  If the latest `opus-review` status for that exact SHA isn't
-  `success` — this now covers *every* case, including an explicit skip,
-  since that's always posted as a status too — **do not merge**: tell
-  the human `/code-review` hasn't been confirmed for the current commit
-  (common cause: fix commits landed after the status was posted) and
-  either post it now if it's genuinely been addressed, ask for
-  `/code-review` to run, or ask for `/claude-skip-review`. Otherwise, merge
-  (`gh pr merge`) — the `/claude-merge` signal plus this status together *are*
-  the explicit human approval the hard rule requires. Report that it
-  merged.
+  Gate B must print `SUCCESS`. Use `statusCheckRollup`, **not** the
+  `/status` endpoint used for gate A — GitHub Actions results are
+  *check-runs*, and the legacy status API does not report them at all, so
+  a `/status` query will silently show nothing and look like a pass.
+
+  If `opus-review` for that SHA isn't `success` — this covers *every*
+  case, including an explicit skip, since that's always posted as a status
+  too — **do not merge**: tell the human `/code-review` hasn't been
+  confirmed for the current commit (common cause: fix commits landed after
+  the status was posted) and either post it now if it's genuinely been
+  addressed, ask for `/code-review` to run, or ask for
+  `/claude-skip-review`.
+
+  If CI isn't `SUCCESS` — **do not merge**, and say so plainly rather than
+  merging on the human's `/claude-merge` alone. `/claude-merge` is approval
+  of the *change*; it is not a statement that the build passes, and the
+  human generally cannot see CI state from the comment box they typed it
+  in. Report which check is failing and whether it's caused by this PR or
+  pre-existing on `main`. **This gate is why `main` was red from
+  2026-08-17 to 2026-08-27**: the check above verified only `opus-review`,
+  so thirteen red merges each satisfied the documented process exactly.
+
+  Otherwise, merge (`gh pr merge`) — the `/claude-merge` signal plus both
+  gates together *are* the explicit human approval the hard rule requires.
+  Report that it merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
