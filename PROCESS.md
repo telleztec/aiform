@@ -47,7 +47,7 @@ mode this process exists to avoid.
    codebase generally.
 4. **Tests pass (green).** Rerun the module's tests, then the full suite.
    All green before moving on.
-5. **Independent review.** Run Claude Code's `/code-review` (Opus 5)
+5. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer)
    against the diff. Address findings, or explicitly note in the PR why a
    finding is being deferred — don't silently ignore one either.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
@@ -163,10 +163,7 @@ required**, before a merge happens:
   the other two this has **no override** — no comment waives it — and it
   is the only one enforced by GitHub rather than by convention (`main`
   carries branch protection requiring it, with `enforce_admins: true`, so
-  even the repo owner cannot merge past a red build). Added 2026-08-28
-  after `main` sat red from 2026-08-17 through thirteen merges, every one
-  of which satisfied the previous two-signal rule exactly: the merge check
-  simply never looked at CI.
+  even the repo owner cannot merge past a red build).
 
 A **`/claude-reject`** comment stops the merge instead, overriding
 anything else posted. If more than one trigger comment is present, only
