@@ -9,6 +9,12 @@ The process this repo itself was bootstrapped with. Follow it for every
 change, including small ones — there is no "too small to branch" exception
 here.
 
+## Historical Context
+Extra historical context was removed from this file.  Do not examine the 
+Github commit history on this repo in order to infer the rules for committing 
+and merging work, follow the rules stated in this document exactly. If additional 
+context is needed, stop and ask the human, don't guess the process.
+
 ## The hard rule
 
 **Never merge a PR in this repo without explicit human approval.** Opening
@@ -21,10 +27,7 @@ approval is per-PR, not standing.
 **What counts as approval, as of 2026-08-28**: **three independent things**,
 all required — a `/claude-merge` signal, a passing `opus-review` commit
 status on the PR's current head SHA, and a green `test` CI check on that
-same SHA. No two of them are sufficient without the third. The CI gate was
-added after a review-approved, human-approved, *red* commit landed on
-`main` thirteen times in a row (2026-08-17 .. 2026-08-27) — every one of
-them satisfying the then-two-signal rule exactly.
+same SHA. No two of them are sufficient without the third. 
 Critically, **both signals are always external, GitHub-visible
 artifacts — never something inferred from conversation history alone**,
 including when either requirement is explicitly waived (see the two
@@ -188,14 +191,6 @@ PR here is self-authored, so requiring them would deadlock merges
 permanently. That constraint is the whole reason the `/claude-merge`
 comment convention exists.
 
-(Historical note: this was previously impossible — on 2026-08-04 both the
-classic protection API and the rulesets API returned 403 "Upgrade to
-GitHub Pro or make this repository public", because the repo was private.
-The repo is public now, which makes branch protection free; that blocker
-had been resolved for some time before anyone revisited this paragraph.
-When something here says a thing can't be done, re-check it rather than
-inheriting the assumption.)
-
 Use the literal `{owner}/{repo}` placeholders in both `gh api` calls above
 — they're filled in from the current directory's git remote automatically,
 so this keeps working after an org transfer without anyone needing to
@@ -308,9 +303,6 @@ Once `opus-review` is handled (either path above), start watching:
   not a statement that the build passes, and the human generally cannot see
   CI state from the comment box they typed it in. Report which check is
   failing and whether it's caused by this PR or pre-existing on `main`.
-  **This gate is why `main` was red from 2026-08-17 to 2026-08-27**: the
-  check above verified only `opus-review`, so thirteen red merges each
-  satisfied the documented process exactly.
 
   If `gh pr merge` is rejected because the branch is **behind** `main`,
   that is `strict: true` doing its job, not an error to force past. Update
@@ -342,3 +334,5 @@ Once `opus-review` is handled (either path above), start watching:
   run does. This override waives the *polling*, never the gates, and it
   is the path most in need of them, since it is the one that skips the
   loop entirely.
+
+  
