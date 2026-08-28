@@ -80,11 +80,8 @@ process treats as required, not optional).
      If CI is still `queued`/`in_progress`, it is *unfinished*, not
      failing — wait and re-check rather than reporting a failure.
 
-     Do not treat this list as a paraphrase you can trim: the reason it is
-     spelled out here rather than delegated to SKILL.md is that this file
-     previously restated the gate incompletely (checking `opus-review`
-     only), which is how thirteen red commits reached `main`. If SKILL.md's
-     gates change, change them here in the same commit.
+     Do not treat this list as a paraphrase you can trim.
+     
    - `REJECTED`: do not merge. Read the PR's actual comments/reviews for
      what needs fixing and act on that instead of re-polling.
 
