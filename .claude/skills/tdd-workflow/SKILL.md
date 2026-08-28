@@ -24,7 +24,8 @@ pass.
    handling.
 4. **Green.** Rerun this module's tests, then the full suite (`pytest`).
    All green.
-5. **Review.** Run `/code-review` (Opus 5) on the diff. Fix what it
+5. **Review.** Run `/code-review` (Opus 5 or newer) on the diff yourself —
+   it does not wait on the human. Fix what it
    flags, or note explicitly in the PR why something is deferred.
 6. **PR.** Follow `.claude/skills/github-commit-process/SKILL.md`
    exactly — branch, commits, PR body, and critically: never merge

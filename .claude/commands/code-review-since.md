@@ -35,7 +35,7 @@ below: get the base branch name (`gh pr view <pr> --json baseRefName --jq
 `<merge_base>..<head-sha>` — never further back into the base branch's own
 history.** This matters concretely on this repo: since PRs here routinely
 merge `main` into a feature branch (see `github-commit-process`), and
-nearly every commit on `main` already carries a passing `opus-review`
+nearly every commit on `main` already carries a passing `llm-review`
 status from its own original PR, an unbounded walk from a feature branch's
 head would immediately find one of *those* and stop — silently resolving
 to an unrelated, ancient checkpoint instead of correctly recognizing "this
@@ -46,12 +46,12 @@ PR has no review of its own yet" and falling back to `base`.
   `/code-review <pr>`, just expressed through this command.
 - **`last-review`** (the default) — the most recent commit *strictly
   within this PR's own range* (`git log <merge_base>..<head-sha>
-  --format=%H`) that already has a successful `opus-review` GitHub commit
-  status (posted either by a completed code review or an explicit human
-  skip — see this repo's `github-commit-process` skill). Walk that
+  --format=%H`) that already has a successful `llm-review` GitHub commit
+  status (posted by a completed code review — see this repo's
+  `github-commit-process` skill). Walk that
   bounded list newest-first, checking each via `gh api
   repos/{owner}/{repo}/commits/<sha>/status --jq '.statuses[] | select
-  (.context=="opus-review") | .state'`, stopping at the first `success`.
+  (.context=="llm-review") | .state'`, stopping at the first `success`.
   This is the most useful checkpoint for a re-review pass: "what's changed
   since this PR last passed review." If the walk reaches `merge_base`
   without finding one (this PR has no review of its own yet), fall back
