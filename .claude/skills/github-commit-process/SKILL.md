@@ -24,54 +24,92 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-28**: **three independent things**,
-all required — a `/claude-merge` signal, a passing `opus-review` commit
-status on the PR's current head SHA, and a green `test` CI check on that
-same SHA. No two of them are sufficient without the third. 
-Critically, **all three are always external, GitHub-visible
-artifacts — never something inferred from conversation history alone**,
-including when a waivable requirement is explicitly waived (see the two
-override paths below). This is deliberate: relying on "I remember the
-human said to skip it" is exactly the failure mode this whole mechanism
-exists to replace — a long conversation, a context compaction, or a
-fresh agent instance resuming the same PR can all silently lose a
-chat-only override, either wrongly blocking an authorized merge or,
-worse, wrongly proceeding on a misremembered one.
+**What counts as approval**: **three gates**, all required, all recorded as
+commit statuses or checks **on the exact head SHA being merged**:
 
-**The `/claude-merge` signal**: a PR comment or review body from
-`github.com/juanman2`, trimmed and lowercased, exactly `/claude-merge` — not a
-formal GitHub "Approve" review (GitHub hard-blocks PR authors from
-approving their own pull requests, a platform rule; every PR here is
-authored by juanman2, so a real "Approve" review is never obtainable).
-A plain comment isn't restricted that way and still requires opening the
-PR's "Files changed" tab to leave it — forcing a visual scan of the diff
-before it merges. Override: if juanman2 explicitly says in *chat* to
-merge without waiting for this GitHub signal, skip starting/polling the
-watch loop and proceed straight to the merge-time check below — but this
-override only ever waives the *polling step*, never the `opus-review`
-status requirement (that has its own, separate, GitHub-based override —
-see next) and never the `test` CI requirement (which has no override at
-all — see below).
+| Gate | Posted by | Means |
+|---|---|---|
+| `test` | GitHub Actions | CI is green |
+| `llm-review` | you, the author LLM | `/code-review` ran and its findings were addressed |
+| `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` |
 
-**The `opus-review` status**: how it gets posted, and its own override
-via a `/claude-skip-review` signal, are covered in "After the PR is open" below.
+**The two reviews are order-independent.** The human may approve before the
+LLM review runs, or after; either order is valid and both end in a merge. Do
+not tell the human to wait for one before doing the other.
 
-**The `test` CI check**: green on the head SHA being merged. Unlike the
-other two, this one has **no override path** — there is deliberately no
-comment a human can post to waive it, because a red `main` is not
-something anyone should be able to authorize in passing. It is also the
-only one of the three enforced server-side: `main` carries branch
-protection requiring it (`strict: true`, `enforce_admins: true`), so a red
-merge now fails at GitHub rather than relying on an agent to check.
+Critically, **all three are external, GitHub-visible artifacts — never
+something inferred from conversation history**. A long conversation, a context
+compaction, or a fresh agent instance resuming the same PR can all silently
+lose a chat-only approval, either wrongly blocking an authorized merge or,
+worse, proceeding on a misremembered one. If it isn't on the SHA, it didn't
+happen.
 
-**Rejection**: a comment or review body that's exactly `/claude-reject` stops
-the watch loop without merging — go read the PR's actual comments/review
-for what needs fixing, rather than continuing to poll indefinitely. Any
-*other* comment (general feedback, a question, a mid-review remark
-that isn't `/claude-merge`/`/claude-reject`/`/claude-skip-review`) is not surfaced
-automatically by the watch loop — it only recognizes those three literal
-triggers. Substantive feedback that isn't a clear accept/reject should
-go through chat instead, as before.
+**The `/claude-merge-approved` signal**: a PR comment or review body from
+`github.com/juanman2`, trimmed and lowercased, exactly
+`/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
+hard-blocks PR authors from approving their own pull requests, a platform
+rule; every PR here is authored by juanman2, so a real "Approve" review is
+never obtainable). A plain comment isn't restricted that way and still
+requires opening the PR's "Files changed" tab to leave it — forcing a visual
+scan of the diff before it merges.
+
+**Rejection**: a comment or review body that's exactly
+`/claude-merge-rejected` stops the watch loop without merging. Read the PR's
+actual comments and inline review for what needs fixing, address it in a new
+commit, and start a fresh cycle. Any *other* comment (general feedback, a
+question, a mid-review remark) is not surfaced by the watch loop — it
+recognizes only those two literal triggers. Substantive feedback that isn't a
+clear accept/reject should go through chat.
+
+### The restart rule: a new commit clears everything
+
+All three gates are pinned to a SHA, so **any new commit — yours, the
+human's, or one addressing review findings — mints a new SHA on which none of
+them exist.** Every approval is therefore cleared automatically. There is no
+separate bookkeeping to do and nothing to remember: if you pushed, the PR
+needs all three gates again.
+
+This is the whole restart mechanism. It covers the author making changes after
+a review, the human pushing their own commits, and findings that turn out to
+need code changes — one rule, no judgment.
+
+**The one exception — cosmetic carry-forward.** `human-approval`, and only it,
+may be re-posted onto a new SHA when the delta since the approved SHA is
+*provably* cosmetic:
+
+```sh
+# Prints nothing iff every changed path is a .md file.
+git diff --name-only <approved-sha> HEAD | awk '!/\.md$/'
+```
+
+Empty output means cosmetic. Use `awk`, **not** `grep -qv '\.md$'` — `grep`
+on this machine is `ugrep`, whose `-qv` does not invert the way GNU grep's
+does, and it reports "no non-.md files" for a diff that plainly contains
+them. A misclassification here carries a human approval forward onto a code
+change, so verify the check itself before trusting its answer.
+
+Put the prior approved SHA in the new status's `description` so the
+carry-forward is auditable rather than asserted. If the check doesn't pass
+cleanly, it is not cosmetic — ask for re-approval instead of arguing the case.
+A minor bug fix is a code change and does **not** qualify, however small.
+
+`llm-review` never carries forward; it re-runs. The asymmetry is deliberate —
+automate the cheap gate, protect the expensive one. Human attention is the
+scarce resource here; re-running a review costs no round-trip at all.
+
+### What the enforcement actually guarantees
+
+`main` requires all three contexts via branch protection (`strict: true`,
+`enforce_admins: true`). Be honest about what that buys: `llm-review` and
+`human-approval` are posted **by you**, so requiring them catches *"the agent
+forgot"*, not *"the agent misbehaves"* — an agent willing to skip a check
+would equally post the status. Only `test` is enforced against an actively
+wrong agent. Do not describe this setup as stronger than it is.
+
+**Never post `/claude-merge-approved` or `/claude-merge-rejected` yourself.**
+They are human triggers, and the watch loop converts the first into the
+`human-approval` status — posting one would manufacture your own approval end
+to end.
 
 ## Branching
 
@@ -139,218 +177,157 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL. **Do not start the watch loop yet.** `/code-review`
-(Opus) is user-triggered and I cannot launch it myself — but the human
-review must come *after* it, not concurrently or before, since Opus
-routinely catches real bugs that need fixing before there's anything
-worth reviewing by eye. Tell the human explicitly: run `/code-review`
-first; I'll act on whatever it finds (fix, push follow-up commits, or
-explain why something's out of scope).
+Report the PR URL, then do **both** of these — they are independent and
+neither waits on the other:
 
-**How the `opus-review` status gets satisfied — always one of two
-GitHub-visible events, never a chat-only decision:**
+1. **Start the watch loop immediately** (`/review-watch <PR>`). The human may
+   approve at any time, including before the LLM review has run.
+2. **Run `/code-review <PR>` yourself.** You can: the command carries
+   `disable-model-invocation: false`. Do not ask the human to trigger it.
+   The one exception is `/code-review ultra`, which is user-triggered and
+   billed — never launch that.
 
-1. **A real `/code-review` pass.** Once its findings (if any) are
-   actually addressed, post a commit status on the PR's *current* head
-   SHA:
-   ```sh
-   gh api repos/{owner}/{repo}/statuses/<head-sha> \
-     -f state=success \
-     -f context=opus-review \
-     -f description="findings addressed" # or "nothing to fix"
-   ```
-2. **An explicit human skip**, via a `/claude-skip-review` comment or review
-   body from `github.com/juanman2` on the PR (same detection mechanism
-   as `/claude-merge`/`/claude-reject` below) — e.g. for a docs-only change not worth
-   an Opus pass. On seeing it, immediately post the *same* status,
-   honestly:
-   ```sh
-   gh api repos/{owner}/{repo}/statuses/<head-sha> \
-     -f state=success \
-     -f context=opus-review \
-     -f description="human explicitly authorized skipping /code-review via /claude-skip-review"
-   ```
+The reviewer must be **Opus 5 or newer, and never you**. An author reviewing
+its own diff satisfies the letter of the gate and none of its purpose.
 
-Both paths converge on the same artifact (an `opus-review: success`
-status on a specific SHA), which is the point: the merge-time check
-below only ever has to look at one thing, and "was review skipped" is
-never something to infer from earlier in the conversation — a long
-conversation, a context compaction, or a fresh agent instance resuming
-this PR could all lose a chat-only override. This status is
-**self-enforced**, not GitHub-blocked. The `test` CI check, by contrast,
-*is* GitHub-blocked as of 2026-08-28: `main` now has branch protection
-requiring it, with `strict: true` (the branch must be up to date with
-`main`) and `enforce_admins: true`.
+### Satisfying `llm-review`
 
-That `enforce_admins` setting is load-bearing, not incidental — every PR
-here is merged by the repo owner, who is an admin, so with it disabled the
-protection would be bypassed on literally every merge and would enforce
-nothing. Note also that required *pull request reviews* are deliberately
-**not** enabled: GitHub blocks authors from approving their own PRs, every
-PR here is self-authored, so requiring them would deadlock merges
-permanently. That constraint is the whole reason the `/claude-merge`
-comment convention exists.
+Run the review, address what it finds — fix it, or state on the PR why a
+finding is out of scope — then post the status on the *current* head SHA
+(fix commits move it, so re-read the SHA rather than reusing the one you
+reviewed):
 
-Use the literal `{owner}/{repo}` placeholders in both `gh api` calls above
-— they're filled in from the current directory's git remote automatically,
-so this keeps working after an org transfer without anyone needing to
-remember to edit this file.
+```sh
+gh api repos/{owner}/{repo}/statuses/<head-sha> \
+  -f state=success \
+  -f context=llm-review \
+  -f description="/code-review pass; N findings addressed"   # or "nothing to fix"
+```
 
-Once `opus-review` is handled (either path above), start watching:
+Say in the description what actually happened, including which model ran if it
+wasn't the default. This status is the durable record of what review this
+commit received; a description that overstates it is worse than none.
 
-- All three triggers (`/claude-merge`, `/claude-reject`, `/claude-skip-review`) can land in
-  two different places and must be checked in both: a plain issue-level
-  PR comment (the comment box at the bottom of the conversation), *or* a
-  review body (`gh pr view`'s `reviews` array, `state: COMMENTED`) —
-  GitHub's own "Files changed" → "Review changes" flow is the natural
-  way to actually scan a diff before signing off, and since "Approve" is
-  blocked for a self-authored PR, that flow lands as a `COMMENTED`
-  review, not an issue comment. Checking only `comments` misses this —
-  confirmed the hard way on this repo's first PR under this process.
-- Start **one** background Bash job containing its own polling loop, using
-  `run_in_background: true` (never manual `nohup`/`disown` — those bypass
-  the harness's completion notification, which is the whole point: you
-  only get woken up once, when the loop actually exits, instead of having
-  to re-poll turn after turn yourself). The loop also handles a
-  `/claude-skip-review` that lands *after* watching starts (posting the status
-  itself, inline, then continuing to poll for `/claude-merge`):
-  ```sh
-  posted_skip=false
-  while true; do
-    body=$(gh pr view <number> --json comments,reviews --jq '
-      ([(.comments[] | {author, body, at: .createdAt}),
-        (.reviews[] | {author, body, at: .submittedAt})]
-        | map(select(.author.login=="juanman2"))
-        | sort_by(.at)
-        | last
-        | .body // "")
-      | gsub("^\\s+|\\s+$";"")
-      | ascii_downcase
-    ')
-    if [ "$body" = "/claude-merge" ]; then
-      echo "MERGE_APPROVED"
-      exit 0
-    fi
-    if [ "$body" = "/claude-reject" ]; then
-      echo "REJECTED"
-      exit 1
-    fi
-    if [ "$body" = "/claude-skip-review" ] && [ "$posted_skip" = false ]; then
-      sha=$(gh pr view <number> --json headRefOid --jq .headRefOid)
-      gh api repos/{owner}/{repo}/statuses/$sha \
-        -f state=success -f context=opus-review \
-        -f description="human explicitly authorized skipping /code-review via /claude-skip-review"
-      posted_skip=true
-    fi
-    sleep 30
-  done
-  ```
-  (Note: only the *latest* trigger comment counts, same as `/claude-merge` vs
-  `/claude-reject` always did — if `/claude-skip-review` and `/claude-merge` are posted out
-  of order, post `/claude-skip-review` first so its status lands before
-  `/claude-merge` is seen as the latest comment.)
-- On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
-  PR's *current* head SHA (not whatever it was when the watch loop
-  started — new commits may have landed) and check **both** gates against
-  that exact SHA:
-  ```sh
-  # gate A: the review status
-  gh api repos/{owner}/{repo}/commits/<current-head-sha>/status \
-    --jq '.statuses[] | select(.context=="opus-review") | .state'
+There is **no skip path.** If a review is genuinely impossible (model
+unavailable), say so on the PR and stop — do not invent a bypass.
 
-  # gate B: CI is actually green ON THAT SHA
-  gh api repos/{owner}/{repo}/commits/<current-head-sha>/check-runs \
-    --jq '[.check_runs[] | select(.name=="test")
-           | {status, conclusion}] | .[0] // "no run yet"'
-  ```
-  Gate B must report `status: "completed"` **and** `conclusion: "success"`.
-  Use the **check-runs** endpoint, not the `/status` endpoint gate A uses —
-  GitHub Actions results are check-runs, and the legacy status API does not
-  report them at all, so a `/status` query returns nothing and reads as a
-  pass. Do not "simplify" the two queries into one: they hit different APIs
-  on purpose.
+Use the literal `{owner}/{repo}` placeholders in every `gh api` call here —
+they resolve from the current directory's git remote, so this survives an org
+transfer with no edits.
 
-  Query gate B **by SHA**, not with `gh pr view --json statusCheckRollup`.
-  The rollup reports whatever the head is at query time, so gate A could
-  validate SHA `X` while gate B reports a newer `Y` — and the merge would
-  take `Y`, which gate A never checked. For the same reason, pin the merge
-  itself:
-  ```sh
-  gh pr merge <number> --merge --match-head-commit <current-head-sha>
-  ```
-  It fails rather than merging if anything landed between the checks and
-  the merge.
+### The watch loop
 
-  **Three outcomes, not two.** If gate B reports `status` of `queued` or
-  `in_progress` — or `"no run yet"` for a just-pushed commit — CI is
-  *unfinished*, not failing. Do not report a failure and do not merge:
-  wait and re-check (a background `until` loop on the same query is the
-  right shape). This case is common, not exotic — the watch loop polls
-  every 30s and humans usually post `/claude-merge` right after a push, so
-  the gate is frequently evaluated mid-run.
+Triggers land in **two** places and both must be checked: a plain issue-level
+PR comment, *or* a review body (`gh pr view`'s `reviews` array, `state:
+COMMENTED`). GitHub's "Files changed" → "Review changes" flow is the natural
+way to scan a diff before signing off, and since "Approve" is blocked on a
+self-authored PR, that flow lands as a `COMMENTED` review, not a comment.
+Checking only `comments` misses it.
 
-  **Bound that wait.** `"no run yet"` also covers cases where a run will
-  *never* appear — Actions disabled, quota exhausted, or a SHA no
-  `pull_request`/`push` trigger covers — and an unbounded `until` loop on
-  those never exits, never fires its completion notification, and hangs
-  the merge silently with nothing to show the human. Give up after a few
-  minutes and report `no test run was ever created for <sha>` rather than
-  waiting forever.
+Start **one** background Bash job with `run_in_background: true` — never
+`nohup`/`disown`, which bypass the completion notification this depends on.
 
-  If `opus-review` for that SHA isn't `success` — this covers *every*
-  case, including an explicit skip, since that's always posted as a status
-  too — **do not merge**: tell the human `/code-review` hasn't been
-  confirmed for the current commit (common cause: fix commits landed after
-  the status was posted) and either post it now if it's genuinely been
-  addressed, ask for `/code-review` to run, or ask for
-  `/claude-skip-review`.
+**Filter triggers by the head commit's timestamp, not by when the loop
+started.** A trigger older than the current head refers to code that no longer
+exists; a trigger newer than it counts, even if it was posted before the loop
+began. Watermarking on loop start instead silently drops an approval the human
+left moments earlier — and makes a PR unwatchable after a rejection, since the
+stale rejection stays "latest" forever.
 
-  If CI has *completed* with any conclusion other than `success` — **do
-  not merge**, and say so plainly rather than merging on the human's
-  `/claude-merge` alone. `/claude-merge` is approval of the *change*; it is
-  not a statement that the build passes, and the human generally cannot see
-  CI state from the comment box they typed it in. Report which check is
-  failing and whether it's caused by this PR or pre-existing on `main`.
+```sh
+PR=<number>
+SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
+SINCE=$(gh api repos/{owner}/{repo}/commits/"$SHA" --jq .commit.committer.date)
+while true; do
+  raw=$(gh pr view "$PR" --json comments,reviews 2>/dev/null || echo '{}')
+  body=$(printf '%s' "$raw" | jq -r --arg since "$SINCE" '
+    ([(.comments[]? | {author, body, at: .createdAt}),
+      (.reviews[]?  | {author, body, at: .submittedAt})]
+      | map(select(.author.login=="juanman2" and .at > $since))
+      | sort_by(.at) | last | .body // "")
+    | gsub("^\\s+|\\s+$";"") | ascii_downcase
+  ')
+  if [ "$body" = "/claude-merge-approved" ]; then echo "MERGE_APPROVED"; exit 0; fi
+  if [ "$body" = "/claude-merge-rejected" ]; then echo "REJECTED"; exit 1; fi
+  sleep 30
+done
+```
 
-  If `gh pr merge` is rejected because the branch is **behind** `main`,
-  that is `strict: true` doing its job, not an error to force past. Update
-  the branch — which produces a **new head SHA**, so both gates must be
-  re-satisfied on it: `opus-review` re-posted, and CI re-run to green. The
-  prior `/claude-merge` does not carry over either; it referred to a commit
-  that is no longer head. If the update is a mechanical merge/rebase with
-  no content change, say so when asking for the re-approval rather than
-  treating it as a fresh review.
+`gh pr view --jq` does **not** accept `--arg` (that is a `gh api` flag), which
+is why the JSON is fetched and piped to real `jq`. Poll every 30s.
 
-  **You never post `/claude-skip-review` yourself.** It is a human trigger
-  (see "The `/claude-merge` signal" above) and the watch loop converts it
-  into an `opus-review: success` status — so an agent posting it would be
-  manufacturing its own approval end to end, with no human involved. Ask
-  the human to post it, and to do so *before* their new `/claude-merge`,
-  since only the latest trigger comment counts. Then **restart the watch
-  loop** (`/review-watch`) — the previous one already exited on
-  `MERGE_APPROVED`, so with no new loop nothing is listening and the
-  human's next comment lands unnoticed.
+A long wait is fine — this is a background job, not something to resolve
+before the turn ends.
 
-  Otherwise, merge (with `--match-head-commit`, above) — the
-  `/claude-merge` signal plus both gates together *are* the explicit human
-  approval the hard rule requires.
-  Report that it merged.
-- On `REJECTED` — do not merge. Read the PR's comments/reviews for what
-  was actually said, and report back / start addressing it as appropriate.
-- Poll every 30s (per explicit instruction) — fast enough that the merge
-  feels immediate after leaving `/claude-merge`, without being a true busy-loop.
-- If the wait is going to span a very long time (the human is away for
-  hours), that's fine — this is a background-job-friendly wait, not
-  something that needs to resolve before the turn ends.
-- If the human explicitly says in *chat* to merge without waiting for
-  the `/claude-merge` GitHub signal, skip starting/polling this loop and go
-  straight to the `MERGE_APPROVED` step above — but **both** gate A
-  (`opus-review`) and gate B (green `test` CI) there still apply
-  unconditionally. A chat-only remark satisfies neither: only a real
-  `/code-review` pass or a `/claude-skip-review` GitHub signal satisfies
-  gate A, and nothing a human can type satisfies gate B — only a green
-  run does. This override waives the *polling*, never the gates, and it
-  is the path most in need of them, since it is the one that skips the
-  loop entirely.
+### On `MERGE_APPROVED`
 
-  
+Post the human's approval as a status, then verify all three gates against the
+**current** head SHA — re-read it, since commits may have landed:
+
+```sh
+SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+
+gh api repos/{owner}/{repo}/statuses/"$SHA" \
+  -f state=success -f context=human-approval \
+  -f description="/claude-merge-approved by juanman2"
+
+# llm-review — legacy status API
+gh api repos/{owner}/{repo}/commits/"$SHA"/status \
+  --jq '[.statuses[] | select(.context=="llm-review") | .state] | .[0] // "NONE"'
+
+# test — check-runs API
+gh api repos/{owner}/{repo}/commits/"$SHA"/check-runs \
+  --jq '[.check_runs[] | select(.name=="test") | {status, conclusion}] | .[0] // "no run yet"'
+```
+
+Actions results are **check-runs**; the legacy `/status` endpoint does not
+report them at all, so querying `/status` for CI returns an empty `contexts`
+array and reads as a pass. The two queries hit different APIs deliberately —
+do not consolidate them.
+
+Then merge, pinned:
+
+```sh
+gh pr merge <number> --merge --match-head-commit "$SHA"
+```
+
+It fails rather than merging if anything landed between the checks and the
+merge.
+
+**CI has three outcomes, not two.** `queued`, `in_progress`, or `"no run yet"`
+means *unfinished*, not failing — wait and re-check rather than reporting a
+failure. But bound that wait: `"no run yet"` also covers runs that will never
+appear (Actions disabled, quota exhausted, a SHA no trigger covers). Give up
+after a few minutes and report `no test run was ever created for <sha>`.
+
+**If `llm-review` is missing**, run `/code-review` now — that gate is yours to
+satisfy, not the human's. **If CI completed non-`success`**, do not merge; say
+which check failed and whether it is caused by this PR or pre-existing on
+`main`. `/claude-merge-approved` approves the *change*; it is not a claim that
+the build passes, and the human usually cannot see CI from the box they typed
+it in.
+
+### On `REJECTED`
+
+Do not merge. Read the PR's comments and inline review for what was actually
+said, address it in a new commit, and start a fresh cycle — the new SHA clears
+all three gates, so the PR needs a new review and a new approval. Restart the
+watch loop once you have pushed; the previous one has already exited, so with
+no new loop nothing is listening.
+
+### If the merge is rejected as behind `main`
+
+That is `strict: true` working, not an error to force past. Update the branch,
+which mints a **new head SHA** — so all three gates must be satisfied on it,
+and the prior `/claude-merge-approved` does not carry over. If the update is a
+mechanical merge or rebase with no content change, say so when asking for
+re-approval rather than presenting it as a fresh review. Then restart the
+watch loop.
+
+### If the human says "just merge it" in chat
+
+Skip the polling and go straight to the gate checks above — but **all three
+gates still apply**. A chat remark satisfies none of them: `llm-review` needs
+a real review, `human-approval` needs the GitHub trigger, and nothing anyone
+can type makes CI green. This override waives the *waiting*, never the gates,
+and it is the path most in need of them since it skips the loop entirely.

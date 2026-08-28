@@ -16,7 +16,8 @@ rather than silently diverging from it.
 
 **`PROCESS.md` is the development workflow spec** — the how, as opposed to
 `PLAN.md`'s what. Every module gets built spec-first, test-first (red
-before green), then reviewed by Opus via `/code-review` before it's a PR.
+before green), then reviewed via `/code-review` (Opus 5 or newer) before
+it's a PR.
 `.claude/skills/tdd-workflow/SKILL.md` operationalizes this loop; use it
 whenever starting or resuming work on a module. Per-module specs live in
 `specs/`, one file per module — see `specs/README.md` for the format.
@@ -76,11 +77,13 @@ to make something easier to build.
   intentional escape hatch, not a violation of this rule — don't add a
   second, uninstructed override of your own.
 - These four roles are distinct from — and not configured the same way
-  as — the fixed Opus 5 `/code-review` gate this project's own build
-  process (`PROCESS.md`) runs against every module's PR, including a
-  curated driver's. That's a development-time tool for building `aiform`
-  itself, not one of `aiform`'s own runtime roles; `PROCESS.md` explains why
-  the two are deliberately not the same mechanism.
+  as — the `/code-review` gate this project's own build process
+  (`PROCESS.md`) runs against every module's PR, including a curated
+  driver's. That gate runs on Opus 5 or newer, never on the model that
+  authored the diff, and it is recorded on the PR as the `llm-review`
+  status. It's a development-time tool for building `aiform` itself, not
+  one of `aiform`'s own runtime roles; `PROCESS.md` explains why the two
+  are deliberately not the same mechanism.
 - Adding a new model source (e.g. Bedrock) is a `MODEL_SOURCES` dispatch-table
   entry in `aiform/llm.py`, not a reason to introduce a plugin system or ABC
   hierarchy — keep it to that one seam.

@@ -47,9 +47,12 @@ mode this process exists to avoid.
    codebase generally.
 4. **Tests pass (green).** Rerun the module's tests, then the full suite.
    All green before moving on.
-5. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer)
-   against the diff. Address findings, or explicitly note in the PR why a
-   finding is being deferred — don't silently ignore one either.
+5. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer,
+   and never the model that authored the diff) against the diff. You launch
+   this yourself — it does not wait on the human. Address findings, or
+   explicitly note in the PR why a finding is being deferred — don't
+   silently ignore one either. This step and the human's review are
+   independent; neither blocks the other.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
    `.claude/skills/github-commit-process/SKILL.md`. CI must be green.
@@ -145,26 +148,40 @@ not a duplicate. If the two ever disagree, the skill wins; update this
 section to match rather than the other way around.
 
 Step 6 of the loop above says "nothing merges without human approval."
-Concretely, that approval is **three independent GitHub signals, all
-required**, before a merge happens:
+Concretely, a merge needs **three gates, all green on the exact head SHA**:
 
-- **`/claude-merge`** — a PR comment or review body from the repo
-  owner's GitHub account, authorizing the merge itself. A native GitHub
-  "Approve" review doesn't substitute for this: GitHub blocks a PR's
-  author from approving their own PR, and every PR in this repo is
-  opened by the same account.
-- **A passing `opus-review` status** — either a real `/code-review` run
-  against the diff, or an explicit **`/claude-skip-review`** comment
-  authorizing skipping it. `/claude-skip-review` exists for small,
-  mechanical changes not worth a full review (e.g. a docs-only PR) —
-  it's a deliberate escape hatch, not a way around the human-approval
-  rule itself, since `/claude-merge` is still separately required.
-- **A green `test` CI check** on the exact head SHA being merged. Unlike
-  the other two this has **no override** — no comment waives it — and it
-  is the only one enforced by GitHub rather than by convention (`main`
-  carries branch protection requiring it, with `enforce_admins: true`, so
-  even the repo owner cannot merge past a red build).
+- **`human-approval`** — posted when the repo owner leaves
+  `/claude-merge-approved` as a PR comment or review body. A native GitHub
+  "Approve" review doesn't substitute: GitHub blocks a PR's author from
+  approving their own PR, and every PR here is opened by the same account.
+- **`llm-review`** — posted by the author LLM once it has run
+  `/code-review` (Opus 5 or newer, never the authoring model) and addressed
+  the findings. The author triggers this itself; it is not something the
+  human has to remember to kick off, and there is no skip path.
+- **`test`** — CI green. No override exists; no comment waives it.
 
-A **`/claude-reject`** comment stops the merge instead, overriding
-anything else posted. If more than one trigger comment is present, only
-the most recently posted one counts.
+**The two reviews are order-independent.** The human may approve before the
+LLM review runs or after; either order ends in a merge. Nothing waits on
+anything else.
+
+**Any new commit clears all three**, because each is pinned to a SHA and a
+new commit mints a new one. That single rule covers every restart case: the
+author fixing review findings, the human pushing their own commits, or a
+branch update to catch up with `main`. The lone exception is that
+`human-approval` may be carried forward onto a new SHA when the delta since
+the approved commit is provably cosmetic — `*.md` files, or comment and
+docstring lines only. `llm-review` is never carried forward; it re-runs,
+which now costs no round-trip.
+
+All three are required by branch protection (`strict: true`,
+`enforce_admins: true`), so even the repo owner cannot merge past a missing
+one. Worth being precise about what that guarantees: `llm-review` and
+`human-approval` are posted *by the agent*, so requiring them catches "the
+agent forgot", not "the agent misbehaves". Only `test` is enforced against
+an actively wrong agent.
+
+A **`/claude-merge-rejected`** comment stops the merge instead. Its feedback
+must be read and addressed in a new commit, which by the rule above restarts
+the cycle. If more than one trigger is present, only the most recent counts
+— and triggers older than the current head commit are ignored entirely,
+since they refer to code that no longer exists.
