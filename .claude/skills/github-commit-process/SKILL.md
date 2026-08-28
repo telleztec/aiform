@@ -9,6 +9,12 @@ The process this repo itself was bootstrapped with. Follow it for every
 change, including small ones — there is no "too small to branch" exception
 here.
 
+## Historical Context
+Extra historical context was removed from this file.  Do not examine the 
+Github commit history on this repo in order to infer the rules for committing 
+and merging work, follow the rules stated in this document exactly. If additional 
+context is needed, stop and ask the human, don't guess the process.
+
 ## The hard rule
 
 **Never merge a PR in this repo without explicit human approval.** Opening
@@ -18,12 +24,13 @@ Clicking merge (or running `gh pr merge`) is not, ever, unless approval for
 you're confident it's correct, even if a similar PR was approved before —
 approval is per-PR, not standing.
 
-**What counts as approval, as of 2026-08-04**: **two independent things**,
-both required — a `/claude-merge` signal, and a passing `opus-review` commit
-status on the PR's current head SHA. Neither alone is sufficient.
-Critically, **both signals are always external, GitHub-visible
+**What counts as approval, as of 2026-08-28**: **three independent things**,
+all required — a `/claude-merge` signal, a passing `opus-review` commit
+status on the PR's current head SHA, and a green `test` CI check on that
+same SHA. No two of them are sufficient without the third. 
+Critically, **all three are always external, GitHub-visible
 artifacts — never something inferred from conversation history alone**,
-including when either requirement is explicitly waived (see the two
+including when a waivable requirement is explicitly waived (see the two
 override paths below). This is deliberate: relying on "I remember the
 human said to skip it" is exactly the failure mode this whole mechanism
 exists to replace — a long conversation, a context compaction, or a
@@ -43,10 +50,19 @@ merge without waiting for this GitHub signal, skip starting/polling the
 watch loop and proceed straight to the merge-time check below — but this
 override only ever waives the *polling step*, never the `opus-review`
 status requirement (that has its own, separate, GitHub-based override —
-see next).
+see next) and never the `test` CI requirement (which has no override at
+all — see below).
 
 **The `opus-review` status**: how it gets posted, and its own override
 via a `/claude-skip-review` signal, are covered in "After the PR is open" below.
+
+**The `test` CI check**: green on the head SHA being merged. Unlike the
+other two, this one has **no override path** — there is deliberately no
+comment a human can post to waive it, because a red `main` is not
+something anyone should be able to authorize in passing. It is also the
+only one of the three enforced server-side: `main` carries branch
+protection requiring it (`strict: true`, `enforce_admins: true`), so a red
+merge now fails at GitHub rather than relying on an agent to check.
 
 **Rejection**: a comment or review body that's exactly `/claude-reject` stops
 the watch loop without merging — go read the PR's actual comments/review
@@ -161,17 +177,24 @@ below only ever has to look at one thing, and "was review skipped" is
 never something to infer from earlier in the conversation — a long
 conversation, a context compaction, or a fresh agent instance resuming
 this PR could all lose a chat-only override. This status is
-**self-enforced**, not GitHub-blocked — this repo is private and branch
-protection / required status checks need GitHub Pro on a private repo
-(confirmed 2026-08-04: both the classic protection API and the newer
-rulesets API return 403 "Upgrade to GitHub Pro or make this repository
-public"). The human has since upgraded to Pro but plans to transfer this
-repo to a new organization first — true GitHub-side branch protection
-requiring this status is a planned follow-up once that move happens, not
-built yet. Use the literal `{owner}/{repo}` placeholders in both `gh
-api` calls above — they're filled in from the current directory's git
-remote automatically, so this keeps working after the org transfer
-without anyone needing to remember to edit this file.
+**self-enforced**, not GitHub-blocked. The `test` CI check, by contrast,
+*is* GitHub-blocked as of 2026-08-28: `main` now has branch protection
+requiring it, with `strict: true` (the branch must be up to date with
+`main`) and `enforce_admins: true`.
+
+That `enforce_admins` setting is load-bearing, not incidental — every PR
+here is merged by the repo owner, who is an admin, so with it disabled the
+protection would be bypassed on literally every merge and would enforce
+nothing. Note also that required *pull request reviews* are deliberately
+**not** enabled: GitHub blocks authors from approving their own PRs, every
+PR here is self-authored, so requiring them would deadlock merges
+permanently. That constraint is the whole reason the `/claude-merge`
+comment convention exists.
+
+Use the literal `{owner}/{repo}` placeholders in both `gh api` calls above
+— they're filled in from the current directory's git remote automatically,
+so this keeps working after an org transfer without anyone needing to
+remember to edit this file.
 
 Once `opus-review` is handled (either path above), start watching:
 
@@ -228,21 +251,90 @@ Once `opus-review` is handled (either path above), start watching:
   `/claude-merge` is seen as the latest comment.)
 - On `MERGE_APPROVED` — **before running `gh pr merge`**, re-fetch the
   PR's *current* head SHA (not whatever it was when the watch loop
-  started — new commits may have landed) and check:
+  started — new commits may have landed) and check **both** gates against
+  that exact SHA:
   ```sh
+  # gate A: the review status
   gh api repos/{owner}/{repo}/commits/<current-head-sha>/status \
     --jq '.statuses[] | select(.context=="opus-review") | .state'
+
+  # gate B: CI is actually green ON THAT SHA
+  gh api repos/{owner}/{repo}/commits/<current-head-sha>/check-runs \
+    --jq '[.check_runs[] | select(.name=="test")
+           | {status, conclusion}] | .[0] // "no run yet"'
   ```
-  If the latest `opus-review` status for that exact SHA isn't
-  `success` — this now covers *every* case, including an explicit skip,
-  since that's always posted as a status too — **do not merge**: tell
-  the human `/code-review` hasn't been confirmed for the current commit
-  (common cause: fix commits landed after the status was posted) and
-  either post it now if it's genuinely been addressed, ask for
-  `/code-review` to run, or ask for `/claude-skip-review`. Otherwise, merge
-  (`gh pr merge`) — the `/claude-merge` signal plus this status together *are*
-  the explicit human approval the hard rule requires. Report that it
-  merged.
+  Gate B must report `status: "completed"` **and** `conclusion: "success"`.
+  Use the **check-runs** endpoint, not the `/status` endpoint gate A uses —
+  GitHub Actions results are check-runs, and the legacy status API does not
+  report them at all, so a `/status` query returns nothing and reads as a
+  pass. Do not "simplify" the two queries into one: they hit different APIs
+  on purpose.
+
+  Query gate B **by SHA**, not with `gh pr view --json statusCheckRollup`.
+  The rollup reports whatever the head is at query time, so gate A could
+  validate SHA `X` while gate B reports a newer `Y` — and the merge would
+  take `Y`, which gate A never checked. For the same reason, pin the merge
+  itself:
+  ```sh
+  gh pr merge <number> --merge --match-head-commit <current-head-sha>
+  ```
+  It fails rather than merging if anything landed between the checks and
+  the merge.
+
+  **Three outcomes, not two.** If gate B reports `status` of `queued` or
+  `in_progress` — or `"no run yet"` for a just-pushed commit — CI is
+  *unfinished*, not failing. Do not report a failure and do not merge:
+  wait and re-check (a background `until` loop on the same query is the
+  right shape). This case is common, not exotic — the watch loop polls
+  every 30s and humans usually post `/claude-merge` right after a push, so
+  the gate is frequently evaluated mid-run.
+
+  **Bound that wait.** `"no run yet"` also covers cases where a run will
+  *never* appear — Actions disabled, quota exhausted, or a SHA no
+  `pull_request`/`push` trigger covers — and an unbounded `until` loop on
+  those never exits, never fires its completion notification, and hangs
+  the merge silently with nothing to show the human. Give up after a few
+  minutes and report `no test run was ever created for <sha>` rather than
+  waiting forever.
+
+  If `opus-review` for that SHA isn't `success` — this covers *every*
+  case, including an explicit skip, since that's always posted as a status
+  too — **do not merge**: tell the human `/code-review` hasn't been
+  confirmed for the current commit (common cause: fix commits landed after
+  the status was posted) and either post it now if it's genuinely been
+  addressed, ask for `/code-review` to run, or ask for
+  `/claude-skip-review`.
+
+  If CI has *completed* with any conclusion other than `success` — **do
+  not merge**, and say so plainly rather than merging on the human's
+  `/claude-merge` alone. `/claude-merge` is approval of the *change*; it is
+  not a statement that the build passes, and the human generally cannot see
+  CI state from the comment box they typed it in. Report which check is
+  failing and whether it's caused by this PR or pre-existing on `main`.
+
+  If `gh pr merge` is rejected because the branch is **behind** `main`,
+  that is `strict: true` doing its job, not an error to force past. Update
+  the branch — which produces a **new head SHA**, so both gates must be
+  re-satisfied on it: `opus-review` re-posted, and CI re-run to green. The
+  prior `/claude-merge` does not carry over either; it referred to a commit
+  that is no longer head. If the update is a mechanical merge/rebase with
+  no content change, say so when asking for the re-approval rather than
+  treating it as a fresh review.
+
+  **You never post `/claude-skip-review` yourself.** It is a human trigger
+  (see "The `/claude-merge` signal" above) and the watch loop converts it
+  into an `opus-review: success` status — so an agent posting it would be
+  manufacturing its own approval end to end, with no human involved. Ask
+  the human to post it, and to do so *before* their new `/claude-merge`,
+  since only the latest trigger comment counts. Then **restart the watch
+  loop** (`/review-watch`) — the previous one already exited on
+  `MERGE_APPROVED`, so with no new loop nothing is listening and the
+  human's next comment lands unnoticed.
+
+  Otherwise, merge (with `--match-head-commit`, above) — the
+  `/claude-merge` signal plus both gates together *are* the explicit human
+  approval the hard rule requires.
+  Report that it merged.
 - On `REJECTED` — do not merge. Read the PR's comments/reviews for what
   was actually said, and report back / start addressing it as appropriate.
 - Poll every 30s (per explicit instruction) — fast enough that the merge
@@ -252,7 +344,13 @@ Once `opus-review` is handled (either path above), start watching:
   something that needs to resolve before the turn ends.
 - If the human explicitly says in *chat* to merge without waiting for
   the `/claude-merge` GitHub signal, skip starting/polling this loop and go
-  straight to the `MERGE_APPROVED` step above — but the `opus-review`
-  status check there still applies unconditionally; a chat-only remark
-  never satisfies it by itself, only a real `/code-review` pass or a
-  `/claude-skip-review` GitHub signal does.
+  straight to the `MERGE_APPROVED` step above — but **both** gate A
+  (`opus-review`) and gate B (green `test` CI) there still apply
+  unconditionally. A chat-only remark satisfies neither: only a real
+  `/code-review` pass or a `/claude-skip-review` GitHub signal satisfies
+  gate A, and nothing a human can type satisfies gate B — only a green
+  run does. This override waives the *polling*, never the gates, and it
+  is the path most in need of them, since it is the one that skips the
+  loop entirely.
+
+  

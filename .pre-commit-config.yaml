@@ -5,3 +5,9 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+        # The hook ships with types_or: [python, pyi, jupyter], but CI runs
+        # `ruff format --check .` over the whole tree -- and ruff formats
+        # Python code blocks inside markdown. Without `markdown` here, a
+        # docs-only commit is invisible to this hook and still fails CI:
+        #  Keep this list matching what CI checks.
+        types_or: [python, pyi, jupyter, markdown]

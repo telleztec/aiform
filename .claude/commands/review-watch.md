@@ -64,10 +64,29 @@ process treats as required, not optional).
    steps exactly — this is the part that actually matters, not the
    polling itself:
    - `MERGE_APPROVED`: re-fetch the PR's **current** head SHA (commits may
-     have landed since the loop started) and verify the latest
-     `opus-review` status on *that exact SHA* is `success` before running
-     `gh pr merge`. If it isn't, do not merge — explain why and what's
-     needed (a fresh `/code-review`, or a `/claude-skip-review`).
+     have landed since the loop started) and verify **both** gates
+     against *that exact SHA*:
+     1. `opus-review` status is `success` — legacy `/commits/<sha>/status`.
+     2. The `test` check-run is `status: completed`, `conclusion: success`
+        — `/commits/<sha>/check-runs`. Actions results are check-runs and
+        do **not** appear in `/status`, so a `/status` query returns an
+        empty `contexts` array for a green run and silently reads as a
+        pass. Use each endpoint for its own gate; do not consolidate.
+
+     Then merge with `gh pr merge <PR> --merge --match-head-commit <sha>`,
+     so it fails rather than merging something that landed in between.
+
+     If `opus-review` isn't `success`, do not merge — explain what's needed
+     (a fresh `/code-review`, or a `/claude-skip-review` **from the
+     human**; never post that trigger yourself). If CI has completed
+     non-`success`, do not merge and report which check failed. If CI is
+     `queued`/`in_progress`, or no run exists for the SHA yet, it is
+     *unfinished*, not failing — wait and re-check rather than reporting a
+     failure, but bound the wait and report `no test run was ever created`
+     rather than looping forever on a run that will never appear.
+
+     Do not treat this list as a paraphrase you can trim.
+     
    - `REJECTED`: do not merge. Read the PR's actual comments/reviews for
      what needs fixing and act on that instead of re-polling.
 
@@ -118,9 +137,11 @@ ever changes, update both together.)
 
 - This command only starts the loop and defines how to react to its
   result; it never merges anything itself outside of step 7, and never
-  treats a chat-only "go ahead and merge" as satisfying either required
-  signal — both `/claude-merge` and `opus-review: success` must be real,
-  GitHub-visible artifacts, per the skill.
+  treats a chat-only "go ahead and merge" as satisfying any required
+  signal — `/claude-merge` and `opus-review: success` must be real,
+  GitHub-visible artifacts, per the skill, and the `test` check must be
+  genuinely green. Nothing a human can type substitutes for that last one;
+  it has no override path.
 - One loop per PR. Poll interval is fixed at 30s, matching the skill's
   explicit instruction ("fast enough that the merge feels immediate...
   without being a true busy-loop").

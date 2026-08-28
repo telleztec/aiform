@@ -47,7 +47,7 @@ mode this process exists to avoid.
    codebase generally.
 4. **Tests pass (green).** Rerun the module's tests, then the full suite.
    All green before moving on.
-5. **Independent review.** Run Claude Code's `/code-review` (Opus 5)
+5. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer)
    against the diff. Address findings, or explicitly note in the PR why a
    finding is being deferred — don't silently ignore one either.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
@@ -145,7 +145,7 @@ not a duplicate. If the two ever disagree, the skill wins; update this
 section to match rather than the other way around.
 
 Step 6 of the loop above says "nothing merges without human approval."
-Concretely, that approval is **two independent GitHub signals, both
+Concretely, that approval is **three independent GitHub signals, all
 required**, before a merge happens:
 
 - **`/claude-merge`** — a PR comment or review body from the repo
@@ -159,6 +159,11 @@ required**, before a merge happens:
   mechanical changes not worth a full review (e.g. a docs-only PR) —
   it's a deliberate escape hatch, not a way around the human-approval
   rule itself, since `/claude-merge` is still separately required.
+- **A green `test` CI check** on the exact head SHA being merged. Unlike
+  the other two this has **no override** — no comment waives it — and it
+  is the only one enforced by GitHub rather than by convention (`main`
+  carries branch protection requiring it, with `enforce_admins: true`, so
+  even the repo owner cannot merge past a red build).
 
 A **`/claude-reject`** comment stops the merge instead, overriding
 anything else posted. If more than one trigger comment is present, only
