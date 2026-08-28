@@ -289,6 +289,14 @@ Once `opus-review` is handled (either path above), start watching:
   every 30s and humans usually post `/claude-merge` right after a push, so
   the gate is frequently evaluated mid-run.
 
+  **Bound that wait.** `"no run yet"` also covers cases where a run will
+  *never* appear — Actions disabled, quota exhausted, or a SHA no
+  `pull_request`/`push` trigger covers — and an unbounded `until` loop on
+  those never exits, never fires its completion notification, and hangs
+  the merge silently with nothing to show the human. Give up after a few
+  minutes and report `no test run was ever created for <sha>` rather than
+  waiting forever.
+
   If `opus-review` for that SHA isn't `success` — this covers *every*
   case, including an explicit skip, since that's always posted as a status
   too — **do not merge**: tell the human `/code-review` hasn't been
@@ -307,11 +315,21 @@ Once `opus-review` is handled (either path above), start watching:
   If `gh pr merge` is rejected because the branch is **behind** `main`,
   that is `strict: true` doing its job, not an error to force past. Update
   the branch — which produces a **new head SHA**, so both gates must be
-  re-satisfied on it: `opus-review` re-posted, and CI re-run to green. If
-  the update is a mechanical merge/rebase with no content change, say so
-  when asking for the re-approval rather than treating it as a fresh
-  review. Post `/claude-skip-review` *before* the new `/claude-merge` if
-  that's the route, since only the latest trigger comment counts.
+  re-satisfied on it: `opus-review` re-posted, and CI re-run to green. The
+  prior `/claude-merge` does not carry over either; it referred to a commit
+  that is no longer head. If the update is a mechanical merge/rebase with
+  no content change, say so when asking for the re-approval rather than
+  treating it as a fresh review.
+
+  **You never post `/claude-skip-review` yourself.** It is a human trigger
+  (see "The `/claude-merge` signal" above) and the watch loop converts it
+  into an `opus-review: success` status — so an agent posting it would be
+  manufacturing its own approval end to end, with no human involved. Ask
+  the human to post it, and to do so *before* their new `/claude-merge`,
+  since only the latest trigger comment counts. Then **restart the watch
+  loop** (`/review-watch`) — the previous one already exited on
+  `MERGE_APPROVED`, so with no new loop nothing is listening and the
+  human's next comment lands unnoticed.
 
   Otherwise, merge (with `--match-head-commit`, above) — the
   `/claude-merge` signal plus both gates together *are* the explicit human

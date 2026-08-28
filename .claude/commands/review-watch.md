@@ -64,21 +64,26 @@ process treats as required, not optional).
    steps exactly — this is the part that actually matters, not the
    polling itself:
    - `MERGE_APPROVED`: re-fetch the PR's **current** head SHA (commits may
-     have landed since the loop started) and verify **all three** gates
-     against *that exact SHA* before merging:
-     1. `opus-review` status is `success` (legacy `/status` endpoint).
+     have landed since the loop started) and verify **both** gates
+     against *that exact SHA*:
+     1. `opus-review` status is `success` — legacy `/commits/<sha>/status`.
      2. The `test` check-run is `status: completed`, `conclusion: success`
-        (`/commits/<sha>/check-runs` — Actions results are check-runs and
-        do **not** appear in `/status`, so querying only the former silently
-        looks like a pass).
-     3. Merge with `gh pr merge <PR> --merge --match-head-commit <sha>` so
-        it fails rather than merging something that landed in between.
+        — `/commits/<sha>/check-runs`. Actions results are check-runs and
+        do **not** appear in `/status`, so a `/status` query returns an
+        empty `contexts` array for a green run and silently reads as a
+        pass. Use each endpoint for its own gate; do not consolidate.
+
+     Then merge with `gh pr merge <PR> --merge --match-head-commit <sha>`,
+     so it fails rather than merging something that landed in between.
 
      If `opus-review` isn't `success`, do not merge — explain what's needed
-     (a fresh `/code-review`, or a `/claude-skip-review`). If CI has
-     completed non-`success`, do not merge and report which check failed.
-     If CI is still `queued`/`in_progress`, it is *unfinished*, not
-     failing — wait and re-check rather than reporting a failure.
+     (a fresh `/code-review`, or a `/claude-skip-review` **from the
+     human**; never post that trigger yourself). If CI has completed
+     non-`success`, do not merge and report which check failed. If CI is
+     `queued`/`in_progress`, or no run exists for the SHA yet, it is
+     *unfinished*, not failing — wait and re-check rather than reporting a
+     failure, but bound the wait and report `no test run was ever created`
+     rather than looping forever on a run that will never appear.
 
      Do not treat this list as a paraphrase you can trim.
      
