@@ -122,14 +122,20 @@ def main(argv: list[str] | None = None) -> int:
   project's existing "the user handles credential values directly,
   never a script" convention (`CLAUDE.md`'s credentials section).
   Since `.envrc` (direnv) landed, that explicit prefix is redundant on
-  macOS for anyone standing in the repo with `direnv allow` run --
-  `DIGITALOCEAN_TOKEN` is already exported, so a bare
-  `.venv/bin/python scripts/run_system_tests.py` now satisfies the
-  presence check. The script itself is unchanged and still only checks
-  presence. Worth noting that this removes a piece of deliberate
-  friction in front of a suite that creates real droplets; the `-m
-  system` gate (`pyproject.toml`'s `addopts`) is now the only thing
-  standing in front of it, so a bare `pytest` remains unaffected.
+  macOS for anyone standing in the repo *in an interactive shell* with
+  `direnv allow` run: `.envrc` exports both `DIGITALOCEAN_TOKEN` and
+  `ANTHROPIC_API_KEY`, which is the whole of `REQUIRED_ENV_VARS`, so a
+  bare `.venv/bin/python scripts/run_system_tests.py` satisfies the
+  presence check. It does *not* help a non-interactive invocation
+  (`bash`, `ssh host '...'`, a subshell, cron), where direnv's prompt
+  hook never fires and the presence check will fail as before -- which
+  is the correct outcome, not a regression. The script itself is
+  unchanged and still only checks presence, not validity: a revoked but
+  non-empty token passes this gate and fails later at the API. Worth
+  noting that this removes a piece of deliberate friction in front of a
+  suite that creates real droplets; the `-m system` gate
+  (`pyproject.toml`'s `addopts`) is now the only thing standing in front
+  of it, so a bare `pytest` remains unaffected.
 - **Live terminal output while the suite runs.** Output goes to the log
   file only, not also to the terminal (`tee`-style dual output) — a
   person running this interactively who wants to watch progress live

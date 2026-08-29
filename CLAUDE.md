@@ -112,9 +112,9 @@ to make something easier to build.
   `terraform.tfvars`) before being adopted here; don't reinvent it
   differently, but don't treat that other repo as required reading either
   — the reasoning above is the actual rule.
-  On macOS there is now a third path, `.envrc` (direnv), which exports
-  `DIGITALOCEAN_TOKEN` from the Keychain entry `DIGITALOCEAN_TOKEN_AIFORM` on
-  `cd` into this repo. It exists because a *global* export makes one project's
+  On macOS there is now a third path, `.envrc` (direnv), which exports both
+  `DIGITALOCEAN_TOKEN` (from Keychain entry `DIGITALOCEAN_TOKEN_AIFORM`) and
+  `ANTHROPIC_API_KEY` on `cd` into this repo. It exists because a *global* export makes one project's
   token ambient in every shell, and this machine has two DigitalOcean projects
   on different accounts. State the tradeoff honestly rather than pretending
   there isn't one: under `.aiform/credentials.env` the token was read only by
@@ -122,7 +122,12 @@ to make something easier to build.
   in the environment of **every** process started in this directory -- pytest,
   pip install hooks, editor tasks, every command an AI agent runs here. That is
   a materially wider surface. It buys, in exchange, that the token which *is*
-  present is the right account's. Note also that direnv's `DIRENV_DIFF` carries
+  present is the right account's -- but only for processes descended from an
+  interactive shell with direnv's prompt hook installed. It does *not* fire for
+  `bash script.sh`, `ssh host 'cd ~/src/aiform && ...'`, `(cd ~/src/aiform &&
+  pytest)`, cron, or an agent session whose environment was populated
+  elsewhere; those inherit whatever the parent had, and `resolve_credentials()`
+  reads the env var before the file. The window is narrowed, not closed. Note also that direnv's `DIRENV_DIFF` carries
   shadowed values, so a global `DIGITALOCEAN_TOKEN` must not coexist with it --
   see the comment block in `.envrc`.
 - A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
