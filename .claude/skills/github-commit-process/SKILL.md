@@ -30,7 +30,7 @@ commit statuses or checks **on the exact head SHA being merged**:
 | Gate | Posted by | Means |
 |---|---|---|
 | `test` | GitHub Actions | CI is green |
-| `llm-review` | you, the author LLM | `/code-review` ran and its findings were addressed |
+| `llm-review` | you, the author LLM | head's content was reviewed and its findings resolved |
 | `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` |
 
 **The two reviews are order-independent.** The human may approve before the
@@ -190,8 +190,10 @@ neither waits on the other:
 
 1. **Start the watch loop immediately** (`/review-watch <PR>`). The human may
    approve at any time, including before the LLM review has run.
-2. **Run `/code-review <PR>` yourself.** You can: the command carries
-   `disable-model-invocation: false`. Do not ask the human to trigger it.
+2. **Run `/code-review <PR>` yourself**, then `/code-review-since <PR>` over
+   each round of fixes until head is covered — see "Satisfying `llm-review`"
+   below for the loop. You can launch both: they carry
+   `disable-model-invocation: false`. Do not ask the human to trigger either.
    The one exception is `/code-review ultra`, which is user-triggered and
    billed — never launch that.
 
@@ -203,25 +205,57 @@ PR instead of reviewing yourself.
 
 ### Satisfying `llm-review`
 
-Run the review, address what it finds — fix it, or state on the PR why a
-finding is out of scope — then post the status **on the SHA whose content was
-actually examined**, including any fix commits you made in response.
+The status means the SHA's content **has been read by a reviewer**. Never post
+it on a SHA containing code no pass has read — that is a false attestation
+however small the change looks. Two placements, with different force:
 
-If head has moved for a reason you did not author or inspect, examine that
-delta before posting. The status attests that *this commit* was reviewed;
-posting it over a commit you never read is a false attestation, however
-small the change looks.
+- **On head, it is the gate**, and means read *and* resolved: every finding
+  either fixed or explicitly deferred on the PR.
+- **On an earlier SHA, it is history** — a review record, and the checkpoint
+  `/code-review-since` walks back to. It gates nothing.
+
+**Never post it on a SHA that is still head with findings open.** Head plus a
+green CI plus an early human approval is a merge, so a premature `success`
+there ships known-unfixed findings. Post on a reviewed SHA once it *stops*
+being head; post on head only when its findings are resolved.
+
+Because your own fix commits are code no pass has read, one round is usually
+not enough. The loop:
+
+1. Review head `R` — `/code-review <PR>` the first round,
+   `/code-review-since <PR>` after, whose default `last-review` checkpoint
+   resolves to the last SHA you posted on, so it reads only what is new.
+2. Resolve every finding: fix it, or state on the PR why it is deferred.
+3. **If that produced commits**, head is now `H`. Post `llm-review` on `R` —
+   it has become history, and posting arms the checkpoint for the next round.
+   Set `R = H` and go back to 1.
+4. **If it produced no commits**, head is still `R` and its findings are
+   resolved. Post `llm-review` on `R`. Done.
+
+It terminates whenever a round produces no commits — including a round whose
+findings are all deferred rather than fixed, which is why step 4 keys on
+commits and not on the finding count. Head never carries the status while
+anything is open, and every SHA the loop posts on has been read.
 
 ```sh
-gh api repos/{owner}/{repo}/statuses/<head-sha> \
+gh api repos/{owner}/{repo}/statuses/<reviewed-sha> \
   -f state=success \
   -f context=llm-review \
   -f description="/code-review pass; N findings addressed"   # or "nothing to fix"
+# incremental rounds:
+#   -f description="/code-review-since <R>; fixes reviewed, nothing further"
 ```
 
 Say in the description what actually happened, including which model ran if it
-wasn't the default. This status is the durable record of what review this
-commit received; a description that overstates it is worse than none.
+wasn't the default and whether the pass was full or incremental. This status
+is the durable record of what review this commit received; a description that
+overstates it is worse than none.
+
+Only head carrying `llm-review` satisfies the merge gate — the statuses on
+earlier SHAs are review history and checkpoints, not gates.
+
+If head moved for a reason you did not author, treat it exactly the same way:
+`R..H` is unread, so review that delta before posting anything on `H`.
 
 There is **no skip path.** If a review is genuinely impossible (model
 unavailable), say so on the PR and stop — do not invent a bypass.
@@ -324,8 +358,10 @@ failure. But bound that wait: `"no run yet"` also covers runs that will never
 appear (Actions disabled, quota exhausted, a SHA no trigger covers). Give up
 after a few minutes and report `no test run was ever created for <sha>`.
 
-**If `llm-review` is missing**, run `/code-review` now — that gate is yours to
-satisfy, not the human's. **If CI completed non-`success`**, do not merge; say
+**If `llm-review` is missing from head**, that gate is yours to satisfy, not
+the human's: run the loop above — `/code-review-since <PR>` when an earlier
+commit on the branch already carries the status, `/code-review <PR>` when none
+does. **If CI completed non-`success`**, do not merge; say
 which check failed and whether it is caused by this PR or pre-existing on
 `main`. `/claude-merge-approved` approves the *change*; it is not a claim that
 the build passes, and the human usually cannot see CI from the box they typed

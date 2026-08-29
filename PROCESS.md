@@ -51,7 +51,9 @@ mode this process exists to avoid.
    and never the model that authored the diff) against the diff. You launch
    this yourself — it does not wait on the human. Address findings, or
    explicitly note in the PR why a finding is being deferred — don't
-   silently ignore one either. This step and the human's review are
+   silently ignore one either. **Then review your own fixes**: they are code
+   no pass has read, so run `/code-review-since <PR>` over each round until
+   the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
@@ -154,10 +156,14 @@ Concretely, a merge needs **three gates, all green on the exact head SHA**:
   `/claude-merge-approved` as a PR comment or review body. A native GitHub
   "Approve" review doesn't substitute: GitHub blocks a PR's author from
   approving their own PR, and every PR here is opened by the same account.
-- **`llm-review`** — posted by the author LLM once it has run
-  `/code-review` (Opus 5 or newer, never the authoring model) and addressed
-  the findings. The author triggers this itself; it is not something the
-  human has to remember to kick off, and there is no skip path.
+- **`llm-review`** — means the SHA's content was read by a reviewer (Opus 5
+  or newer, never the authoring model). On head it is the gate and means
+  read *and* resolved — every finding fixed or explicitly deferred on the
+  PR; it is never posted on head while anything is open. On earlier SHAs it
+  is review history, and the checkpoint `/code-review-since` walks back to.
+  The author triggers all of this itself, and there is no skip path. Fix
+  commits are unread code, so each round is re-reviewed incrementally until
+  head is covered.
 - **`test`** — CI green. No override exists; no comment waives it.
 
 **The two reviews are order-independent.** The human may approve before the
