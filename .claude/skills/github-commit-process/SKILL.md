@@ -30,7 +30,7 @@ commit statuses or checks **on the exact head SHA being merged**:
 | Gate | Posted by | Means |
 |---|---|---|
 | `test` | GitHub Actions | CI is green |
-| `llm-review` | you, the author LLM | `/code-review` ran and its findings were addressed |
+| `llm-review` | you, the author LLM | head's content was reviewed and its findings resolved |
 | `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` |
 
 **The two reviews are order-independent.** The human may approve before the
@@ -205,29 +205,37 @@ PR instead of reviewing yourself.
 
 ### Satisfying `llm-review`
 
-**The status means "this SHA's content has been read by a reviewer."** Post it
-on a SHA the moment that becomes true, and never on a SHA containing code no
-pass has read — that is a false attestation however small the change looks.
+The status means the SHA's content **has been read by a reviewer**. Never post
+it on a SHA containing code no pass has read — that is a false attestation
+however small the change looks. Two placements, with different force:
 
-Because your own fix commits are code no pass has read, one review round is
-usually not enough. The loop:
+- **On head, it is the gate**, and means read *and* resolved: every finding
+  either fixed or explicitly deferred on the PR.
+- **On an earlier SHA, it is history** — a review record, and the checkpoint
+  `/code-review-since` walks back to. It gates nothing.
 
-1. Run `/code-review <PR>` on the current head `R`. Post `llm-review` on `R` —
-   it *was* reviewed, and the status records that, not that it was flawless.
-2. Address the findings. If that produced no commits, `R` is head and you are
-   done.
-3. Otherwise head is now `H`, and `R..H` is unread. Run
-   `/code-review-since <PR>` — its default `last-review` checkpoint resolves
-   to `R`, so it reviews exactly your fixes and not the whole diff again.
-4. Clean? Post `llm-review` on `H`; head is now fully covered — `R` by the
-   full pass, `R..H` by the incremental one. Otherwise set `R = H` and repeat
-   from step 2.
+**Never post it on a SHA that is still head with findings open.** Head plus a
+green CI plus an early human approval is a merge, so a premature `success`
+there ships known-unfixed findings. Post on a reviewed SHA once it *stops*
+being head; post on head only when its findings are resolved.
 
-This terminates when a pass produces no commits, and it is what keeps
-`/code-review-since` usable: its checkpoint walk looks for the newest commit
-carrying `llm-review`, so posting the status on each reviewed SHA — rather
-than only on head — is what makes the default resolve correctly instead of
-finding head and diffing nothing.
+Because your own fix commits are code no pass has read, one round is usually
+not enough. The loop:
+
+1. Review head `R` — `/code-review <PR>` the first round,
+   `/code-review-since <PR>` after, whose default `last-review` checkpoint
+   resolves to the last SHA you posted on, so it reads only what is new.
+2. Resolve every finding: fix it, or state on the PR why it is deferred.
+3. **If that produced commits**, head is now `H`. Post `llm-review` on `R` —
+   it has become history, and posting arms the checkpoint for the next round.
+   Set `R = H` and go back to 1.
+4. **If it produced no commits**, head is still `R` and its findings are
+   resolved. Post `llm-review` on `R`. Done.
+
+It terminates whenever a round produces no commits — including a round whose
+findings are all deferred rather than fixed, which is why step 4 keys on
+commits and not on the finding count. Head never carries the status while
+anything is open, and every SHA the loop posts on has been read.
 
 ```sh
 gh api repos/{owner}/{repo}/statuses/<reviewed-sha> \
@@ -350,8 +358,10 @@ failure. But bound that wait: `"no run yet"` also covers runs that will never
 appear (Actions disabled, quota exhausted, a SHA no trigger covers). Give up
 after a few minutes and report `no test run was ever created for <sha>`.
 
-**If `llm-review` is missing**, run `/code-review` now — that gate is yours to
-satisfy, not the human's. **If CI completed non-`success`**, do not merge; say
+**If `llm-review` is missing from head**, that gate is yours to satisfy, not
+the human's: run the loop above — `/code-review-since <PR>` when an earlier
+commit on the branch already carries the status, `/code-review <PR>` when none
+does. **If CI completed non-`success`**, do not merge; say
 which check failed and whether it is caused by this PR or pre-existing on
 `main`. `/claude-merge-approved` approves the *change*; it is not a claim that
 the build passes, and the human usually cannot see CI from the box they typed
