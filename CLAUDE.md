@@ -112,6 +112,19 @@ to make something easier to build.
   `terraform.tfvars`) before being adopted here; don't reinvent it
   differently, but don't treat that other repo as required reading either
   — the reasoning above is the actual rule.
+  On macOS there is now a third path, `.envrc` (direnv), which exports
+  `DIGITALOCEAN_TOKEN` from the Keychain entry `DIGITALOCEAN_TOKEN_AIFORM` on
+  `cd` into this repo. It exists because a *global* export makes one project's
+  token ambient in every shell, and this machine has two DigitalOcean projects
+  on different accounts. State the tradeoff honestly rather than pretending
+  there isn't one: under `.aiform/credentials.env` the token was read only by
+  aiform's own process on the driver-execution path, whereas under direnv it is
+  in the environment of **every** process started in this directory -- pytest,
+  pip install hooks, editor tasks, every command an AI agent runs here. That is
+  a materially wider surface. It buys, in exchange, that the token which *is*
+  present is the right account's. Note also that direnv's `DIRENV_DIFF` carries
+  shadowed values, so a global `DIGITALOCEAN_TOKEN` must not coexist with it --
+  see the comment block in `.envrc`.
 - A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
   reads `ANTHROPIC_API_KEY` is a hard failure at `code-review-model` review
   time (gate #1) — this is explicitly one of the review checklist items in
