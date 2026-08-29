@@ -118,7 +118,7 @@ to make something easier to build.
   token ambient in every shell, and this machine has two DigitalOcean projects
   on different accounts. State the tradeoff honestly rather than pretending
   there isn't one: under `.aiform/credentials.env` the token was read only by
-  aiform's own process on the driver-execution path, whereas under direnv it is
+  aiform's own process, whereas under direnv it is
   in the environment of **every** process started in this directory -- pytest,
   pip install hooks, editor tasks, every command an AI agent runs here. That is
   a materially wider surface. It buys, in exchange, that the token which *is*
@@ -128,7 +128,7 @@ to make something easier to build.
   pytest)`, cron, or an agent session whose environment was populated
   elsewhere; those inherit whatever the parent had, and `resolve_credentials()`
   reads the env var before the file. The window is narrowed, not closed. Note also that direnv's `DIRENV_DIFF` carries
-  shadowed values, so a global `DIGITALOCEAN_TOKEN` must not coexist with it --
+  shadowed values, so a global `DIGITALOCEAN_TOKEN` or `ANTHROPIC_API_KEY` must not coexist with it --
   see the comment block in `.envrc`.
 - A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
   reads `ANTHROPIC_API_KEY` is a hard failure at `code-review-model` review
