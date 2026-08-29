@@ -11,3 +11,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .claude/session-start-sha
+
+# direnv local cache -- not created by this repo's .envrc (which uses no
+# layout/use stdlib functions), but present if one is ever added.
+.direnv/
