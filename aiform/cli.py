@@ -304,7 +304,7 @@ def _format_check(label: str, check: KeyCheck) -> str:
 def _print_credential_checks(provider: str, token_env_var: str) -> None:
     # Up to three sequential probes run below; without this the command
     # looks hung on a black-holed network.
-    print("Checking credentials...")
+    print("Checking credentials...", flush=True)
     print(
         _format_check(
             "ANTHROPIC_API_KEY", _guarded(lambda: llm.verify_api_key(timeout=_PROBE_TIMEOUT))
@@ -403,10 +403,15 @@ def _check_droplet_scope(
     body, failure = _probe(url, token, timeout)
     if failure is not None:
         if failure.code == 403:
-            return KeyCheck(
-                state=KeyState.REJECTED,
-                detail="token is valid but cannot read droplets",
+            # Only claim the token is valid when the account probe actually
+            # established that; on the 403/403 path nothing did, and telling
+            # the user to add droplet scope points at the wrong fix.
+            detail = (
+                "token is valid but cannot read droplets"
+                if account.authenticated
+                else "token cannot read the account or droplets"
             )
+            return KeyCheck(state=KeyState.REJECTED, detail=detail)
         # A 401 here is unambiguous -- the token was not accepted at all,
         # whatever the account endpoint said a moment ago -- so it outranks
         # anything the first probe established.
@@ -470,34 +475,50 @@ def _open(request: urllib.request.Request, timeout: float):
 
 
 def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | None]:
+    def failed(state: KeyState, detail: str, code: int | None = None) -> tuple[None, _ProbeFailure]:
+        # Every detail leaving this function passes through here. An
+        # exception raised while sending carries the request -- including the
+        # Authorization header -- in its message, and CLAUDE.md's rule is
+        # that the token never reaches the output of any command.
+        return None, _ProbeFailure(KeyCheck(state=state, detail=_redact(detail, token)), code)
+
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with _open(request, timeout) as response:
-            return json.loads(response.read(_MAX_PROBE_BODY).decode("utf-8")), None
+            raw = response.read(_MAX_PROBE_BODY)
     except urllib.error.HTTPError as exc:
         detail = _http_error_detail(exc)
         # A redirect is not a verdict on the token -- and following it would
         # have leaked the token to wherever it pointed.
         if 300 <= exc.code < 400:
-            return None, _ProbeFailure(
-                KeyCheck(
-                    state=KeyState.UNVERIFIED, detail=f"unexpected redirect (HTTP {exc.code})"
-                ),
-                exc.code,
-            )
+            return failed(KeyState.UNVERIFIED, f"unexpected redirect (HTTP {exc.code})", exc.code)
         if exc.code in config.PROVIDER_TOKEN_VERDICT_STATUSES:
-            return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
-        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
+            return failed(KeyState.REJECTED, detail, exc.code)
+        return failed(KeyState.UNVERIFIED, detail, exc.code)
     except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         # HTTPException (IncompleteRead, BadStatusLine) is not an OSError, so
         # a truncated chunked body would otherwise escape a function
         # specified to return a KeyCheck.
-        detail = str(exc) or type(exc).__name__
-        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
+        return failed(KeyState.UNVERIFIED, str(exc) or type(exc).__name__)
+    except ValueError:
+        # Raised by http.client when the header value is malformed -- a token
+        # with a stray newline is the usual cause. The message quotes the
+        # whole header, so it must never be echoed.
+        return failed(
+            KeyState.UNVERIFIED,
+            "the token is not a valid HTTP header value (check for stray whitespace)",
+        )
+
+    try:
+        return json.loads(raw.decode("utf-8")), None
     except ValueError as exc:
-        # A captive portal or proxy answering 200 with non-JSON.
-        detail = f"unreadable response: {exc}"
-        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
+        # A captive portal or proxy answering 200 with non-JSON. Decoding
+        # happens after the request, so this message cannot carry the token.
+        return failed(KeyState.UNVERIFIED, f"unreadable response: {exc}")
+
+
+def _redact(detail: str, token: str) -> str:
+    return detail.replace(token.strip(), "***") if token.strip() else detail
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:

@@ -155,8 +155,13 @@ which never reads or writes state.
   (`_PROBE_TIMEOUT`, 5s) and no retries.
 
   Note what that does and does not bound: **each request**, not the
-  command. Up to three probes run in sequence, so a black-holed network
-  costs ~15s, not 5. `init` prints `Checking credentials...` before them so
+  command, and not name resolution. `socket.create_connection` resolves
+  the host *before* applying the timeout, so a network that black-holes
+  DNS waits out the OS resolver instead — typically several seconds per
+  nameserver per attempt. Three probes run in sequence, so ~15s is the
+  floor for a network that refuses connections cleanly, not a ceiling for
+  every failure mode. `init` still terminates; it is not bounded as
+  tightly as a per-request timeout suggests. `init` prints `Checking credentials...` before them so
   the pause is explained rather than looking like a hang. Response bodies
   are read with a size cap (`_MAX_PROBE_BODY`) because a socket timeout
   bounds each read, not a slow endless stream.

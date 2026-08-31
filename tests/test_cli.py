@@ -950,6 +950,41 @@ class TestCheckProviderToken:
         assert sent["auth"] == ["Bearer dop_v1_test", "Bearer dop_v1_test"]
         assert sent["urls"][0] == config.PROVIDER_ACCOUNT_PROBES["digitalocean"]
 
+    def test_malformed_token_never_reaches_output(self, monkeypatch, capsys):
+        # A trailing newline is the usual malformation for a secret read
+        # from a file, and .aiform/credentials.env is hand-edited. http.client
+        # rejects the header and quotes the whole value -- including the
+        # token -- in the exception message.
+        secret = "dop_v1_supersecretvalue"
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", secret + "\n")
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert secret not in (check.detail or "")
+        assert secret not in capsys.readouterr().out
+
+    def test_init_never_prints_a_malformed_token(self, project_dir: Path, monkeypatch, capsys):
+        secret = "dop_v1_supersecretvalue"
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.MISSING))
+        monkeypatch.setattr(cli, "_check_provider_token", _REAL_CHECK_PROVIDER_TOKEN)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", secret + "\n")
+
+        cli.main(["init"])
+
+        captured = capsys.readouterr()
+        assert secret not in captured.out
+        assert secret not in captured.err
+
+    def test_redaction_covers_any_detail_carrying_the_token(self, token, monkeypatch):
+        # Defense in depth: every detail leaving _probe is redacted, not just
+        # the one path known to quote the header.
+        self._urlopen(monkeypatch, OSError("connect failed for Bearer dop_v1_test"))
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert "dop_v1_test" not in (check.detail or "")
+
     def test_never_prints_or_returns_the_token(self, token, monkeypatch, capsys):
         self._urlopen(monkeypatch, fake_http_error(401, {"message": "bad token"}))
 
