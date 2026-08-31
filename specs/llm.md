@@ -425,8 +425,8 @@ Returns a `KeyCheck` (`aiform/models.py`) — `state` plus an optional
 |---|---|---|
 | `KeyState.OK` | probe returned 2xx | `None` |
 | `KeyState.MISSING` | `ANTHROPIC_API_KEY` unset | `None` |
-| `KeyState.REJECTED` | API returned 4xx | the API's own error message |
-| `KeyState.UNVERIFIED` | API unreachable | the connection error |
+| `KeyState.REJECTED` | API returned 4xx **other than 408/429** | the API's own error message |
+| `KeyState.UNVERIFIED` | 408, 429, 5xx, or unreachable | the API's error, or the connection error |
 
 `REJECTED` covers `AuthenticationError` (401), `PermissionDeniedError`
 (403) **and `BadRequestError` (400)** — the 400 case is the one that
@@ -434,8 +434,11 @@ motivated this function, since an identity-linked key 400s rather than
 401s, and treating only 401/403 as rejection would miss exactly the bug
 being fixed.
 
-`UNVERIFIED` is returned for `APIConnectionError` (which covers timeout
-and DNS failure) and must never be reported as a bad key. Constructed
+`UNVERIFIED` covers `APIConnectionError` (timeout and DNS failure) and
+also 408, 429 and every 5xx: a rate limit or an outage is not a verdict on
+the key, and a busy org key routinely 429s. Reporting any of those as a bad
+key sends the user to rotate a credential that works. None of them may ever
+be reported as `REJECTED`. Constructed
 with `max_retries=0` and the given `timeout` so `init` cannot hang.
 
 **This function takes no `credentials` parameter and introduces no

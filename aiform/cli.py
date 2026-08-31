@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import http.client
 import json
 import logging
 import sys
@@ -301,6 +302,9 @@ def _format_check(label: str, check: KeyCheck) -> str:
 
 
 def _print_credential_checks(provider: str, token_env_var: str) -> None:
+    # Up to three sequential probes run below; without this the command
+    # looks hung on a black-holed network.
+    print("Checking credentials...")
     print(
         _format_check(
             "ANTHROPIC_API_KEY", _guarded(lambda: llm.verify_api_key(timeout=_PROBE_TIMEOUT))
@@ -333,41 +337,57 @@ def _check_provider_token(provider: str, *, timeout: float = _PROBE_TIMEOUT) -> 
         return KeyCheck(state=KeyState.UNVERIFIED, detail="no account probe for this provider")
 
     token = creds[config.PROVIDER_TOKEN_ENV_VARS[provider]]
-    email, failure = _probe_account(probe_url, token, timeout)
-    if failure is not None:
-        return failure
+    account = _probe_account(probe_url, token, timeout)
+    if account.check is not None:
+        return account.check
 
     # Always, not only after a 403 on the account endpoint: a token granted
     # account:read without droplet scopes answers 200 above and then fails
     # every apply, which is the same false green reached by the other path.
-    return _check_droplet_scope(provider, token, timeout, email)
+    return _check_droplet_scope(provider, token, timeout, account)
 
 
-def _probe_account(url: str, token: str, timeout: float) -> tuple[str | None, KeyCheck | None]:
-    """Return the account email, or the KeyCheck that ends the check.
+class _AccountResult(NamedTuple):
+    """What the account probe established.
 
-    A 403 is neither -- it means only that this token lacks account:read,
-    which DigitalOcean's scoped tokens routinely do."""
+    `authenticated` is tracked separately from `email` because a 200 whose
+    body carries no email still proves the token works, and must not be
+    mistaken for the 403 case that proves nothing."""
+
+    authenticated: bool
+    email: str | None
+    check: KeyCheck | None
+
+
+def _probe_account(url: str, token: str, timeout: float) -> _AccountResult:
     body, failure = _probe(url, token, timeout)
     if failure is not None:
+        # A 403 ends nothing -- it means only that this token lacks
+        # account:read, which DigitalOcean's scoped tokens routinely do.
         if failure.state is KeyState.REJECTED and failure.code == 403:
-            return None, None
-        return None, failure.check
+            return _AccountResult(authenticated=False, email=None, check=None)
+        return _AccountResult(authenticated=False, email=None, check=failure.check)
 
     # A 200 that is not shaped like an account response did not come from the
     # provider (a proxy or captive portal answering anything), so it is not
     # evidence about the token.
     account = body.get("account") if isinstance(body, dict) else None
     if not isinstance(account, dict):
-        return None, KeyCheck(
-            state=KeyState.UNVERIFIED, detail="unexpected response from the provider"
+        return _AccountResult(
+            authenticated=False,
+            email=None,
+            check=KeyCheck(
+                state=KeyState.UNVERIFIED, detail="unexpected response from the provider"
+            ),
         )
     # Which of several provider accounts a token belongs to is the failure
     # this probe is most likely to catch.
-    return account.get("email"), None
+    return _AccountResult(authenticated=True, email=account.get("email"), check=None)
 
 
-def _check_droplet_scope(provider: str, token: str, timeout: float, email: str | None) -> KeyCheck:
+def _check_droplet_scope(
+    provider: str, token: str, timeout: float, account: _AccountResult
+) -> KeyCheck:
     """Confirm the token can read droplets.
 
     Read scope only -- it does not prove the token can create or destroy
@@ -376,26 +396,32 @@ def _check_droplet_scope(provider: str, token: str, timeout: float, email: str |
     if url is None:
         # A forbidden account probe proved nothing, and with no scope probe
         # to fall back on there is nothing left to call a pass.
-        if email is None:
+        if not account.authenticated:
             return KeyCheck(state=KeyState.UNVERIFIED, detail="no scope probe for this provider")
-        return KeyCheck(state=KeyState.OK, detail=email)
+        return KeyCheck(state=KeyState.OK, detail=account.email)
 
     body, failure = _probe(url, token, timeout)
     if failure is not None:
-        if failure.state is KeyState.REJECTED and failure.code == 403:
+        if failure.code == 403:
             return KeyCheck(
                 state=KeyState.REJECTED,
                 detail="token is valid but cannot read droplets",
             )
-        # A rate limit or dropped connection on this second request must not
-        # discard what the first one already proved.
-        if email is not None:
-            return KeyCheck(state=KeyState.OK, detail=f"{email} (droplet scope unverified)")
+        # A 401 here is unambiguous -- the token was not accepted at all,
+        # whatever the account endpoint said a moment ago -- so it outranks
+        # anything the first probe established.
+        if failure.code in config.PROVIDER_TOKEN_VERDICT_STATUSES:
+            return failure.check
+        # Anything else is inconclusive, and must not discard what the first
+        # probe already proved.
+        if account.authenticated:
+            detail = f"{account.email or 'authenticated'} (droplet scope unverified)"
+            return KeyCheck(state=KeyState.OK, detail=detail)
         return failure.check
 
     if not isinstance(body, dict) or "droplets" not in body:
         return KeyCheck(state=KeyState.UNVERIFIED, detail="unexpected response from the provider")
-    return KeyCheck(state=KeyState.OK, detail=email or "authenticated (scoped token)")
+    return KeyCheck(state=KeyState.OK, detail=account.email or "authenticated (scoped token)")
 
 
 class _ProbeFailure(NamedTuple):
@@ -444,7 +470,10 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
         if exc.code in config.PROVIDER_TOKEN_VERDICT_STATUSES:
             return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
         return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
+        # HTTPException (IncompleteRead, BadStatusLine) is not an OSError, so
+        # a truncated chunked body would otherwise escape a function
+        # specified to return a KeyCheck.
         detail = str(exc) or type(exc).__name__
         return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
     except ValueError as exc:

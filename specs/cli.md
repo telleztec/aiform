@@ -179,11 +179,22 @@ which never reads or writes state.
   |---|---|---|
   | 2xx | 2xx | `✓`, detail is the account email |
   | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
+  | 2xx | 401 | `✗`, rejected |
   | 2xx | 408/429/5xx/other | `✓` "&lt;email&gt; (droplet scope unverified)" |
   | 403 | 2xx | `✓` "authenticated (scoped token)" |
   | 403 | 403 | `✗` "token is valid but cannot read droplets" |
   | 403 | 408/429/5xx/other | `?` |
   | 401 | — | `✗`, rejected |
+
+  A **401 on the droplet probe outranks a 2xx on the account probe**: the
+  token was not accepted at all, whatever the first endpoint said moments
+  earlier (it may have been revoked in between, or served from a proxy
+  cache). Only an *inconclusive* second result defers to the first.
+
+  "Authenticated" is tracked separately from the email, because a 2xx whose
+  body carries no email still proves the token works. Collapsing the two
+  would make that case indistinguishable from the 403 case, which proves
+  nothing.
 
   The 2xx-then-inconclusive row matters: a rate limit on the *second*
   request must not discard what the first already proved. The token

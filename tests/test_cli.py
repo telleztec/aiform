@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import http.client
 import importlib
 import inspect
 import io
@@ -385,6 +386,17 @@ class TestInitGuidance:
     standing between a new user and an unexplained `Plan: 0 to create`.
     """
 
+    def test_announces_the_credential_check_before_running_it(
+        self, project_dir: Path, offline_preflight, capsys
+    ):
+        # Three sequential probes run after this line; without it the
+        # command looks hung on a black-holed network.
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "Checking credentials..." in out
+        assert out.index("Checking credentials...") < out.index("ANTHROPIC_API_KEY -- ")
+
     def test_names_the_copy_step(self, project_dir: Path, offline_preflight, capsys):
         cli.main(["init"])
         out = capsys.readouterr().out
@@ -716,6 +728,56 @@ class TestCheckProviderToken:
         assert check.state is KeyState.OK
         assert "juan@example.com" in check.detail
         assert "unverified" in check.detail
+
+    def test_droplet_401_outranks_a_good_account_probe(self, token, monkeypatch):
+        # The token was revoked or rotated between the two requests. A 401
+        # is unambiguous and must outrank what /v2/account said a moment
+        # earlier -- otherwise a dead token prints a green check.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                fake_http_error(401, {"message": "Unable to authenticate you"}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.REJECTED
+
+    def test_account_200_without_an_email_still_counts_as_authenticated(self, token, monkeypatch):
+        # A 200 carrying no email still proves the token works. Collapsing
+        # that to the same "no email" signal as a 403 would downgrade a
+        # proven token on any transient droplet failure.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"status": "active"}}),
+                fake_http_error(429, {"message": "slow down"}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert "unverified" in check.detail
+
+    def test_truncated_body_does_not_escape_as_an_exception(self, token, monkeypatch):
+        # IncompleteRead descends from Exception, not OSError, so it would
+        # otherwise escape a function specified to return a KeyCheck.
+        class Truncated:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def read(self, amt=None):
+                raise http.client.IncompleteRead(b"partial")
+
+        monkeypatch.setattr(cli, "_open", lambda request, timeout=None: Truncated())
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
 
     @pytest.mark.parametrize("code", [400, 404])
     def test_bad_endpoint_is_unverified_not_a_token_verdict(self, token, monkeypatch, code):
