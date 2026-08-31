@@ -201,9 +201,16 @@ Then:
    Splitting was considered and rejected because <reason>.
    ```
 
-   Note the repeated keyword. `Closes #73 and #74` closes only #73 and
-   leaves #74 fixed-but-open — the exact outcome this rule exists to
-   prevent, and the one #82 produced.
+   Note the repeated keyword. Without it, only the first number closes and
+   the rest are left fixed-but-open — the exact outcome this rule exists to
+   prevent.
+
+   **Never write a closing keyword next to a real issue number in a commit
+   message unless you mean it.** GitHub parses them out of prose, including
+   prose that is explaining the syntax, and a commit that merely documents
+   the trap will spring it. Use letter placeholders in examples — `#A`,
+   `#B` — since only `#<digits>` is parsed. Two commits on this branch
+   closed unrelated issues exactly this way.
 
 2. **Tell the human, in the conversation, that the PR needs a waiver** —
    when you open it, not when you want to merge. They are being asked for
