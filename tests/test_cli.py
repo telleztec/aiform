@@ -729,6 +729,56 @@ class TestCheckProviderToken:
         assert "juan@example.com" in check.detail
         assert "unverified" in check.detail
 
+    def test_droplet_redirect_is_distrusted_not_shrugged_off(self, token, monkeypatch):
+        # A redirect on a token-bearing request is the one thing
+        # _RejectRedirects exists to distrust; it must not fall into the
+        # benign "inconclusive" bucket and print a green check.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                fake_http_error(302, {"message": "moved"}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert "redirect" in check.detail
+
+    def test_malformed_droplet_body_keeps_the_proven_account_result(self, token, monkeypatch):
+        # Same rule as a transient failure: a malformed second response is
+        # not evidence against a token the first response authenticated.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                FakeHTTPResponse({"unexpected": True}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert "juan@example.com" in check.detail
+        assert "unverified" in check.detail
+
+    def test_account_read_without_email_is_not_labelled_a_scoped_token(self, token, monkeypatch):
+        # "scoped token" means specifically the token that could NOT read
+        # the account. One that read it and carried no email is not that.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"status": "active"}}),
+                FakeHTTPResponse({"droplets": []}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert "scoped" not in check.detail
+
     def test_droplet_401_outranks_a_good_account_probe(self, token, monkeypatch):
         # The token was revoked or rotated between the two requests. A 401
         # is unambiguous and must outrank what /v2/account said a moment

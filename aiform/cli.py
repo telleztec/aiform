@@ -412,16 +412,34 @@ def _check_droplet_scope(
         # anything the first probe established.
         if failure.code in config.PROVIDER_TOKEN_VERDICT_STATUSES:
             return failure.check
+        # A redirect on a token-bearing request is the one signal
+        # _RejectRedirects exists to distrust; it is not "inconclusive".
+        if failure.code is not None and 300 <= failure.code < 400:
+            return failure.check
         # Anything else is inconclusive, and must not discard what the first
         # probe already proved.
         if account.authenticated:
-            detail = f"{account.email or 'authenticated'} (droplet scope unverified)"
-            return KeyCheck(state=KeyState.OK, detail=detail)
+            return KeyCheck(state=KeyState.OK, detail=_unverified_scope_detail(account))
         return failure.check
 
     if not isinstance(body, dict) or "droplets" not in body:
+        # Same rule as the failure branch above: a malformed second response
+        # is not evidence against a token the first response authenticated.
+        if account.authenticated:
+            return KeyCheck(state=KeyState.OK, detail=_unverified_scope_detail(account))
         return KeyCheck(state=KeyState.UNVERIFIED, detail="unexpected response from the provider")
-    return KeyCheck(state=KeyState.OK, detail=account.email or "authenticated (scoped token)")
+
+    if account.email:
+        return KeyCheck(state=KeyState.OK, detail=account.email)
+    # "scoped token" is specifically the token that could not read the
+    # account. One that read it and simply carried no email is not that.
+    if account.authenticated:
+        return KeyCheck(state=KeyState.OK, detail="authenticated")
+    return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
+
+
+def _unverified_scope_detail(account: _AccountResult) -> str:
+    return f"{account.email or 'authenticated'} (droplet scope unverified)"
 
 
 class _ProbeFailure(NamedTuple):

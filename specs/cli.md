@@ -180,7 +180,8 @@ which never reads or writes state.
   | 2xx | 2xx | `✓`, detail is the account email |
   | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
   | 2xx | 401 | `✗`, rejected |
-  | 2xx | 408/429/5xx/other | `✓` "&lt;email&gt; (droplet scope unverified)" |
+  | 2xx | 3xx | `?` — a redirect is distrusted, never shrugged off |
+  | 2xx | 408/429/5xx/malformed | `✓` "&lt;email&gt; (droplet scope unverified)" |
   | 403 | 2xx | `✓` "authenticated (scoped token)" |
   | 403 | 403 | `✗` "token is valid but cannot read droplets" |
   | 403 | 408/429/5xx/other | `?` |
@@ -194,7 +195,15 @@ which never reads or writes state.
   "Authenticated" is tracked separately from the email, because a 2xx whose
   body carries no email still proves the token works. Collapsing the two
   would make that case indistinguishable from the 403 case, which proves
-  nothing.
+  nothing. For the same reason such a token is reported as
+  `"authenticated"`, **not** `"authenticated (scoped token)"` — that label
+  is reserved for the token that could not read the account at all.
+
+  A **malformed** droplet response is treated like a transient failure, not
+  like a bad token: if the account probe already authenticated, the result
+  stays `✓ (droplet scope unverified)`. Only a 3xx breaks that rule, since a
+  redirect on a token-bearing request is exactly what the no-redirect opener
+  exists to distrust.
 
   The 2xx-then-inconclusive row matters: a rate limit on the *second*
   request must not discard what the first already proved. The token
