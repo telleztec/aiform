@@ -12,6 +12,20 @@ argument parsing, output formatting/printing... `cli.py`, not built
 yet"). `aiform/__main__.py` is the one-line `python -m aiform` entry
 point that calls `cli.main()`.
 
+**Two supported invocations, both reaching `cli.main()`:**
+
+- `python -m aiform ...` via `aiform/__main__.py`. Always available in a
+  checkout; this is what CI and the test suite use.
+- `aiform ...` via the `[project.scripts]` console script in
+  `pyproject.toml` (`aiform = "aiform.cli:main"`). This is the surface a
+  user is expected to type, and the one `init` names in its output.
+
+`main`'s signature — optional `argv`, `int` return — is already the shape
+a console-script entry point requires, so the entry point is a
+`pyproject.toml` declaration with no code change. Note it materializes
+only on install: an editable install created before the entry was added
+does not gain the command until `pip install -e .` is re-run.
+
 ## Interface
 
 ```python
@@ -69,6 +83,17 @@ which never reads or writes state.
   starter file on a repeat `init`. Only written for `--provider
   digitalocean` (the only driver that exists); an unsupported provider
   already failed above, so this is unconditional once past the check.
+  Deliberately written under `examples/`, where
+  `orchestrator.discover_files()` (cwd-only `*.aiform.md` glob) will
+  **not** pick it up: `init` must never produce discoverable config, or
+  a user's very first `plan create` would propose creating a real,
+  billable droplet they never asked for. The scaffold is a template to
+  copy, and the printed instructions say so (next bullet).
+- The scaffold's `ssh_keys` placeholder is a **fingerprint**, not a key
+  name. DigitalOcean's `POST /v2/droplets` accepts key IDs or
+  fingerprints and rejects names with a 422, so a name-shaped
+  placeholder teaches a shape that cannot work. Carries a comment
+  pointing at `doctl compute ssh-key list`.
 - Prints instructions: how to set `ANTHROPIC_API_KEY` (environment
   variable, never a CLI flag or file) and the resolved provider's token
   env var (`config.PROVIDER_TOKEN_ENV_VARS[provider]`) — env var first,
@@ -77,20 +102,202 @@ which never reads or writes state.
   scaffolds that file with a value, never prompts for one interactively
   — same rule stated three times over in `CLAUDE.md`/`PLAN.md` for a
   reason.
-- **"Verifies that the credentials work" (`PLAN.md` §7) is narrowed
-  here exactly the way `specs/orchestrator.md`'s judgment call 3
-  narrows the identical phrase for `plan create`'s step 3**: there is
-  no side-effect-free way to confirm a token is *valid* against either
-  API without spending a real call, so this command instead reports,
-  per credential, only whether something is *configured* at all —
-  `ANTHROPIC_API_KEY` via `os.environ.get`, the provider token via
-  `config.resolve_credentials(provider)` succeeding or raising
-  `RuntimeError`. Printed as a `✓`/`✗` pair; **never fails `init`
-  itself** on a `✗` — a brand-new project legitimately hasn't set
-  credentials up yet, and `init`'s job is to scaffold and inform, not
-  gate. A real flagged divergence from `PLAN.md`'s literal "verifies
-  that the credentials work," same treatment as the orchestrator spec's
-  judgment call 3.
+- Prints the **next step** explicitly: copy an example into the working
+  directory and edit it, plus the fact that discovery is cwd-only.
+  Without this, `init` followed literally yields `Plan: 0 to create`
+  with nothing explaining why — the scaffold is where discovery cannot
+  see it, by design (two bullets up), so the instruction is the only
+  thing connecting the two.
+- **"Verifies that the credentials work" (`PLAN.md` §7) is implemented
+  literally here — a reversal of this spec's own earlier narrowing,
+  which is preserved below so the reasoning is auditable.**
+
+  The bullet this replaces claimed "there is no side-effect-free way to
+  confirm a token is *valid* against either API without spending a real
+  call," and on that basis reported only whether a credential was
+  *configured at all* (`os.environ.get` for `ANTHROPIC_API_KEY`,
+  `config.resolve_credentials(provider)` for the provider token).
+
+  **That premise was false.** Both APIs expose a free, read-only,
+  side-effect-free probe:
+
+  - Anthropic: `GET /v1/models` — the Models API. No tokens billed, no
+    message created.
+  - DigitalOcean: `GET /v2/account` — reads the account record; touches
+    no resource.
+
+  The cost of the false premise was real: during the 2026-08-31 live
+  walkthrough the presence check printed `[✓] ANTHROPIC_API_KEY` for an
+  identity-linked key that returned 400 on *every* endpoint. The
+  failure surfaced much later, inside `plan apply`, pointing at the call
+  site rather than at the key.
+
+  Note this is **not** the same call as `specs/orchestrator.md`'s
+  judgment call 3, which still stands: that one narrows the phrase for
+  `plan create`, where a probe on every run would violate `CLAUDE.md`'s
+  zero-API-calls-on-unchanged-input rule. The probes specified here run
+  **only in `init`**, never on the `plan`/`apply` path.
+
+- The check reports **four** states per credential, not two. A key that
+  is set but rejected is a different problem from one that is absent,
+  and neither is the same as an unreachable API:
+
+  | State | Marker | When |
+  |---|---|---|
+  | configured and accepted | `✓` | probe returned 2xx |
+  | not configured | `✗` | env var unset / `resolve_credentials` raised |
+  | configured but rejected | `✗` | probe returned 4xx — **carries the API's own error text** |
+  | configured, unverifiable | `?` | probe could not reach the API |
+
+  The `?` state is load-bearing: reporting `✗` for a working key because
+  the user is offline is its own defect. Any connection-level failure —
+  DNS, timeout, refused — is `?`, never `✗`. Probes use a short timeout
+  (`_PROBE_TIMEOUT`, 5s) and no retries.
+
+  Note what that does and does not bound: **each request**, not the
+  command, and not name resolution. `socket.create_connection` resolves
+  the host *before* applying the timeout, so a network that black-holes
+  DNS waits out the OS resolver instead — typically several seconds per
+  nameserver per attempt. Three probes run in sequence, so ~15s is the
+  floor for a network that refuses connections cleanly, not a ceiling for
+  every failure mode. `init` still terminates; it is not bounded as
+  tightly as a per-request timeout suggests. `init` prints `Checking credentials...` before them so
+  the pause is explained rather than looking like a hang. Response bodies
+  are read with a size cap (`_MAX_PROBE_BODY`) because a socket timeout
+  bounds each read, not a slow endless stream.
+
+  A 5xx is `?`, not `✗`, for the same reason: a provider outage is not a
+  verdict on the credential.
+
+- **A DigitalOcean 403 triggers a second probe rather than a verdict.**
+  DigitalOcean's scoped tokens can be valid for droplet operations while
+  lacking `account:read`, so `GET /v2/account` answers 403 for a token
+  that works perfectly for everything aiform does. Only **401** says the
+  token itself was not accepted.
+
+  But "the token is real" is not the question worth answering — a token
+  scoped *without* droplet access fails every `apply`. So the account
+  probe is always followed by `GET /v2/droplets?per_page=1`
+  (`config.PROVIDER_DROPLET_PROBES`):
+
+  | `/v2/account` | `/v2/droplets` | Result |
+  |---|---|---|
+  | 2xx | 2xx | `✓`, detail is the account email |
+  | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
+  | 2xx | 401 | `✗`, rejected |
+  | 2xx | 3xx | `?` — a redirect is distrusted, never shrugged off |
+  | 2xx | 408/429/5xx/malformed | `✓` "&lt;email&gt; (droplet scope unverified)" |
+  | 403 | 2xx | `✓` "authenticated (scoped token)" |
+  | 403 | 403 | `✗` "token is valid but cannot read droplets" |
+  | 403 | 408/429/5xx/other | `?` |
+  | 401 | — | `✗`, rejected |
+
+  A **401 on the droplet probe outranks a 2xx on the account probe**: the
+  token was not accepted at all, whatever the first endpoint said moments
+  earlier (it may have been revoked in between, or served from a proxy
+  cache). Only an *inconclusive* second result defers to the first.
+
+  "Authenticated" is tracked separately from the email, because a 2xx whose
+  body carries no email still proves the token works. Collapsing the two
+  would make that case indistinguishable from the 403 case, which proves
+  nothing. For the same reason such a token is reported as
+  `"authenticated"`, **not** `"authenticated (scoped token)"` — that label
+  is reserved for the token that could not read the account at all.
+
+  A **malformed** droplet response is treated like a transient failure, not
+  like a bad token: if the account probe already authenticated, the result
+  stays `✓ (droplet scope unverified)`. Only a 3xx breaks that rule, since a
+  redirect on a token-bearing request is exactly what the no-redirect opener
+  exists to distrust.
+
+  The 2xx-then-inconclusive row matters: a rate limit on the *second*
+  request must not discard what the first already proved. The token
+  authenticated; only the scope check is missing, and the result says
+  exactly that rather than reporting a working token as unverifiable.
+
+  **The droplet probe runs unconditionally, not only after a 403.** A
+  token granted `account:read` without droplet scopes answers 2xx on the
+  first probe, so gating the second on a 403 would let that token print a
+  green check and fail on the first `apply` — the same false green
+  reached by the other path.
+
+  Note what the second probe does and does not establish: **read** scope
+  on droplets. It cannot prove the token may create or destroy one, and
+  no free probe can. `✓` means "this token can talk to DigitalOcean and
+  see droplets", not "every `apply` will succeed".
+
+- **A redirect is refused, not followed.** `urllib` re-sends the
+  `Authorization` header verbatim to a redirect target, including a
+  cross-host one — `requests` and `httpx` both drop it. These probes
+  carry a provider token, so the opener rejects 3xx and reports `?`
+  rather than chasing it and leaking the token to wherever it pointed.
+- **A 2xx of the wrong shape is `?`, not `✓`.** A proxy or captive portal
+  answering 200 with arbitrary JSON is not evidence the token works, so
+  the account probe requires an `account` object and the droplet probe a
+  `droplets` key before either counts as a pass.
+- **Only 401 and 403 are verdicts on a provider token**
+  (`config.PROVIDER_TOKEN_VERDICT_STATUSES`). Every other status is `?`.
+  The probe URLs are hardcoded, so a 404 or 400 is far likelier to mean a
+  moved endpoint, a corporate proxy or a hijacked DNS answer than a bad
+  token — and telling a user to rotate a working credential is the same
+  class of error as passing a broken one.
+
+  The Anthropic probe is deliberately the **opposite**: there, every 4xx
+  except 408/429 is a verdict, because an identity-linked key rejects with
+  400. The asymmetry is a real difference between the two APIs, not an
+  oversight.
+
+- **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
+  rate limit says nothing about the credential, and DigitalOcean's
+  limiter is shared with anything else using the token (`doctl`
+  included), so a routine 429 must not tell a user their working token
+  was rejected. This is the same reasoning as the 5xx rule above; a bare
+  `code < 500` test gets it wrong.
+
+- On a 2xx the DigitalOcean probe reports the **account email** as its
+  `detail`. `CLAUDE.md` notes this machine has two DigitalOcean accounts;
+  a token silently belonging to the wrong one is the failure mode most
+  worth surfacing at `init`, and the email is what makes it visible.
+
+- **`init` still never fails on a `✗` or `?`.** Exit stays 0 regardless
+  of probe outcome — a brand-new project legitimately has no credentials
+  yet, and `init`'s job is to scaffold and inform, not to gate. This
+  rule is unchanged from the narrowed version.
+- Presence for `ANTHROPIC_API_KEY` is decided by the environment
+  variable alone — `CLAUDE.md` makes that the only supported source
+  ("env var only, never a CLI flag"). A key supplied any other way is
+  reported not-configured by design rather than probed.
+
+  **Known divergence:** `llm._anthropic_call` builds a bare
+  `anthropic.Anthropic()`, whose own resolution order also accepts
+  `ANTHROPIC_AUTH_TOKEN` and an `ant auth login` profile. So a user
+  authenticated that way sees `[✗] ANTHROPIC_API_KEY -- not set` from
+  `init` and then a working `plan create` — the mirror image of the false
+  green this preflight exists to remove, and a smaller error (it
+  understates rather than overstates). The `✗` names the exact variable it
+  checked, which keeps it literally true. Closing the gap means deciding
+  whether `CLAUDE.md`'s env-var-only rule binds the runtime too, which is
+  a wider question than this command.
+- The Anthropic probe lives in `aiform/llm.py` (`verify_api_key()`),
+  which already owns Anthropic client construction. It takes **no**
+  `credentials` parameter — the SDK reads `ANTHROPIC_API_KEY` from the
+  environment itself — so `CLAUDE.md`'s grep-verifiable "no `credentials`
+  identifier in `llm.py`" property is preserved. See `specs/llm.md`.
+- Both probes are stubbed in tests **by an autouse fixture**, and
+  `tests/test_cli.py::TestInitMakesNoNetworkCalls` asserts that `init`
+  attempts no socket connection at all.
+
+  Opt-in stubbing was tried first and was silently wrong: `_guarded`
+  swallows a probe failure, so a test that forgot to stub still *passed*
+  while firing live requests with the developer's real tokens and
+  printing the account email into test output. The only symptom was the
+  suite getting slower. Both the autouse default and the explicit
+  assertion exist because this claim cannot be verified by reading the
+  tests.
+- Forward note: `PLAN.md` §10's "Use short lived tokens instead of API
+  Keys" (workload identity federation) would change *what* is being
+  verified, not whether verification happens. The four-state contract
+  above survives that change; the probe implementations would not.
 - Exit 0 on a successful scaffold (regardless of the credential
   check's ✓/✗ outcome); exit 2 on an unsupported `--provider`.
 

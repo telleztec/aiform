@@ -15,6 +15,30 @@ PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
     "digitalocean": "DIGITALOCEAN_TOKEN",
 }
 
+# Free, read-only endpoints used only by `aiform init`'s preflight to tell a
+# token that works from one that is merely present. Never called on the
+# plan/apply path -- see CLAUDE.md's zero-API-calls rule.
+PROVIDER_ACCOUNT_PROBES: dict[str, str] = {
+    "digitalocean": "https://api.digitalocean.com/v2/account",
+}
+
+# Fallback probe for a scoped token that cannot read the account. Verifies the
+# scope aiform actually needs rather than merely that the token is real.
+PROVIDER_DROPLET_PROBES: dict[str, str] = {
+    "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
+}
+
+# A timeout or a rate limit is not a verdict on a credential. Used by the
+# Anthropic probe, which treats every other 4xx as a verdict because an
+# identity-linked key rejects with 400.
+INCONCLUSIVE_HTTP_STATUSES = frozenset({408, 429})
+
+# The provider probes invert that default: only these are verdicts on the
+# token. A 404 or 400 against a URL aiform hardcodes is far likelier to be
+# aiform's problem -- a moved endpoint, a proxy, a hijacked DNS answer --
+# than the token's, and must not send a user to rotate a working credential.
+PROVIDER_TOKEN_VERDICT_STATUSES = frozenset({401, 403})
+
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(

@@ -407,6 +407,50 @@ Backs the `review-orchestration-model` role, gate #2. Same shape as
 `review_driver()` — model and `max_tokens` resolved from
 `llm_config.review_orchestration` instead.
 
+### `verify_api_key(*, client=None, timeout=10.0) -> KeyCheck`
+
+Not a model call and not a fifth role — a **credential probe**, used
+only by `aiform init`'s preflight (`specs/cli.md`). Issues
+`client.models.list(limit=1)` (`GET /v1/models`), which is free: no
+tokens billed, no message created, no state changed on Anthropic's side.
+
+Lives here rather than in `cli.py` because this file already owns
+Anthropic client construction, and nowhere else should be importing
+`anthropic` to build one.
+
+Returns a `KeyCheck` (`aiform/models.py`) — `state` plus an optional
+`detail`:
+
+| `state` | Meaning | `detail` |
+|---|---|---|
+| `KeyState.OK` | probe returned 2xx | `None` |
+| `KeyState.MISSING` | `ANTHROPIC_API_KEY` unset | `None` |
+| `KeyState.REJECTED` | API returned 4xx **other than 408/429** | the API's own error message |
+| `KeyState.UNVERIFIED` | 408, 429, 5xx, or unreachable | the API's error, or the connection error |
+
+`REJECTED` covers `AuthenticationError` (401), `PermissionDeniedError`
+(403) **and `BadRequestError` (400)** — the 400 case is the one that
+motivated this function, since an identity-linked key 400s rather than
+401s, and treating only 401/403 as rejection would miss exactly the bug
+being fixed.
+
+`UNVERIFIED` covers `APIConnectionError` (timeout and DNS failure) and
+also 408, 429 and every 5xx: a rate limit or an outage is not a verdict on
+the key, and a busy org key routinely 429s. Reporting any of those as a bad
+key sends the user to rotate a credential that works. None of them may ever
+be reported as `REJECTED`. Constructed
+with `max_retries=0` and the given `timeout` so `init` cannot hang.
+
+**This function takes no `credentials` parameter and introduces no
+`credentials` identifier** — the SDK resolves `ANTHROPIC_API_KEY` from
+the environment itself. The grep-verifiable property in this spec's
+Purpose section (`"credentials"` does not appear anywhere in
+`aiform/llm.py`) is unaffected, and the existing test asserting it
+continues to pass unchanged.
+
+`client` is injectable for the same reason it is on the four role
+functions: the default test run must make no network calls.
+
 ### `llm_config` parameter (on all four public functions)
 
 Injectable for testing, exactly like `client` — tests construct an
