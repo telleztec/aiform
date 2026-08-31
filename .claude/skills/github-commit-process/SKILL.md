@@ -220,19 +220,22 @@ Then:
    waiver is an explicit act rather than something inferred from what they
    were assumed to have read. A plain `/claude-merge-approved` on a
    multi-issue PR grants **no** waiver and is not authorization to merge.
-4. **Check it before merging.** Count the **distinct issues GitHub will
-   actually close** — every `closes`/`fixes`/`resolves` keyword paired with
-   a number, across the PR body *and* every commit message. Count issues,
-   not keywords: `Closes #73 and #74` is one keyword and closes one issue,
-   while `Closes #73, closes #74` is two of each. Above one, **both** are
-   required: the `-multi` trigger, and a description disclosing the issues.
-   Missing either, stop and ask.
+4. **Check it before merging.** Count the **distinct issues** that will
+   close — the union of GitHub's linked-issue list (the PR description) and
+   the closing keywords in commit messages, deduplicated. Count issues, not
+   keywords: `Closes #A and #B` is one keyword closing one issue, while
+   `Closes #A, closes #B` is two of each. Above one, **both** are required:
+   the `-multi` trigger, and a description disclosing the issues. Missing
+   either, stop and ask. The exact command is in "On `MERGE_APPROVED`".
 
 **If a plain approval arrives on a multi-issue PR**, the loop has already
 exited, so nothing is watching when the human posts the `-multi` form.
-Explain what is needed and **restart the loop**, exactly as after a
-rejection — otherwise their second comment lands with no listener and the
-PR stalls.
+Explain what is needed and restart the loop — but **watermark it on that
+comment's timestamp, not on the head commit's**. No new commit is pushed
+on this path, so the default watermark leaves the plain approval still
+"latest and newer than head", and the restarted loop re-fires on it within
+seconds, forever. The rejection path avoids this only because a fix commit
+moves the watermark.
 
 **Why a second literal rather than a waiver clause on the first.** Two
 earlier designs failed on the same point. Putting the issues in the
@@ -453,33 +456,41 @@ and stamping the approval onto it would launder an unapproved commit through
 a human artifact — the exact thing all three gates exist to prevent.
 
 **If this PR closes more than one issue, check the acknowledgement first.**
-Ask GitHub how many it closes (below) rather than counting keywords
-yourself — a single-commit PR has its body prefilled from the commit
-message, so the same `closes` appears twice and a keyword count says two
-where the answer is one.
+Take the **union** of GitHub's linked-issue list and a scan of the commit
+messages, deduplicated (below). Neither alone is right: GitHub's list
+covers only the PR description, while a keyword in a commit message closes
+on merge without ever appearing there. Deduplicating matters because a
+single-commit PR has its body prefilled from the commit, so the same
+`closes` legitimately appears in both.
 
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 
-# If these differ, STOP and resolve per the paragraph above before posting.
-[ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
+# TRIGGER is the literal the loop matched: "/claude-merge-approved" or
+# "/claude-merge-approved-multi". On the chat-override path, which never
+# sees the loop's output, it is the comment body your own jq check found.
+TRIGGER="<the literal that was actually posted>"
 
-# What GitHub itself will close -- its own parse, not a reimplementation
-# of it. Addressed by PR number, so it does not depend on which branch the
-# working tree happens to be on after a long background wait.
-gh pr view <number> --json closingIssuesReferences \
-  --jq '.closingIssuesReferences | length'
+# Both sources, unioned. GitHub's linked-issue list reflects the PR
+# description only -- a closing keyword in a commit message still closes on
+# merge to the default branch but never appears here -- so asking GitHub
+# alone is blind to exactly the case this rule names.
+ISSUES=$( { gh pr view <number> --json closingIssuesReferences \
+              --jq '.closingIssuesReferences[].number | "#\(.)"'
+            gh pr view <number> --json commits --jq '.commits[].messageBody' \
+              | grep -Eiwo '(closes?d?|fix(es|ed)?|resolves?d?) +#[0-9]+' \
+              | grep -Eo '#[0-9]+'; } | sort -u )
+COUNT=$(printf '%s\n' "$ISSUES" | grep -c '^#' || true)
 
-# More than one requires BOTH the -multi trigger and disclosure in the
-# description. Check before posting: once human-approval is on the SHA all
-# three contexts are green, and anything that merges afterwards -- another
-# agent, the chat-override path, the human -- gets no further signal.
-
-# Set TRIGGER to the literal the loop matched. On a multi-issue PR this
-# status is the only place the acknowledgement lands on the SHA, so a
-# hardcoded value would record the wrong thing.
-TRIGGER="<the literal the loop reported>"
+# Guards, not printouts. Once human-approval is on the SHA all three
+# contexts are green and anything that merges afterwards gets no further
+# signal, so these must stop the script rather than report to a log.
+[ "$SHA" = "$WATCHED_SHA" ] || { echo "head moved: approval does not cover $SHA"; exit 1; }
+if [ "$COUNT" -gt 1 ] && [ "$TRIGGER" != "/claude-merge-approved-multi" ]; then
+  echo "closes $COUNT issues ($ISSUES) but was approved with $TRIGGER -- needs -multi"
+  exit 1
+fi
 
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \

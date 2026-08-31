@@ -45,14 +45,21 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      first — commits may have landed while the loop ran — then, **before
      posting anything**, check how many issues this PR closes.
 
-     Ask GitHub rather than counting keywords yourself:
-     `gh pr view <PR> --json closingIssuesReferences`. If it names more than
-     one, the trigger must be `MERGE_APPROVED_MULTI` **and** the description
-     must disclose them. A plain `MERGE_APPROVED` on a multi-issue PR is
-     **not** authorization: post nothing, explain what is needed, and
-     **restart this loop** — it has already exited, so the human's `-multi`
-     comment would otherwise land with no listener. Then satisfy **all three
-     gates on one and the same SHA**:
+     Take the union of `gh pr view <PR> --json closingIssuesReferences` and
+     the closing keywords in the PR's commit messages, deduplicated —
+     GitHub's list covers only the description, while a keyword in a commit
+     message closes on merge without appearing there. SKILL.md's "On
+     `MERGE_APPROVED`" has the exact command.
+
+     If more than one issue closes, the trigger must be
+     `MERGE_APPROVED_MULTI` **and** the description must disclose them. A
+     plain `MERGE_APPROVED` on a multi-issue PR is **not** authorization:
+     post nothing, explain what is needed, and restart this loop
+     **watermarked on that approval comment's timestamp**, not on the head
+     commit — no new commit is pushed here, so the default watermark would
+     leave the plain approval still latest and the loop would re-fire on it
+     immediately, in a spin. Then satisfy **all three gates on one and the
+     same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
         trigger approves that commit and nothing after it. If head has moved,
@@ -146,7 +153,8 @@ that skill's author detection changes, change it here in the same commit.
   to sign off. Checking only `comments` misses it.
 - This command starts the loop and defines how to react to its result; it never
   merges outside step 7, and never treats a chat-only "go ahead" as satisfying
-  any gate. **Never post `/claude-merge-approved` or `/claude-merge-rejected`
+  any gate. **Never post `/claude-merge-approved`, `/claude-merge-approved-multi` or
+  `/claude-merge-rejected`
   yourself** — they are human triggers, and posting one manufactures your own
   approval.
 - One loop per PR. Poll interval 30s.
