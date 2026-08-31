@@ -26,9 +26,10 @@ mode this process exists to avoid.
 The same rule applies to bug fixes, where the unit is an issue rather than
 a module: **one GitHub issue is closed by one PR.** A PR may close zero
 issues — process changes and chores don't need one invented — but never
-two. If an issue turns out to be too big for a single PR, split the
-*issue*; two PRs both claiming to fix one issue leave it half-fixed with
-no record of which half landed.
+two without an explicit human waiver, requested in the PR description and
+granted as `/claude-merge-approved issues …`. If an issue turns out to be
+too big for a single PR, split the *issue*; two PRs both claiming to fix
+one issue leave it half-fixed with no record of which half landed.
 `.claude/skills/github-commit-process/SKILL.md`'s "One issue, one PR"
 section is the authority; this paragraph exists so the loop reads
 completely on its own.
@@ -66,9 +67,11 @@ completely on its own.
    the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
-   and the exceptions it raises) per PR — and at most one GitHub issue
-   closed, which is the binding limit when a PR does both, following
-   `.claude/skills/github-commit-process/SKILL.md`. CI must be green.
+   and the exceptions it raises) per PR, following
+   `.claude/skills/github-commit-process/SKILL.md`. A PR closes at most
+   one GitHub issue; if the pair is two issues, that needs a human waiver
+   (SKILL.md's "Closing more than one issue"), not a second exception.
+   CI must be green.
    Human reviews and approves — nothing merges without that, same rule as
    always.
 7. **Move on.** The next module's spec may treat this module's interface

@@ -45,8 +45,9 @@ worse, proceeding on a misremembered one. If it isn't on the SHA, it didn't
 happen.
 
 **The `/claude-merge-approved` signal**: a PR comment or review body from
-`github.com/juanman2`, trimmed and lowercased, exactly
-`/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
+`github.com/juanman2`, trimmed and lowercased, either exactly
+`/claude-merge-approved` or that followed by a waiver clause naming issues
+(see "Closing more than one issue") — not a formal GitHub "Approve" review (GitHub
 hard-blocks PR authors from approving their own pull requests, a platform
 rule; every PR here is authored by juanman2, so a real "Approve" review is
 never obtainable). A plain comment isn't restricted that way and still
@@ -162,14 +163,41 @@ such a split: the scaffold change and the driver-schema change need
 different gates, since editing a driver changes its `sha256` and forces a
 gate #1 re-review.
 
-**Found something else mid-branch?** File it and keep going.
+**Found something else mid-branch?** File it if it warrants an issue, or
+ask — don't fold it in silently. A typo or a chore you fix in passing needs
+no issue (see the zero-issue rule above); a defect somebody has to decide
+about does.
 
 **"Closes" means every closing keyword on the PR — body and commit messages
 both.** `Closes #73` in the body plus `Fixes #74` in a commit closes two
-issues and breaks this rule as surely as naming both in one line.
+issues and breaks this rule as surely as naming both in one line. Note also
+that GitHub needs the keyword before **each** number: `Closes #73, #74`
+closes only #73, and the rest stay open as fixed-but-unclosed.
 
-**Exempt: PR #82**, which closes #73, #74, #75 and the scaffold half of #76.
-It predates this rule and is not precedent.
+### Closing more than one issue: the waiver
+
+Sometimes one change genuinely resolves several issues — duplicates, or a
+fix that incidentally closes another report. Splitting those apart is
+artificial, and closing them silently is what this rule exists to stop.
+The escape hatch is a **human waiver**, and it is not yours to grant:
+
+1. **Say so in the PR description** — which issues, and why one change
+   resolves all of them rather than being several changes in a trench coat.
+2. **Tell the human you need a waiver.** Say it, in the conversation, when
+   you open the PR. Do not leave it in the description for them to notice;
+   they are the one being asked for something.
+3. **The waiver arrives as an extended approval** naming the issues:
+   `/claude-merge-approved issues 73, 74, 75`. A plain
+   `/claude-merge-approved` approves the merge and grants **no** waiver.
+
+Without a waiver, close one issue and link the others plainly (`see #81`)
+for a follow-up PR. Never assume a waiver from a plain approval, and never
+infer one from a conversation — same rule as every other gate here.
+
+This is also the answer to `PROCESS.md` step 6's "one tightly-coupled pair"
+(a module and the exceptions it raises, say). If that pair is two issues,
+it needs a waiver like anything else, rather than a second exception with
+its own boundary to argue about.
 
 ## Commits
 
@@ -340,8 +368,12 @@ while true; do
       | sort_by(.at) | last | .body // "")
     | gsub("^\\s+|\\s+$";"") | ascii_downcase
   ')
-  if [ "$body" = "/claude-merge-approved" ]; then echo "MERGE_APPROVED"; exit 0; fi
-  if [ "$body" = "/claude-merge-rejected" ]; then echo "REJECTED"; exit 1; fi
+  # Accepts a bare approval and the waiver form ("/claude-merge-approved
+  # issues 73, 74"). An exact-equality test would silently ignore the latter.
+  case "$body" in
+    "/claude-merge-approved"|"/claude-merge-approved "*) echo "MERGE_APPROVED"; exit 0;;
+    "/claude-merge-rejected"|"/claude-merge-rejected "*) echo "REJECTED"; exit 1;;
+  esac
   sleep 30
 done
 ```
