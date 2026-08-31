@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*)
-description: Start the background loop that watches a PR for /claude-merge-approved or /claude-merge-rejected
+description: Start the background loop that watches a PR for /claude-merge-approved, /claude-merge-approved-multi or /claude-merge-rejected
 argument-hint: [<PR#>]
 disable-model-invocation: false
 ---
@@ -41,13 +41,17 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
 7. **On the eventual notification**, follow SKILL.md's post-loop steps — this
    is the part that matters, not the polling.
 
-   - `MERGE_APPROVED`: re-read the current head SHA first — commits may have
-     landed while the loop ran — then, **before posting anything**, count the
-     distinct issues this PR will close (every `closes`/`fixes`/`resolves`
-     keyword paired with a number, in the PR body *and* every commit
-     message). More than one requires a `## Waiver requested` section in the
-     description naming each; if it is missing, stop and ask rather than
-     posting. Then satisfy **all three gates on one and the same SHA**:
+   - `MERGE_APPROVED` / `MERGE_APPROVED_MULTI`: re-read the current head SHA
+     first — commits may have landed while the loop ran — then, **before
+     posting anything**, count the distinct issues this PR will close (every
+     `closes`/`fixes`/`resolves` keyword paired with a number, in the PR body
+     *and* every commit message).
+
+     If that count is above one, the trigger must be `MERGE_APPROVED_MULTI`
+     **and** the description must disclose the issues. A plain
+     `MERGE_APPROVED` on a multi-issue PR is **not** authorization: stop and
+     ask for the `-multi` form rather than posting anything. Then satisfy
+     **all three gates on one and the same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
         trigger approves that commit and nothing after it. If head has moved,
@@ -106,8 +110,14 @@ while true; do
     | gsub("^\\s+|\\s+$";"")
     | ascii_downcase
   ')
+  # Three exact literals, no parsing. -multi is the human's conscious
+  # acknowledgement that this PR closes more than one issue.
   if [ "$body" = "/claude-merge-approved" ]; then
     echo "MERGE_APPROVED"
+    exit 0
+  fi
+  if [ "$body" = "/claude-merge-approved-multi" ]; then
+    echo "MERGE_APPROVED_MULTI"
     exit 0
   fi
   if [ "$body" = "/claude-merge-rejected" ]; then

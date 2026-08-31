@@ -26,8 +26,9 @@ mode this process exists to avoid.
 The same rule applies to bug fixes, where the unit is an issue rather than
 a module: **one GitHub issue is closed by one PR.** A PR may close zero
 issues — process changes and chores don't need one invented — but never
-two without an explicit human waiver, requested in the PR description and
-granted by the human's approval of it. If an issue turns out to be
+two without an explicit human waiver: the issues disclosed in the PR
+description, and the human approving with `/claude-merge-approved-multi`
+rather than the plain trigger. If an issue turns out to be
 too big for a single PR, split the *issue*; two PRs both claiming to fix
 one issue leave it half-fixed with no record of which half landed.
 `.claude/skills/github-commit-process/SKILL.md`'s "One issue, one PR"

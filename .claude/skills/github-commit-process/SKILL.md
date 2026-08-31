@@ -31,7 +31,7 @@ commit statuses or checks **on the exact head SHA being merged**:
 |---|---|---|
 | `test` | GitHub Actions | CI is green |
 | `llm-review` | you, the author LLM | head's content was reviewed and its findings resolved |
-| `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` |
+| `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` (or `-multi`, for a PR closing several issues) |
 
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs, or after; either order is valid and both end in a merge. Do
@@ -44,9 +44,12 @@ lose a chat-only approval, either wrongly blocking an authorized merge or,
 worse, proceeding on a misremembered one. If it isn't on the SHA, it didn't
 happen.
 
-**The `/claude-merge-approved` signal**: a PR comment or review body from
+**The approval signals**: a PR comment or review body from
 `github.com/juanman2`, trimmed and lowercased, exactly
-`/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
+`/claude-merge-approved` — or exactly `/claude-merge-approved-multi`, which
+additionally acknowledges that the PR closes more than one issue (see
+"Closing more than one issue"). Both are exact matches; neither takes a
+suffix. `/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
 hard-blocks PR authors from approving their own pull requests, a platform
 rule; every PR here is authored by juanman2, so a real "Approve" review is
 never obtainable). A plain comment isn't restricted that way and still
@@ -114,7 +117,8 @@ forgot"*, not *"the agent misbehaves"* — an agent willing to skip a check
 would equally post the status. Only `test` is enforced against an actively
 wrong agent. Do not describe this setup as stronger than it is.
 
-**Never post `/claude-merge-approved` or `/claude-merge-rejected` yourself.**
+**Never post `/claude-merge-approved`, `/claude-merge-approved-multi` or
+`/claude-merge-rejected` yourself.**
 They are human triggers, and the watch loop converts the first into the
 `human-approval` status — posting one would manufacture your own approval end
 to end.
@@ -204,22 +208,33 @@ Then:
 2. **Tell the human, in the conversation, that the PR needs a waiver** —
    when you open it, not when you want to merge. They are being asked for
    something; do not leave it in the description to be noticed.
-3. **Their `/claude-merge-approved` grants it.** The trigger is unchanged
-   and stays exact — the description is what they are approving, so a
-   waiver written there is covered by the same signal that approves the
-   diff.
+3. **They grant it with `/claude-merge-approved-multi`.** A distinct
+   literal, not a suffix — so there is still nothing to parse, and the
+   waiver is an explicit act rather than something inferred from what they
+   were assumed to have read. A plain `/claude-merge-approved` on a
+   multi-issue PR grants **no** waiver and is not authorization to merge.
 4. **Check it before merging.** Count the **distinct issues GitHub will
    actually close** — every `closes`/`fixes`/`resolves` keyword paired with
    a number, across the PR body *and* every commit message. Count issues,
    not keywords: `Closes #73 and #74` is one keyword and closes one issue,
-   while `Closes #73, closes #74` is two of each. If the count is above
-   one, the description must carry a waiver section naming each. If it does
-   not, stop and ask — a bare approval on a PR whose description requests
-   nothing is not a waiver.
+   while `Closes #73, closes #74` is two of each. Above one, **both** are
+   required: the `-multi` trigger, and a description disclosing the issues.
+   Missing either, stop and ask.
 
-The human has two answers, and both are normal: `/claude-merge-approved`
-accepts the reasoning, and `/claude-merge-rejected` sends you to split it
-after all. A rejection here is not a finding about the code — it is a
+**Why a second literal rather than a waiver clause on the first.** Two
+earlier designs failed on the same point. Putting the issues in the
+comment (`/claude-merge-approved issues 73, 74`) made the merge gate parse
+free text, and every version of that parser accepted something it should
+have refused. Putting the waiver only in the description made it a thing
+the human is *assumed* to have read — but `/claude-merge-approved` is
+normally left through "Files changed" → "Review changes", which does not
+display the PR body, and a description can be edited after approval with
+no new SHA. A separate constant fixes both: nothing to parse, and typing
+it is a deliberate act that cannot be manufactured after the fact.
+
+The human has two answers, and both are normal:
+`/claude-merge-approved-multi` accepts the reasoning, and
+`/claude-merge-rejected` sends you to split it after all. A rejection here is not a finding about the code — it is a
 judgment that the change was two changes. Split it and open two PRs; do
 not re-argue the waiver.
 
@@ -408,7 +423,9 @@ while true; do
       | sort_by(.at) | last | .body // "")
     | gsub("^\\s+|\\s+$";"") | ascii_downcase
   ')
+  # Three exact literals, no parsing.
   if [ "$body" = "/claude-merge-approved" ]; then echo "MERGE_APPROVED"; exit 0; fi
+  if [ "$body" = "/claude-merge-approved-multi" ]; then echo "MERGE_APPROVED_MULTI"; exit 0; fi
   if [ "$body" = "/claude-merge-rejected" ]; then echo "REJECTED"; exit 1; fi
   sleep 30
 done
@@ -453,9 +470,11 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
   | grep -Eio '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)) #[0-9]+' \
   | grep -Eo '#[0-9]+' | sort -u
 
+# Record which trigger was used: on a multi-issue PR this is the only
+# place the acknowledgement lands on the SHA.
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
-  -f description="/claude-merge-approved by juanman2"
+  -f description="/claude-merge-approved by juanman2"   # or -multi
 
 # llm-review — legacy status API
 gh api repos/{owner}/{repo}/commits/"$SHA"/status \
