@@ -28,10 +28,16 @@ PROVIDER_DROPLET_PROBES: dict[str, str] = {
     "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
 }
 
-# A timeout or a rate limit is not a verdict on a credential. Shared by both
-# preflight probes (aiform/llm.py, aiform/cli.py) so the rule cannot drift
-# between providers -- specs/cli.md states it applies to both.
+# A timeout or a rate limit is not a verdict on a credential. Used by the
+# Anthropic probe, which treats every other 4xx as a verdict because an
+# identity-linked key rejects with 400.
 INCONCLUSIVE_HTTP_STATUSES = frozenset({408, 429})
+
+# The provider probes invert that default: only these are verdicts on the
+# token. A 404 or 400 against a URL aiform hardcodes is far likelier to be
+# aiform's problem -- a moved endpoint, a proxy, a hijacked DNS answer --
+# than the token's, and must not send a user to rotate a working credential.
+PROVIDER_TOKEN_VERDICT_STATUSES = frozenset({401, 403})
 
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 

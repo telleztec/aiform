@@ -163,8 +163,8 @@ class FakeHTTPResponse:
     def __exit__(self, *exc_info):
         return False
 
-    def read(self) -> bytes:
-        return json.dumps(self._payload).encode("utf-8")
+    def read(self, amt: int | None = None) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")[:amt]
 
 
 class FakeRawResponse:
@@ -179,8 +179,8 @@ class FakeRawResponse:
     def __exit__(self, *exc_info):
         return False
 
-    def read(self) -> bytes:
-        return self._raw
+    def read(self, amt: int | None = None) -> bytes:
+        return self._raw[:amt]
 
 
 def fake_http_error(code: int, payload: dict) -> urllib.error.HTTPError:
@@ -698,6 +698,63 @@ class TestCheckProviderToken:
 
         assert check.state is KeyState.REJECTED
         assert "droplets" in check.detail
+
+    def test_transient_droplet_failure_keeps_the_proven_account_result(self, token, monkeypatch):
+        # The account probe already authenticated the token one request
+        # earlier. A rate limit on the second must not throw that away and
+        # report a working token as unverifiable.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                fake_http_error(429, {"message": "slow down"}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert "juan@example.com" in check.detail
+        assert "unverified" in check.detail
+
+    @pytest.mark.parametrize("code", [400, 404])
+    def test_bad_endpoint_is_unverified_not_a_token_verdict(self, token, monkeypatch, code):
+        # The probe URLs are hardcoded, so a 404 is far likelier to be
+        # aiform's problem than the token's. Calling it "rejected" sends the
+        # user to rotate a working credential.
+        self._urlopen(monkeypatch, fake_http_error(code, {"message": "not found"}))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_forbidden_account_with_no_scope_probe_is_not_a_pass(self, token, monkeypatch):
+        # A provider configured with an account probe but no scope probe:
+        # a 403 proved nothing, so it must not read as a green check.
+        monkeypatch.setitem(config.PROVIDER_DROPLET_PROBES, "digitalocean", None)
+        monkeypatch.delitem(config.PROVIDER_DROPLET_PROBES, "digitalocean")
+        self._urlopen(monkeypatch, fake_http_error(403, {"message": "You are not authorized"}))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_body_read_is_capped(self, token, monkeypatch):
+        # urllib's timeout bounds each socket read, not the total transfer.
+        requested = []
+
+        class Endless:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def read(self, amt=None):
+                requested.append(amt)
+                return json.dumps({"account": {"email": "j@example.com"}}).encode()
+
+        monkeypatch.setattr(cli, "_open", lambda request, timeout=None: Endless())
+
+        _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert requested and all(a == cli._MAX_PROBE_BODY for a in requested)
 
     @pytest.mark.parametrize("code", [408, 429])
     def test_rate_limited_or_timed_out_is_unverified_not_rejected(self, token, monkeypatch, code):

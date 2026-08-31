@@ -152,7 +152,14 @@ which never reads or writes state.
   The `?` state is load-bearing: reporting `✗` for a working key because
   the user is offline is its own defect. Any connection-level failure —
   DNS, timeout, refused — is `?`, never `✗`. Probes use a short timeout
-  and no retries so `init` cannot hang on a black-holed network.
+  (`_PROBE_TIMEOUT`, 5s) and no retries.
+
+  Note what that does and does not bound: **each request**, not the
+  command. Up to three probes run in sequence, so a black-holed network
+  costs ~15s, not 5. `init` prints `Checking credentials...` before them so
+  the pause is explained rather than looking like a hang. Response bodies
+  are read with a size cap (`_MAX_PROBE_BODY`) because a socket timeout
+  bounds each read, not a slow endless stream.
 
   A 5xx is `?`, not `✗`, for the same reason: a provider outage is not a
   verdict on the credential.
@@ -172,9 +179,16 @@ which never reads or writes state.
   |---|---|---|
   | 2xx | 2xx | `✓`, detail is the account email |
   | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
+  | 2xx | 408/429/5xx/other | `✓` "&lt;email&gt; (droplet scope unverified)" |
   | 403 | 2xx | `✓` "authenticated (scoped token)" |
   | 403 | 403 | `✗` "token is valid but cannot read droplets" |
+  | 403 | 408/429/5xx/other | `?` |
   | 401 | — | `✗`, rejected |
+
+  The 2xx-then-inconclusive row matters: a rate limit on the *second*
+  request must not discard what the first already proved. The token
+  authenticated; only the scope check is missing, and the result says
+  exactly that rather than reporting a working token as unverifiable.
 
   **The droplet probe runs unconditionally, not only after a 403.** A
   token granted `account:read` without droplet scopes answers 2xx on the
@@ -196,6 +210,18 @@ which never reads or writes state.
   answering 200 with arbitrary JSON is not evidence the token works, so
   the account probe requires an `account` object and the droplet probe a
   `droplets` key before either counts as a pass.
+- **Only 401 and 403 are verdicts on a provider token**
+  (`config.PROVIDER_TOKEN_VERDICT_STATUSES`). Every other status is `?`.
+  The probe URLs are hardcoded, so a 404 or 400 is far likelier to mean a
+  moved endpoint, a corporate proxy or a hijacked DNS answer than a bad
+  token — and telling a user to rotate a working credential is the same
+  class of error as passing a broken one.
+
+  The Anthropic probe is deliberately the **opposite**: there, every 4xx
+  except 408/429 is a verdict, because an identity-linked key rejects with
+  400. The asymmetry is a real difference between the two APIs, not an
+  oversight.
+
 - **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
   rate limit says nothing about the credential, and DigitalOcean's
   limiter is shared with anything else using the token (`doctl`
@@ -216,6 +242,17 @@ which never reads or writes state.
   variable alone — `CLAUDE.md` makes that the only supported source
   ("env var only, never a CLI flag"). A key supplied any other way is
   reported not-configured by design rather than probed.
+
+  **Known divergence:** `llm._anthropic_call` builds a bare
+  `anthropic.Anthropic()`, whose own resolution order also accepts
+  `ANTHROPIC_AUTH_TOKEN` and an `ant auth login` profile. So a user
+  authenticated that way sees `[✗] ANTHROPIC_API_KEY -- not set` from
+  `init` and then a working `plan create` — the mirror image of the false
+  green this preflight exists to remove, and a smaller error (it
+  understates rather than overstates). The `✗` names the exact variable it
+  checked, which keeps it literally true. Closing the gap means deciding
+  whether `CLAUDE.md`'s env-var-only rule binds the runtime too, which is
+  a wider question than this command.
 - The Anthropic probe lives in `aiform/llm.py` (`verify_api_key()`),
   which already owns Anthropic client construction. It takes **no**
   `credentials` parameter — the SDK reads `ANTHROPIC_API_KEY` from the

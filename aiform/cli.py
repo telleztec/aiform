@@ -268,6 +268,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+# urllib's timeout bounds each socket operation, not the total transfer, so
+# an endpoint that streams steadily would otherwise be read forever.
+_MAX_PROBE_BODY = 65536
+
+# Three probes run in sequence, so this is the per-request bound, not the
+# worst case a user waits through.
+_PROBE_TIMEOUT = 5.0
+
 _STATE_MARKERS = {
     KeyState.OK: "✓",
     KeyState.MISSING: "✗",
@@ -293,7 +301,11 @@ def _format_check(label: str, check: KeyCheck) -> str:
 
 
 def _print_credential_checks(provider: str, token_env_var: str) -> None:
-    print(_format_check("ANTHROPIC_API_KEY", _guarded(lambda: llm.verify_api_key())))
+    print(
+        _format_check(
+            "ANTHROPIC_API_KEY", _guarded(lambda: llm.verify_api_key(timeout=_PROBE_TIMEOUT))
+        )
+    )
     print(_format_check(token_env_var, _guarded(lambda: _check_provider_token(provider))))
 
 
@@ -307,7 +319,7 @@ def _guarded(probe: Callable[[], KeyCheck]) -> KeyCheck:
         return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
 
 
-def _check_provider_token(provider: str, *, timeout: float = 10.0) -> KeyCheck:
+def _check_provider_token(provider: str, *, timeout: float = _PROBE_TIMEOUT) -> KeyCheck:
     """Probe the provider's free account endpoint (GET /v2/account for
     DigitalOcean) so a token that is present but wrong -- the other
     account's, or revoked -- is not reported as working."""
@@ -362,6 +374,10 @@ def _check_droplet_scope(provider: str, token: str, timeout: float, email: str |
     one, which no free probe can establish."""
     url = config.PROVIDER_DROPLET_PROBES.get(provider)
     if url is None:
+        # A forbidden account probe proved nothing, and with no scope probe
+        # to fall back on there is nothing left to call a pass.
+        if email is None:
+            return KeyCheck(state=KeyState.UNVERIFIED, detail="no scope probe for this provider")
         return KeyCheck(state=KeyState.OK, detail=email)
 
     body, failure = _probe(url, token, timeout)
@@ -371,6 +387,10 @@ def _check_droplet_scope(provider: str, token: str, timeout: float, email: str |
                 state=KeyState.REJECTED,
                 detail="token is valid but cannot read droplets",
             )
+        # A rate limit or dropped connection on this second request must not
+        # discard what the first one already proved.
+        if email is not None:
+            return KeyCheck(state=KeyState.OK, detail=f"{email} (droplet scope unverified)")
         return failure.check
 
     if not isinstance(body, dict) or "droplets" not in body:
@@ -409,7 +429,7 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
         with _open(request, timeout) as response:
-            return json.loads(response.read().decode("utf-8")), None
+            return json.loads(response.read(_MAX_PROBE_BODY).decode("utf-8")), None
     except urllib.error.HTTPError as exc:
         detail = _http_error_detail(exc)
         # A redirect is not a verdict on the token -- and following it would
@@ -421,11 +441,9 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
                 ),
                 exc.code,
             )
-        # A timeout or a rate limit says nothing about the token; DO's
-        # limiter is shared with anything else using it, doctl included.
-        if exc.code in config.INCONCLUSIVE_HTTP_STATUSES or exc.code >= 500:
-            return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
-        return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
+        if exc.code in config.PROVIDER_TOKEN_VERDICT_STATUSES:
+            return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
+        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         detail = str(exc) or type(exc).__name__
         return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
@@ -437,7 +455,7 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
     try:
-        body = json.loads(exc.read().decode("utf-8"))
+        body = json.loads(exc.read(_MAX_PROBE_BODY).decode("utf-8"))
     except (ValueError, OSError):
         return f"HTTP {exc.code}"
     message = body.get("message") if isinstance(body, dict) else None
