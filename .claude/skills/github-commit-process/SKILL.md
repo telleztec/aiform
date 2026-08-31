@@ -125,9 +125,9 @@ to end.
 - Branch names: short, descriptive, kebab-case, imperative-ish —
   `add-plan-and-docs`, `implement-state-module`, `fix-drift-detection-race`.
   Not `fix`, not `juan-patch-1`, not a ticket number with no context.
-- Don't stack unrelated changes on one branch. If you notice something else
-  worth fixing while working, either note it for a follow-up or ask — don't
-  fold it into the current PR silently.
+- Don't stack unrelated changes on one branch, and never fold one in
+  silently. See "One issue, one PR" below for what to do with something you
+  find mid-branch.
 
 ### One issue, one PR
 
@@ -157,20 +157,19 @@ quota.
 **If an issue is too big for one PR, split the issue, not the PR.** Two PRs
 both claiming to fix #N leave #N in an ambiguous state — half-fixed, still
 open, with no record of which half landed. File the second issue, say in
-each what the other covers, and close each with its own PR. (Worked
-example: `#76` needed a scaffold change and a driver-schema change, where
-the second triggers a gate #1 re-review. That is two issues, not one issue
-across two PRs.)
+each what the other covers, and close each with its own PR. #76 and #87 are
+such a split: the scaffold change and the driver-schema change need
+different gates, since editing a driver changes its `sha256` and forces a
+gate #1 re-review.
 
-**Found something else mid-branch?** File it and keep going. That is the
-existing "don't stack unrelated changes" rule with the ambiguity removed —
-"unrelated" was doing too much work, and "related enough to bundle" is a
-judgment that always resolves toward bundling under time pressure.
+**Found something else mid-branch?** File it and keep going.
 
-**One recorded exception: PR #82** (`fix-init-onboarding-papercuts`) closes
-#73, #74, #75 and part of #76. It was built and reviewed before this rule
-existed and was allowed to land as-is by explicit decision, rather than
-reworked. It is not precedent, and it is the reason this section exists.
+**"Closes" means every closing keyword on the PR — body and commit messages
+both.** `Closes #73` in the body plus `Fixes #74` in a commit closes two
+issues and breaks this rule as surely as naming both in one line.
+
+**Exempt: PR #82**, which closes #73, #74, #75 and the scaffold half of #76.
+It predates this rule and is not precedent.
 
 ## Commits
 
@@ -208,6 +207,8 @@ EOF
 )"
 ```
 
+- Reference at most one issue with a closing keyword — see "One issue, one
+  PR". To mention others without closing them, link them plainly (`see #81`).
 - Title under ~70 characters. Details go in the body, not a long title.
 - The Test plan section should be honest — if something wasn't actually
   tested (e.g. this is a docs-only PR, or a piece that can't be verified

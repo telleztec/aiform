@@ -30,8 +30,8 @@ two. If an issue turns out to be too big for a single PR, split the
 *issue*; two PRs both claiming to fix one issue leave it half-fixed with
 no record of which half landed.
 `.claude/skills/github-commit-process/SKILL.md`'s "One issue, one PR"
-section is the authority, including the reasoning and the one recorded
-exception; this paragraph exists so the loop reads completely on its own.
+section is the authority; this paragraph exists so the loop reads
+completely on its own.
 
 1. **Spec.** First, grep `PLAN.md` §9 ("Not Yet Implemented") and §10
    ("Planned, not yet designed in detail") for an existing entry on the
@@ -66,7 +66,8 @@ exception; this paragraph exists so the loop reads completely on its own.
    the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
-   and the exceptions it raises) per PR, following
+   and the exceptions it raises) per PR — and at most one GitHub issue
+   closed, which is the binding limit when a PR does both, following
    `.claude/skills/github-commit-process/SKILL.md`. CI must be green.
    Human reviews and approves — nothing merges without that, same rule as
    always.
