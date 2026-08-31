@@ -133,7 +133,8 @@ to end.
 
 **A PR closes at most one GitHub issue.** Not two related ones, not four
 that happen to touch the same file, not "they're all onboarding papercuts."
-If you are about to write `Closes #A, #B`, stop and split the branch.
+If you are about to write `Closes #A, closes #B`, stop and split the
+branch. (`Closes #A, #B` closes only #A — a different bug, covered below.)
 
 The reasons are about review, not tidiness:
 
@@ -192,9 +193,13 @@ Then:
 
    ```
    ## Waiver requested
-   Closes #73 and #74. One change resolves both because <reason>.
+   Closes #73, closes #74. One change resolves both because <reason>.
    Splitting was considered and rejected because <reason>.
    ```
+
+   Note the repeated keyword. `Closes #73 and #74` closes only #73 and
+   leaves #74 fixed-but-open — the exact outcome this rule exists to
+   prevent, and the one #82 produced.
 
 2. **Tell the human, in the conversation, that the PR needs a waiver** —
    when you open it, not when you want to merge. They are being asked for
@@ -203,9 +208,12 @@ Then:
    and stays exact — the description is what they are approving, so a
    waiver written there is covered by the same signal that approves the
    diff.
-4. **Check it before merging.** Count the closing keywords across the PR
-   body *and* every commit message. If that count is more than one, the
-   description must carry a waiver section naming each of them. If it does
+4. **Check it before merging.** Count the **distinct issues GitHub will
+   actually close** — every `closes`/`fixes`/`resolves` keyword paired with
+   a number, across the PR body *and* every commit message. Count issues,
+   not keywords: `Closes #73 and #74` is one keyword and closes one issue,
+   while `Closes #73, closes #74` is two of each. If the count is above
+   one, the description must carry a waiver section naming each. If it does
    not, stop and ask — a bare approval on a PR whose description requests
    nothing is not a waiver.
 
@@ -435,6 +443,16 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # If these differ, STOP and resolve per the paragraph above before posting.
 [ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
 
+# Issues this PR will actually close, body + commits. More than one needs a
+# waiver section in the description. Check BEFORE posting: once
+# human-approval is on the SHA, all three contexts are green and anything
+# that merges -- another agent, the chat-override path, the human -- gets no
+# further signal that a waiver was missing.
+{ gh pr view <number> --json body --jq .body
+  git log origin/main..HEAD --format=%B; } \
+  | grep -Eio '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)) #[0-9]+' \
+  | grep -Eo '#[0-9]+' | sort -u
+
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
   -f description="/claude-merge-approved by juanman2"
@@ -496,7 +514,9 @@ watch loop.
 
 ### If the human says "just merge it" in chat
 
-Skip the *polling* only. Go to the three **verification queries** above — not
+Skip the *polling* only. Run the waiver count first — this path skips the
+loop, so nothing else will surface a missing waiver — then go to the three
+**verification queries** above — not
 to the `human-approval` post that precedes them; a chat remark is not the
 trigger and never authorizes stamping that status.
 

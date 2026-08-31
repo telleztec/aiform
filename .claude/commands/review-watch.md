@@ -42,8 +42,12 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
    is the part that matters, not the polling.
 
    - `MERGE_APPROVED`: re-read the current head SHA first — commits may have
-     landed while the loop ran — then satisfy **all three gates on one and
-     the same SHA**:
+     landed while the loop ran — then, **before posting anything**, count the
+     distinct issues this PR will close (every `closes`/`fixes`/`resolves`
+     keyword paired with a number, in the PR body *and* every commit
+     message). More than one requires a `## Waiver requested` section in the
+     description naming each; if it is missing, stop and ask rather than
+     posting. Then satisfy **all three gates on one and the same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
         trigger approves that commit and nothing after it. If head has moved,
