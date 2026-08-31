@@ -176,15 +176,24 @@ closes only #73, and the rest stay open as fixed-but-unclosed.
 ### Closing more than one issue: the waiver
 
 Sometimes one change genuinely resolves several issues — duplicates, or a
-fix that incidentally closes another report. Splitting those apart is
-artificial, and closing them silently is what this rule exists to stop.
-The escape hatch is a **human waiver**, and it is not yours to grant:
+fix that incidentally closes another report. The escape hatch is a **human
+waiver**, and it is not yours to grant.
+
+**Try to split it first.** One issue per PR is the default, not the
+preference. Before asking for a waiver, attempt the split and satisfy
+yourself that it cannot be done — two commits, two branches, one issue
+each. Most "this fixes both" changes are two changes that happen to be
+adjacent. Ask only when splitting would mean shipping something incoherent
+or duplicating the same edit in two PRs.
+
+Then:
 
 1. **Put it at the top of the PR description**, as its own section:
 
    ```
    ## Waiver requested
    Closes #73 and #74. One change resolves both because <reason>.
+   Splitting was considered and rejected because <reason>.
    ```
 
 2. **Tell the human, in the conversation, that the PR needs a waiver** —
@@ -199,6 +208,12 @@ The escape hatch is a **human waiver**, and it is not yours to grant:
    description must carry a waiver section naming each of them. If it does
    not, stop and ask — a bare approval on a PR whose description requests
    nothing is not a waiver.
+
+The human has two answers, and both are normal: `/claude-merge-approved`
+accepts the reasoning, and `/claude-merge-rejected` sends you to split it
+after all. A rejection here is not a finding about the code — it is a
+judgment that the change was two changes. Split it and open two PRs; do
+not re-argue the waiver.
 
 Without a waiver, close one issue and link the others plainly (`see #81`)
 for a follow-up PR.
