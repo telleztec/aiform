@@ -264,8 +264,13 @@ class KeyCheck(BaseModel):
   three different things about.
 - `detail` carries the provider's **own** error text on `REJECTED`, and
   the connection error on `UNVERIFIED`. Swallowing that text is what made
-  the original bug expensive to diagnose. `None` for `OK` and `MISSING` —
-  neither has anything to add beyond the state.
+  the original bug expensive to diagnose. Always `None` for `MISSING` —
+  "not set" says everything there is to say.
+- On `OK`, `detail` is optional and provider-specific: the DigitalOcean
+  probe reports the **account email**, or `"authenticated (scoped
+  token)"` when the token could not read the account but proved droplet
+  access (`specs/cli.md`'s probe table). The Anthropic probe has nothing
+  comparable to report and leaves it `None`.
 - Deliberately provider-agnostic: the same type reports both the
   Anthropic and the DigitalOcean probe, so `cli.py` formats one shape
   rather than two. Not persisted to `state.json` — a preflight result is

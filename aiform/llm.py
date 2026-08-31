@@ -282,10 +282,6 @@ def review_plan(
     return review
 
 
-# A timeout or a rate limit is not a verdict on the credential.
-_INCONCLUSIVE_STATUSES = frozenset({408, 429})
-
-
 def verify_api_key(
     *,
     client: anthropic.Anthropic | None = None,
@@ -322,7 +318,7 @@ def verify_api_key(
         # 401/403 here would miss the case this function exists for.
         # 408/429 are the exception: a timeout or a rate limit says nothing
         # about the key, and a busy org key routinely 429s.
-        if exc.status_code in _INCONCLUSIVE_STATUSES or exc.status_code >= 500:
+        if exc.status_code in config.INCONCLUSIVE_HTTP_STATUSES or exc.status_code >= 500:
             return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
         return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
     except anthropic.APIError as exc:

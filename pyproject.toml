@@ -8,7 +8,9 @@ license-files = ["LICENSE"]
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "anthropic>=0.40",
+    # 0.41 is the floor, not 0.40: client.models (GET /v1/models) is what
+    # llm.verify_api_key probes, and 0.40.x has no models resource at all.
+    "anthropic>=0.41",
 ]
 
 [project.scripts]

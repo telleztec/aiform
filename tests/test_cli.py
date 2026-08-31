@@ -196,6 +196,7 @@ def fake_http_error(code: int, payload: dict) -> urllib.error.HTTPError:
 # Captured before the autouse stub below can replace it, so the tests that
 # exercise the real probe can still reach it.
 _REAL_CHECK_PROVIDER_TOKEN = cli._check_provider_token
+_REAL_VERIFY_API_KEY = llm.verify_api_key
 
 
 @pytest.fixture(autouse=True)
@@ -327,7 +328,8 @@ class TestInitMakesNoNetworkCalls:
     unstubbed probe fails here rather than silently phoning home.
     """
 
-    def test_init_attempts_no_socket_connections(self, project_dir: Path, monkeypatch):
+    @staticmethod
+    def _block_sockets(monkeypatch) -> list:
         attempts = []
 
         def record(target, *args, **kwargs):
@@ -337,9 +339,42 @@ class TestInitMakesNoNetworkCalls:
         monkeypatch.setattr(socket, "create_connection", record)
         monkeypatch.setattr(socket.socket, "connect", record)
         monkeypatch.setattr(socket, "getaddrinfo", record)
+        return attempts
+
+    def test_stubbing_covers_every_path_init_takes(self, project_dir: Path, monkeypatch):
+        """With the autouse stub active, init must touch no socket.
+
+        This catches a *new* network call added to _cmd_init that nobody
+        remembered to stub -- not a regression inside the two probes
+        themselves, which are replaced wholesale here. The next test
+        covers those.
+        """
+        attempts = self._block_sockets(monkeypatch)
 
         assert cli.main(["init"]) == 0
         assert attempts == []
+
+    def test_real_probes_degrade_instead_of_crashing_offline(
+        self, project_dir: Path, monkeypatch, capsys
+    ):
+        """The real probes, un-stubbed, against a dead network.
+
+        Credentials must be set or both probes short-circuit on absence and
+        never reach a socket, which would make this pass for the wrong
+        reason.
+        """
+        monkeypatch.setattr(llm, "verify_api_key", _REAL_VERIFY_API_KEY)
+        monkeypatch.setattr(cli, "_check_provider_token", _REAL_CHECK_PROVIDER_TOKEN)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        attempts = self._block_sockets(monkeypatch)
+
+        assert cli.main(["init"]) == 0
+        assert attempts, "probes must have actually tried, or this proves nothing"
+
+        out = capsys.readouterr().out
+        assert out.count("?") >= 2
+        assert "✗" not in out
 
 
 class TestInitGuidance:
@@ -552,7 +587,7 @@ class TestCheckProviderToken:
                 raise result
             return result
 
-        monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(cli, "_open", fake_urlopen)
 
     def test_unset_token_is_missing_without_a_request(self, project_dir, monkeypatch):
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
@@ -560,7 +595,7 @@ class TestCheckProviderToken:
         def explode(request, timeout=None):
             raise AssertionError("probe must not run without a token")
 
-        monkeypatch.setattr(cli.urllib.request, "urlopen", explode)
+        monkeypatch.setattr(cli, "_open", explode)
 
         assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.MISSING
 
@@ -593,7 +628,7 @@ class TestCheckProviderToken:
                 raise result
             return result
 
-        monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(cli, "_open", fake_urlopen)
         return urls
 
     def test_scoped_token_with_droplet_access_is_accepted(self, token, monkeypatch):
@@ -633,16 +668,41 @@ class TestCheckProviderToken:
 
         assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
 
-    def test_malformed_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
-        # A captive portal or proxy answering 200 with something that is not
-        # the expected shape must not raise out of a function specified to
-        # return a KeyCheck.
+    def test_success_body_of_the_wrong_shape_is_unverified(self, token, monkeypatch):
+        # A proxy or captive portal answering 200 with arbitrary JSON is not
+        # evidence the token works -- and must not raise out of a function
+        # specified to return a KeyCheck.
         self._urlopen(monkeypatch, FakeHTTPResponse(["not", "a", "dict"]))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_success_body_missing_account_is_unverified(self, token, monkeypatch):
+        self._urlopen(monkeypatch, FakeHTTPResponse({"something_else": 1}))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_redirect_is_refused_not_followed(self, token, monkeypatch):
+        # urllib re-sends Authorization to a redirect target, so following
+        # one would leak the provider token to wherever it pointed.
+        self._urlopen(monkeypatch, fake_http_error(302, {"message": "moved"}))
 
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
-        assert check.state is KeyState.OK
-        assert check.detail is None
+        assert check.state is KeyState.UNVERIFIED
+        assert "redirect" in check.detail
+
+    def test_opener_does_not_follow_redirects(self):
+        # The guard above only holds because the opener refuses redirects
+        # rather than chasing them before we ever see a status.
+        handlers = [type(h).__name__ for h in cli._PROBE_OPENER.handlers]
+
+        assert "_RejectRedirects" in handlers
+        assert (
+            cli._RejectRedirects().redirect_request(
+                None, None, 302, "Found", {}, "https://evil.example.com"
+            )
+            is None
+        )
 
     def test_non_json_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
         self._urlopen(monkeypatch, FakeRawResponse(b"<html>captive portal</html>"))
@@ -670,7 +730,7 @@ class TestCheckProviderToken:
             sent["url"] = request.full_url
             return FakeHTTPResponse({"account": {"email": "x@example.com"}})
 
-        monkeypatch.setattr(cli.urllib.request, "urlopen", capture)
+        monkeypatch.setattr(cli, "_open", capture)
 
         _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 

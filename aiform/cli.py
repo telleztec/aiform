@@ -240,7 +240,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
-    print(f"{'Wrote' if example_written else 'Example already present:'} {example_path}")
+    if example_written:
+        print(f"Wrote {example_path}")
+    else:
+        print(f"Kept your existing {example_path} (it may predate the current template)")
     print()
     print("Set the following before running `aiform plan create`:")
     print("  - ANTHROPIC_API_KEY: environment variable only, never a CLI flag or file")
@@ -264,9 +267,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("aiform discovers *.aiform.md in the current directory only.")
     return 0
 
-
-# A timeout or a rate limit is not a verdict on the credential.
-_INCONCLUSIVE_STATUSES = frozenset({408, 429})
 
 _STATE_MARKERS = {
     KeyState.OK: "✓",
@@ -334,9 +334,13 @@ def _check_provider_token(provider: str, *, timeout: float = 10.0) -> KeyCheck:
 
     # The account email disambiguates which of several provider accounts a
     # token belongs to -- the failure this probe is most likely to catch.
+    # A 200 that is not shaped like an account response did not come from
+    # the provider (a proxy or captive portal answering anything), so it is
+    # not evidence the token works.
     account = body.get("account") if isinstance(body, dict) else None
-    email = account.get("email") if isinstance(account, dict) else None
-    return KeyCheck(state=KeyState.OK, detail=email)
+    if not isinstance(account, dict):
+        return KeyCheck(state=KeyState.UNVERIFIED, detail="unexpected response from the provider")
+    return KeyCheck(state=KeyState.OK, detail=account.get("email"))
 
 
 def _check_droplet_scope(provider: str, token: str, timeout: float) -> KeyCheck:
@@ -344,8 +348,12 @@ def _check_droplet_scope(provider: str, token: str, timeout: float) -> KeyCheck:
     if url is None:
         return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
 
-    _, failure = _probe(url, token, timeout)
+    body, failure = _probe(url, token, timeout)
     if failure is None:
+        if not isinstance(body, dict) or "droplets" not in body:
+            return KeyCheck(
+                state=KeyState.UNVERIFIED, detail="unexpected response from the provider"
+            )
         return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
     if failure.state is KeyState.REJECTED and failure.code == 403:
         return KeyCheck(
@@ -364,16 +372,43 @@ class _ProbeFailure(NamedTuple):
         return self.check.state
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib re-sends the Authorization header verbatim to a redirect
+    target, including a cross-host one -- requests and httpx both drop it.
+    These probes carry a provider token, so a redirect is refused rather
+    than followed. Returning None makes urllib raise the 3xx as an
+    HTTPError instead of chasing it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_PROBE_OPENER = urllib.request.build_opener(_RejectRedirects)
+
+
+def _open(request: urllib.request.Request, timeout: float):
+    return _PROBE_OPENER.open(request, timeout=timeout)
+
+
 def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | None]:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open(request, timeout) as response:
             return json.loads(response.read().decode("utf-8")), None
     except urllib.error.HTTPError as exc:
         detail = _http_error_detail(exc)
+        # A redirect is not a verdict on the token -- and following it would
+        # have leaked the token to wherever it pointed.
+        if 300 <= exc.code < 400:
+            return None, _ProbeFailure(
+                KeyCheck(
+                    state=KeyState.UNVERIFIED, detail=f"unexpected redirect (HTTP {exc.code})"
+                ),
+                exc.code,
+            )
         # A timeout or a rate limit says nothing about the token; DO's
         # limiter is shared with anything else using it, doctl included.
-        if exc.code in _INCONCLUSIVE_STATUSES or exc.code >= 500:
+        if exc.code in config.INCONCLUSIVE_HTTP_STATUSES or exc.code >= 500:
             return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
         return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:

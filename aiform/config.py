@@ -28,6 +28,11 @@ PROVIDER_DROPLET_PROBES: dict[str, str] = {
     "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
 }
 
+# A timeout or a rate limit is not a verdict on a credential. Shared by both
+# preflight probes (aiform/llm.py, aiform/cli.py) so the rule cannot drift
+# between providers -- specs/cli.md states it applies to both.
+INCONCLUSIVE_HTTP_STATUSES = frozenset({408, 429})
+
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(

@@ -180,6 +180,15 @@ which never reads or writes state.
   DigitalOcean token, which is exactly the 403-then-2xx shape; the `✓`
   and `✗` cases are indistinguishable without doing that.
 
+- **A redirect is refused, not followed.** `urllib` re-sends the
+  `Authorization` header verbatim to a redirect target, including a
+  cross-host one — `requests` and `httpx` both drop it. These probes
+  carry a provider token, so the opener rejects 3xx and reports `?`
+  rather than chasing it and leaking the token to wherever it pointed.
+- **A 2xx of the wrong shape is `?`, not `✓`.** A proxy or captive portal
+  answering 200 with arbitrary JSON is not evidence the token works, so
+  the account probe requires an `account` object and the droplet probe a
+  `droplets` key before either counts as a pass.
 - **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
   rate limit says nothing about the credential, and DigitalOcean's
   limiter is shared with anything else using the token (`doctl`
