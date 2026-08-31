@@ -45,9 +45,8 @@ worse, proceeding on a misremembered one. If it isn't on the SHA, it didn't
 happen.
 
 **The `/claude-merge-approved` signal**: a PR comment or review body from
-`github.com/juanman2`, trimmed and lowercased, either exactly
-`/claude-merge-approved` or that followed by a waiver clause naming issues
-(see "Closing more than one issue") — not a formal GitHub "Approve" review (GitHub
+`github.com/juanman2`, trimmed and lowercased, exactly
+`/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
 hard-blocks PR authors from approving their own pull requests, a platform
 rule; every PR here is authored by juanman2, so a real "Approve" review is
 never obtainable). A plain comment isn't restricted that way and still
@@ -55,9 +54,7 @@ requires opening the PR's "Files changed" tab to leave it — forcing a visual
 scan of the diff before it merges.
 
 **Rejection**: a comment or review body that's exactly
-`/claude-merge-rejected` stops the watch loop without merging. Exactly --
-unlike approval, it takes no trailing clause, so anything after it is a
-different comment and does not stop the loop. Read the PR's
+`/claude-merge-rejected` stops the watch loop without merging. Read the PR's
 actual comments and inline review for what needs fixing, address it in a new
 commit, and start a fresh cycle. Any *other* comment (general feedback, a
 question, a mid-review remark) is not surfaced by the watch loop — it
@@ -183,22 +180,36 @@ fix that incidentally closes another report. Splitting those apart is
 artificial, and closing them silently is what this rule exists to stop.
 The escape hatch is a **human waiver**, and it is not yours to grant:
 
-1. **Say so in the PR description** — which issues, and why one change
-   resolves all of them rather than being several changes in a trench coat.
-2. **Tell the human you need a waiver.** Say it, in the conversation, when
-   you open the PR. Do not leave it in the description for them to notice;
-   they are the one being asked for something.
-3. **The waiver arrives as an extended approval** naming the issues:
-   `/claude-merge-approved issues 73, 74, 75`. A plain
-   `/claude-merge-approved` approves the merge and grants **no** waiver.
-4. **Verify it before merging.** The named set must cover every issue the
-   PR closes; a waiver for #73 does not license also closing #74. Record
-   the trigger verbatim in the `human-approval` status description, so
-   the waiver is on the SHA rather than only in a comment.
+1. **Put it at the top of the PR description**, as its own section:
+
+   ```
+   ## Waiver requested
+   Closes #73 and #74. One change resolves both because <reason>.
+   ```
+
+2. **Tell the human, in the conversation, that the PR needs a waiver** —
+   when you open it, not when you want to merge. They are being asked for
+   something; do not leave it in the description to be noticed.
+3. **Their `/claude-merge-approved` grants it.** The trigger is unchanged
+   and stays exact — the description is what they are approving, so a
+   waiver written there is covered by the same signal that approves the
+   diff.
+4. **Check it before merging.** Count the closing keywords across the PR
+   body *and* every commit message. If that count is more than one, the
+   description must carry a waiver section naming each of them. If it does
+   not, stop and ask — a bare approval on a PR whose description requests
+   nothing is not a waiver.
 
 Without a waiver, close one issue and link the others plainly (`see #81`)
-for a follow-up PR. Never assume a waiver from a plain approval, and never
-infer one from a conversation — same rule as every other gate here.
+for a follow-up PR.
+
+**Why the trigger stays exact.** An earlier attempt put the waiver in the
+comment (`/claude-merge-approved issues 73, 74`), which meant the watch
+loop had to parse free text to decide whether to merge. Every version of
+that parser accepted something it should have refused — including
+`/claude-merge-approved issues 73 and 74 are not fixed yet, do NOT merge`.
+A merge gate should not be a parser. The description carries the detail;
+the trigger stays a constant.
 
 This is also the answer to `PROCESS.md` step 6's "one tightly-coupled pair"
 (a module and the exceptions it raises, say). If that pair is two issues,
@@ -372,16 +383,10 @@ while true; do
       (.reviews[]?  | {author, body, at: .submittedAt})]
       | map(select(.author.login=="juanman2" and .at > $since))
       | sort_by(.at) | last | .body // "")
-    | gsub("^\\s+|\\s+$";"") | gsub("\\s+";" ") | ascii_downcase
+    | gsub("^\\s+|\\s+$";"") | ascii_downcase
   ')
-  # Bare approval, or the waiver form naming issues. Matching the waiver
-  # clause specifically -- not any trailing text -- keeps
-  # "/claude-merge-approved once CI is green" from firing a merge.
-  case "$body" in
-    "/claude-merge-approved") echo "MERGE_APPROVED"; exit 0;;
-    "/claude-merge-approved issues "*) echo "MERGE_APPROVED|$body"; exit 0;;
-    "/claude-merge-rejected") echo "REJECTED"; exit 1;;
-  esac
+  if [ "$body" = "/claude-merge-approved" ]; then echo "MERGE_APPROVED"; exit 0; fi
+  if [ "$body" = "/claude-merge-rejected" ]; then echo "REJECTED"; exit 1; fi
   sleep 30
 done
 ```
@@ -402,28 +407,22 @@ ask for a fresh `/claude-merge-approved` and restart the loop. Re-reading head
 and stamping the approval onto it would launder an unapproved commit through
 a human artifact — the exact thing all three gates exist to prevent.
 
-**Check the waiver before anything else.** The loop prints
-`MERGE_APPROVED` for a bare approval and `MERGE_APPROVED|<body>` for a
-waiver. Count the issues this PR closes — every closing keyword, in the
-body *and* every commit message. If that count is more than one, the
-waiver must exist and must name each of them. A bare approval on a PR
-closing two issues is **not** authorization to merge it: say so and ask,
-exactly as you would for a missing approval.
+**If this PR closes more than one issue, check the waiver first.** Count
+the closing keywords across the PR body and every commit message; if that
+count is above one, the description must carry a waiver section naming
+each of them. If it does not, stop and ask — a bare approval on a PR whose
+description requests nothing is not a waiver.
 
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
-TRIGGER=<the body the loop printed after the pipe, or the bare trigger>
 
 # If these differ, STOP and resolve per the paragraph above before posting.
 [ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
 
-# The description is the durable record: it is the only place the waiver
-# lands on the SHA. A waiver that lives only in a PR comment is the
-# transient artifact this whole section exists to distrust.
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
-  -f description="$TRIGGER by juanman2"
+  -f description="/claude-merge-approved by juanman2"
 
 # llm-review — legacy status API
 gh api repos/{owner}/{repo}/commits/"$SHA"/status \

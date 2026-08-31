@@ -100,17 +100,16 @@ while true; do
       | last
       | .body // "")
     | gsub("^\\s+|\\s+$";"")
-    | gsub("\\s+";" ")
     | ascii_downcase
   ')
-  # Bare approval, or the waiver form naming issues. Matching the waiver
-  # clause specifically -- not any trailing text -- keeps
-  # "/claude-merge-approved once CI is green" from firing a merge.
-  case "$body" in
-    "/claude-merge-approved") echo "MERGE_APPROVED"; exit 0;;
-    "/claude-merge-approved issues "*) echo "MERGE_APPROVED|$body"; exit 0;;
-    "/claude-merge-rejected") echo "REJECTED"; exit 1;;
-  esac
+  if [ "$body" = "/claude-merge-approved" ]; then
+    echo "MERGE_APPROVED"
+    exit 0
+  fi
+  if [ "$body" = "/claude-merge-rejected" ]; then
+    echo "REJECTED"
+    exit 1
+  fi
   sleep 30
 done
 ```
