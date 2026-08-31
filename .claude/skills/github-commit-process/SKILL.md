@@ -129,6 +129,49 @@ to end.
   worth fixing while working, either note it for a follow-up or ask — don't
   fold it into the current PR silently.
 
+### One issue, one PR
+
+**A PR closes at most one GitHub issue.** Not two related ones, not four
+that happen to touch the same file, not "they're all onboarding papercuts."
+If you are about to write `Closes #A, #B`, stop and split the branch.
+
+The reasons are about review, not tidiness:
+
+- **A reviewer can hold one change in their head.** Four issues in one diff
+  means the human either reviews the largest one properly and skims the
+  rest, or bounces the whole thing. Both are worse than four small reads.
+- **Approval is all-or-nothing.** `/claude-merge-approved` is a single
+  signal on a single SHA. Bundling means the human cannot accept three
+  fixes and reject the fourth without rejecting all four — so a
+  disagreement about one line blocks unrelated finished work.
+- **A revert takes the bundle with it.** If one of four fixes turns out to
+  be wrong, reverting it reverts the other three too.
+- **Each issue gets its own review record.** `llm-review` on a bundled PR
+  attests to a diff, not to an issue; nothing afterward says which issue
+  was actually reviewed.
+
+**A PR may close zero issues.** Process changes, refactors, doc fixes and
+chores don't need an issue invented for them. The rule is a ceiling, not a
+quota.
+
+**If an issue is too big for one PR, split the issue, not the PR.** Two PRs
+both claiming to fix #N leave #N in an ambiguous state — half-fixed, still
+open, with no record of which half landed. File the second issue, say in
+each what the other covers, and close each with its own PR. (Worked
+example: `#76` needed a scaffold change and a driver-schema change, where
+the second triggers a gate #1 re-review. That is two issues, not one issue
+across two PRs.)
+
+**Found something else mid-branch?** File it and keep going. That is the
+existing "don't stack unrelated changes" rule with the ambiguity removed —
+"unrelated" was doing too much work, and "related enough to bundle" is a
+judgment that always resolves toward bundling under time pressure.
+
+**One recorded exception: PR #82** (`fix-init-onboarding-papercuts`) closes
+#73, #74, #75 and part of #76. It was built and reviewed before this rule
+existed and was allowed to land as-is by explicit decision, rather than
+reworked. It is not precedent, and it is the reason this section exists.
+
 ## Commits
 
 - Commit at natural logical boundaries — a working, coherent unit, not

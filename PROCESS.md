@@ -23,6 +23,16 @@ One pass of this loop = one module = one PR. Don't batch multiple modules
 into one pass to save time — that's exactly the "overwhelming PR" failure
 mode this process exists to avoid.
 
+The same rule applies to bug fixes, where the unit is an issue rather than
+a module: **one GitHub issue is closed by one PR.** A PR may close zero
+issues — process changes and chores don't need one invented — but never
+two. If an issue turns out to be too big for a single PR, split the
+*issue*; two PRs both claiming to fix one issue leave it half-fixed with
+no record of which half landed.
+`.claude/skills/github-commit-process/SKILL.md`'s "One issue, one PR"
+section is the authority, including the reasoning and the one recorded
+exception; this paragraph exists so the loop reads completely on its own.
+
 1. **Spec.** First, grep `PLAN.md` §9 ("Not Yet Implemented") and §10
    ("Planned, not yet designed in detail") for an existing entry on the
    same topic — a new spec that duplicates or contradicts one of those
