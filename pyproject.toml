@@ -8,8 +8,16 @@ license-files = ["LICENSE"]
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "anthropic>=0.40",
+    # 0.77 is the binding floor: _anthropic_call passes output_config on
+    # every structured call, which lands in 0.77.0. (client.models, which
+    # verify_api_key probes, only needs 0.41 -- the lower of the two would
+    # let init report a green key and every plan create then die on an
+    # unexpected-keyword TypeError.)
+    "anthropic>=0.77",
 ]
+
+[project.scripts]
+aiform = "aiform.cli:main"
 
 [project.optional-dependencies]
 dev = [

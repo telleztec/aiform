@@ -114,12 +114,22 @@ independent, in its own test function with its own `tmp_path`.
 
 1. **`aiform init`** — scaffolds `.aiform/`, `.gitignore` entries, and
    `examples/compute.aiform.md`; with both real env vars set, prints
-   `✓` for both credential checks. (Note: `_cmd_init`'s check is
-   presence/resolvability only, per `aiform/cli.py:240-247` — it does
-   not itself make a live API call. This suite's later steps are what
-   first exercise the token for real; if DO ever rejects the token,
-   that surfaces at step 2, not step 1 — don't expect `init` to catch a
-   bad token.)
+   `✓` for both credential checks. **`init` does make live API calls**
+   (`specs/cli.md`'s preflight): a free `GET /v1/models` for Anthropic,
+   and `GET /v2/account` plus `GET /v2/droplets?per_page=1` for
+   DigitalOcean. All are read-only and unbilled, so this step costs
+   nothing and creates nothing — but it means a rejected token now
+   surfaces **here**, at step 1, rather than at step 2.
+
+   This reverses the note that stood here previously ("don't expect
+   `init` to catch a bad token"), which described the presence-only
+   check that `specs/cli.md` replaced. A `✓` on this step is now
+   evidence the token authenticates, not merely that it is set.
+
+   Note also that `✓` for DigitalOcean carries a detail — the account
+   email, or `authenticated (scoped token)` for a token that cannot read
+   the account — so an assertion on this line must not expect it to end
+   after the variable name.
 2. **First `plan create`** (fresh project, no `state.json` yet) — per
    `PLAN.md` §9 step 2: gate #1 (`code-review-model`) fires to
    trust-on-first-use the curated driver's on-disk hash, since no state

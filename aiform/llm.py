@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,7 +14,15 @@ from typing import Any
 import anthropic
 
 from aiform import config, log
-from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, PlanReview
+from aiform.models import (
+    DriverReview,
+    KeyCheck,
+    KeyState,
+    LLMConfig,
+    LLMRoleConfig,
+    ModelSource,
+    PlanReview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -271,3 +280,59 @@ def review_plan(
         extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
     )
     return review
+
+
+def verify_api_key(
+    *,
+    client: anthropic.Anthropic | None = None,
+    timeout: float = 10.0,
+) -> KeyCheck:
+    """Probe GET /v1/models to tell a working key from a merely present one.
+
+    Not a model call and not a fifth role -- a preflight check for
+    `aiform init`. The Models API is free: no tokens billed, no message
+    created. Lives here because this module already owns Anthropic client
+    construction.
+
+    Presence is decided by ANTHROPIC_API_KEY alone, which CLAUDE.md makes
+    the only supported source ("env var only, never a CLI flag"). A key
+    supplied any other way -- ANTHROPIC_AUTH_TOKEN, or an explicit
+    api_key on an injected client -- is therefore reported MISSING by
+    design, not probed.
+
+    `timeout` applies only to the client this builds; an injected `client`
+    carries its own. Nothing secret-bearing is accepted as a parameter,
+    which is what keeps this file's grep-verifiable property (CLAUDE.md)
+    intact.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return KeyCheck(state=KeyState.MISSING)
+
+    probe = client or anthropic.Anthropic(timeout=timeout, max_retries=0)
+    try:
+        probe.models.list(limit=1)
+    except anthropic.APIStatusError as exc:
+        # 4xx is the key's problem; 5xx is Anthropic's, and reporting it as
+        # a bad key sends the user to rotate a credential that works.
+        # An identity-linked key 400s rather than 401s -- matching only
+        # 401/403 here would miss the case this function exists for.
+        # 408/429 are the exception: a timeout or a rate limit says nothing
+        # about the key, and a busy org key routinely 429s.
+        if exc.status_code in config.INCONCLUSIVE_HTTP_STATUSES or exc.status_code >= 500:
+            return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
+        return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
+    except anthropic.APIError as exc:
+        # APIConnectionError and its timeout/DNS subclasses land here.
+        # Offline is never a verdict on the key.
+        return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
+
+    return KeyCheck(state=KeyState.OK)
+
+
+def _api_error_detail(exc: anthropic.APIStatusError) -> str:
+    body = exc.body
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    return exc.message or str(exc)

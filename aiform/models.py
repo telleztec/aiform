@@ -56,6 +56,26 @@ class PlanReview(BaseModel):
     flags: list[PlanReviewFlag]
 
 
+class KeyState(str, Enum):
+    OK = "ok"
+    MISSING = "missing"
+    REJECTED = "rejected"
+    UNVERIFIED = "unverified"
+
+
+class KeyCheck(BaseModel):
+    """One credential's preflight result (`aiform init`).
+
+    Four states rather than a bool: a credential that is absent, one that
+    is present but rejected, and one that cannot be checked because the
+    network is down each call for a different fix. `detail` carries the
+    provider's own error text -- swallowing it is what made the original
+    bug expensive to diagnose."""
+
+    state: KeyState
+    detail: str | None = None
+
+
 class ModelSource(str, Enum):
     ANTHROPIC = "anthropic"
 
