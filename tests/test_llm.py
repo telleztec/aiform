@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import anthropic
-import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -610,10 +609,24 @@ class TestRealPromptFiles:
         assert len(path.read_text(encoding="utf-8").strip()) > 0
 
 
+class FakeHTTPResponse:
+    """The subset of an HTTP response anthropic.APIStatusError reads.
+
+    Deliberately not httpx: anthropic 1.x is built on httpx2, so importing
+    either by name makes this suite depend on which major version resolved
+    -- which is exactly how CI broke on a green local run.
+    """
+
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        self.request = object()
+        self.headers: dict[str, str] = {}
+
+
 def _api_error(status_code: int, message: str) -> anthropic.APIStatusError:
-    request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
-    response = httpx.Response(status_code, request=request, json={"error": {"message": message}})
-    return anthropic.APIStatusError(message, response=response, body=None)
+    return anthropic.APIStatusError(
+        message, response=FakeHTTPResponse(status_code), body={"error": {"message": message}}
+    )
 
 
 class FakeModels:
@@ -693,6 +706,16 @@ class TestVerifyApiKey:
 
         assert result.state is KeyState.REJECTED
 
+    @pytest.mark.parametrize("status_code", [408, 429])
+    def test_rate_limited_or_timed_out_is_unverified_not_rejected(self, api_key_set, status_code):
+        # A busy org key routinely 429s. Reporting that as a rejected key
+        # sends the user to rotate a credential that works -- the same
+        # failure the 5xx branch exists to prevent, so a bare `< 500` test
+        # gets it wrong.
+        client = FakeProbeClient(_api_error(status_code, "rate limit exceeded"))
+
+        assert llm.verify_api_key(client=client).state is KeyState.UNVERIFIED
+
     def test_server_error_is_unverified_not_rejected(self, api_key_set):
         # A 500 is Anthropic's problem, not the key's -- reporting it as a
         # bad key would send the user to rotate a credential that works.
@@ -704,8 +727,7 @@ class TestVerifyApiKey:
 
     def test_connection_error_is_unverified_not_rejected(self, api_key_set):
         # Offline must never be reported as an invalid key.
-        request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
-        client = FakeProbeClient(anthropic.APIConnectionError(request=request))
+        client = FakeProbeClient(anthropic.APIConnectionError(request=object()))
 
         result = llm.verify_api_key(client=client)
 
