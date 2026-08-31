@@ -49,7 +49,7 @@ happen.
 `/claude-merge-approved` — or exactly `/claude-merge-approved-multi`, which
 additionally acknowledges that the PR closes more than one issue (see
 "Closing more than one issue"). Both are exact matches; neither takes a
-suffix. `/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
+suffix. Not a formal GitHub "Approve" review (GitHub
 hard-blocks PR authors from approving their own pull requests, a platform
 rule; every PR here is authored by juanman2, so a real "Approve" review is
 never obtainable). A plain comment isn't restricted that way and still
@@ -197,7 +197,7 @@ Then:
 
    ```
    ## Waiver requested
-   Closes #73, closes #74. One change resolves both because <reason>.
+   Closes #A, closes #B. One change resolves both because <reason>.
    Splitting was considered and rejected because <reason>.
    ```
 
@@ -228,6 +228,12 @@ Then:
    required: the `-multi` trigger, and a description disclosing the issues.
    Missing either, stop and ask.
 
+**If a plain approval arrives on a multi-issue PR**, the loop has already
+exited, so nothing is watching when the human posts the `-multi` form.
+Explain what is needed and **restart the loop**, exactly as after a
+rejection — otherwise their second comment lands with no listener and the
+PR stalls.
+
 **Why a second literal rather than a waiver clause on the first.** Two
 earlier designs failed on the same point. Putting the issues in the
 comment (`/claude-merge-approved issues 73, 74`) made the merge gate parse
@@ -247,14 +253,6 @@ not re-argue the waiver.
 
 Without a waiver, close one issue and link the others plainly (`see #81`)
 for a follow-up PR.
-
-**Why the trigger stays exact.** An earlier attempt put the waiver in the
-comment (`/claude-merge-approved issues 73, 74`), which meant the watch
-loop had to parse free text to decide whether to merge. Every version of
-that parser accepted something it should have refused — including
-`/claude-merge-approved issues 73 and 74 are not fixed yet, do NOT merge`.
-A merge gate should not be a parser. The description carries the detail;
-the trigger stays a constant.
 
 This is also the answer to `PROCESS.md` step 6's "one tightly-coupled pair"
 (a module and the exceptions it raises, say). If that pair is two issues,
@@ -444,7 +442,7 @@ is why the JSON is fetched and piped to real `jq`. Poll every 30s.
 A long wait is fine — this is a background job, not something to resolve
 before the turn ends.
 
-### On `MERGE_APPROVED`
+### On `MERGE_APPROVED` / `MERGE_APPROVED_MULTI`
 
 **Post `human-approval` on the SHA the loop was watching — never on a newer
 head.** The loop's watermark is that SHA's commit date, so the trigger it
@@ -454,11 +452,11 @@ ask for a fresh `/claude-merge-approved` and restart the loop. Re-reading head
 and stamping the approval onto it would launder an unapproved commit through
 a human artifact — the exact thing all three gates exist to prevent.
 
-**If this PR closes more than one issue, check the waiver first.** Count
-the closing keywords across the PR body and every commit message; if that
-count is above one, the description must carry a waiver section naming
-each of them. If it does not, stop and ask — a bare approval on a PR whose
-description requests nothing is not a waiver.
+**If this PR closes more than one issue, check the acknowledgement first.**
+Ask GitHub how many it closes (below) rather than counting keywords
+yourself — a single-commit PR has its body prefilled from the commit
+message, so the same `closes` appears twice and a keyword count says two
+where the answer is one.
 
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
@@ -467,21 +465,25 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # If these differ, STOP and resolve per the paragraph above before posting.
 [ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
 
-# Issues this PR will actually close, body + commits. More than one needs a
-# waiver section in the description. Check BEFORE posting: once
-# human-approval is on the SHA, all three contexts are green and anything
-# that merges -- another agent, the chat-override path, the human -- gets no
-# further signal that a waiver was missing.
-{ gh pr view <number> --json body --jq .body
-  git log origin/main..HEAD --format=%B; } \
-  | grep -Eio '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed)) #[0-9]+' \
-  | grep -Eo '#[0-9]+' | sort -u
+# What GitHub itself will close -- its own parse, not a reimplementation
+# of it. Addressed by PR number, so it does not depend on which branch the
+# working tree happens to be on after a long background wait.
+gh pr view <number> --json closingIssuesReferences \
+  --jq '.closingIssuesReferences | length'
 
-# Record which trigger was used: on a multi-issue PR this is the only
-# place the acknowledgement lands on the SHA.
+# More than one requires BOTH the -multi trigger and disclosure in the
+# description. Check before posting: once human-approval is on the SHA all
+# three contexts are green, and anything that merges afterwards -- another
+# agent, the chat-override path, the human -- gets no further signal.
+
+# Set TRIGGER to the literal the loop matched. On a multi-issue PR this
+# status is the only place the acknowledgement lands on the SHA, so a
+# hardcoded value would record the wrong thing.
+TRIGGER="<the literal the loop reported>"
+
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
-  -f description="/claude-merge-approved by juanman2"   # or -multi
+  -f description="$TRIGGER by juanman2"
 
 # llm-review — legacy status API
 gh api repos/{owner}/{repo}/commits/"$SHA"/status \
@@ -546,7 +548,9 @@ loop, so nothing else will surface a missing waiver — then go to the three
 to the `human-approval` post that precedes them; a chat remark is not the
 trigger and never authorizes stamping that status.
 
-`human-approval` still requires a real `/claude-merge-approved` on the PR. If
+`human-approval` still requires a real `/claude-merge-approved` on the PR —
+or `/claude-merge-approved-multi` if it closes more than one issue, which
+this path must check for itself since it never sees the loop's output. If
 one already exists and is newer than the head commit, verify it yourself with
 the same jq the loop uses, then post the status on the SHA it covers. If none
 exists, ask for one — this override waives the waiting, never the gates, and

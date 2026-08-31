@@ -43,15 +43,16 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
 
    - `MERGE_APPROVED` / `MERGE_APPROVED_MULTI`: re-read the current head SHA
      first — commits may have landed while the loop ran — then, **before
-     posting anything**, count the distinct issues this PR will close (every
-     `closes`/`fixes`/`resolves` keyword paired with a number, in the PR body
-     *and* every commit message).
+     posting anything**, check how many issues this PR closes.
 
-     If that count is above one, the trigger must be `MERGE_APPROVED_MULTI`
-     **and** the description must disclose the issues. A plain
-     `MERGE_APPROVED` on a multi-issue PR is **not** authorization: stop and
-     ask for the `-multi` form rather than posting anything. Then satisfy
-     **all three gates on one and the same SHA**:
+     Ask GitHub rather than counting keywords yourself:
+     `gh pr view <PR> --json closingIssuesReferences`. If it names more than
+     one, the trigger must be `MERGE_APPROVED_MULTI` **and** the description
+     must disclose them. A plain `MERGE_APPROVED` on a multi-issue PR is
+     **not** authorization: post nothing, explain what is needed, and
+     **restart this loop** — it has already exited, so the human's `-multi`
+     comment would otherwise land with no listener. Then satisfy **all three
+     gates on one and the same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
         trigger approves that commit and nothing after it. If head has moved,
