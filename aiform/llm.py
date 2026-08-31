@@ -282,6 +282,10 @@ def review_plan(
     return review
 
 
+# A timeout or a rate limit is not a verdict on the credential.
+_INCONCLUSIVE_STATUSES = frozenset({408, 429})
+
+
 def verify_api_key(
     *,
     client: anthropic.Anthropic | None = None,
@@ -294,9 +298,16 @@ def verify_api_key(
     created. Lives here because this module already owns Anthropic client
     construction.
 
-    Reads nothing and accepts nothing secret-bearing: the SDK resolves
-    ANTHROPIC_API_KEY from the environment itself, which is what keeps
-    this file's grep-verifiable property (CLAUDE.md) intact.
+    Presence is decided by ANTHROPIC_API_KEY alone, which CLAUDE.md makes
+    the only supported source ("env var only, never a CLI flag"). A key
+    supplied any other way -- ANTHROPIC_AUTH_TOKEN, or an explicit
+    api_key on an injected client -- is therefore reported MISSING by
+    design, not probed.
+
+    `timeout` applies only to the client this builds; an injected `client`
+    carries its own. Nothing secret-bearing is accepted as a parameter,
+    which is what keeps this file's grep-verifiable property (CLAUDE.md)
+    intact.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return KeyCheck(state=KeyState.MISSING)
@@ -309,9 +320,11 @@ def verify_api_key(
         # a bad key sends the user to rotate a credential that works.
         # An identity-linked key 400s rather than 401s -- matching only
         # 401/403 here would miss the case this function exists for.
-        if exc.status_code < 500:
-            return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
-        return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
+        # 408/429 are the exception: a timeout or a rate limit says nothing
+        # about the key, and a busy org key routinely 429s.
+        if exc.status_code in _INCONCLUSIVE_STATUSES or exc.status_code >= 500:
+            return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
+        return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
     except anthropic.APIError as exc:
         # APIConnectionError and its timeout/DNS subclasses land here.
         # Offline is never a verdict on the key.

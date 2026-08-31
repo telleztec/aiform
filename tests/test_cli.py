@@ -6,6 +6,7 @@ import inspect
 import io
 import json
 import re
+import socket
 import subprocess
 import sys
 import tomllib
@@ -153,7 +154,7 @@ def project_dir(tmp_path: Path, monkeypatch) -> Path:
 class FakeHTTPResponse:
     """Duck-typed like urllib's response context manager."""
 
-    def __init__(self, payload: dict):
+    def __init__(self, payload):
         self._payload = payload
 
     def __enter__(self):
@@ -166,6 +167,22 @@ class FakeHTTPResponse:
         return json.dumps(self._payload).encode("utf-8")
 
 
+class FakeRawResponse:
+    """A 200 whose body is not JSON at all -- a captive portal."""
+
+    def __init__(self, raw: bytes):
+        self._raw = raw
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self) -> bytes:
+        return self._raw
+
+
 def fake_http_error(code: int, payload: dict) -> urllib.error.HTTPError:
     return urllib.error.HTTPError(
         url="https://api.digitalocean.com/v2/account",
@@ -176,10 +193,22 @@ def fake_http_error(code: int, payload: dict) -> urllib.error.HTTPError:
     )
 
 
-@pytest.fixture
+# Captured before the autouse stub below can replace it, so the tests that
+# exercise the real probe can still reach it.
+_REAL_CHECK_PROVIDER_TOKEN = cli._check_provider_token
+
+
+@pytest.fixture(autouse=True)
 def offline_preflight(monkeypatch):
-    """Stub both credential probes. init's preflight reaches the network,
-    and no test outside TestInitPreflight is about that."""
+    """Stub both credential probes for every test in this module.
+
+    Autouse, not opt-in: `init`'s preflight reaches the network, and
+    `_guarded` swallows whatever comes back, so a test that forgets to
+    stub still *passes* while firing live requests with the developer's
+    real tokens and printing the account email into test output. That is
+    exactly what happened before this was made autouse -- the only
+    symptom was the suite getting slower.
+    """
     monkeypatch.setattr(llm, "verify_api_key", lambda **kwargs: KeyCheck(state=KeyState.MISSING))
     monkeypatch.setattr(
         cli, "_check_provider_token", lambda provider: KeyCheck(state=KeyState.MISSING)
@@ -287,6 +316,30 @@ class TestInit:
         cli.main(["init"])
         out = capsys.readouterr().out
         assert "✓" in out
+
+
+class TestInitMakesNoNetworkCalls:
+    """specs/cli.md claims the default pytest run makes no network calls.
+
+    That claim was false when written: init's probes ran for real against
+    the developer's tokens, and passed anyway because _guarded swallows
+    everything. This asserts the claim instead of restating it, so a new
+    unstubbed probe fails here rather than silently phoning home.
+    """
+
+    def test_init_attempts_no_socket_connections(self, project_dir: Path, monkeypatch):
+        attempts = []
+
+        def record(target, *args, **kwargs):
+            attempts.append(target)
+            raise OSError("network disabled for this test")
+
+        monkeypatch.setattr(socket, "create_connection", record)
+        monkeypatch.setattr(socket.socket, "connect", record)
+        monkeypatch.setattr(socket, "getaddrinfo", record)
+
+        assert cli.main(["init"]) == 0
+        assert attempts == []
 
 
 class TestInitGuidance:
@@ -509,12 +562,12 @@ class TestCheckProviderToken:
 
         monkeypatch.setattr(cli.urllib.request, "urlopen", explode)
 
-        assert cli._check_provider_token("digitalocean").state is KeyState.MISSING
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.MISSING
 
     def test_accepted_token_reports_the_account_email(self, token, monkeypatch):
         self._urlopen(monkeypatch, FakeHTTPResponse({"account": {"email": "juan@example.com"}}))
 
-        check = cli._check_provider_token("digitalocean")
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.OK
         assert check.detail == "juan@example.com"
@@ -522,35 +575,89 @@ class TestCheckProviderToken:
     def test_revoked_token_401_is_rejected(self, token, monkeypatch):
         self._urlopen(monkeypatch, fake_http_error(401, {"message": "Unable to authenticate you"}))
 
-        check = cli._check_provider_token("digitalocean")
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.REJECTED
         assert "Unable to authenticate you" in check.detail
 
-    def test_scoped_token_403_is_accepted_not_rejected(self, token, monkeypatch):
-        # A DigitalOcean token scoped to droplets but not account:read gets
-        # 403 here. It authenticated -- that is the whole question being
-        # asked -- so reporting it as rejected would send the user to
-        # replace a token that works. Observed against the real API.
-        self._urlopen(
-            monkeypatch,
-            fake_http_error(403, {"message": "You are not authorized to perform this operation"}),
-        )
+    def _urlopen_sequence(self, monkeypatch, results):
+        """Answer successive probes with successive results -- the account
+        probe first, then the droplet-scope fallback."""
+        remaining = list(results)
+        urls = []
 
-        check = cli._check_provider_token("digitalocean")
+        def fake_urlopen(request, timeout=None):
+            urls.append(request.full_url)
+            result = remaining.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+        return urls
+
+    def test_scoped_token_with_droplet_access_is_accepted(self, token, monkeypatch):
+        # A DigitalOcean token scoped to droplets but not account:read gets
+        # 403 from /v2/account. It authenticated, and it can do what aiform
+        # needs -- reporting it as rejected would send the user to replace a
+        # working token. Observed against the real API with this repo's own
+        # token, which is exactly this shape.
+        forbidden = fake_http_error(403, {"message": "You are not authorized"})
+        urls = self._urlopen_sequence(monkeypatch, [forbidden, FakeHTTPResponse({"droplets": []})])
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.OK
         assert "scoped" in check.detail
+        assert urls == [
+            config.PROVIDER_ACCOUNT_PROBES["digitalocean"],
+            config.PROVIDER_DROPLET_PROBES["digitalocean"],
+        ]
+
+    def test_token_without_droplet_scope_is_rejected(self, token, monkeypatch):
+        # "Real token somewhere" is not the question. A token scoped without
+        # droplet access is 403 on both probes and fails every apply.
+        forbidden = fake_http_error(403, {"message": "You are not authorized"})
+        self._urlopen_sequence(monkeypatch, [forbidden, forbidden])
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.REJECTED
+        assert "droplet scope" in check.detail
+
+    @pytest.mark.parametrize("code", [408, 429])
+    def test_rate_limited_or_timed_out_is_unverified_not_rejected(self, token, monkeypatch, code):
+        # DO's limiter is shared with anything else using the token (doctl
+        # included); a 429 says nothing about whether the token is good.
+        self._urlopen(monkeypatch, fake_http_error(code, {"message": "slow down"}))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_malformed_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
+        # A captive portal or proxy answering 200 with something that is not
+        # the expected shape must not raise out of a function specified to
+        # return a KeyCheck.
+        self._urlopen(monkeypatch, FakeHTTPResponse(["not", "a", "dict"]))
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert check.detail is None
+
+    def test_non_json_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
+        self._urlopen(monkeypatch, FakeRawResponse(b"<html>captive portal</html>"))
+
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
 
     def test_server_error_is_unverified_not_rejected(self, token, monkeypatch):
         self._urlopen(monkeypatch, fake_http_error(503, {"message": "unavailable"}))
 
-        assert cli._check_provider_token("digitalocean").state is KeyState.UNVERIFIED
+        assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED
 
     def test_offline_is_unverified_not_rejected(self, token, monkeypatch):
         self._urlopen(monkeypatch, urllib.error.URLError("name resolution failed"))
 
-        check = cli._check_provider_token("digitalocean")
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.UNVERIFIED
         assert check.detail
@@ -565,7 +672,7 @@ class TestCheckProviderToken:
 
         monkeypatch.setattr(cli.urllib.request, "urlopen", capture)
 
-        cli._check_provider_token("digitalocean")
+        _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert sent["auth"] == "Bearer dop_v1_test"
         assert sent["url"] == config.PROVIDER_ACCOUNT_PROBES["digitalocean"]
@@ -573,7 +680,7 @@ class TestCheckProviderToken:
     def test_never_prints_or_returns_the_token(self, token, monkeypatch, capsys):
         self._urlopen(monkeypatch, fake_http_error(401, {"message": "bad token"}))
 
-        check = cli._check_provider_token("digitalocean")
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert "dop_v1_test" not in (check.detail or "")
         assert "dop_v1_test" not in capsys.readouterr().out

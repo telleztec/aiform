@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, NamedTuple
 
 import anthropic
 
@@ -233,12 +234,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
     examples_dir = Path("examples")
     examples_dir.mkdir(parents=True, exist_ok=True)
     example_path = examples_dir / "compute.aiform.md"
-    if not example_path.exists():
+    example_written = not example_path.exists()
+    if example_written:
         example_path.write_text(_EXAMPLE_COMPUTE_AIFORM_MD, encoding="utf-8")
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
-    print(f"Wrote {example_path}")
+    print(f"{'Wrote' if example_written else 'Example already present:'} {example_path}")
     print()
     print("Set the following before running `aiform plan create`:")
     print("  - ANTHROPIC_API_KEY: environment variable only, never a CLI flag or file")
@@ -262,6 +264,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("aiform discovers *.aiform.md in the current directory only.")
     return 0
 
+
+# A timeout or a rate limit is not a verdict on the credential.
+_INCONCLUSIVE_STATUSES = frozenset({408, 429})
 
 _STATE_MARKERS = {
     KeyState.OK: "✓",
@@ -316,26 +321,68 @@ def _check_provider_token(provider: str, *, timeout: float = 10.0) -> KeyCheck:
         return KeyCheck(state=KeyState.UNVERIFIED, detail="no account probe for this provider")
 
     token = creds[config.PROVIDER_TOKEN_ENV_VARS[provider]]
-    request = urllib.request.Request(probe_url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        # 403 means the token authenticated and then lacked account:read --
-        # DigitalOcean's scoped tokens routinely do. That is a *pass*: the
-        # token is real. Only 401 says the token itself was not accepted.
-        if exc.code == 403:
-            return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
-        if exc.code < 500:
-            return KeyCheck(state=KeyState.REJECTED, detail=_http_error_detail(exc))
-        return KeyCheck(state=KeyState.UNVERIFIED, detail=_http_error_detail(exc))
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
+    body, failure = _probe(probe_url, token, timeout)
+    if failure is not None:
+        # 403 means the token authenticated and was then denied one scope --
+        # DigitalOcean's scoped tokens routinely lack account:read. The token
+        # is real, but "real" is not enough: a token scoped without droplet
+        # access is equally 403 here and fails every apply. So re-probe the
+        # scope aiform actually needs before calling it a pass.
+        if failure.state is KeyState.REJECTED and failure.code == 403:
+            return _check_droplet_scope(provider, token, timeout)
+        return failure.check
 
     # The account email disambiguates which of several provider accounts a
     # token belongs to -- the failure this probe is most likely to catch.
-    email = body.get("account", {}).get("email")
+    account = body.get("account") if isinstance(body, dict) else None
+    email = account.get("email") if isinstance(account, dict) else None
     return KeyCheck(state=KeyState.OK, detail=email)
+
+
+def _check_droplet_scope(provider: str, token: str, timeout: float) -> KeyCheck:
+    url = config.PROVIDER_DROPLET_PROBES.get(provider)
+    if url is None:
+        return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
+
+    _, failure = _probe(url, token, timeout)
+    if failure is None:
+        return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
+    if failure.state is KeyState.REJECTED and failure.code == 403:
+        return KeyCheck(
+            state=KeyState.REJECTED,
+            detail="token is valid but lacks the droplet scope aiform needs",
+        )
+    return failure.check
+
+
+class _ProbeFailure(NamedTuple):
+    check: KeyCheck
+    code: int | None
+
+    @property
+    def state(self) -> KeyState:
+        return self.check.state
+
+
+def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | None]:
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8")), None
+    except urllib.error.HTTPError as exc:
+        detail = _http_error_detail(exc)
+        # A timeout or a rate limit says nothing about the token; DO's
+        # limiter is shared with anything else using it, doctl included.
+        if exc.code in _INCONCLUSIVE_STATUSES or exc.code >= 500:
+            return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), exc.code)
+        return None, _ProbeFailure(KeyCheck(state=KeyState.REJECTED, detail=detail), exc.code)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        detail = str(exc) or type(exc).__name__
+        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
+    except ValueError as exc:
+        # A captive portal or proxy answering 200 with non-JSON.
+        detail = f"unreadable response: {exc}"
+        return None, _ProbeFailure(KeyCheck(state=KeyState.UNVERIFIED, detail=detail), None)
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:

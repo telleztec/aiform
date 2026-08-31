@@ -22,6 +22,12 @@ PROVIDER_ACCOUNT_PROBES: dict[str, str] = {
     "digitalocean": "https://api.digitalocean.com/v2/account",
 }
 
+# Fallback probe for a scoped token that cannot read the account. Verifies the
+# scope aiform actually needs rather than merely that the token is real.
+PROVIDER_DROPLET_PROBES: dict[str, str] = {
+    "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
+}
+
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(

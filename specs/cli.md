@@ -157,19 +157,35 @@ which never reads or writes state.
   A 5xx is `?`, not `✗`, for the same reason: a provider outage is not a
   verdict on the credential.
 
-- **DigitalOcean 403 is a pass, not a rejection.** DigitalOcean's scoped
-  tokens can be valid for droplet operations while lacking
-  `account:read`, so `GET /v2/account` answers 403 for a token that works
-  perfectly for everything aiform actually does. 403 means the token
-  *authenticated* and was then denied one scope — which is exactly the
-  question the probe asks. Only **401** says the token itself was not
-  accepted. Reporting `✗` on 403 would send a user to replace a working
-  token, reintroducing the defect this preflight exists to remove, merely
-  inverted.
+- **A DigitalOcean 403 triggers a second probe rather than a verdict.**
+  DigitalOcean's scoped tokens can be valid for droplet operations while
+  lacking `account:read`, so `GET /v2/account` answers 403 for a token
+  that works perfectly for everything aiform does. Only **401** says the
+  token itself was not accepted.
 
-  This was found by running the probe against the real API with this
-  repo's own DigitalOcean token, not by reading the docs — the `✓` and
-  `✗` cases are indistinguishable without it.
+  But "the token is real" is not the question worth answering — a token
+  scoped *without* droplet access is equally 403 here and would fail
+  every `apply`. So a 403 falls through to
+  `GET /v2/droplets?per_page=1` (`config.PROVIDER_DROPLET_PROBES`), which
+  tests the scope aiform actually needs:
+
+  | `/v2/account` | `/v2/droplets` | Result |
+  |---|---|---|
+  | 2xx | — | `✓`, detail is the account email |
+  | 403 | 2xx | `✓` "authenticated (scoped token)" |
+  | 403 | 403 | `✗` "token is valid but lacks the droplet scope aiform needs" |
+  | 401 | — | `✗`, rejected |
+
+  Found by running the probe against the real API with this repo's own
+  DigitalOcean token, which is exactly the 403-then-2xx shape; the `✓`
+  and `✗` cases are indistinguishable without doing that.
+
+- **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
+  rate limit says nothing about the credential, and DigitalOcean's
+  limiter is shared with anything else using the token (`doctl`
+  included), so a routine 429 must not tell a user their working token
+  was rejected. This is the same reasoning as the 5xx rule above; a bare
+  `code < 500` test gets it wrong.
 
 - On a 2xx the DigitalOcean probe reports the **account email** as its
   `detail`. `CLAUDE.md` notes this machine has two DigitalOcean accounts;
@@ -180,13 +196,26 @@ which never reads or writes state.
   of probe outcome — a brand-new project legitimately has no credentials
   yet, and `init`'s job is to scaffold and inform, not to gate. This
   rule is unchanged from the narrowed version.
+- Presence for `ANTHROPIC_API_KEY` is decided by the environment
+  variable alone — `CLAUDE.md` makes that the only supported source
+  ("env var only, never a CLI flag"). A key supplied any other way is
+  reported not-configured by design rather than probed.
 - The Anthropic probe lives in `aiform/llm.py` (`verify_api_key()`),
   which already owns Anthropic client construction. It takes **no**
   `credentials` parameter — the SDK reads `ANTHROPIC_API_KEY` from the
   environment itself — so `CLAUDE.md`'s grep-verifiable "no `credentials`
   identifier in `llm.py`" property is preserved. See `specs/llm.md`.
-- Both probes are stubbed in tests; the default `pytest` run makes no
-  network calls.
+- Both probes are stubbed in tests **by an autouse fixture**, and
+  `tests/test_cli.py::TestInitMakesNoNetworkCalls` asserts that `init`
+  attempts no socket connection at all.
+
+  Opt-in stubbing was tried first and was silently wrong: `_guarded`
+  swallows a probe failure, so a test that forgot to stub still *passed*
+  while firing live requests with the developer's real tokens and
+  printing the account email into test output. The only symptom was the
+  suite getting slower. Both the autouse default and the explicit
+  assertion exist because this claim cannot be verified by reading the
+  tests.
 - Forward note: `PLAN.md` §10's "Use short lived tokens instead of API
   Keys" (workload identity federation) would change *what* is being
   verified, not whether verification happens. The four-state contract
