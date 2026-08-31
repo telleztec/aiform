@@ -321,46 +321,61 @@ def _check_provider_token(provider: str, *, timeout: float = 10.0) -> KeyCheck:
         return KeyCheck(state=KeyState.UNVERIFIED, detail="no account probe for this provider")
 
     token = creds[config.PROVIDER_TOKEN_ENV_VARS[provider]]
-    body, failure = _probe(probe_url, token, timeout)
+    email, failure = _probe_account(probe_url, token, timeout)
     if failure is not None:
-        # 403 means the token authenticated and was then denied one scope --
-        # DigitalOcean's scoped tokens routinely lack account:read. The token
-        # is real, but "real" is not enough: a token scoped without droplet
-        # access is equally 403 here and fails every apply. So re-probe the
-        # scope aiform actually needs before calling it a pass.
-        if failure.state is KeyState.REJECTED and failure.code == 403:
-            return _check_droplet_scope(provider, token, timeout)
-        return failure.check
+        return failure
 
-    # The account email disambiguates which of several provider accounts a
-    # token belongs to -- the failure this probe is most likely to catch.
-    # A 200 that is not shaped like an account response did not come from
-    # the provider (a proxy or captive portal answering anything), so it is
-    # not evidence the token works.
+    # Always, not only after a 403 on the account endpoint: a token granted
+    # account:read without droplet scopes answers 200 above and then fails
+    # every apply, which is the same false green reached by the other path.
+    return _check_droplet_scope(provider, token, timeout, email)
+
+
+def _probe_account(url: str, token: str, timeout: float) -> tuple[str | None, KeyCheck | None]:
+    """Return the account email, or the KeyCheck that ends the check.
+
+    A 403 is neither -- it means only that this token lacks account:read,
+    which DigitalOcean's scoped tokens routinely do."""
+    body, failure = _probe(url, token, timeout)
+    if failure is not None:
+        if failure.state is KeyState.REJECTED and failure.code == 403:
+            return None, None
+        return None, failure.check
+
+    # A 200 that is not shaped like an account response did not come from the
+    # provider (a proxy or captive portal answering anything), so it is not
+    # evidence about the token.
     account = body.get("account") if isinstance(body, dict) else None
     if not isinstance(account, dict):
-        return KeyCheck(state=KeyState.UNVERIFIED, detail="unexpected response from the provider")
-    return KeyCheck(state=KeyState.OK, detail=account.get("email"))
+        return None, KeyCheck(
+            state=KeyState.UNVERIFIED, detail="unexpected response from the provider"
+        )
+    # Which of several provider accounts a token belongs to is the failure
+    # this probe is most likely to catch.
+    return account.get("email"), None
 
 
-def _check_droplet_scope(provider: str, token: str, timeout: float) -> KeyCheck:
+def _check_droplet_scope(provider: str, token: str, timeout: float, email: str | None) -> KeyCheck:
+    """Confirm the token can read droplets.
+
+    Read scope only -- it does not prove the token can create or destroy
+    one, which no free probe can establish."""
     url = config.PROVIDER_DROPLET_PROBES.get(provider)
     if url is None:
-        return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
+        return KeyCheck(state=KeyState.OK, detail=email)
 
     body, failure = _probe(url, token, timeout)
-    if failure is None:
-        if not isinstance(body, dict) or "droplets" not in body:
+    if failure is not None:
+        if failure.state is KeyState.REJECTED and failure.code == 403:
             return KeyCheck(
-                state=KeyState.UNVERIFIED, detail="unexpected response from the provider"
+                state=KeyState.REJECTED,
+                detail="token is valid but cannot read droplets",
             )
-        return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
-    if failure.state is KeyState.REJECTED and failure.code == 403:
-        return KeyCheck(
-            state=KeyState.REJECTED,
-            detail="token is valid but lacks the droplet scope aiform needs",
-        )
-    return failure.check
+        return failure.check
+
+    if not isinstance(body, dict) or "droplets" not in body:
+        return KeyCheck(state=KeyState.UNVERIFIED, detail="unexpected response from the provider")
+    return KeyCheck(state=KeyState.OK, detail=email or "authenticated (scoped token)")
 
 
 class _ProbeFailure(NamedTuple):

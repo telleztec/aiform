@@ -164,21 +164,28 @@ which never reads or writes state.
   token itself was not accepted.
 
   But "the token is real" is not the question worth answering — a token
-  scoped *without* droplet access is equally 403 here and would fail
-  every `apply`. So a 403 falls through to
-  `GET /v2/droplets?per_page=1` (`config.PROVIDER_DROPLET_PROBES`), which
-  tests the scope aiform actually needs:
+  scoped *without* droplet access fails every `apply`. So the account
+  probe is always followed by `GET /v2/droplets?per_page=1`
+  (`config.PROVIDER_DROPLET_PROBES`):
 
   | `/v2/account` | `/v2/droplets` | Result |
   |---|---|---|
-  | 2xx | — | `✓`, detail is the account email |
+  | 2xx | 2xx | `✓`, detail is the account email |
+  | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
   | 403 | 2xx | `✓` "authenticated (scoped token)" |
-  | 403 | 403 | `✗` "token is valid but lacks the droplet scope aiform needs" |
+  | 403 | 403 | `✗` "token is valid but cannot read droplets" |
   | 401 | — | `✗`, rejected |
 
-  Found by running the probe against the real API with this repo's own
-  DigitalOcean token, which is exactly the 403-then-2xx shape; the `✓`
-  and `✗` cases are indistinguishable without doing that.
+  **The droplet probe runs unconditionally, not only after a 403.** A
+  token granted `account:read` without droplet scopes answers 2xx on the
+  first probe, so gating the second on a 403 would let that token print a
+  green check and fail on the first `apply` — the same false green
+  reached by the other path.
+
+  Note what the second probe does and does not establish: **read** scope
+  on droplets. It cannot prove the token may create or destroy one, and
+  no free probe can. `✓` means "this token can talk to DigitalOcean and
+  see droplets", not "every `apply` will succeed".
 
 - **A redirect is refused, not followed.** `urllib` re-sends the
   `Authorization` header verbatim to a redirect target, including a

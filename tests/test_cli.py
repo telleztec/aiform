@@ -600,12 +600,51 @@ class TestCheckProviderToken:
         assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.MISSING
 
     def test_accepted_token_reports_the_account_email(self, token, monkeypatch):
-        self._urlopen(monkeypatch, FakeHTTPResponse({"account": {"email": "juan@example.com"}}))
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                FakeHTTPResponse({"droplets": []}),
+            ],
+        )
 
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.OK
         assert check.detail == "juan@example.com"
+
+    def test_account_read_without_droplet_scope_is_rejected(self, token, monkeypatch):
+        # The false green reached by the success path: a token granted
+        # account:read but no droplet scope answers 200 on /v2/account and
+        # then 403s on every apply.
+        self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                fake_http_error(403, {"message": "You are not authorized"}),
+            ],
+        )
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.REJECTED
+        assert "droplets" in check.detail
+
+    def test_droplet_scope_is_checked_even_when_the_account_reads_fine(self, token, monkeypatch):
+        urls = self._urlopen_sequence(
+            monkeypatch,
+            [
+                FakeHTTPResponse({"account": {"email": "juan@example.com"}}),
+                FakeHTTPResponse({"droplets": []}),
+            ],
+        )
+
+        _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert urls == [
+            config.PROVIDER_ACCOUNT_PROBES["digitalocean"],
+            config.PROVIDER_DROPLET_PROBES["digitalocean"],
+        ]
 
     def test_revoked_token_401_is_rejected(self, token, monkeypatch):
         self._urlopen(monkeypatch, fake_http_error(401, {"message": "Unable to authenticate you"}))
@@ -658,7 +697,7 @@ class TestCheckProviderToken:
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.REJECTED
-        assert "droplet scope" in check.detail
+        assert "droplets" in check.detail
 
     @pytest.mark.parametrize("code", [408, 429])
     def test_rate_limited_or_timed_out_is_unverified_not_rejected(self, token, monkeypatch, code):
@@ -725,17 +764,22 @@ class TestCheckProviderToken:
     def test_sends_the_token_as_a_bearer_header(self, token, monkeypatch):
         sent = {}
 
+        bodies = [
+            FakeHTTPResponse({"account": {"email": "x@example.com"}}),
+            FakeHTTPResponse({"droplets": []}),
+        ]
+
         def capture(request, timeout=None):
-            sent["auth"] = request.get_header("Authorization")
-            sent["url"] = request.full_url
-            return FakeHTTPResponse({"account": {"email": "x@example.com"}})
+            sent.setdefault("auth", []).append(request.get_header("Authorization"))
+            sent.setdefault("urls", []).append(request.full_url)
+            return bodies.pop(0)
 
         monkeypatch.setattr(cli, "_open", capture)
 
         _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
-        assert sent["auth"] == "Bearer dop_v1_test"
-        assert sent["url"] == config.PROVIDER_ACCOUNT_PROBES["digitalocean"]
+        assert sent["auth"] == ["Bearer dop_v1_test", "Bearer dop_v1_test"]
+        assert sent["urls"][0] == config.PROVIDER_ACCOUNT_PROBES["digitalocean"]
 
     def test_never_prints_or_returns_the_token(self, token, monkeypatch, capsys):
         self._urlopen(monkeypatch, fake_http_error(401, {"message": "bad token"}))
