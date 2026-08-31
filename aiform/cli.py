@@ -4,15 +4,17 @@
 import argparse
 import json
 import logging
-import os
 import sys
+import urllib.error
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import anthropic
 
-from aiform import config, log, orchestrator, state
+from aiform import config, llm, log, orchestrator, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
-from aiform.models import PlanAction
+from aiform.models import KeyCheck, KeyState, PlanAction
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,10 @@ params:
   region: sfo3
   size: s-1vcpu-2gb
   image: ubuntu-24-04-x64
+  # DigitalOcean takes SSH key fingerprints or numeric IDs, never names.
+  # List yours with: doctl compute ssh-key list
   ssh_keys:
-    - "your-ssh-key-name"
+    - "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
   backups: false
   monitoring: true
   tags:
@@ -234,6 +238,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
+    print(f"Wrote {example_path}")
     print()
     print("Set the following before running `aiform plan create`:")
     print("  - ANTHROPIC_API_KEY: environment variable only, never a CLI flag or file")
@@ -244,15 +249,102 @@ def _cmd_init(args: argparse.Namespace) -> int:
     )
     print()
 
-    anthropic_ok = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    try:
-        config.resolve_credentials(provider)
-        provider_ok = True
-    except RuntimeError:
-        provider_ok = False
-    print(f"  [{'✓' if anthropic_ok else '✗'}] ANTHROPIC_API_KEY")
-    print(f"  [{'✓' if provider_ok else '✗'}] {token_env_var}")
+    _print_credential_checks(provider, token_env_var)
+
+    # The scaffold is deliberately somewhere discover_files() cannot see
+    # (specs/cli.md): init must never produce config that would make a
+    # first `plan create` propose a real droplet. That makes this
+    # instruction the only thing connecting the example to a usable plan.
+    print()
+    print("Next: copy an example here and edit it --")
+    print(f"  cp {example_path} ./my-server.aiform.md")
+    print()
+    print("aiform discovers *.aiform.md in the current directory only.")
     return 0
+
+
+_STATE_MARKERS = {
+    KeyState.OK: "✓",
+    KeyState.MISSING: "✗",
+    KeyState.REJECTED: "✗",
+    KeyState.UNVERIFIED: "?",
+}
+
+_STATE_SUMMARIES = {
+    KeyState.MISSING: "not set",
+    KeyState.REJECTED: "set, but rejected",
+    KeyState.UNVERIFIED: "set, but could not verify",
+}
+
+
+def _format_check(label: str, check: KeyCheck) -> str:
+    line = f"  [{_STATE_MARKERS[check.state]}] {label}"
+    summary = _STATE_SUMMARIES.get(check.state)
+    if summary:
+        line += f" -- {summary}"
+    if check.detail:
+        line += f": {check.detail}"
+    return line
+
+
+def _print_credential_checks(provider: str, token_env_var: str) -> None:
+    print(_format_check("ANTHROPIC_API_KEY", _guarded(lambda: llm.verify_api_key())))
+    print(_format_check(token_env_var, _guarded(lambda: _check_provider_token(provider))))
+
+
+def _guarded(probe: Callable[[], KeyCheck]) -> KeyCheck:
+    """A preflight that crashes is worse than one that reports nothing:
+    `init`'s job is to scaffold and inform, and the scaffold already
+    happened by the time these run."""
+    try:
+        return probe()
+    except Exception as exc:  # noqa: BLE001 -- see docstring
+        return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
+
+
+def _check_provider_token(provider: str, *, timeout: float = 10.0) -> KeyCheck:
+    """Probe the provider's free account endpoint (GET /v2/account for
+    DigitalOcean) so a token that is present but wrong -- the other
+    account's, or revoked -- is not reported as working."""
+    try:
+        creds = config.resolve_credentials(provider)
+    except RuntimeError:
+        return KeyCheck(state=KeyState.MISSING)
+
+    probe_url = config.PROVIDER_ACCOUNT_PROBES.get(provider)
+    if probe_url is None:
+        return KeyCheck(state=KeyState.UNVERIFIED, detail="no account probe for this provider")
+
+    token = creds[config.PROVIDER_TOKEN_ENV_VARS[provider]]
+    request = urllib.request.Request(probe_url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # 403 means the token authenticated and then lacked account:read --
+        # DigitalOcean's scoped tokens routinely do. That is a *pass*: the
+        # token is real. Only 401 says the token itself was not accepted.
+        if exc.code == 403:
+            return KeyCheck(state=KeyState.OK, detail="authenticated (scoped token)")
+        if exc.code < 500:
+            return KeyCheck(state=KeyState.REJECTED, detail=_http_error_detail(exc))
+        return KeyCheck(state=KeyState.UNVERIFIED, detail=_http_error_detail(exc))
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
+
+    # The account email disambiguates which of several provider accounts a
+    # token belongs to -- the failure this probe is most likely to catch.
+    email = body.get("account", {}).get("email")
+    return KeyCheck(state=KeyState.OK, detail=email)
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(exc.read().decode("utf-8"))
+    except (ValueError, OSError):
+        return f"HTTP {exc.code}"
+    message = body.get("message") if isinstance(body, dict) else None
+    return f"HTTP {exc.code}: {message}" if message else f"HTTP {exc.code}"
 
 
 def _cmd_plan_create(args: argparse.Namespace, client: _CountingClient) -> int:

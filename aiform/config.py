@@ -15,6 +15,13 @@ PROVIDER_TOKEN_ENV_VARS: dict[str, str] = {
     "digitalocean": "DIGITALOCEAN_TOKEN",
 }
 
+# Free, read-only endpoints used only by `aiform init`'s preflight to tell a
+# token that works from one that is merely present. Never called on the
+# plan/apply path -- see CLAUDE.md's zero-API-calls rule.
+PROVIDER_ACCOUNT_PROBES: dict[str, str] = {
+    "digitalocean": "https://api.digitalocean.com/v2/account",
+}
+
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")
 
 DEFAULT_LLM_CONFIG = LLMConfig(

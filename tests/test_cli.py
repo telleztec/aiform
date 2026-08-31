@@ -1,17 +1,24 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
+import inspect
+import io
 import json
+import re
 import subprocess
 import sys
+import tomllib
 import types
+import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
-from aiform import cli, llm, orchestrator, state
-from aiform.models import DriverInfo, DriverReview, StateEntry
+from aiform import cli, config, llm, orchestrator, parser, state
+from aiform.models import DriverInfo, DriverReview, KeyCheck, KeyState, StateEntry
 
 
 class FakeTextBlock:
@@ -143,6 +150,42 @@ def project_dir(tmp_path: Path, monkeypatch) -> Path:
     return tmp_path
 
 
+class FakeHTTPResponse:
+    """Duck-typed like urllib's response context manager."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+
+def fake_http_error(code: int, payload: dict) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        url="https://api.digitalocean.com/v2/account",
+        code=code,
+        msg="error",
+        hdrs=None,
+        fp=io.BytesIO(json.dumps(payload).encode("utf-8")),
+    )
+
+
+@pytest.fixture
+def offline_preflight(monkeypatch):
+    """Stub both credential probes. init's preflight reaches the network,
+    and no test outside TestInitPreflight is about that."""
+    monkeypatch.setattr(llm, "verify_api_key", lambda **kwargs: KeyCheck(state=KeyState.MISSING))
+    monkeypatch.setattr(
+        cli, "_check_provider_token", lambda provider: KeyCheck(state=KeyState.MISSING)
+    )
+
+
 class FakeStdinTTY:
     def isatty(self) -> bool:
         return True
@@ -227,19 +270,313 @@ class TestInit:
         assert code == 0
 
     def test_prints_credential_check_marks(self, project_dir: Path, monkeypatch, capsys):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.MISSING))
+        monkeypatch.setattr(
+            cli, "_check_provider_token", lambda provider: KeyCheck(state=KeyState.MISSING)
+        )
         cli.main(["init"])
         out = capsys.readouterr().out
         assert "✗" in out
         assert "ANTHROPIC_API_KEY" in out
         assert "DIGITALOCEAN_TOKEN" in out
 
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.OK))
+        monkeypatch.setattr(
+            cli, "_check_provider_token", lambda provider: KeyCheck(state=KeyState.OK)
+        )
         cli.main(["init"])
         out = capsys.readouterr().out
         assert "✓" in out
+
+
+class TestInitGuidance:
+    """init's printed next-step guidance (specs/cli.md).
+
+    The scaffold lands in examples/, which discover_files() deliberately
+    cannot see, so the instruction connecting the two is the only thing
+    standing between a new user and an unexplained `Plan: 0 to create`.
+    """
+
+    def test_names_the_copy_step(self, project_dir: Path, offline_preflight, capsys):
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "examples/compute.aiform.md" in out
+        assert "cp " in out
+
+    def test_states_that_discovery_is_cwd_only(self, project_dir: Path, offline_preflight, capsys):
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "current directory" in out.lower()
+
+    def test_scaffold_stays_out_of_discovery_range(
+        self, project_dir: Path, offline_preflight, capsys
+    ):
+        cli.main(["init"])
+
+        assert orchestrator.discover_files(None, cwd=project_dir) == []
+
+    def test_names_an_invocation_that_exists(self, project_dir: Path, offline_preflight, capsys):
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "`aiform plan create`" in out or "python -m aiform plan create" in out
+
+
+class TestConsoleScript:
+    def test_pyproject_declares_the_entry_point(self):
+        pyproject = tomllib.loads(
+            (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+        )
+
+        assert pyproject["project"]["scripts"]["aiform"] == "aiform.cli:main"
+
+    def test_entry_point_target_resolves_and_takes_no_required_args(self):
+        # A console script is invoked as `main()` with no arguments, so
+        # every parameter must have a default or the command dies on
+        # startup for everyone who installed it.
+        module_path, _, attr = "aiform.cli:main".partition(":")
+        entry = getattr(importlib.import_module(module_path), attr)
+
+        assert callable(entry)
+        required = [
+            name
+            for name, param in inspect.signature(entry).parameters.items()
+            if param.default is inspect.Parameter.empty
+        ]
+        assert required == []
+
+
+class TestScaffoldSshKeys:
+    """DO's POST /v2/droplets takes key IDs or fingerprints, never names --
+    a name-shaped placeholder teaches a shape that 422s."""
+
+    def test_placeholder_is_not_a_key_name(self, project_dir: Path, offline_preflight):
+        cli.main(["init"])
+        scaffold = (project_dir / "examples" / "compute.aiform.md").read_text()
+
+        assert "your-ssh-key-name" not in scaffold
+
+    def test_placeholder_is_fingerprint_shaped(self, project_dir: Path, offline_preflight):
+        cli.main(["init"])
+        scaffold = (project_dir / "examples" / "compute.aiform.md").read_text()
+        spec = yaml.safe_load(scaffold.split("---")[1])
+
+        for key in spec["params"]["ssh_keys"]:
+            assert re.fullmatch(r"(?:[0-9a-f]{2}:){15}[0-9a-f]{2}", key), key
+
+    def test_points_at_how_to_find_a_real_key(self, project_dir: Path, offline_preflight):
+        cli.main(["init"])
+        scaffold = (project_dir / "examples" / "compute.aiform.md").read_text()
+
+        assert "doctl compute ssh-key list" in scaffold
+
+    def test_scaffold_still_parses_as_a_resource_spec(self, project_dir: Path, offline_preflight):
+        # The comment lines added above the placeholder sit inside the YAML
+        # frontmatter, so this guards against breaking the scaffold while
+        # fixing its content.
+        cli.main(["init"])
+        scaffold = (project_dir / "examples" / "compute.aiform.md").read_text()
+
+        spec = parser.parse_frontmatter(scaffold)
+
+        assert spec.resource == "compute"
+        assert spec.provider == "digitalocean"
+        assert spec.params["ssh_keys"]
+
+
+class TestInitPreflight:
+    """The four-state credential check (specs/cli.md).
+
+    Collapsing these into set/unset is what let an identity-linked key
+    that 400s on every endpoint report a green check.
+    """
+
+    def test_unset_key_reports_not_set(self, project_dir: Path, monkeypatch, capsys):
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.MISSING))
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "✗" in out
+        assert "not set" in out
+
+    def test_accepted_key_reports_a_check(self, project_dir: Path, monkeypatch, capsys):
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.OK))
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.setattr(cli, "_check_provider_token", lambda p: KeyCheck(state=KeyState.OK))
+
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "✓" in out
+        assert "✗" not in out
+
+    def test_rejected_key_is_a_cross_carrying_the_api_error(
+        self, project_dir: Path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            llm,
+            "verify_api_key",
+            lambda **kw: KeyCheck(state=KeyState.REJECTED, detail="workspace is not accessible"),
+        )
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "✗" in out
+        assert "workspace is not accessible" in out
+
+    def test_a_set_but_rejected_key_is_distinguishable_from_an_unset_one(
+        self, project_dir: Path, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.REJECTED, detail="nope")
+        )
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        cli.main(["init"])
+        rejected = capsys.readouterr().out
+
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kw: KeyCheck(state=KeyState.MISSING))
+        cli.main(["init"])
+        missing = capsys.readouterr().out
+
+        assert rejected != missing
+
+    def test_unverifiable_key_is_neither_a_check_nor_a_cross(
+        self, project_dir: Path, monkeypatch, capsys
+    ):
+        # Offline must not be reported as an invalid key.
+        monkeypatch.setattr(
+            llm,
+            "verify_api_key",
+            lambda **kw: KeyCheck(state=KeyState.UNVERIFIED, detail="Connection error."),
+        )
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.setattr(
+            cli, "_check_provider_token", lambda p: KeyCheck(state=KeyState.UNVERIFIED)
+        )
+
+        cli.main(["init"])
+        out = capsys.readouterr().out
+
+        assert "?" in out
+        assert "✗" not in out
+
+    @pytest.mark.parametrize("key_state", list(KeyState))
+    def test_exit_is_zero_whatever_the_probe_says(self, project_dir: Path, monkeypatch, key_state):
+        check = KeyCheck(state=key_state)
+        monkeypatch.setattr(llm, "verify_api_key", lambda **kwargs: check)
+        monkeypatch.setattr(cli, "_check_provider_token", lambda provider: check)
+
+        assert cli.main(["init"]) == 0
+
+    def test_probe_failure_never_propagates(self, project_dir: Path, monkeypatch):
+        def explode(**kwargs):
+            raise RuntimeError("probe blew up")
+
+        monkeypatch.setattr(llm, "verify_api_key", explode)
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+
+        assert cli.main(["init"]) == 0
+
+
+class TestCheckProviderToken:
+    """The DigitalOcean half of the preflight. GET /v2/account is free and
+    read-only; the account email it returns is what distinguishes a token
+    for the wrong one of several accounts from a working one."""
+
+    @pytest.fixture
+    def token(self, monkeypatch):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+
+    def _urlopen(self, monkeypatch, result):
+        def fake_urlopen(request, timeout=None):
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+
+    def test_unset_token_is_missing_without_a_request(self, project_dir, monkeypatch):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+
+        def explode(request, timeout=None):
+            raise AssertionError("probe must not run without a token")
+
+        monkeypatch.setattr(cli.urllib.request, "urlopen", explode)
+
+        assert cli._check_provider_token("digitalocean").state is KeyState.MISSING
+
+    def test_accepted_token_reports_the_account_email(self, token, monkeypatch):
+        self._urlopen(monkeypatch, FakeHTTPResponse({"account": {"email": "juan@example.com"}}))
+
+        check = cli._check_provider_token("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert check.detail == "juan@example.com"
+
+    def test_revoked_token_401_is_rejected(self, token, monkeypatch):
+        self._urlopen(monkeypatch, fake_http_error(401, {"message": "Unable to authenticate you"}))
+
+        check = cli._check_provider_token("digitalocean")
+
+        assert check.state is KeyState.REJECTED
+        assert "Unable to authenticate you" in check.detail
+
+    def test_scoped_token_403_is_accepted_not_rejected(self, token, monkeypatch):
+        # A DigitalOcean token scoped to droplets but not account:read gets
+        # 403 here. It authenticated -- that is the whole question being
+        # asked -- so reporting it as rejected would send the user to
+        # replace a token that works. Observed against the real API.
+        self._urlopen(
+            monkeypatch,
+            fake_http_error(403, {"message": "You are not authorized to perform this operation"}),
+        )
+
+        check = cli._check_provider_token("digitalocean")
+
+        assert check.state is KeyState.OK
+        assert "scoped" in check.detail
+
+    def test_server_error_is_unverified_not_rejected(self, token, monkeypatch):
+        self._urlopen(monkeypatch, fake_http_error(503, {"message": "unavailable"}))
+
+        assert cli._check_provider_token("digitalocean").state is KeyState.UNVERIFIED
+
+    def test_offline_is_unverified_not_rejected(self, token, monkeypatch):
+        self._urlopen(monkeypatch, urllib.error.URLError("name resolution failed"))
+
+        check = cli._check_provider_token("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert check.detail
+
+    def test_sends_the_token_as_a_bearer_header(self, token, monkeypatch):
+        sent = {}
+
+        def capture(request, timeout=None):
+            sent["auth"] = request.get_header("Authorization")
+            sent["url"] = request.full_url
+            return FakeHTTPResponse({"account": {"email": "x@example.com"}})
+
+        monkeypatch.setattr(cli.urllib.request, "urlopen", capture)
+
+        cli._check_provider_token("digitalocean")
+
+        assert sent["auth"] == "Bearer dop_v1_test"
+        assert sent["url"] == config.PROVIDER_ACCOUNT_PROBES["digitalocean"]
+
+    def test_never_prints_or_returns_the_token(self, token, monkeypatch, capsys):
+        self._urlopen(monkeypatch, fake_http_error(401, {"message": "bad token"}))
+
+        check = cli._check_provider_token("digitalocean")
+
+        assert "dop_v1_test" not in (check.detail or "")
+        assert "dop_v1_test" not in capsys.readouterr().out
 
 
 class TestPlanCreate:
