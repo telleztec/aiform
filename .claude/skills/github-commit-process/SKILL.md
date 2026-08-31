@@ -55,7 +55,9 @@ requires opening the PR's "Files changed" tab to leave it — forcing a visual
 scan of the diff before it merges.
 
 **Rejection**: a comment or review body that's exactly
-`/claude-merge-rejected` stops the watch loop without merging. Read the PR's
+`/claude-merge-rejected` stops the watch loop without merging. Exactly --
+unlike approval, it takes no trailing clause, so anything after it is a
+different comment and does not stop the loop. Read the PR's
 actual comments and inline review for what needs fixing, address it in a new
 commit, and start a fresh cycle. Any *other* comment (general feedback, a
 question, a mid-review remark) is not surfaced by the watch loop — it
@@ -189,6 +191,10 @@ The escape hatch is a **human waiver**, and it is not yours to grant:
 3. **The waiver arrives as an extended approval** naming the issues:
    `/claude-merge-approved issues 73, 74, 75`. A plain
    `/claude-merge-approved` approves the merge and grants **no** waiver.
+4. **Verify it before merging.** The named set must cover every issue the
+   PR closes; a waiver for #73 does not license also closing #74. Record
+   the trigger verbatim in the `human-approval` status description, so
+   the waiver is on the SHA rather than only in a comment.
 
 Without a waiver, close one issue and link the others plainly (`see #81`)
 for a follow-up PR. Never assume a waiver from a plain approval, and never
@@ -366,13 +372,15 @@ while true; do
       (.reviews[]?  | {author, body, at: .submittedAt})]
       | map(select(.author.login=="juanman2" and .at > $since))
       | sort_by(.at) | last | .body // "")
-    | gsub("^\\s+|\\s+$";"") | ascii_downcase
+    | gsub("^\\s+|\\s+$";"") | gsub("\\s+";" ") | ascii_downcase
   ')
-  # Accepts a bare approval and the waiver form ("/claude-merge-approved
-  # issues 73, 74"). An exact-equality test would silently ignore the latter.
+  # Bare approval, or the waiver form naming issues. Matching the waiver
+  # clause specifically -- not any trailing text -- keeps
+  # "/claude-merge-approved once CI is green" from firing a merge.
   case "$body" in
-    "/claude-merge-approved"|"/claude-merge-approved "*) echo "MERGE_APPROVED"; exit 0;;
-    "/claude-merge-rejected"|"/claude-merge-rejected "*) echo "REJECTED"; exit 1;;
+    "/claude-merge-approved") echo "MERGE_APPROVED"; exit 0;;
+    "/claude-merge-approved issues "*) echo "MERGE_APPROVED|$body"; exit 0;;
+    "/claude-merge-rejected") echo "REJECTED"; exit 1;;
   esac
   sleep 30
 done
@@ -394,16 +402,28 @@ ask for a fresh `/claude-merge-approved` and restart the loop. Re-reading head
 and stamping the approval onto it would launder an unapproved commit through
 a human artifact — the exact thing all three gates exist to prevent.
 
+**Check the waiver before anything else.** The loop prints
+`MERGE_APPROVED` for a bare approval and `MERGE_APPROVED|<body>` for a
+waiver. Count the issues this PR closes — every closing keyword, in the
+body *and* every commit message. If that count is more than one, the
+waiver must exist and must name each of them. A bare approval on a PR
+closing two issues is **not** authorization to merge it: say so and ask,
+exactly as you would for a missing approval.
+
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
+TRIGGER=<the body the loop printed after the pipe, or the bare trigger>
 
 # If these differ, STOP and resolve per the paragraph above before posting.
 [ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
 
+# The description is the durable record: it is the only place the waiver
+# lands on the SHA. A waiver that lives only in a PR comment is the
+# transient artifact this whole section exists to distrust.
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
-  -f description="/claude-merge-approved by juanman2"
+  -f description="$TRIGGER by juanman2"
 
 # llm-review — legacy status API
 gh api repos/{owner}/{repo}/commits/"$SHA"/status \
