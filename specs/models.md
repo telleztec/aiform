@@ -239,6 +239,38 @@ class DriverReview(BaseModel):
   `llm.code_review` entry resolved to at review time (default
   `claude-opus-5`), not a hardcoded string.
 
+### `KeyState`, `KeyCheck`
+
+The result of `aiform init`'s credential preflight — see `specs/cli.md`'s
+four-state table and `specs/llm.md`'s `verify_api_key()`.
+
+```python
+class KeyState(str, Enum):
+    OK = "ok"
+    MISSING = "missing"
+    REJECTED = "rejected"
+    UNVERIFIED = "unverified"
+
+
+class KeyCheck(BaseModel):
+    state: KeyState
+    detail: str | None = None
+```
+
+- Four states rather than a `bool` because the preflight's whole defect
+  was collapsing distinct problems into one: a credential that is absent,
+  one that is present but rejected, and one that cannot be checked
+  because the network is down are three different things a user does
+  three different things about.
+- `detail` carries the provider's **own** error text on `REJECTED`, and
+  the connection error on `UNVERIFIED`. Swallowing that text is what made
+  the original bug expensive to diagnose. `None` for `OK` and `MISSING` —
+  neither has anything to add beyond the state.
+- Deliberately provider-agnostic: the same type reports both the
+  Anthropic and the DigitalOcean probe, so `cli.py` formats one shape
+  rather than two. Not persisted to `state.json` — a preflight result is
+  a fact about this moment, not about the infrastructure.
+
 ### `DriverInfo`
 
 Not explicitly named in `PLAN.md` §1's repo-layout comment — that

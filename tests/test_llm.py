@@ -6,11 +6,20 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+import anthropic
+import httpx
 import pytest
 from pydantic import ValidationError
 
 from aiform import llm
-from aiform.models import DriverReview, LLMConfig, LLMRoleConfig, ModelSource, PlanReview
+from aiform.models import (
+    DriverReview,
+    KeyState,
+    LLMConfig,
+    LLMRoleConfig,
+    ModelSource,
+    PlanReview,
+)
 
 
 class FakeThinkingBlock:
@@ -599,3 +608,111 @@ class TestRealPromptFiles:
         path = llm.PROMPTS_DIR / "review_plan.md"
         assert path.exists()
         assert len(path.read_text(encoding="utf-8").strip()) > 0
+
+
+def _api_error(status_code: int, message: str) -> anthropic.APIStatusError:
+    request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
+    response = httpx.Response(status_code, request=request, json={"error": {"message": message}})
+    return anthropic.APIStatusError(message, response=response, body=None)
+
+
+class FakeModels:
+    """Duck-typed like anthropic.Anthropic().models -- verify_api_key()
+    calls only .list()."""
+
+    def __init__(self, raises: Exception | None = None):
+        self._raises = raises
+        self.calls: list[dict] = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return object()
+
+
+class FakeProbeClient:
+    def __init__(self, raises: Exception | None = None):
+        self.models = FakeModels(raises)
+        self.messages = FakeMessages([])
+
+
+@pytest.fixture
+def api_key_set(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+
+class TestVerifyApiKey:
+    def test_unset_key_is_missing_without_calling_the_api(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        client = FakeProbeClient()
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.MISSING
+        assert result.detail is None
+        assert client.models.calls == []
+
+    def test_accepted_key_is_ok(self, api_key_set):
+        result = llm.verify_api_key(client=FakeProbeClient())
+
+        assert result.state is KeyState.OK
+        assert result.detail is None
+
+    def test_probes_the_free_models_endpoint_not_messages(self, api_key_set):
+        client = FakeProbeClient()
+
+        llm.verify_api_key(client=client)
+
+        assert len(client.models.calls) == 1
+        assert client.messages.calls == []
+
+    def test_identity_linked_key_400s_and_is_rejected(self, api_key_set):
+        # The bug this function exists for: an identity-linked key returns
+        # 400 on every endpoint, not 401, so treating only 401/403 as
+        # rejection would miss exactly the case that motivated it.
+        client = FakeProbeClient(_api_error(400, "workspace is not accessible"))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.REJECTED
+        assert "workspace is not accessible" in result.detail
+
+    def test_invalid_key_401_is_rejected(self, api_key_set):
+        client = FakeProbeClient(_api_error(401, "invalid x-api-key"))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.REJECTED
+        assert "invalid x-api-key" in result.detail
+
+    def test_forbidden_key_403_is_rejected(self, api_key_set):
+        client = FakeProbeClient(_api_error(403, "permission denied"))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.REJECTED
+
+    def test_server_error_is_unverified_not_rejected(self, api_key_set):
+        # A 500 is Anthropic's problem, not the key's -- reporting it as a
+        # bad key would send the user to rotate a credential that works.
+        client = FakeProbeClient(_api_error(500, "internal server error"))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.UNVERIFIED
+
+    def test_connection_error_is_unverified_not_rejected(self, api_key_set):
+        # Offline must never be reported as an invalid key.
+        request = httpx.Request("GET", "https://api.anthropic.com/v1/models")
+        client = FakeProbeClient(anthropic.APIConnectionError(request=request))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.UNVERIFIED
+        assert result.detail
+
+    def test_never_raises_on_a_bad_key(self, api_key_set):
+        client = FakeProbeClient(_api_error(401, "nope"))
+
+        llm.verify_api_key(client=client)
