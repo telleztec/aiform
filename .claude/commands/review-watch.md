@@ -63,9 +63,12 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      which matches every subcommand of a chain independently and has no rule
      for `exit`.
 
-     In a linked worktree `--show-toplevel` is that worktree, which usually
-     has no `.venv`; use the main checkout's interpreter there rather than
-     assuming the two coincide. Add `--multi` when that is
+     In a linked worktree `--show-toplevel` prints that worktree, and most
+     here have no `.venv` — `.venv/` is gitignored, so `git worktree add`
+     never creates one. `cd` to the main checkout and run there instead;
+     reaching back with an absolute interpreter path would leave step 3
+     matching no rule in `allowed-tools`, which is the trap this whole
+     three-command shape exists to avoid. Add `--multi` when that is
      the literal the human posted. Post nothing unless it exits 0.
      Exit 1 means the PR closes several issues: ask the human to re-read
      the description and post `/claude-merge-approved-multi`. Exit 2 means

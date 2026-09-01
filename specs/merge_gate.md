@@ -18,9 +18,11 @@ have tests for.
 
 ```sh
 # From the repo root: gh resolves the repository from the working directory.
-# Two commands, and `cd` to the printed path -- not `cd "$(...)"`, whose
-# empty substitution is a silent no-op in sh, zsh and bash 3.2.
+# Three commands, not a chain, and `cd` to the path the first one printed --
+# not `cd "$(...)"`, whose empty substitution is a silent no-op in sh, zsh
+# and bash 3.2, leaving you wherever you already were.
 git rev-parse --show-toplevel
+cd <the path it printed>
 .venv/bin/python scripts/merge_gate.py <PR> [--multi]
 ```
 
@@ -81,8 +83,9 @@ merely unavailable.
 
   **The PR itself is still resolved from the working directory.** Not
   because it must be — `gh pr view` does accept `--repo` — but because the
-  first of those two calls is the one that *answers* which repository this
-  is; pinning it would require its own result. The second could be pinned
+  first of the two `gh pr view` calls (the url read, as against the two
+  host-scoped lookups above) is the one that *answers* which repository
+  this is; pinning it would require its own result. The second could be pinned
   afterwards and is not, so the two agree by construction instead. The
   caller must therefore run from a clone of the PR's repo, which is why the
   snippet in `github-commit-process` cds to the repo root before its first
