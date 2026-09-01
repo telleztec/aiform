@@ -13,8 +13,8 @@ often require minor judgments from developers or SREs. Enter AI: the AI running 
 the orchestration can make an educated guess that an additional retry is warranted,
 or that perhaps we should quit immediately because the error is catastrophic.
 
-Moreover, infrastructure as code (IaC) stops at standing the infrastructure up: it
-provisions the system but does not operate it day to day. This project
+Moreover, infrastructure as code (IaC) simply builds the infrastructure up: it does
+not run it, alert when it fails, or adjust as the needs require. This project
 explores the premise that an LLM will be a better orchestrator than the Terraform
 engine, and that once the infrastructure is stood up, a set of skills can maintain the
 system — doing software upgrades, rotating certs, performing white-hat security probes,
@@ -39,7 +39,7 @@ aiform replaces Terraform's *planning and diffing* logic with an LLM that
 reasons about the actual diff each time — while keeping the mechanical,
 repeated part (the CSP API calls that create/read/update/delete a resource)
 in plain, deterministic, human-readable Python modules. Those modules are
-generated once per resource type, reviewed, and then reused forever with
+written once per resource type, reviewed, and then reused forever with
 **zero further LLM calls** on repeat applies — so the cost and latency of
 "AI-driven" stays bounded to the parts that actually benefit from judgment.
 
@@ -66,10 +66,10 @@ All of the core modules are now built and tested against their specs:
 `python -m aiform` entry point, and the curated
 `drivers/digitalocean/compute.py` driver. `python -m aiform` exposes `init`
 along with `plan create`, `plan apply`, `plan destroy`, `plan refresh`, and
-`plan show` — aiform says "hello world," creating, refreshing, and destroying
-droplets on DigitalOcean. In-place updates are narrower than the pitch above
-may suggest: the curated driver resizes a droplet in place, and any other
-changed field forces a replace.
+`plan show` — aiform says "hello world" against DigitalOcean, creating,
+refreshing, resizing, and destroying droplets. In-place updates are narrower
+than the pitch above suggests: the curated driver resizes a droplet in place,
+and any other changed field forces a replace.
 
 MVP scope is intentionally narrow: one cloud provider (DigitalOcean), one
 resource type (a droplet). Prove the loop end to end before expanding.
@@ -79,7 +79,7 @@ resource type (a droplet). Prove the loop end to end before expanding.
 1. You describe a resource in an `.aiform.md` file — structured YAML
    frontmatter (type, name, provider, params) plus a free-form prose
    "Intent" section for nuance a rigid schema can't capture.
-2. `aiform plan` parses it, refreshes state against the live cloud resource,
+2. `aiform plan create` parses it, refreshes state against the live cloud resource,
    diffs, and — only when there's something to decide — asks the
    **intent-orchestration-model** (default **Claude Sonnet 5**) to
    categorize the change (create/update/no-op) and explain why. Destroy
@@ -89,14 +89,16 @@ resource type (a droplet). Prove the loop end to end before expanding.
 3. Resource drivers (the small Python modules implementing
    `create`/`read`/`update`/`delete` against a given CSP's API) are
    **written ahead of time, never generated mid-run**. A missing driver is
-   an error, not a trigger to generate one. Authoring a driver is a
-   deliberate step somebody takes on purpose — an end user, or a developer
-   on the aiform core team — through this repo's spec-first/test-first
-   loop, with the **code-generator-model** drafting and the
-   **code-review-model** reviewing before it ships. Today that means the
-   drivers this repo curates; see "Not yet implemented" below for opening
-   it up.
-4. `aiform apply` re-plans, has the **review-orchestration-model** (default
+   an error, not a trigger to generate one. Today every driver is
+   hand-authored by a developer on the aiform core team, through this
+   repo's own spec-first/test-first development loop — a development-time
+   process, separate from aiform's four runtime model roles. One of those
+   roles does run on this path: at `plan` time the **code-review-model**
+   re-reviews a driver whose file no longer matches its recorded hash,
+   before that driver is trusted again. Putting driver authoring in an end
+   user's hands is the part still to build — see "Not yet implemented"
+   below.
+4. `aiform plan apply` re-plans, has the **review-orchestration-model** (default
    **Claude Opus 5**) review anything destructive as a second safety gate,
    then executes — via the deterministic Python module, not another LLM
    call.
@@ -116,10 +118,8 @@ calling out explicitly since they change how the project grows over time:
   something this repo's maintainers do on your behalf either. The goal is an
   agent that helps you draft, review, and approve a driver as its own
   deliberate step, built once the plan/apply loop against curated drivers is
-  stable. Generating a driver on the fly, mid-`plan`, was considered and
-  abandoned: a driver is code that runs against your cloud account with your
-  credentials, so a person decides when one gets written and reads it before
-  it ships.
+  stable. Generating a driver on the fly, in the middle of a `plan`, is not
+  the direction: authoring one stays a step somebody invokes deliberately.
 - **Driver submission and publishing.** A methodology for contributing a
   driver back so other aiform users can install and trust it, so the set
   of usable drivers isn't limited to what this repo's maintainers have
