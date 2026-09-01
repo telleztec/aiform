@@ -46,9 +46,11 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      posting anything**, check how many issues this PR closes.
 
      Run `.venv/bin/python scripts/merge_gate.py <PR>`, adding `--multi` when that is
-     the literal the human posted. Non-zero means stop: post nothing, ask
-     the human to re-read the description and post
-     `/claude-merge-approved-multi`, then restart this loop **watermarked on
+     the literal the human posted. Post nothing unless it exits 0.
+     Exit 1 means the PR closes several issues: ask the human to re-read
+     the description and post `/claude-merge-approved-multi`. Exit 2 means
+     the check itself failed — fix that, and do not ask for a waiver on its
+     strength. After a genuine exit 1, restart this loop **watermarked on
      that approval comment's timestamp**, not on the head commit — no commit
      is pushed on this path, so the default watermark would leave the plain
      approval still latest and the loop would re-fire on it immediately, in
@@ -99,7 +101,10 @@ OWNER_REPO="<the resolved owner/repo>"
 # instead drops an approval left moments earlier, and leaves a rejected PR
 # permanently unwatchable because the stale rejection stays "latest" forever.
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
-SINCE=$(gh api repos/$OWNER_REPO/commits/"$SHA" --jq .commit.committer.date)
+# Normally the head commit's date. Override when restarting after a plain
+# approval on a multi-issue PR: no commit is pushed there, so the default
+# leaves that approval still latest and the loop re-fires on it in a spin.
+SINCE=${SINCE_OVERRIDE:-$(gh api repos/$OWNER_REPO/commits/"$SHA" --jq .commit.committer.date)}
 while true; do
   raw=$(gh pr view "$PR" --json comments,reviews 2>/dev/null || echo '{}')
   body=$(printf '%s' "$raw" | jq -r --arg since "$SINCE" '

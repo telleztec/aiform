@@ -21,23 +21,41 @@ import sys
 
 # GitHub's closing keywords, each optionally followed by a colon, then an
 # issue reference: #12, owner/repo#12, or a full issue URL.
+_TIMEOUT = 30
+
 _CLOSING = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
-    r"(?:[\w.-]+/[\w.-]+)?(?:#|GH-)(\d+)"
+    r"(?:([\w.-]+/[\w.-]+))?(?:#|GH-)(\d+)"
     r"|\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
-    r"https?://\S*?/issues/(\d+)",
+    r"https?://\S*?/(?:([\w.-]+/[\w.-]+))/issues/(\d+)",
     re.IGNORECASE,
 )
 
 
-def closing_refs(text: str) -> set[int]:
-    return {int(n) for match in _CLOSING.finditer(text or "") for n in match.groups() if n}
+def closing_refs(text: str, repo: str | None = None) -> set[int]:
+    """Issue numbers closed by keywords in `text`.
+
+    A reference naming another repository closes nothing here, so it is
+    dropped when `repo` is known. With `repo` unset every reference counts,
+    which is only right for testing the pattern itself.
+    """
+    found: set[int] = set()
+    for match in _CLOSING.finditer(text or ""):
+        owner, number = (match.group(1), match.group(2))
+        if number is None:
+            owner, number = (match.group(3), match.group(4))
+        if owner and repo and owner.lower() != repo.lower():
+            continue
+        found.add(int(number))
+    return found
 
 
 def _run(command: list[str]) -> str:
     """Fail closed: any lookup problem is an error, never an empty result."""
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=_TIMEOUT)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{command[0]} timed out after {_TIMEOUT}s") from exc
     except OSError as exc:
         raise RuntimeError(f"could not run {command[0]}: {exc}") from exc
     if result.returncode != 0:
@@ -73,7 +91,22 @@ def issues_closed_by(pr: str) -> set[int]:
             ".[].commit.message",
         ]
     )
-    return found | closing_refs(messages)
+    repo = _run(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
+    return {n for n in found | closing_refs(messages, repo) if _is_open(n)}
+
+
+def _is_open(number: int) -> bool:
+    """A reference to an already-closed issue closes nothing on merge.
+
+    Without this the gate counts closing keywords that appear as prose --
+    a commit message quoting the syntax, say -- and demands a waiver for a
+    PR that will close one issue or none.
+    """
+    out = _run(["gh", "issue", "view", str(number), "--json", "state"])
+    try:
+        return json.loads(out).get("state") == "OPEN"
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh returned unparseable JSON for issue {number}: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:

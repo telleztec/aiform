@@ -38,10 +38,15 @@ merely unavailable.
   description only; a closing keyword in a commit message still closes the
   issue on merge to the default branch and never appears there. Neither is
   sufficient alone.
+- **Only issues currently `OPEN` are counted.** A reference to an
+  already-closed issue closes nothing on merge, and counting it demands a
+  waiver for a PR that will close one issue or none — which is what a
+  commit message quoting closing-keyword syntax produces.
 - Commits come from `gh api .../pulls/<pr>/commits --paginate`, not
-  `gh pr view --json commits` — the latter is a GraphQL connection capped
-  at one page, so a long PR would silently drop later commits and the gate
-  would **fail open**.
+  `gh pr view --json commits`: the latter is a GraphQL connection capped at
+  one page. **The REST endpoint caps at 250 commits even with
+  `--paginate`**, so this narrows the fail-open window rather than closing
+  it. A PR with more than 250 commits can still drop later references.
 - **Fails closed.** Any lookup problem raises rather than returning an
   empty set, including `gh` being absent (an `OSError`, not a non-zero
   exit).
@@ -64,7 +69,11 @@ merely unavailable.
 - **Warning about `Closes #A, #B`.** The gate answers what *will* close,
   not what the author intended to close. A bare `#\d+` scan as a
   non-blocking warning would catch it and is worth considering separately.
-- **Checking that the description discloses the issues.** The rule
-  requires both the `-multi` trigger and disclosure; only the trigger is
-  mechanically checked.
+- **Verifying the acknowledgement.** `--multi` is asserted by the calling
+  agent; the script never reads PR comments, so nothing binds the flag to a
+  human having posted `/claude-merge-approved-multi`. An agent that
+  mis-reads the loop's signal self-grants the waiver. **Neither half of the
+  rule is mechanically checked** — not the trigger, not the disclosure in
+  the description. Having the script verify the literal itself would close
+  this; it already shells out to `gh`.
 - Posting statuses or merging. This reports; the caller decides.

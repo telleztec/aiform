@@ -45,11 +45,23 @@ class TestClosingRefs:
         assert merge_gate.closing_refs(None) == set()
 
 
-def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr=""):
-    """Two calls now: `gh pr view` for linked issues, `gh api` for commits."""
+def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr="", closed=()):
+    """Three call shapes: linked issues, commit messages, per-issue state.
 
-    def fake_run(cmd, capture_output=True, text=True):
-        out = commits if "api" in cmd else json.dumps(payload)
+    `closed` names issues to report as already CLOSED, which the gate must
+    not count -- merging closes nothing that is closed already.
+    """
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=None):
+        if "repo" in cmd:
+            out = "telleztec/aiform"
+        elif "issue" in cmd:
+            number = int(cmd[cmd.index("view") + 1])
+            out = json.dumps({"state": "CLOSED" if number in closed else "OPEN"})
+        elif "api" in cmd:
+            out = commits
+        else:
+            out = json.dumps(payload)
         return subprocess.CompletedProcess(cmd, returncode, out, stderr)
 
     monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
@@ -96,6 +108,47 @@ class TestIssuesClosedBy:
 
         assert merge_gate.issues_closed_by("84") == {83}
 
+    def test_already_closed_issues_are_not_counted(self, monkeypatch):
+        # A commit quoting closing-keyword syntax attaches a reference to an
+        # issue that is already closed. Merging closes nothing, so demanding
+        # a waiver for it is a false positive -- this blocked the PR that
+        # introduced the gate.
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": [{"number": 83}]},
+            commits="`Closes #73, closes #74` is the correct form",
+            closed=(73, 74),
+        )
+
+        assert merge_gate.issues_closed_by("84") == {83}
+
+    def test_cross_repo_reference_is_not_a_local_close(self, monkeypatch):
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": []},
+            commits="fixes otherorg/otherrepo#5",
+        )
+
+        assert merge_gate.issues_closed_by("84") == set()
+
+    def test_same_repo_prefix_still_counts(self, monkeypatch):
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": []},
+            commits="fixes telleztec/aiform#92",
+        )
+
+        assert merge_gate.issues_closed_by("84") == {92}
+
+    def test_timeout_raises_rather_than_hanging(self, monkeypatch):
+        def hang(cmd, capture_output=True, text=True, timeout=None):
+            raise merge_gate.subprocess.TimeoutExpired(cmd, timeout or 30)
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", hang)
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            merge_gate.issues_closed_by("84")
+
     def test_lookup_failure_raises_rather_than_returning_empty(self, monkeypatch):
         # Failing open here would post human-approval on an unchecked PR.
         _stub_gh(monkeypatch, {}, returncode=1, stderr="rate limited")
@@ -104,7 +157,7 @@ class TestIssuesClosedBy:
             merge_gate.issues_closed_by("84")
 
     def test_unparseable_output_raises(self, monkeypatch):
-        def fake_run(cmd, capture_output=True, text=True):
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
             return subprocess.CompletedProcess(cmd, 0, "not json", "")
 
         monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
@@ -152,7 +205,7 @@ class TestMain:
     def test_missing_gh_exits_two_not_one(self, monkeypatch):
         # Exit 1 means BLOCKED, which callers read as "needs -multi". A
         # broken toolchain must not masquerade as a multi-issue PR.
-        def boom(cmd, capture_output=True, text=True):
+        def boom(cmd, capture_output=True, text=True, timeout=None):
             raise FileNotFoundError(2, "No such file or directory", "gh")
 
         monkeypatch.setattr(merge_gate.subprocess, "run", boom)

@@ -221,9 +221,11 @@ Then:
    were assumed to have read. A plain `/claude-merge-approved` on a
    multi-issue PR grants **no** waiver and is not authorization to merge.
 4. **Check it before merging** with `.venv/bin/python scripts/merge_gate.py <PR>`,
-   adding `--multi` when that is the literal the human posted. If it
-   refuses, ask the human to re-read the description and post
-   `/claude-merge-approved-multi`; do not post any status until it passes.
+   adding `--multi` when that is the literal the human posted. Exit 1
+   means the PR closes several issues: ask the human to re-read the
+   description and post `/claude-merge-approved-multi`. Exit 2 means the
+   check could not run — fix that instead, and never ask for a waiver on
+   its strength. Post no status until it exits 0.
 
 **If a plain approval arrives on a multi-issue PR**, the loop has already
 exited, so nothing is watching when the human posts the `-multi` form.
@@ -467,9 +469,15 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # --multi when that is the literal the human posted. Non-zero means stop --
 # do not post the status, because once human-approval is on the SHA all
 # three contexts are green and nothing downstream gets another signal.
-.venv/bin/python scripts/merge_gate.py <number> || exit 1
-# ...or, when the human posted the -multi form:
-.venv/bin/python scripts/merge_gate.py <number> --multi || exit 1
+# MULTI is --multi when the human posted /claude-merge-approved-multi,
+# empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
+# means the check could not run at all -- do not confuse the two.
+.venv/bin/python "$(git rev-parse --show-toplevel)/scripts/merge_gate.py" <number> ${MULTI:-}
+case $? in
+  0) ;;
+  1) echo "needs /claude-merge-approved-multi -- ask, post nothing"; exit 1;;
+  *) echo "gate could not run -- fix that first, do not ask for -multi"; exit 2;;
+esac
 
 [ "$SHA" = "$WATCHED_SHA" ] || { echo "head moved: approval does not cover $SHA"; exit 1; }
 
