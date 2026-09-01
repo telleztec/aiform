@@ -523,7 +523,12 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
                 KeyState.UNVERIFIED,
                 "the token is not a valid HTTP header value (check for stray whitespace)",
             )
-        return failed(KeyState.UNVERIFIED, "the request could not be sent")
+        # Names the variables, never their values: _parse_proxy quotes the
+        # proxy URL in its own message, and that URL can carry credentials.
+        return failed(
+            KeyState.UNVERIFIED,
+            "the request could not be sent (check any http_proxy/https_proxy setting)",
+        )
 
     try:
         return json.loads(raw.decode("utf-8")), None

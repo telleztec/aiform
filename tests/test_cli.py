@@ -931,6 +931,20 @@ class TestCheckProviderToken:
 
             assert raised.value.code == code
 
+    def test_opener_raises_an_unparseable_redirect_rather_than_a_value_error(self):
+        # The composition is what broke in #91, not either half: _probe's
+        # ValueError came out of _PROBE_OPENER's own handler chain. Asserting
+        # only on the handler would stay green if the chain stopped routing
+        # through it, or if a stock HTTPRedirectHandler were re-registered.
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "http://[::1"
+        request = urllib.request.Request("https://api.digitalocean.com/v2/account")
+
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            cli._PROBE_OPENER.error("http", request, io.BytesIO(b""), 302, "Found", headers)
+
+        assert raised.value.code == 302
+
     def test_unparseable_redirect_location_does_not_blame_the_token(self, token, monkeypatch):
         # Backstop for every other ValueError the opener can raise -- a
         # malformed https_proxy in the environment is the live one. A good
@@ -998,6 +1012,15 @@ class TestCheckProviderToken:
     def test_malformed_token_still_names_the_token(self, monkeypatch):
         # The complement of the test above: distinguishing the two ValueError
         # sources must not cost the one message that actually helps.
+        #
+        # Alone in this class this drives the real urllib stack, which is safe
+        # only because putheader rejects the value before endheaders opens a
+        # socket. Assert that rather than rely on it: if the guard ever moved
+        # after connect, this test would quietly start talking to DigitalOcean.
+        def no_connect(*args, **kwargs):
+            raise AssertionError("the malformed-token path must not reach the network")
+
+        monkeypatch.setattr(socket.socket, "connect", no_connect)
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_supersecretvalue\n")
 
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
