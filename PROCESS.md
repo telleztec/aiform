@@ -168,7 +168,8 @@ Step 6 of the loop above says "nothing merges without human approval."
 Concretely, a merge needs **three gates, all green on the exact head SHA**:
 
 - **`human-approval`** — posted when the repo owner leaves
-  `/claude-merge-approved` as a PR comment or review body. A native GitHub
+  `/claude-merge-approved` as a PR comment or review body — or
+  `/claude-merge-approved-multi`, when the PR closes more than one issue. A native GitHub
   "Approve" review doesn't substitute: GitHub blocks a PR's author from
   approving their own PR, and every PR here is opened by the same account.
 - **`llm-review`** — means the SHA's content was read by a reviewer (Opus 5

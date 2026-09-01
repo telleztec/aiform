@@ -45,20 +45,14 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      first — commits may have landed while the loop ran — then, **before
      posting anything**, check how many issues this PR closes.
 
-     Take the union of `gh pr view <PR> --json closingIssuesReferences` and
-     the closing keywords in the PR's commit messages, deduplicated —
-     GitHub's list covers only the description, while a keyword in a commit
-     message closes on merge without appearing there. SKILL.md's "On
-     `MERGE_APPROVED`" has the exact command.
-
-     If more than one issue closes, the trigger must be
-     `MERGE_APPROVED_MULTI` **and** the description must disclose them. A
-     plain `MERGE_APPROVED` on a multi-issue PR is **not** authorization:
-     post nothing, explain what is needed, and restart this loop
-     **watermarked on that approval comment's timestamp**, not on the head
-     commit — no new commit is pushed here, so the default watermark would
-     leave the plain approval still latest and the loop would re-fire on it
-     immediately, in a spin. Then satisfy **all three gates on one and the
+     Run `python scripts/merge_gate.py <PR>`, adding `--multi` when that is
+     the literal the human posted. Non-zero means stop: post nothing, ask
+     the human to re-read the description and post
+     `/claude-merge-approved-multi`, then restart this loop **watermarked on
+     that approval comment's timestamp**, not on the head commit — no commit
+     is pushed on this path, so the default watermark would leave the plain
+     approval still latest and the loop would re-fire on it immediately, in
+     a spin. Then satisfy **all three gates on one and the
      same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
