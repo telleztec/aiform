@@ -138,9 +138,9 @@ merely unavailable.
   false positive the open-issue filter exists to remove, surviving for
   cross-repo refs only. `gh issue list --repo <host>/<owner/name> --state
   open` would close it, at a round trip per distinct cross-repo repository
-  and a hard failure when that repository is not readable. Note the `<host>/` — a bare `owner/name`
-  there resolves against gh's *default* host and would reintroduce the
-  silent enterprise drop described above, in the very fix for it. Left
-  undone because it fails closed: it costs a review round, never a bad
-  merge.
+  and a hard failure when that repository is not readable. Note the
+  `<host>/` — a bare `owner/name` there resolves against gh's *default*
+  host and would reintroduce the silent enterprise drop described above,
+  in the very fix for it. Left undone because it fails closed: it costs a
+  review round, never a bad merge.
 - Posting statuses or merging. This reports; the caller decides.

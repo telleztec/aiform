@@ -145,7 +145,7 @@ class TestIssuesClosedBy:
 
         assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 83)}
 
-    def test_cross_repo_reference_is_not_a_local_close(self, monkeypatch):
+    def test_cross_repo_reference_is_not_a_same_repo_close(self, monkeypatch):
         _stub_gh(
             monkeypatch,
             {"closingIssuesReferences": []},
