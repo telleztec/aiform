@@ -51,10 +51,16 @@ merely unavailable.
   here — a placeholder in an example, a number from another project — is
   simply absent rather than an error. If the list comes back at the limit
   it may be truncated, so the gate raises rather than undercounting.
-- **A reference qualified with `owner/repo`, or an issue URL, is dropped
-  unless it names this PR's repository** — read from the PR itself, not
-  from the working directory, since in a fork clone those differ and the
-  wrong one drops legitimate same-repo references.
+- **In commit messages**, a reference qualified with `owner/repo` or an
+  issue URL is dropped unless it names this PR's repository — a keyword
+  there does not close another project's issue. The repository is read
+  from the PR's own url (host-agnostic), not from the working directory,
+  since in a fork clone those differ.
+- **In `closingIssuesReferences`**, a cross-repo entry is *counted*, not
+  dropped. GitHub lists it because merging really does close it, and it
+  cannot be checked against this repo's open issues — so intersecting
+  would silently lose it. Results are `(repo, number)` pairs for that
+  reason: a foreign `#4` and a local `#4` are different issues.
 - Commits come from `gh api .../pulls/<pr>/commits --paginate`, not
   `gh pr view --json commits`: the latter is a GraphQL connection capped at
   one page. **The REST endpoint caps at 250 commits even with

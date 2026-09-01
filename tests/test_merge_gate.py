@@ -77,7 +77,10 @@ class TestIssuesClosedBy:
             open_issues=(83, 74),
         )
 
-        assert merge_gate.issues_closed_by("84") == {83, 74}
+        assert merge_gate.issues_closed_by("84") == {
+            ("telleztec/aiform", 83),
+            ("telleztec/aiform", 74),
+        }
 
     def test_reads_the_commit_subject_not_only_the_body(self, monkeypatch):
         # gh puts the subject in messageHeadline; scanning only messageBody
@@ -91,7 +94,7 @@ class TestIssuesClosedBy:
             open_issues=(74,),
         )
 
-        assert merge_gate.issues_closed_by("84") == {74}
+        assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 74)}
 
     def test_deduplicates_across_sources(self, monkeypatch):
         # A single-commit PR has its body prefilled from the commit, so the
@@ -105,7 +108,7 @@ class TestIssuesClosedBy:
             open_issues=(83,),
         )
 
-        assert merge_gate.issues_closed_by("84") == {83}
+        assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 83)}
 
     def test_already_closed_issues_are_not_counted(self, monkeypatch):
         # A commit quoting closing-keyword syntax attaches a reference to an
@@ -119,7 +122,7 @@ class TestIssuesClosedBy:
             open_issues=(83,),
         )
 
-        assert merge_gate.issues_closed_by("84") == {83}
+        assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 83)}
 
     def test_cross_repo_reference_is_not_a_local_close(self, monkeypatch):
         _stub_gh(
@@ -139,7 +142,31 @@ class TestIssuesClosedBy:
             open_issues=(92,),
         )
 
-        assert merge_gate.issues_closed_by("84") == {92}
+        assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 92)}
+
+    def test_cross_repo_linked_issue_is_counted_not_dropped(self, monkeypatch):
+        # GitHub lists cross-repo closing references and merging closes
+        # them. They cannot be checked against this repo's open issues, so
+        # intersecting would silently drop them -- fail open, on the branch
+        # whose purpose is not dropping references.
+        _stub_gh(
+            monkeypatch,
+            {
+                "closingIssuesReferences": [
+                    {
+                        "number": 83,
+                        "repository": {"name": "aiform", "owner": {"login": "telleztec"}},
+                    },
+                    {"number": 4, "repository": {"name": "other", "owner": {"login": "telleztec"}}},
+                ]
+            },
+            open_issues=(83,),
+        )
+
+        found = merge_gate.issues_closed_by("84")
+
+        assert found == {("telleztec/aiform", 83), ("telleztec/other", 4)}
+        assert merge_gate.main(["84"]) == 1
 
     def test_timeout_raises_rather_than_hanging(self, monkeypatch):
         def hang(cmd, capture_output=True, text=True, timeout=None):
@@ -160,13 +187,14 @@ class TestIssuesClosedBy:
             open_issues=(83,),
         )
 
-        assert merge_gate.issues_closed_by("84") == {83}
+        assert merge_gate.issues_closed_by("84") == {("telleztec/aiform", 83)}
 
     def test_truncated_issue_list_raises_rather_than_undercounting(self, monkeypatch):
         _stub_gh(
             monkeypatch,
             {"closingIssuesReferences": []},
-            open_issues=tuple(range(merge_gate._ISSUE_LIMIT + 1)),
+            # --limit caps exactly, so at-limit is the only truncation signal.
+            open_issues=tuple(range(1, merge_gate._ISSUE_LIMIT + 1)),
         )
 
         with pytest.raises(RuntimeError, match="truncated"):
@@ -266,3 +294,33 @@ class TestMain:
         _stub_gh(monkeypatch, {}, returncode=1, stderr="boom")
 
         assert merge_gate.main(["84"]) == 2
+
+
+class TestRepoOf:
+    @pytest.mark.parametrize(
+        "url,expected",
+        [
+            ("https://github.com/telleztec/aiform/pull/84", "telleztec/aiform"),
+            # A GitHub Enterprise host must parse the same way; splitting on
+            # "/github.com/" returned garbage and then dropped every
+            # qualified reference as if it named another repo.
+            ("https://github.example.com/telleztec/aiform/pull/84", "telleztec/aiform"),
+            ("https://ghe.corp.net/org/repo/pull/1", "org/repo"),
+        ],
+    )
+    def test_parses_any_host(self, monkeypatch, url, expected):
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"url": url}), "")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        assert merge_gate._repo_of("84") == expected
+
+    def test_unparseable_url_raises(self, monkeypatch):
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"url": "https://x/"}), "")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="could not read a repository"):
+            merge_gate._repo_of("84")

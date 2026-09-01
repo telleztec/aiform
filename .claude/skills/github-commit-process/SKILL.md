@@ -473,6 +473,7 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
 # means the check could not run at all -- do not confuse the two.
 ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"   # gh resolves the repo from the working directory
 "$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <number> ${MULTI:-}
 case $? in
   0) ;;

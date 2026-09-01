@@ -18,6 +18,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 
 # GitHub's closing keywords, each optionally followed by a colon, then an
 # issue reference: #12, owner/repo#12, or a full issue URL.
@@ -67,17 +68,32 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
-def issues_closed_by(pr: str) -> set[int]:
-    """Union of both sources, because neither is complete on its own.
+def issues_closed_by(pr: str) -> set[tuple[str, int]]:
+    """Issues this PR will close, as (repo, number) pairs.
 
-    GitHub's linked-issue list covers the PR description only; a closing
-    keyword in a commit message still closes the issue on merge to the
-    default branch but never appears there.
+    Two sources, unioned. GitHub's linked-issue list covers the PR
+    description only; a closing keyword in a commit message still closes
+    the issue on merge to the default branch but never appears there.
     """
+    repo = _repo_of(pr)
     data = _parse_json(
         _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"]), f"PR {pr}"
     )
-    found = {ref["number"] for ref in data.get("closingIssuesReferences") or []}
+
+    local: set[int] = set()
+    foreign: set[tuple[str, int]] = set()
+    for ref in data.get("closingIssuesReferences") or []:
+        owner = (ref.get("repository") or {}).get("owner") or {}
+        name = (ref.get("repository") or {}).get("name")
+        where = f"{owner.get('login')}/{name}" if name else repo
+        # A reference GitHub lists against another repository still closes
+        # on merge. It cannot be checked against this repo's open issues,
+        # so it is counted as-is rather than dropped by the intersection.
+        (
+            local.add(ref["number"])
+            if where.lower() == repo.lower()
+            else foreign.add((where, ref["number"]))
+        )
 
     # The REST endpoint with --paginate, not `gh pr view --json commits`:
     # that is a GraphQL connection capped at one page, so a long PR would
@@ -87,27 +103,31 @@ def issues_closed_by(pr: str) -> set[int]:
         [
             "gh",
             "api",
-            "repos/{owner}/{repo}/pulls/" + pr + "/commits",
+            "repos/" + repo + "/pulls/" + pr + "/commits",
             "--paginate",
             "--jq",
             ".[].commit.message",
         ]
     )
-    return (found | closing_refs(messages, _repo_of(pr))) & _open_issues()
+    local |= closing_refs(messages, repo)
+    return {(repo, n) for n in local & _open_issues(repo)} | foreign
 
 
 def _repo_of(pr: str) -> str:
     """The PR's own repository, not the working directory's.
 
     In a fork clone those differ, and using the wrong one drops a
-    legitimate same-repo reference as if it named somewhere else.
+    legitimate same-repo reference as if it named somewhere else. Parsed
+    from the url path so it holds on a GitHub Enterprise host too.
     """
     url = _parse_json(_run(["gh", "pr", "view", pr, "--json", "url"]), f"PR {pr}")["url"]
-    owner, _, name = url.split("/github.com/")[-1].partition("/")
-    return f"{owner}/{name.split('/')[0]}"
+    parts = urllib.parse.urlparse(url).path.strip("/").split("/")
+    if len(parts) < 2:
+        raise RuntimeError(f"could not read a repository from the PR url: {url}")
+    return f"{parts[0]}/{parts[1]}"
 
 
-def _open_issues() -> set[int]:
+def _open_issues(repo: str) -> set[int]:
     """Every open issue, in one call.
 
     A reference to an already-closed issue closes nothing on merge, and
@@ -138,6 +158,14 @@ def _parse_json(raw: str, what: str):
         raise RuntimeError(f"gh returned unparseable JSON for {what}: {exc}") from exc
 
 
+def _repo_safe(pr: str) -> str | None:
+    """For display only -- a failure here must not change the verdict."""
+    try:
+        return _repo_of(pr)
+    except RuntimeError:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="merge_gate")
     parser.add_argument("pr")
@@ -150,12 +178,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         issues = issues_closed_by(args.pr)
-    except Exception as exc:  # noqa: BLE001 -- exit 1 means "blocked"; an
-        # unexpected failure must not be mistaken for a multi-issue PR.
+    except Exception as exc:
+        # Exit 1 means "blocked"; an unexpected failure must not be
+        # mistaken for a multi-issue PR, so everything becomes exit 2.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    listed = ", ".join(f"#{n}" for n in sorted(issues)) or "none"
+    here = _repo_safe(args.pr)
+    listed = (
+        ", ".join(
+            f"#{n}" if r.lower() == (here or "").lower() else f"{r}#{n}" for r, n in sorted(issues)
+        )
+        or "none"
+    )
     if len(issues) <= 1:
         print(f"OK: PR {args.pr} closes {listed}")
         return 0
