@@ -146,7 +146,7 @@ which never reads or writes state.
   |---|---|---|
   | configured and accepted | `✓` | probe returned 2xx |
   | not configured | `✗` | env var unset / `resolve_credentials` raised |
-  | configured but rejected | `✗` | probe returned 4xx — **carries the API's own error text** |
+  | configured but rejected | `✗` | probe returned a verdict status (below) — **carries the API's own error text** |
   | configured, unverifiable | `?` | probe could not reach the API |
 
   The `?` state is load-bearing: reporting `✗` for a working key because
@@ -251,17 +251,23 @@ which never reads or writes state.
   answering 200 with arbitrary JSON is not evidence the token works, so
   the account probe requires an `account` object and the droplet probe a
   `droplets` key before either counts as a pass.
-- **Only 401 and 403 are verdicts on a provider token**
-  (`config.PROVIDER_TOKEN_VERDICT_STATUSES`). Every other status is `?`.
-  The probe URLs are hardcoded, so a 404 or 400 is far likelier to mean a
-  moved endpoint, a corporate proxy or a hijacked DNS answer than a bad
-  token — and telling a user to rotate a working credential is the same
-  class of error as passing a broken one.
+- **Both probes name the statuses that are a verdict; everything else is
+  `?`.** The provider token's set is `{401, 403}`
+  (`config.PROVIDER_TOKEN_VERDICT_STATUSES`), the Anthropic key's is
+  `{400, 401, 403}` (`config.ANTHROPIC_KEY_VERDICT_STATUSES`). A status
+  outside the set is a verdict on the *endpoint*, not the credential, and
+  telling a user to rotate a working credential is the same class of error
+  as passing a broken one.
 
-  The Anthropic probe is deliberately the **opposite**: there, every 4xx
-  except 408/429 is a verdict, because an identity-linked key rejects with
-  400. The asymmetry is a real difference between the two APIs, not an
-  oversight.
+  They differ in exactly one status, **400**, and for a reason specific to
+  each API. An identity-linked Anthropic key rejects with 400 rather than
+  401, which is the case the Anthropic probe exists for. DigitalOcean has
+  no such case, and its probe URLs are hardcoded, so a 400 there is far
+  likelier to mean a moved endpoint, a corporate proxy or a hijacked DNS
+  answer than a bad token. A 404 is outside both sets for that same
+  reason — on the Anthropic side an `ANTHROPIC_BASE_URL` gateway that
+  proxies `/v1/messages` but not `/v1/models` answers 404 for a key that
+  works.
 
 - **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
   rate limit says nothing about the credential, and DigitalOcean's
