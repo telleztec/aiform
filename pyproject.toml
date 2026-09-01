@@ -24,6 +24,11 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.16",
     "pre-commit>=4.0",
+    # tests/test_llm.py drives verify_api_key's redirect refusal through an
+    # httpx.MockTransport. httpx is a hard dependency of anthropic (whose
+    # public DefaultHttpxClient subclasses httpx.Client), so this pins
+    # nothing new -- it just stops the suite importing an undeclared package.
+    "httpx>=0.28",
 ]
 
 [tool.pytest.ini_options]

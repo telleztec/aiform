@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import anthropic
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -648,11 +649,20 @@ class FakeProbeClient:
     def __init__(self, raises: Exception | None = None):
         self.models = FakeModels(raises)
         self.messages = FakeMessages([])
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
 def api_key_set(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    # The SDK reads ANTHROPIC_BASE_URL when no base_url is passed, so a
+    # developer or runner with the gateway variable exported would send these
+    # probes at a host the tests do not expect -- the redirect test asserts on
+    # the host it reached. Supported in production, pinned out here.
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
 
 
 class TestVerifyApiKey:
@@ -750,3 +760,99 @@ class TestVerifyApiKey:
         client = FakeProbeClient(_api_error(401, "nope"))
 
         llm.verify_api_key(client=client)
+
+
+class TestVerifyApiKeyRefusesRedirects:
+    """The Anthropic half of the rule tests/test_cli.py already enforces on
+    the provider probe (test_redirect_is_refused_not_followed,
+    test_opener_does_not_follow_redirects). The reasoning recorded there --
+    "requests and httpx both drop it" -- is about the Authorization header;
+    this SDK authenticates with x-api-key, which httpx's cross-origin
+    stripping does not cover. #97.
+    """
+
+    def test_the_key_never_reaches_a_redirect_target(self, api_key_set, monkeypatch):
+        # The test the fix exists for. Only the transport is injected -- the
+        # client is built by verify_api_key itself, through the real SDK and
+        # the real httpx redirect machinery, so follow_redirects is the
+        # production value and not the test's. Before the fix this records a
+        # second hop to evil.example.com with x-api-key intact and returns OK.
+        hops = []
+
+        def handler(request):
+            hops.append(request)
+            if request.url.host == "api.anthropic.com":
+                return httpx.Response(
+                    302, headers={"Location": "https://evil.example.com/v1/models"}
+                )
+            return httpx.Response(200, json={"data": [], "has_more": False})
+
+        real_http_client = llm.anthropic.DefaultHttpxClient
+        monkeypatch.setattr(
+            llm.anthropic,
+            "DefaultHttpxClient",
+            lambda **kwargs: real_http_client(**kwargs, transport=httpx.MockTransport(handler)),
+        )
+
+        result = llm.verify_api_key()
+
+        assert [request.url.host for request in hops] == ["api.anthropic.com"]
+        # The header that makes this worth testing: it is sent, and httpx
+        # would have carried it across the redirect.
+        assert "x-api-key" in hops[0].headers
+        assert result.state is KeyState.UNVERIFIED
+
+    def test_probe_client_is_built_with_redirects_off(self, api_key_set, monkeypatch):
+        # The guard above only holds because the constructed client refuses
+        # redirects. Pin it directly, so the SDK restoring its
+        # follow_redirects default is a test failure and not a silent leak.
+        built = {}
+
+        def fake_anthropic(**kwargs):
+            built.update(kwargs)
+            return FakeProbeClient()
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", fake_anthropic)
+
+        llm.verify_api_key()
+
+        assert built["http_client"].follow_redirects is False
+
+    @pytest.mark.parametrize("status_code", [301, 302, 303, 307, 308])
+    def test_redirect_is_unverified_not_a_key_verdict(self, api_key_set, status_code):
+        # A 3xx is not a verdict on the credential -- and it is the one
+        # status that must not fall into the benign bucket either.
+        client = FakeProbeClient(_api_error(status_code, "moved"))
+
+        result = llm.verify_api_key(client=client)
+
+        assert result.state is KeyState.UNVERIFIED
+        assert "redirect" in result.detail
+        assert str(status_code) in result.detail
+
+    def test_redirect_body_is_not_echoed(self, api_key_set):
+        # The body of a 3xx from a captive portal or a hostile base URL is
+        # attacker-authored text, and _api_error_detail would lift its
+        # error.message straight into what init prints.
+        client = FakeProbeClient(_api_error(302, "visit https://evil.example.com to continue"))
+
+        assert "evil.example.com" not in llm.verify_api_key(client=client).detail
+
+    def test_the_probe_client_it_builds_is_closed(self, api_key_set, monkeypatch):
+        # http_client= costs the SDK wrapper's __del__, which is what closed
+        # the pool before; without an explicit close the probe's socket
+        # outlives init.
+        probe = FakeProbeClient()
+        monkeypatch.setattr(llm.anthropic, "Anthropic", lambda **kwargs: probe)
+
+        llm.verify_api_key()
+
+        assert probe.closed
+
+    def test_an_injected_client_is_left_open(self, api_key_set):
+        # It belongs to the caller, who may reuse it.
+        client = FakeProbeClient()
+
+        llm.verify_api_key(client=client)
+
+        assert not client.closed

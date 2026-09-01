@@ -228,9 +228,16 @@ which never reads or writes state.
 
 - **A redirect is refused, not followed.** `urllib` re-sends the
   `Authorization` header verbatim to a redirect target, including a
-  cross-host one — `requests` and `httpx` both drop it. These probes
-  carry a provider token, so the opener rejects 3xx and reports `?`
+  cross-host one — `requests` and `httpx` both drop *that* header. These
+  probes carry a provider token, so the opener rejects 3xx and reports `?`
   rather than chasing it and leaking the token to wherever it pointed.
+
+  The emphasis matters, and cost us once. What `httpx` strips on a
+  cross-origin redirect is `Authorization` and `Cookie` — **not** a custom
+  auth header. The Anthropic probe in `specs/llm.md` sends `x-api-key`, so
+  "httpx drops it" was never true of that probe, and it followed redirects
+  with the key attached until #97. Both probes now refuse a 3xx; read this
+  bullet as the shared policy rather than a fact about one HTTP client.
 
   **The `Location` is never parsed.** `HTTPRedirectHandler` calls
   `urlparse(newurl)` *before* consulting `redirect_request`, so a
