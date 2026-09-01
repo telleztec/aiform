@@ -191,7 +191,7 @@ class TestIssuesClosedBy:
 
     def test_a_closed_linked_issue_is_not_counted(self, monkeypatch):
         # The open-issue filter was only ever exercised through the commit
-        # -message source; routing every linked ref into `foreign` (which
+        # -message source; routing every linked ref into `cross_repo` (which
         # skips the intersection) passed the whole suite.
         _stub_gh(
             monkeypatch,
@@ -503,7 +503,7 @@ class TestRepositoryScoping:
         # The formatting half of the same guarantee, and the half no test
         # reached: `number` comes verbatim from gh's JSON, and sorted()
         # compares the repo strings first, so it only reaches the number
-        # when they tie -- two foreign refs in one repo, mismatched types.
+        # when they tie -- two cross-repo refs in one repo, mismatched types.
         # Formatted below the `except` that TypeError escapes and the
         # interpreter exits 1, which SKILL.md reads as "needs -multi".
         # A verbatim revert of the guard left the suite green before this.

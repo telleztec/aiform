@@ -96,7 +96,7 @@ merely unavailable.
   dropped. GitHub lists it because merging really does close it, and it
   cannot be checked against this repo's open issues — so intersecting
   would silently lose it. Results are `(repo, number)` pairs for that
-  reason: a foreign `#4` and a local `#4` are different issues.
+  reason: a cross-repo `#4` and a same-repo `#4` are different issues.
 - Commits come from `gh api .../pulls/<pr>/commits --paginate`, not
   `gh pr view --json commits`: the latter is a GraphQL connection capped at
   one page. **The REST endpoint caps at 250 commits even with
@@ -131,13 +131,13 @@ merely unavailable.
   rule is mechanically checked** — not the trigger, not the disclosure in
   the description. Having the script verify the literal itself would close
   this; it already shells out to `gh`.
-- **State-checking cross-repo references.** Local references are
-  intersected with the open-issue list; foreign ones are counted as-is, so
-  an *already-closed* foreign issue still counts toward the total and can
-  demand a waiver for a PR that really closes one issue. That is the false
-  positive the open-issue filter exists to remove, surviving for foreign
-  refs only. `gh issue list --repo <host>/<owner/name> --state open` would
-  close it, at a round trip per distinct foreign repo and a hard failure
+- **State-checking cross-repo references.** Same-repo references are
+  intersected with the open-issue list; cross-repo ones are counted as-is,
+  so an *already-closed* cross-repo issue still counts toward the total and
+  can demand a waiver for a PR that really closes one issue. That is the
+  false positive the open-issue filter exists to remove, surviving for
+  cross-repo refs only. `gh issue list --repo <host>/<owner/name> --state
+  open` would close it, at a round trip per distinct repo and a hard failure
   when that repo is not readable. Note the `<host>/` — a bare `owner/name`
   there resolves against gh's *default* host and would reintroduce the
   silent enterprise drop described above, in the very fix for it. Left

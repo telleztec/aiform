@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         issues = issues_closed_by(args.pr, (host, here))
         # Formatting stays inside the guard: sorted() compares the repo
         # strings first and reaches the numbers only when they tie, and a
-        # foreign ref's number comes verbatim from gh's JSON. Outside, that
+        # cross-repo ref's number comes verbatim from gh's JSON. Outside, that
         # TypeError would escape as exit 1 -- read as "needs -multi".
         listed = (
             ", ".join(
