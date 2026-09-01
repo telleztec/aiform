@@ -17,6 +17,8 @@ have tests for.
 ## Interface
 
 ```sh
+# From the repo root: gh resolves the repository from the working directory.
+cd "$(git rev-parse --show-toplevel)"
 .venv/bin/python scripts/merge_gate.py <PR> [--multi]
 ```
 
@@ -126,8 +128,11 @@ merely unavailable.
   an *already-closed* foreign issue still counts toward the total and can
   demand a waiver for a PR that really closes one issue. That is the false
   positive the open-issue filter exists to remove, surviving for foreign
-  refs only. `gh issue list --repo <owner/name> --state open` would close
-  it, at a round trip per distinct foreign repo and a hard failure when
-  that repo is not readable. Left undone because it fails closed: it costs
-  a review round, never a bad merge.
+  refs only. `gh issue list --repo <host>/<owner/name> --state open` would
+  close it, at a round trip per distinct foreign repo and a hard failure
+  when that repo is not readable. Note the `<host>/` — a bare `owner/name`
+  there resolves against gh's *default* host and would reintroduce the
+  silent enterprise drop described above, in the very fix for it. Left
+  undone because it fails closed: it costs a review round, never a bad
+  merge.
 - Posting statuses or merging. This reports; the caller decides.

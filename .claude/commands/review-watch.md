@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*), Bash(cd:*), Bash(.venv/bin/python scripts/merge_gate.py:*)
+allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*), Bash(cd:*), Bash(ROOT=:*), Bash(.venv/bin/python scripts/merge_gate.py:*), Bash("$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py":*)
 description: Start the background loop that watches a PR for /claude-merge-approved, /claude-merge-approved-multi or /claude-merge-rejected
 argument-hint: [<PR#>]
 disable-model-invocation: false
@@ -45,10 +45,16 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      first — commits may have landed while the loop ran — then, **before
      posting anything**, check how many issues this PR closes.
 
-     Run `ROOT=$(git rev-parse --show-toplevel) && cd "$ROOT" &&
-     "$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <PR>` — absolute,
-     and from the repo root, since gh resolves the repository from the
-     working directory. Add `--multi` when that is
+     Run `ROOT=$(git rev-parse --show-toplevel) || exit 2; cd "$ROOT" ||
+     exit 2; "$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <PR>` —
+     absolute, and from the repo root, since gh resolves the repository from
+     the working directory. `|| exit 2`, not `&&`, on both: chained with
+     `&&` a failed `cd` leaves the shell's own exit 1, which the next
+     paragraph reads as "closes several issues" — the false waiver request
+     the 1-vs-2 split exists to prevent. In a linked worktree `--show-toplevel`
+     is that worktree, which usually has no `.venv`; use the main checkout's
+     interpreter there rather than assuming the two coincide.
+     Add `--multi` when that is
      the literal the human posted. Post nothing unless it exits 0.
      Exit 1 means the PR closes several issues: ask the human to re-read
      the description and post `/claude-merge-approved-multi`. Exit 2 means

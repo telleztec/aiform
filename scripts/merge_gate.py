@@ -129,8 +129,11 @@ def _repo_of(pr: str) -> tuple[str, str]:
     `gh` resolves the bare PR number from the working directory; this
     reads back what it actually resolved, so the two repository-scoped
     lookups are pinned to it rather than resolved again. The other two
-    calls are `gh pr view` itself and stay cwd-resolved -- a bare PR
-    number means nothing without a repository.
+    calls are `gh pr view` itself and stay cwd-resolved. Not because they
+    must -- `gh pr view` does take `--repo` -- but because the first of
+    them is what answers this question: pinning it would need the answer
+    it produces. The second could be pinned once this has returned, and
+    is not, so both agree by construction instead.
 
     The host comes too: `--repo owner/name` targets gh's *default* host,
     so on a GitHub Enterprise clone a bare name queries github.com. That
@@ -206,9 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         host, here = _repo_of(args.pr)
         issues = issues_closed_by(args.pr, (host, here))
-        # Formatting stays inside the guard: sorted() compares the numbers,
-        # and a foreign ref's number comes verbatim from gh's JSON. Outside,
-        # a TypeError there would escape as exit 1 -- read as "needs -multi".
+        # Formatting stays inside the guard: sorted() compares the repo
+        # strings first and reaches the numbers only when they tie, and a
+        # foreign ref's number comes verbatim from gh's JSON. Outside, that
+        # TypeError would escape as exit 1 -- read as "needs -multi".
         listed = (
             ", ".join(
                 f"#{n}" if r.lower() == here.lower() else f"{r}#{n}" for r, n in sorted(issues)

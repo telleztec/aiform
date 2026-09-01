@@ -49,13 +49,16 @@ def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr="", open_iss
     """Models the four call shapes: linked issues, the PR url, commit
     messages, and the open-issue list.
 
-    Rejects an implausible host or repo the way gh itself would, rather
-    than answering anything asked. This stub returning a valid payload
-    whatever the arguments is why three rounds of scoping bugs were
-    invisible here; a wrong argument must surface as a failed lookup, not
-    as a correct answer. It reports the failure through the return code
-    rather than raising, since an AssertionError inside the stub would be
-    caught by main's `except Exception` and read as a plain exit 2.
+    Rejects a malformed `--repo` or `--hostname`. This stub returning a
+    valid payload whatever the arguments is why three rounds of scoping
+    bugs were invisible here. It checks shape only, and is deliberately
+    stricter than gh, which accepts a bare `owner/name` happily: a wrong
+    repository of the right shape is still answered as though correct, so
+    identity is TestRepositoryScoping's job, not this stub's.
+
+    Failures come back as a return code because that is what gh does --
+    both that and a raised AssertionError would reach main's
+    `except Exception` and become exit 2, so neither hides the other.
     """
 
     def _bad(cmd, why):
@@ -382,10 +385,12 @@ class TestRepoOf:
 class TestRepositoryScoping:
     """The open-issue list decides the verdict, so it must name the PR's repo.
 
-    Both bugs survived the suite as it stood: _stub_gh answers the issue list
-    whatever repo is asked for, and the display lookup sat outside main's
-    try. Assert on the emitted argv and the exit code rather than on the
-    result, or the regression is invisible again.
+    Both bugs survived the suite as it stood: _stub_gh answered the issue
+    list whatever repo was asked for, and the display path sat outside
+    main's try. Assert on the emitted argv and the exit code rather than on
+    the result, or the regression is invisible again -- the display half
+    went untested for a further round precisely because this said it was
+    covered when only the second-url-lookup variant was.
     """
 
     @pytest.mark.parametrize("host", ["github.com", "ghe.corp.net"])
@@ -491,5 +496,31 @@ class TestRepositoryScoping:
             return subprocess.CompletedProcess(cmd, 0, out, "")
 
         monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        assert merge_gate.main(["84"]) == 2
+
+    def test_an_unorderable_issue_number_is_exit_2_not_1(self, monkeypatch):
+        # The formatting half of the same guarantee, and the half no test
+        # reached: `number` comes verbatim from gh's JSON, and sorted()
+        # compares the repo strings first, so it only reaches the number
+        # when they tie -- two foreign refs in one repo, mismatched types.
+        # Formatted below the `except` that TypeError escapes and the
+        # interpreter exits 1, which SKILL.md reads as "needs -multi".
+        # A verbatim revert of the guard left the suite green before this.
+        _stub_gh(
+            monkeypatch,
+            {
+                "closingIssuesReferences": [
+                    {
+                        "number": 4,
+                        "repository": {"name": "other", "owner": {"login": "telleztec"}},
+                    },
+                    {
+                        "number": "5",
+                        "repository": {"name": "other", "owner": {"login": "telleztec"}},
+                    },
+                ]
+            },
+        )
 
         assert merge_gate.main(["84"]) == 2

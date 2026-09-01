@@ -220,8 +220,12 @@ Then:
    waiver is an explicit act rather than something inferred from what they
    were assumed to have read. A plain `/claude-merge-approved` on a
    multi-issue PR grants **no** waiver and is not authorization to merge.
-4. **Check it before merging** with `.venv/bin/python scripts/merge_gate.py <PR>`,
-   adding `--multi` when that is the literal the human posted. Exit 1
+4. **Check it before merging** with `cd "$(git rev-parse --show-toplevel)"`
+   first, then `.venv/bin/python scripts/merge_gate.py <PR>` — `gh` resolves
+   the repository from the working directory, so the gate answers about
+   whatever repo you happen to be standing in otherwise. The watch loop's
+   copy of this call spells the same thing out at greater length.
+   Add `--multi` when that is the literal the human posted. Exit 1
    means the PR closes several issues: ask the human to re-read the
    description and post `/claude-merge-approved-multi`. Exit 2 means the
    check could not run — fix that instead, and never ask for a waiver on
@@ -466,8 +470,9 @@ WATCHED_SHA=<the SHA the loop was started against>
 
 # Before the first gh call, not just before the gate: gh resolves the repo
 # from the working directory, and every gh command in this block depends on
-# it. An empty ROOT makes `cd ""` a no-op in sh and zsh (bash errors),
-# so check rather than assume.
+# it. An empty ROOT makes `cd ""` a silent no-op in sh, zsh and bash 3.2
+# (the macOS system bash); bash 5 errors. Depending on which you get is the
+# bug, so check rather than assume.
 ROOT=$(git rev-parse --show-toplevel) || { echo "not in a repo"; exit 2; }
 cd "$ROOT" || exit 2
 
