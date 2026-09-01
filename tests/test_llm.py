@@ -775,8 +775,15 @@ class TestVerifyApiKeyRefusesRedirects:
         # The test the fix exists for. Only the transport is injected -- the
         # client is built by verify_api_key itself, through the real SDK and
         # the real httpx redirect machinery, so follow_redirects is the
-        # production value and not the test's. Before the fix this records a
-        # second hop to evil.example.com with x-api-key intact and returns OK.
+        # production value and not the test's.
+        #
+        # The counterfactual is worth stating precisely, because the obvious
+        # one is wrong. Drop follow_redirects=False and keep http_client=, and
+        # this records a second hop to evil.example.com with x-api-key intact
+        # and returns OK -- the #97 bug. Drop http_client= entirely and the
+        # patched constructor below is never called at all, so guard_client
+        # raises rather than letting the probe build a real transport and put
+        # a live request on the network from the unit suite.
         hops = []
 
         def handler(request):
@@ -793,6 +800,14 @@ class TestVerifyApiKeyRefusesRedirects:
             "DefaultHttpxClient",
             lambda **kwargs: real_http_client(**kwargs, transport=httpx.MockTransport(handler)),
         )
+
+        real_anthropic = llm.anthropic.Anthropic
+
+        def guard_client(**kwargs):
+            assert "http_client" in kwargs, "the probe must be built with an explicit http_client"
+            return real_anthropic(**kwargs)
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", guard_client)
 
         result = llm.verify_api_key()
 
