@@ -57,10 +57,10 @@ merely unavailable.
   issue URL is dropped unless it names this PR's repository — a keyword
   there does not close another project's issue. The repository is read
   from the PR's own url, not from the working directory, since in a fork
-  clone those differ. **Every lookup derived from the PR is then scoped to
-  that repository explicitly** — the commits endpoint by path, the
-  open-issue list with `--repo`. Leaving the open-issue list to `gh`'s
-  working-directory resolution intersects against the wrong repo's issues
+  clone those differ. **Every lookup derived from the resolved
+  repository is then scoped to it explicitly** — the commits endpoint by
+  path, the open-issue list with `--repo`. Leaving the open-issue list to
+  `gh`'s working-directory resolution intersects against the wrong issues
   and reports "closes none"; leaving the commits endpoint to it fetches
   another repo's commits.
 
@@ -70,7 +70,10 @@ merely unavailable.
   *default* host, so on a GitHub Enterprise clone a scoped lookup would
   query github.com: the same silent drop, reintroduced by the fix for it.
   Bare `owner/name` is still what commit-message references and the result
-  pairs use; the host reaches only the lookups.
+  pairs use; the host reaches only the lookups. A reference written as an
+  issue *url* is therefore matched on `owner/name` alone, so one naming the
+  same path on another host counts as local — an over-count, which fails
+  closed.
 
   **The PR itself is still resolved from the working directory.** A bare
   PR number is only meaningful relative to a repository, so `gh pr view`

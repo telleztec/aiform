@@ -78,6 +78,10 @@ def issues_closed_by(pr: str, resolved: tuple[str, str] | None = None) -> set[tu
     `resolved` is `_repo_of`'s answer, looked up here when the caller has
     not already. Bare `owner/name` is what commit messages and the result
     pairs use; the host only ever reaches the lookups.
+
+    A reference written as an issue *url* is matched on `owner/name` alone,
+    so one naming the same path on another host counts as local. That
+    over-counts, which fails closed.
     """
     host, repo = resolved or _repo_of(pr)
     data = _parse_json(
@@ -123,14 +127,15 @@ def _repo_of(pr: str) -> tuple[str, str]:
     """(host, owner/name) read from the PR's url.
 
     `gh` resolves the bare PR number from the working directory; this
-    reads back what it actually resolved, so every lookup derived from the
-    PR is pinned to that repository rather than resolved again. In a fork
-    clone the two differ, and re-resolving drops a legitimate same-repo
-    reference as if it named somewhere else.
+    reads back what it actually resolved, so the two repository-scoped
+    lookups are pinned to it rather than resolved again. The other two
+    calls are `gh pr view` itself and stay cwd-resolved -- a bare PR
+    number means nothing without a repository.
 
-    The host is returned alongside because `--repo owner/name` targets
-    gh's *default* host: on a GitHub Enterprise clone, dropping it would
-    silently query github.com instead.
+    The host comes too: `--repo owner/name` targets gh's *default* host,
+    so on a GitHub Enterprise clone a bare name queries github.com. That
+    usually errors and exits 2; it answers the wrong repository silently
+    only when the same owner/name also exists there.
     """
     url = _parse_json(_run(["gh", "pr", "view", pr, "--json", "url"]), f"PR {pr}")["url"]
     parsed = urllib.parse.urlparse(url)
@@ -146,8 +151,7 @@ def _open_issues(host: str, repo: str) -> set[int]:
     Scoped with --repo rather than left to gh's working-directory
     resolution: in a fork clone those differ, and intersecting against the
     wrong repo's issues drops live references and reports "closes none".
-    The host is included because a bare owner/name would resolve against
-    gh's default host, which is the same drop on a GitHub Enterprise clone.
+    Host-qualified for the same reason -- see `_repo_of`.
 
     A reference to an already-closed issue closes nothing on merge, and
     counting it demands a waiver for a PR that closes one or none -- which
@@ -200,19 +204,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        resolved = _repo_of(args.pr)
-        issues = issues_closed_by(args.pr, resolved)
+        host, here = _repo_of(args.pr)
+        issues = issues_closed_by(args.pr, (host, here))
+        # Formatting stays inside the guard: sorted() compares the numbers,
+        # and a foreign ref's number comes verbatim from gh's JSON. Outside,
+        # a TypeError there would escape as exit 1 -- read as "needs -multi".
+        listed = (
+            ", ".join(
+                f"#{n}" if r.lower() == here.lower() else f"{r}#{n}" for r, n in sorted(issues)
+            )
+            or "none"
+        )
     except Exception as exc:
         # Exit 1 means "blocked"; an unexpected failure must not be
         # mistaken for a multi-issue PR, so everything becomes exit 2.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    here = resolved[1]
-    listed = (
-        ", ".join(f"#{n}" if r.lower() == here.lower() else f"{r}#{n}" for r, n in sorted(issues))
-        or "none"
-    )
     if len(issues) <= 1:
         print(f"OK: PR {args.pr} closes {listed}")
         return 0

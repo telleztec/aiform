@@ -47,14 +47,32 @@ class TestClosingRefs:
 
 def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr="", open_issues=(83,)):
     """Models the four call shapes: linked issues, the PR url, commit
-    messages, and the open-issue list."""
+    messages, and the open-issue list.
+
+    Rejects an implausible host or repo the way gh itself would, rather
+    than answering anything asked. This stub returning a valid payload
+    whatever the arguments is why three rounds of scoping bugs were
+    invisible here; a wrong argument must surface as a failed lookup, not
+    as a correct answer. It reports the failure through the return code
+    rather than raising, since an AssertionError inside the stub would be
+    caught by main's `except Exception` and read as a plain exit 2.
+    """
+
+    def _bad(cmd, why):
+        return subprocess.CompletedProcess(cmd, 1, "", f"gh: {why}")
 
     def fake_run(cmd, capture_output=True, text=True, timeout=None):
         if "issue" in cmd and "list" in cmd:
+            asked = cmd[cmd.index("--repo") + 1] if "--repo" in cmd else ""
+            if asked.count("/") != 2:
+                return _bad(cmd, f"expected [HOST/]OWNER/REPO, got {asked!r}")
             out = json.dumps([{"number": n} for n in open_issues])
         elif "url" in cmd:
             out = json.dumps({"url": "https://github.com/telleztec/aiform/pull/84"})
         elif "api" in cmd:
+            host = cmd[cmd.index("--hostname") + 1] if "--hostname" in cmd else ""
+            if "/" in host or not host:
+                return _bad(cmd, f"not a hostname: {host!r}")
             out = commits
         else:
             out = json.dumps(payload)
@@ -168,6 +186,18 @@ class TestIssuesClosedBy:
         assert found == {("telleztec/aiform", 83), ("telleztec/other", 4)}
         assert merge_gate.main(["84"]) == 1
 
+    def test_a_closed_linked_issue_is_not_counted(self, monkeypatch):
+        # The open-issue filter was only ever exercised through the commit
+        # -message source; routing every linked ref into `foreign` (which
+        # skips the intersection) passed the whole suite.
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": [{"number": 73}]},
+            open_issues=(83,),
+        )
+
+        assert merge_gate.issues_closed_by("84") == set()
+
     def test_timeout_raises_rather_than_hanging(self, monkeypatch):
         def hang(cmd, capture_output=True, text=True, timeout=None):
             raise merge_gate.subprocess.TimeoutExpired(cmd, timeout or 30)
@@ -227,7 +257,10 @@ class TestMain:
         _stub_gh(monkeypatch, {"closingIssuesReferences": [{"number": 83}]})
 
         assert merge_gate.main(["84"]) == 0
-        assert "#83" in capsys.readouterr().out
+        # Exact form, not a substring: "telleztec/aiform#83" contains
+        # "#83", so the loose assertion passed when host and repo were
+        # swapped and every local issue rendered as cross-repo.
+        assert "closes #83" in capsys.readouterr().out
 
     def test_zero_issues_passes(self, monkeypatch):
         _stub_gh(monkeypatch, {"closingIssuesReferences": []})
@@ -245,6 +278,7 @@ class TestMain:
         err = capsys.readouterr().err
         assert "/claude-merge-approved-multi" in err
         assert "#74" in err and "#83" in err
+        assert "aiform#83" not in err
 
     def test_multiple_issues_allowed_with_multi(self, monkeypatch):
         _stub_gh(
@@ -322,6 +356,19 @@ class TestRepoOf:
 
         assert merge_gate._repo_of("84") == expected
 
+    def test_hostless_url_raises(self, monkeypatch):
+        # Distinct from the short-path case below: this one has enough
+        # segments to pass that guard, and would emit --hostname "".
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"url": "owner/repo/pull/84"}), ""
+            )
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="could not read a repository"):
+            merge_gate._repo_of("84")
+
     def test_unparseable_url_raises(self, monkeypatch):
         def fake_run(cmd, capture_output=True, text=True, timeout=None):
             return subprocess.CompletedProcess(cmd, 0, json.dumps({"url": "https://x/"}), "")
@@ -335,26 +382,28 @@ class TestRepoOf:
 class TestRepositoryScoping:
     """The open-issue list decides the verdict, so it must name the PR's repo.
 
-    Both bugs survived the 42-test suite: _stub_gh answers the issue list
+    Both bugs survived the suite as it stood: _stub_gh answers the issue list
     whatever repo is asked for, and the display lookup sat outside main's
     try. Assert on the emitted argv and the exit code rather than on the
     result, or the regression is invisible again.
     """
 
-    def test_open_issue_list_is_scoped_to_the_prs_repository(self, monkeypatch):
-        # In a fork clone gh's cwd-resolved repo is not the PR's. Left
-        # unscoped, live references are intersected against the fork's
-        # issues, vanish, and the gate reports "closes none" and exits 0.
+    @pytest.mark.parametrize("host", ["github.com", "ghe.corp.net"])
+    def test_both_lookups_are_scoped_to_the_prs_repository(self, monkeypatch, host):
+        # Parametrised over the host on purpose. With only a github.com url,
+        # asserting `== "github.com"` compares a literal against a literal,
+        # so hardcoding the host in either lookup passed all 46 tests -- a
+        # verbatim revert of the fix this pins, invisible. The enterprise
+        # case is what makes the assertion mean "it came from the PR".
         seen = []
 
         def fake_run(cmd, capture_output=True, text=True, timeout=None):
             seen.append(cmd)
             if "issue" in cmd and "list" in cmd:
-                assert "--repo" in cmd, "the open-issue list must name a repository"
-                repo = cmd[cmd.index("--repo") + 1]
-                out = json.dumps([{"number": 83}] if repo == "github.com/upstream/aiform" else [])
+                asked = cmd[cmd.index("--repo") + 1]
+                out = json.dumps([{"number": 83}] if asked == f"{host}/upstream/aiform" else [])
             elif "url" in cmd:
-                out = json.dumps({"url": "https://github.com/upstream/aiform/pull/84"})
+                out = json.dumps({"url": f"https://{host}/upstream/aiform/pull/84"})
             elif "api" in cmd:
                 out = ""
             else:
@@ -375,14 +424,14 @@ class TestRepositoryScoping:
         assert merge_gate.issues_closed_by("84") == {("upstream/aiform", 83)}
 
         listing = next(c for c in seen if "issue" in c and "list" in c)
-        assert listing[listing.index("--repo") + 1] == "github.com/upstream/aiform"
+        assert listing[listing.index("--repo") + 1] == f"{host}/upstream/aiform"
 
-        # The other half of the same guarantee. Asserting only on the issue
+        # The other half of the same guarantee. Asserting only the issue
         # list is how "the fix was half applied" recurred twice already:
-        # hardcoding a wrong path here left all 46 tests green.
+        # hardcoding a wrong path here left the whole suite green.
         api = next(c for c in seen if "api" in c)
         assert "repos/upstream/aiform/pulls/84/commits" in api
-        assert api[api.index("--hostname") + 1] == "github.com"
+        assert api[api.index("--hostname") + 1] == host
 
     def test_the_repo_is_resolved_once(self, monkeypatch):
         # main used to look the url up a second time purely to format the
