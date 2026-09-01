@@ -460,8 +460,19 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
     """urllib re-sends the Authorization header verbatim to a redirect
     target, including a cross-host one -- requests and httpx both drop it.
     These probes carry a provider token, so a redirect is refused rather
-    than followed. Returning None makes urllib raise the 3xx as an
-    HTTPError instead of chasing it."""
+    than followed.
+
+    The 3xx is raised here rather than left to the base class, which parses
+    the Location header (urlparse) before it ever consults redirect_request:
+    an unparseable one -- `Location: http://[::1` from a captive portal --
+    raises ValueError out of the probe, about a URL already decided against
+    following. Nothing here reads the Location at all.
+    """
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -501,13 +512,18 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
         # specified to return a KeyCheck.
         return failed(KeyState.UNVERIFIED, str(exc) or type(exc).__name__)
     except ValueError:
-        # Raised by http.client when the header value is malformed -- a token
-        # with a stray newline is the usual cause. The message quotes the
-        # whole header, so it must never be echoed.
-        return failed(
-            KeyState.UNVERIFIED,
-            "the token is not a valid HTTP header value (check for stray whitespace)",
-        )
+        # http.client raises this for a malformed header value -- a token with
+        # a stray newline is the usual cause -- and quotes the whole header in
+        # the message, so it must never be echoed. Other handlers in the
+        # opener raise ValueError too (a malformed https_proxy, say), and with
+        # the text unusable the only safe way to tell them apart is to ask
+        # whether the token could have been the cause.
+        if _cannot_be_a_header_value(token):
+            return failed(
+                KeyState.UNVERIFIED,
+                "the token is not a valid HTTP header value (check for stray whitespace)",
+            )
+        return failed(KeyState.UNVERIFIED, "the request could not be sent")
 
     try:
         return json.loads(raw.decode("utf-8")), None
@@ -515,6 +531,23 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
         # A captive portal or proxy answering 200 with non-JSON. Decoding
         # happens after the request, so this message cannot carry the token.
         return failed(KeyState.UNVERIFIED, f"unreadable response: {exc}")
+
+
+def _cannot_be_a_header_value(token: str) -> bool:
+    # Deliberately wider than http.client's rule, which permits a newline that
+    # continues a folded line: this only chooses between two canned messages
+    # once a ValueError has already been raised, so erring wide costs nothing
+    # and keeps a private regex out of this file.
+    value = f"Bearer {token}"
+    if "\r" in value or "\n" in value:
+        return True
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        # putheader encodes latin-1 first, and UnicodeEncodeError is a
+        # ValueError -- so this lands in the same branch.
+        return True
+    return False
 
 
 def _redact(detail: str, token: str) -> str:

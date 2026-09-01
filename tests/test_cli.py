@@ -13,6 +13,7 @@ import sys
 import tomllib
 import types
 import urllib.error
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -912,6 +913,36 @@ class TestCheckProviderToken:
             is None
         )
 
+    def test_redirect_is_refused_before_its_location_is_parsed(self):
+        # HTTPRedirectHandler.http_error_302 runs urlparse(newurl) before it
+        # ever consults redirect_request, so an unparseable Location raised a
+        # ValueError that _probe then blamed on the token (#91). The handler
+        # refuses the 3xx itself rather than parsing a URL it has already
+        # decided not to follow.
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "http://[::1"
+        request = urllib.request.Request("https://api.digitalocean.com/v2/account")
+
+        for code in (302, 307):
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                cli._RejectRedirects().http_error_302(
+                    request, io.BytesIO(b""), code, "Found", headers
+                )
+
+            assert raised.value.code == code
+
+    def test_unparseable_redirect_location_does_not_blame_the_token(self, token, monkeypatch):
+        # Backstop for every other ValueError the opener can raise -- a
+        # malformed https_proxy in the environment is the live one. A good
+        # token must never be reported as malformed because of it.
+        self._urlopen(monkeypatch, ValueError("Invalid IPv6 URL"))
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert "whitespace" not in (check.detail or "")
+        assert "token" not in (check.detail or "")
+
     def test_non_json_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
         self._urlopen(monkeypatch, FakeRawResponse(b"<html>captive portal</html>"))
 
@@ -963,6 +994,16 @@ class TestCheckProviderToken:
         assert check.state is KeyState.UNVERIFIED
         assert secret not in (check.detail or "")
         assert secret not in capsys.readouterr().out
+
+    def test_malformed_token_still_names_the_token(self, monkeypatch):
+        # The complement of the test above: distinguishing the two ValueError
+        # sources must not cost the one message that actually helps.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_supersecretvalue\n")
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert "whitespace" in (check.detail or "")
 
     def test_init_never_prints_a_malformed_token(self, project_dir: Path, monkeypatch, capsys):
         secret = "dop_v1_supersecretvalue"

@@ -231,6 +231,22 @@ which never reads or writes state.
   cross-host one — `requests` and `httpx` both drop it. These probes
   carry a provider token, so the opener rejects 3xx and reports `?`
   rather than chasing it and leaking the token to wherever it pointed.
+
+  **The `Location` is never parsed.** `HTTPRedirectHandler` calls
+  `urlparse(newurl)` *before* consulting `redirect_request`, so a
+  `Location: http://[::1` from a captive portal raises `ValueError` out of
+  the probe — an error about a header we had already decided not to follow,
+  which then has to be attributed to something. The opener raises the 3xx
+  as an `HTTPError` itself instead of letting the base class parse first.
+- **A `ValueError` while sending blames the token only when the token is
+  the plausible cause** — when it could not be a legal HTTP header value at
+  all (a stray `\r`/`\n`, or bytes that will not encode as latin-1). Any
+  other `ValueError` reaching that branch — a malformed `https_proxy` in
+  the environment is the live example — is reported as a send failure, not
+  as a bad credential. Both messages are canned: `http.client` quotes the
+  whole header value in its message, so the exception's own text can never
+  reach `detail`, which is what makes the two cases indistinguishable by
+  message and forces the decision to be made from the token itself.
 - **A 2xx of the wrong shape is `?`, not `✓`.** A proxy or captive portal
   answering 200 with arbitrary JSON is not evidence the token works, so
   the account probe requires an `account` object and the droplet probe a
