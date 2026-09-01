@@ -13,6 +13,7 @@ import sys
 import tomllib
 import types
 import urllib.error
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -217,6 +218,20 @@ def offline_preflight(monkeypatch):
     )
 
 
+def _block_sockets(monkeypatch) -> list:
+    """Make every outbound connection fail, and record that it was tried."""
+    attempts = []
+
+    def record(target, *args, **kwargs):
+        attempts.append(target)
+        raise OSError("network disabled for this test")
+
+    monkeypatch.setattr(socket, "create_connection", record)
+    monkeypatch.setattr(socket.socket, "connect", record)
+    monkeypatch.setattr(socket, "getaddrinfo", record)
+    return attempts
+
+
 class FakeStdinTTY:
     def isatty(self) -> bool:
         return True
@@ -329,19 +344,6 @@ class TestInitMakesNoNetworkCalls:
     unstubbed probe fails here rather than silently phoning home.
     """
 
-    @staticmethod
-    def _block_sockets(monkeypatch) -> list:
-        attempts = []
-
-        def record(target, *args, **kwargs):
-            attempts.append(target)
-            raise OSError("network disabled for this test")
-
-        monkeypatch.setattr(socket, "create_connection", record)
-        monkeypatch.setattr(socket.socket, "connect", record)
-        monkeypatch.setattr(socket, "getaddrinfo", record)
-        return attempts
-
     def test_stubbing_covers_every_path_init_takes(self, project_dir: Path, monkeypatch):
         """With the autouse stub active, init must touch no socket.
 
@@ -350,7 +352,7 @@ class TestInitMakesNoNetworkCalls:
         themselves, which are replaced wholesale here. The next test
         covers those.
         """
-        attempts = self._block_sockets(monkeypatch)
+        attempts = _block_sockets(monkeypatch)
 
         assert cli.main(["init"]) == 0
         assert attempts == []
@@ -368,7 +370,7 @@ class TestInitMakesNoNetworkCalls:
         monkeypatch.setattr(cli, "_check_provider_token", _REAL_CHECK_PROVIDER_TOKEN)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        attempts = self._block_sockets(monkeypatch)
+        attempts = _block_sockets(monkeypatch)
 
         assert cli.main(["init"]) == 0
         assert attempts, "probes must have actually tried, or this proves nothing"
@@ -588,6 +590,19 @@ class TestCheckProviderToken:
     """The DigitalOcean half of the preflight. GET /v2/account is free and
     read-only; the account email it returns is what distinguishes a token
     for the wrong one of several accounts from a working one."""
+
+    @pytest.fixture(autouse=True)
+    def no_sockets(self, monkeypatch):
+        # Three tests here hand a malformed token to the real urllib stack,
+        # which reaches no socket only because putheader rejects the header
+        # before endheaders connects. Should that guard ever move after the
+        # connect, they would talk to DigitalOcean for real -- and still pass,
+        # since _probe turns a failed connection into UNVERIFIED and _guarded
+        # swallows anything raised from inside the probe. So the assertion has
+        # to outlive the call rather than be raised during it.
+        attempts = _block_sockets(monkeypatch)
+        yield
+        assert not attempts, "this test must not reach the network"
 
     @pytest.fixture
     def token(self, monkeypatch):
@@ -912,6 +927,50 @@ class TestCheckProviderToken:
             is None
         )
 
+    def test_redirect_is_refused_before_its_location_is_parsed(self):
+        # HTTPRedirectHandler.http_error_302 runs urlparse(newurl) before it
+        # ever consults redirect_request, so an unparseable Location raised a
+        # ValueError that _probe then blamed on the token (#91). The handler
+        # refuses the 3xx itself rather than parsing a URL it has already
+        # decided not to follow.
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "http://[::1"
+        request = urllib.request.Request("https://api.digitalocean.com/v2/account")
+
+        for code in (302, 307):
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                cli._RejectRedirects().http_error_302(
+                    request, io.BytesIO(b""), code, "Found", headers
+                )
+
+            assert raised.value.code == code
+
+    def test_opener_raises_an_unparseable_redirect_rather_than_a_value_error(self):
+        # The composition is what broke in #91, not either half: _probe's
+        # ValueError came out of _PROBE_OPENER's own handler chain. Asserting
+        # only on the handler would stay green if the chain stopped routing
+        # through it, or if a stock HTTPRedirectHandler were re-registered.
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "http://[::1"
+        request = urllib.request.Request("https://api.digitalocean.com/v2/account")
+
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            cli._PROBE_OPENER.error("http", request, io.BytesIO(b""), 302, "Found", headers)
+
+        assert raised.value.code == 302
+
+    def test_unparseable_redirect_location_does_not_blame_the_token(self, token, monkeypatch):
+        # Backstop for every other ValueError the opener can raise -- a
+        # malformed https_proxy in the environment is the live one. A good
+        # token must never be reported as malformed because of it.
+        self._urlopen(monkeypatch, ValueError("Invalid IPv6 URL"))
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert "whitespace" not in (check.detail or "")
+        assert "token" not in (check.detail or "")
+
     def test_non_json_success_body_is_unverified_not_a_crash(self, token, monkeypatch):
         self._urlopen(monkeypatch, FakeRawResponse(b"<html>captive portal</html>"))
 
@@ -963,6 +1022,16 @@ class TestCheckProviderToken:
         assert check.state is KeyState.UNVERIFIED
         assert secret not in (check.detail or "")
         assert secret not in capsys.readouterr().out
+
+    def test_malformed_token_still_names_the_token(self, monkeypatch):
+        # The complement of the test above: distinguishing the two ValueError
+        # sources must not cost the one message that actually helps.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_supersecretvalue\n")
+
+        check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
+
+        assert check.state is KeyState.UNVERIFIED
+        assert "whitespace" in (check.detail or "")
 
     def test_init_never_prints_a_malformed_token(self, project_dir: Path, monkeypatch, capsys):
         secret = "dop_v1_supersecretvalue"
