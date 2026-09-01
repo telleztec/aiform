@@ -71,9 +71,12 @@ to make something easier to build.
   `plan`/`apply` — see `PLAN.md`'s "Driver curation".
 - **`code-review-model`**, default **Claude Opus 5** (`claude-opus-5`):
   gate #1 — approving a driver before it's trusted for reuse. Live today
-  in one case only: the `plan`-time re-review of an on-disk driver whose
-  hash doesn't match its trusted record. It is also the gate a draft
-  passes through inside `driver_gen.py`.
+  on one `plan`-time path: an on-disk driver whose sha256 matches no
+  state entry that trusts it. That is both the hand-edited/upgraded
+  driver case *and* a driver never recorded in this project's state —
+  so a brand-new project's first `plan create` pays one such call
+  (`PLAN.md` §9 step 2). It is also the gate a draft passes through
+  inside `driver_gen.py`.
 - **`review-orchestration-model`**, default **Claude Opus 5**
   (`claude-opus-5`): gate #2 — reviewing a plan before `apply` executes
   anything destructive.
@@ -95,7 +98,7 @@ to make something easier to build.
   entry in `aiform/llm.py`, not a reason to introduce a plugin system or ABC
   hierarchy — keep it to that one seam.
 - On repeat `apply`/`plan` runs against unchanged input, the execution path
-  must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §8 step 4).
+  must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §9 step 4).
   If you find yourself adding an LLM call inside the driver-execution path,
   stop — that call belongs in the planning phase, not here.
 
@@ -166,7 +169,7 @@ to make something easier to build.
 - Don't add abstractions, config knobs, or error handling for scenarios
   that can't happen yet. The MVP is single-provider, single-resource-kind,
   no dependency graph — build for that, not for a hypothetical future
-  multi-cloud graph engine. `PLAN.md` §9 already names what's deferred and
+  multi-cloud graph engine. `PLAN.md` §10 already names what's deferred and
   why; don't quietly start building toward it early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
   names, argument order, exception type and its two fields (`reason`,
@@ -203,7 +206,7 @@ provider follows the same shape:
    yourself; it establishes the pattern every future driver follows.
 5. `aiform/planner.py`, `aiform/orchestrator.py`, `aiform/cli.py` — wire
    everything into the `plan`/`apply` commands and validate against the full
-   MVP walkthrough in `PLAN.md` §8, including the "second plan run makes
+   MVP walkthrough in `PLAN.md` §9, including the "second plan run makes
    zero Anthropic API calls" claim — actually verify that with `--verbose`
    logging or a request counter, don't just assume it.
 

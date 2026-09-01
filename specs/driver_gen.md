@@ -46,11 +46,13 @@ Two things follow, and they are easy to get backwards:
 2. **This module returns, it does not write.** `draft_driver()` and
    `generate_driver()` never touch the filesystem beyond reading
    `prompts/generate_driver.md`. Writing the approved source to
-   `drivers/<provider>/<resource>.py`, computing its `sha256`, and
-   recording it in `.aiform/state.json` belong to the `aiform driver
+   `drivers/<provider>/<resource>.py` belongs to the `aiform driver
    create` flow (`PLAN.md` §6/§7), which isn't built — this module only
-   drafts, validates, and reviews. Note this is deliberately *not*
-   `orchestrator.py`'s plan/apply path, which never writes a driver.
+   drafts, validates, and reviews, and `plan`/`apply` never write a
+   driver at all. Computing a driver's `sha256` and recording it in
+   `.aiform/state.json`, by contrast, are `orchestrator.py`'s job and
+   are shipped today (`ensure_driver_trusted()`, `specs/orchestrator.md`)
+   — that half is not waiting on anything.
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
    necessary empirically** — the first real `generate_driver()` run

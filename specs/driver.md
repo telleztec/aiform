@@ -14,10 +14,10 @@ import logic.
 code defines it inside `driver.py`, alongside `ResourceDriver`. Per
 `CLAUDE.md`'s "follow the `ResourceDriver` interface in `PLAN.md` §4
 exactly," this spec treats §4 as authoritative: `DriverUpdateNotSupported`
-is defined here, in `driver.py`. `exceptions.py` (not yet built) can
-re-export it later if convenient; §1's comment is stale and should be
-corrected whenever `exceptions.py` is actually written, not silently
-worked around.
+is defined here, in `driver.py`, and that is where it lives today.
+`exceptions.py` has since been written and does *not* re-export it, so
+§1's comment remains stale — still to be corrected (or the re-export
+added), not silently worked around.
 
 **Second flagged discrepancy, now resolved**: `create()`'s original
 two-argument signature (`params`, `credentials`) had no way for a driver
@@ -178,13 +178,13 @@ calling them from its own methods, or doesn't).
 ## Out of scope
 
 - `ResourceNotFoundError`, `DriverExecutionError`, `PlanBlockedError` —
-  these belong to `aiform/exceptions.py` (`PLAN.md` §1), not yet built.
+  these belong to `aiform/exceptions.py` (`PLAN.md` §1), since built.
   `driver.py` only defines `DriverUpdateNotSupported`, per the flagged
   discrepancy above.
 - Dynamic driver import (`importlib.util.spec_from_file_location`),
   instantiating `module.Driver()`, and credential wiring — all
   `orchestrator.py`'s "Orchestrator invocation contract" (`PLAN.md` §4),
-  not built yet.
+  since built. Not this module's concern either way.
 - Static AST validation of a drafted driver's source (no `anthropic`
   import, no `ANTHROPIC_API_KEY` read, etc.) — `driver_gen.py`'s job, not
   this module's.
