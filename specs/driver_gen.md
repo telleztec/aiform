@@ -51,8 +51,11 @@ Two things follow, and they are easy to get backwards:
    drafts, validates, and reviews, and `plan`/`apply` never write a
    driver at all. Computing a driver's `sha256` and recording it in
    `.aiform/state.json`, by contrast, are `orchestrator.py`'s job and
-   are shipped today (`ensure_driver_trusted()`, `specs/orchestrator.md`)
-   — that half is not waiting on anything.
+   are shipped today — that half is not waiting on anything. Note the
+   split: `ensure_driver_trusted()` computes the hash and runs gate #1
+   on every `plan`, but only the *apply* path persists the resulting
+   `DriverInfo` onto a `StateEntry`, so a driver's hash becomes trusted
+   at `apply` time, not at `plan` time (`specs/orchestrator.md`).
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
    necessary empirically** — the first real `generate_driver()` run

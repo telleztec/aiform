@@ -110,7 +110,7 @@ configurable model roles to the flow it drives.
 ## Not yet implemented
 
 Beyond the MVP's narrow scope (one CSP, one resource kind, no dependency
-graph — see [`PLAN.md`](./PLAN.md) §9 for the full list), two things worth
+graph — see [`PLAN.md`](./PLAN.md) §10 for the full list), two things worth
 calling out explicitly since they change how the project grows over time:
 
 - **Self-service driver creation.** Creating a new `(provider, resource)`

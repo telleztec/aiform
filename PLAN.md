@@ -41,7 +41,7 @@ anything expensive to get wrong:
 
 - **`intent-orchestration-model`** — parses the prose Intent section into `intent_notes[]` and categorizes each plan action (create/update/no-op) against the raw diff (`prompts/parse_intent.md`, `prompts/diff_plan.md`, §2 and §5 step 6). This is the model behind every routine `aiform plan create` call — the one that must cost zero tokens on an unchanged second run (§5 step 5, §9 step 4).
 - **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §6). Exercised only by `aiform/driver_gen.py`, which no `plan`/`apply` or CLI path calls; it is reserved for the deliberate `aiform driver create` flow (mechanism 2), not currently being built — see "Driver curation" below. This role therefore costs nothing on a normal `plan`/`apply`.
-- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
+- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). The trusted hash is persisted by `apply`, not by `plan`, so repeated `plan create` runs before the first `apply` each pay that call. It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
 - **`review-orchestration-model`** — reviews the full plan before `apply` executes anything destructive: gate #2 (§5 `apply` step 2, `prompts/review_plan.md`).
 
 Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
@@ -103,14 +103,16 @@ built) an explicit, per-instance approval from the *aiform user* who needs
 the driver — never a silent, unattended generate-and-trust step:
 
 **Drivers are written ahead of time, never generated at `plan` time.**
-That second half is permanent. The first half is where things stand
-today: every usable `(provider, resource)` driver is one aiform's own
-maintainers built, shipping as part of the aiform package itself
-(`drivers/<provider>/<resource>.py`). Mechanism 2 below is exactly the
-plan for lifting that restriction — an end user authoring a driver into
-their own local repository of drivers (§7) — but it changes *who* may
-add a driver and *when* they do it, never the rule that `plan` doesn't
-generate one. Two ways a driver gets added:
+Both halves of that are permanent, under either mechanism below.
+
+What is *not* permanent is who authors them. Today every driver aiform
+can use is one its own maintainers built, shipping as part of the
+aiform package itself (`drivers/<provider>/<resource>.py`); mechanism 2
+is the plan for letting an end user author one into their own local
+repository of drivers (§7), from inside `aiform`, without going through
+this repo. That changes **who** may add a driver, not **when** — under
+both mechanisms authoring stays a deliberate step taken ahead of any
+`plan` run. Two ways a driver gets added:
 
 1. **Via Claude Code, now.** The same spec-first/test-first/Opus-reviewed
    development loop (`PROCESS.md`) used for every other module in this

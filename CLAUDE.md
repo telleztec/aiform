@@ -75,8 +75,10 @@ to make something easier to build.
   state entry that trusts it. That is both the hand-edited/upgraded
   driver case *and* a driver never recorded in this project's state —
   so a brand-new project's first `plan create` pays one such call
-  (`PLAN.md` §9 step 2). It is also the gate a draft passes through
-  inside `driver_gen.py`.
+  (`PLAN.md` §9 step 2). Note that only `apply` persists the trusted
+  hash, so repeated `plan create` runs before the first `apply` each
+  pay one. It is also the gate a draft passes through inside
+  `driver_gen.py`.
 - **`review-orchestration-model`**, default **Claude Opus 5**
   (`claude-opus-5`): gate #2 — reviewing a plan before `apply` executes
   anything destructive.
