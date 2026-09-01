@@ -50,7 +50,8 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      Exit 1 means the PR closes several issues: ask the human to re-read
      the description and post `/claude-merge-approved-multi`. Exit 2 means
      the check itself failed — fix that, and do not ask for a waiver on its
-     strength. After a genuine exit 1, restart this loop **watermarked on
+     strength. After a genuine exit 1, restart this loop with `SINCE_OVERRIDE`
+     set to that approval comment's timestamp — **watermarked on
      that approval comment's timestamp**, not on the head commit — no commit
      is pushed on this path, so the default watermark would leave the plain
      approval still latest and the loop would re-fire on it immediately, in

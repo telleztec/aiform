@@ -472,7 +472,8 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # MULTI is --multi when the human posted /claude-merge-approved-multi,
 # empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
 # means the check could not run at all -- do not confuse the two.
-.venv/bin/python "$(git rev-parse --show-toplevel)/scripts/merge_gate.py" <number> ${MULTI:-}
+ROOT=$(git rev-parse --show-toplevel)
+"$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <number> ${MULTI:-}
 case $? in
   0) ;;
   1) echo "needs /claude-merge-approved-multi -- ask, post nothing"; exit 1;;

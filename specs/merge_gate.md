@@ -38,10 +38,23 @@ merely unavailable.
   description only; a closing keyword in a commit message still closes the
   issue on merge to the default branch and never appears there. Neither is
   sufficient alone.
-- **Only issues currently `OPEN` are counted.** A reference to an
+- **Only currently open issues are counted**, obtained as one
+  `gh issue list --state open` and intersected. A reference to an
   already-closed issue closes nothing on merge, and counting it demands a
-  waiver for a PR that will close one issue or none — which is what a
-  commit message quoting closing-keyword syntax produces.
+  waiver for a PR that closes one issue or none — which is what a commit
+  message quoting closing-keyword syntax produces.
+
+  Asking for the whole set rather than each number in turn is deliberate.
+  It is one round trip instead of N; `gh issue list` excludes pull
+  requests, where `gh issue view <n>` resolves them and would count an open
+  PR as an open issue; and a reference to something that is not an issue
+  here — a placeholder in an example, a number from another project — is
+  simply absent rather than an error. If the list comes back at the limit
+  it may be truncated, so the gate raises rather than undercounting.
+- **A reference qualified with `owner/repo`, or an issue URL, is dropped
+  unless it names this PR's repository** — read from the PR itself, not
+  from the working directory, since in a fork clone those differ and the
+  wrong one drops legitimate same-repo references.
 - Commits come from `gh api .../pulls/<pr>/commits --paginate`, not
   `gh pr view --json commits`: the latter is a GraphQL connection capped at
   one page. **The REST endpoint caps at 250 commits even with

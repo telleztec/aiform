@@ -45,19 +45,15 @@ class TestClosingRefs:
         assert merge_gate.closing_refs(None) == set()
 
 
-def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr="", closed=()):
-    """Three call shapes: linked issues, commit messages, per-issue state.
-
-    `closed` names issues to report as already CLOSED, which the gate must
-    not count -- merging closes nothing that is closed already.
-    """
+def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr="", open_issues=(83,)):
+    """Models the four call shapes: linked issues, the PR url, commit
+    messages, and the open-issue list."""
 
     def fake_run(cmd, capture_output=True, text=True, timeout=None):
-        if "repo" in cmd:
-            out = "telleztec/aiform"
-        elif "issue" in cmd:
-            number = int(cmd[cmd.index("view") + 1])
-            out = json.dumps({"state": "CLOSED" if number in closed else "OPEN"})
+        if "issue" in cmd and "list" in cmd:
+            out = json.dumps([{"number": n} for n in open_issues])
+        elif "url" in cmd:
+            out = json.dumps({"url": "https://github.com/telleztec/aiform/pull/84"})
         elif "api" in cmd:
             out = commits
         else:
@@ -78,6 +74,7 @@ class TestIssuesClosedBy:
                 "closingIssuesReferences": [{"number": 83}],
             },
             commits="x\n\nCloses #74",
+            open_issues=(83, 74),
         )
 
         assert merge_gate.issues_closed_by("84") == {83, 74}
@@ -91,6 +88,7 @@ class TestIssuesClosedBy:
                 "closingIssuesReferences": [],
             },
             commits="Fixes #74: stop the leak",
+            open_issues=(74,),
         )
 
         assert merge_gate.issues_closed_by("84") == {74}
@@ -104,6 +102,7 @@ class TestIssuesClosedBy:
                 "closingIssuesReferences": [{"number": 83}],
             },
             commits="Closes #83",
+            open_issues=(83,),
         )
 
         assert merge_gate.issues_closed_by("84") == {83}
@@ -117,7 +116,7 @@ class TestIssuesClosedBy:
             monkeypatch,
             {"closingIssuesReferences": [{"number": 83}]},
             commits="`Closes #73, closes #74` is the correct form",
-            closed=(73, 74),
+            open_issues=(83,),
         )
 
         assert merge_gate.issues_closed_by("84") == {83}
@@ -127,6 +126,7 @@ class TestIssuesClosedBy:
             monkeypatch,
             {"closingIssuesReferences": []},
             commits="fixes otherorg/otherrepo#5",
+            open_issues=(5, 83),
         )
 
         assert merge_gate.issues_closed_by("84") == set()
@@ -136,6 +136,7 @@ class TestIssuesClosedBy:
             monkeypatch,
             {"closingIssuesReferences": []},
             commits="fixes telleztec/aiform#92",
+            open_issues=(92,),
         )
 
         assert merge_gate.issues_closed_by("84") == {92}
@@ -147,6 +148,28 @@ class TestIssuesClosedBy:
         monkeypatch.setattr(merge_gate.subprocess, "run", hang)
 
         with pytest.raises(RuntimeError, match="timed out"):
+            merge_gate.issues_closed_by("84")
+
+    def test_reference_to_a_nonexistent_number_is_simply_absent(self, monkeypatch):
+        # A placeholder in a doc example, or a number from another project.
+        # It closes nothing here, so it must neither count nor be an error.
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": [{"number": 83}]},
+            commits="Closes #99999",
+            open_issues=(83,),
+        )
+
+        assert merge_gate.issues_closed_by("84") == {83}
+
+    def test_truncated_issue_list_raises_rather_than_undercounting(self, monkeypatch):
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": []},
+            open_issues=tuple(range(merge_gate._ISSUE_LIMIT + 1)),
+        )
+
+        with pytest.raises(RuntimeError, match="truncated"):
             merge_gate.issues_closed_by("84")
 
     def test_lookup_failure_raises_rather_than_returning_empty(self, monkeypatch):
@@ -166,7 +189,7 @@ class TestIssuesClosedBy:
             merge_gate.issues_closed_by("84")
 
     def test_null_fields_are_not_a_crash(self, monkeypatch):
-        _stub_gh(monkeypatch, {"closingIssuesReferences": None})
+        _stub_gh(monkeypatch, {"closingIssuesReferences": None}, open_issues=())
 
         assert merge_gate.issues_closed_by("84") == set()
 
@@ -187,6 +210,7 @@ class TestMain:
         _stub_gh(
             monkeypatch,
             {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
+            open_issues=(83, 74),
         )
 
         assert merge_gate.main(["84"]) == 1
@@ -198,6 +222,7 @@ class TestMain:
         _stub_gh(
             monkeypatch,
             {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
+            open_issues=(83, 74),
         )
 
         assert merge_gate.main(["84", "--multi"]) == 0
@@ -218,12 +243,23 @@ class TestMain:
         _stub_gh(
             monkeypatch,
             {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
+            open_issues=(83, 74),
         )
 
         merge_gate.main(["84"])
         err = capsys.readouterr().err
 
         assert err.index("Split it") < err.index("/claude-merge-approved-multi")
+
+    def test_unexpected_exception_exits_two_not_one(self, monkeypatch, capsys):
+        # Exit 1 means BLOCKED. Any unexpected failure reaching the caller
+        # as 1 becomes a false request for /claude-merge-approved-multi.
+        def boom(cmd, capture_output=True, text=True, timeout=None):
+            raise AttributeError("gh returned null")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", boom)
+
+        assert merge_gate.main(["84"]) == 2
 
     def test_lookup_failure_exits_two_not_zero(self, monkeypatch):
         # Distinct from BLOCKED so a caller cannot mistake an outage for a pass.

@@ -23,6 +23,10 @@ import sys
 # issue reference: #12, owner/repo#12, or a full issue URL.
 _TIMEOUT = 30
 
+# Above this the list may be truncated, so the gate refuses rather than
+# undercounting.
+_ISSUE_LIMIT = 500
+
 _CLOSING = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
     r"(?:([\w.-]+/[\w.-]+))?(?:#|GH-)(\d+)"
@@ -70,11 +74,9 @@ def issues_closed_by(pr: str) -> set[int]:
     keyword in a commit message still closes the issue on merge to the
     default branch but never appears there.
     """
-    linked = _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"])
-    try:
-        data = json.loads(linked)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh returned unparseable JSON for PR {pr}: {exc}") from exc
+    data = _parse_json(
+        _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"]), f"PR {pr}"
+    )
     found = {ref["number"] for ref in data.get("closingIssuesReferences") or []}
 
     # The REST endpoint with --paginate, not `gh pr view --json commits`:
@@ -91,22 +93,49 @@ def issues_closed_by(pr: str) -> set[int]:
             ".[].commit.message",
         ]
     )
-    repo = _run(["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"]).strip()
-    return {n for n in found | closing_refs(messages, repo) if _is_open(n)}
+    return (found | closing_refs(messages, _repo_of(pr))) & _open_issues()
 
 
-def _is_open(number: int) -> bool:
-    """A reference to an already-closed issue closes nothing on merge.
+def _repo_of(pr: str) -> str:
+    """The PR's own repository, not the working directory's.
 
-    Without this the gate counts closing keywords that appear as prose --
-    a commit message quoting the syntax, say -- and demands a waiver for a
-    PR that will close one issue or none.
+    In a fork clone those differ, and using the wrong one drops a
+    legitimate same-repo reference as if it named somewhere else.
     """
-    out = _run(["gh", "issue", "view", str(number), "--json", "state"])
+    url = _parse_json(_run(["gh", "pr", "view", pr, "--json", "url"]), f"PR {pr}")["url"]
+    owner, _, name = url.split("/github.com/")[-1].partition("/")
+    return f"{owner}/{name.split('/')[0]}"
+
+
+def _open_issues() -> set[int]:
+    """Every open issue, in one call.
+
+    A reference to an already-closed issue closes nothing on merge, and
+    counting it demands a waiver for a PR that closes one or none -- which
+    is what a commit message quoting closing-keyword syntax produces.
+
+    Asking for the whole set rather than each number in turn also means a
+    reference to something that is not an issue here at all -- a pull
+    request, a number from another project, a placeholder in an example --
+    is simply absent rather than an error or a wrong answer.
+    """
+    raw = _run(
+        ["gh", "issue", "list", "--state", "open", "--limit", str(_ISSUE_LIMIT), "--json", "number"]
+    )
+    listed = _parse_json(raw, "the open-issue list")
+    if len(listed) >= _ISSUE_LIMIT:
+        raise RuntimeError(
+            f"more than {_ISSUE_LIMIT} open issues: the list may be truncated, "
+            f"which would silently undercount"
+        )
+    return {entry["number"] for entry in listed}
+
+
+def _parse_json(raw: str, what: str):
     try:
-        return json.loads(out).get("state") == "OPEN"
+        return json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh returned unparseable JSON for issue {number}: {exc}") from exc
+        raise RuntimeError(f"gh returned unparseable JSON for {what}: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         issues = issues_closed_by(args.pr)
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 -- exit 1 means "blocked"; an
+        # unexpected failure must not be mistaken for a multi-issue PR.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
