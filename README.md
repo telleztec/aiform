@@ -13,20 +13,19 @@ developers or SREs.  Enter AI, the AI running in the orchestration can make an e
 guess that and additional retry is warranted, or that perhaps we should quit immediately
 because the error is catastrophic.
 
-This project explores the premise that an LLM will be a better orchestrator than the
-Terraform engine. The side-effects of the project are numerous. One of them is that
-If the driver that implements a resource can be generated on by a user of the tool, then
-the slow process of adding a new resource and publishing it to the Terraform registry could
-shortcut with a faster process.  
+More over IAC, simply builds up the infrastructure, it does not run it, update it, alert 
+when it fails or adjust as the needs require! This project explores the premise that an 
+LLM will be a better orchestrator than the Terraform engine. That once the IAC, a set of 
+skills can maintain the system, doing software upgrades, rotating certs, performing white 
+hat security probes, alerting when something goes wrong and utilizing AI techniques to 
+resolve incidents and propose fixes. 
 
-Terraform's plan/apply engine is powerful but rigid: every resource attribute is
-statically flagged by the provider author as either updatable-in-place or
-`ForceNew` (destroy + recreate), with no room for "it depends on the actual
-diff." Real-world consequences include unnecessary destroy/recreate cycles
-(e.g. AWS security-group description edits, Azure `zone_redundant`), and
-`count`/`for_each` index-shift bugs that destroy unrelated resources.
+The side-effects of the project are numerous. One of them is that we will provide an agent
+to help create drivers that implement resource deployment, update, deletion, and query.  The
+agent will be able to be used by anyone to generate a new driver.  This means that I won't
+need to be 80% IAC, but I can be 100% IAC. 
 
-aiform replaces Terraform's *planning and diffing* logic with an LLM that
+**aiform** replaces Terraform's *planning and diffing* logic with an LLM that
 reasons about the actual diff each time — while keeping the mechanical,
 repeated part (the CSP API calls that create/read/update/delete a resource)
 in plain, deterministic, human-readable Python modules. Those modules are
@@ -35,7 +34,12 @@ generated once per resource type, reviewed, and then reused forever with
 "AI-driven" stays bounded to the parts that actually benefit from judgment.
 
 This is a standalone CLI tool, not a Claude-Code-only workflow — it calls the
-Anthropic API directly, the same way Terraform is independent of any editor.
+Anthropic API directly, the same way Terraform is independent of any editor, but I 
+expect to take advantage of LLM brokers like Bedrock, and downloadable LLMs 
+like Olama3, Gema4, or DeepSeek3.  I am anticipating the need for a server to facilitate
+advance deploy infrastructure and monitoring.  The design will be such that 
+the end user of the product will deploy its own monitoring, running infrastructure
+with the tool, then use IAC to deploy and run their SaaS application.
 
 ## Status
 
@@ -52,6 +56,8 @@ Most of the core modules are built and tested against their specs:
 `aiform/orchestrator.py`, `cli.py`, and the `python -m aiform` entry point —
 so there's no runnable `aiform plan`/`apply` yet, even though the pieces it
 wires together are already in place.
+
+aiform now says "hello world", deploying Droplets on DO. 
 
 MVP scope is intentionally narrow: one cloud provider (DigitalOcean), one
 resource type (a droplet). Prove the loop end to end before expanding.
