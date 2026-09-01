@@ -706,12 +706,24 @@ class TestVerifyApiKey:
 
         assert result.state is KeyState.REJECTED
 
+    @pytest.mark.parametrize("status_code", [404, 405])
+    def test_wrong_endpoint_is_unverified_not_a_key_verdict(self, api_key_set, status_code):
+        # ANTHROPIC_BASE_URL pointing at a gateway that proxies /v1/messages
+        # but not /v1/models answers 404 for a key that works. The status is
+        # a verdict on the endpoint, not the credential, so reporting it as
+        # rejected sends the user to rotate a working key. The provider
+        # probe's test_bad_endpoint_is_unverified_not_a_token_verdict
+        # (tests/test_cli.py) is this test's other half.
+        client = FakeProbeClient(_api_error(status_code, "not found"))
+
+        assert llm.verify_api_key(client=client).state is KeyState.UNVERIFIED
+
     @pytest.mark.parametrize("status_code", [408, 429])
     def test_rate_limited_or_timed_out_is_unverified_not_rejected(self, api_key_set, status_code):
         # A busy org key routinely 429s. Reporting that as a rejected key
-        # sends the user to rotate a credential that works -- the same
-        # failure the 5xx branch exists to prevent, so a bare `< 500` test
-        # gets it wrong.
+        # sends the user to rotate a credential that works. These two are
+        # the reason the verdict set is enumerated rather than derived from
+        # the status class -- a bare `< 500` test gets them wrong.
         client = FakeProbeClient(_api_error(status_code, "rate limit exceeded"))
 
         assert llm.verify_api_key(client=client).state is KeyState.UNVERIFIED

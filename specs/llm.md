@@ -425,8 +425,8 @@ Returns a `KeyCheck` (`aiform/models.py`) — `state` plus an optional
 |---|---|---|
 | `KeyState.OK` | probe returned 2xx | `None` |
 | `KeyState.MISSING` | `ANTHROPIC_API_KEY` unset | `None` |
-| `KeyState.REJECTED` | API returned 4xx **other than 408/429** | the API's own error message |
-| `KeyState.UNVERIFIED` | 408, 429, 5xx, or unreachable | the API's error, or the connection error |
+| `KeyState.REJECTED` | API returned **400, 401 or 403** (`config.ANTHROPIC_KEY_VERDICT_STATUSES`) | the API's own error message |
+| `KeyState.UNVERIFIED` | any other status, or unreachable | the API's error, or the connection error |
 
 `REJECTED` covers `AuthenticationError` (401), `PermissionDeniedError`
 (403) **and `BadRequestError` (400)** — the 400 case is the one that
@@ -434,11 +434,15 @@ motivated this function, since an identity-linked key 400s rather than
 401s, and treating only 401/403 as rejection would miss exactly the bug
 being fixed.
 
-`UNVERIFIED` covers `APIConnectionError` (timeout and DNS failure) and
-also 408, 429 and every 5xx: a rate limit or an outage is not a verdict on
-the key, and a busy org key routinely 429s. Reporting any of those as a bad
-key sends the user to rotate a credential that works. None of them may ever
-be reported as `REJECTED`. Constructed
+`UNVERIFIED` is the default: every status outside the verdict set, plus
+`APIConnectionError` (timeout and DNS failure). That covers 408, 429 and
+every 5xx — a rate limit or an outage is not a verdict on the key, and a
+busy org key routinely 429s — and it also covers **404 and 405**, which say
+nothing about the credential at all: an `ANTHROPIC_BASE_URL` pointed at a
+gateway that proxies `/v1/messages` but not `/v1/models` answers 404 for a
+key that then works fine on the `plan`/`apply` path. None of these may ever
+be reported as `REJECTED`; telling a user to rotate a working credential is
+the same class of error as passing a broken one. Constructed
 with `max_retries=0` and the given `timeout` so `init` cannot hang.
 
 **This function takes no `credentials` parameter and introduces no
