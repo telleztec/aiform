@@ -68,14 +68,14 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
-def issues_closed_by(pr: str) -> set[tuple[str, int]]:
+def issues_closed_by(pr: str, repo: str | None = None) -> set[tuple[str, int]]:
     """Issues this PR will close, as (repo, number) pairs.
 
     Two sources, unioned. GitHub's linked-issue list covers the PR
     description only; a closing keyword in a commit message still closes
     the issue on merge to the default branch but never appears there.
     """
-    repo = _repo_of(pr)
+    repo = repo or _repo_of(pr)
     data = _parse_json(
         _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"]), f"PR {pr}"
     )
@@ -128,7 +128,11 @@ def _repo_of(pr: str) -> str:
 
 
 def _open_issues(repo: str) -> set[int]:
-    """Every open issue, in one call.
+    """Every open issue in the PR's repository, in one call.
+
+    Scoped with --repo rather than left to gh's working-directory
+    resolution: in a fork clone those differ, and intersecting against the
+    wrong repo's issues drops live references and reports "closes none".
 
     A reference to an already-closed issue closes nothing on merge, and
     counting it demands a waiver for a PR that closes one or none -- which
@@ -140,7 +144,19 @@ def _open_issues(repo: str) -> set[int]:
     is simply absent rather than an error or a wrong answer.
     """
     raw = _run(
-        ["gh", "issue", "list", "--state", "open", "--limit", str(_ISSUE_LIMIT), "--json", "number"]
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            str(_ISSUE_LIMIT),
+            "--json",
+            "number",
+        ]
     )
     listed = _parse_json(raw, "the open-issue list")
     if len(listed) >= _ISSUE_LIMIT:
@@ -158,14 +174,6 @@ def _parse_json(raw: str, what: str):
         raise RuntimeError(f"gh returned unparseable JSON for {what}: {exc}") from exc
 
 
-def _repo_safe(pr: str) -> str | None:
-    """For display only -- a failure here must not change the verdict."""
-    try:
-        return _repo_of(pr)
-    except RuntimeError:
-        return None
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="merge_gate")
     parser.add_argument("pr")
@@ -177,18 +185,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        issues = issues_closed_by(args.pr)
+        here = _repo_of(args.pr)
+        issues = issues_closed_by(args.pr, here)
     except Exception as exc:
         # Exit 1 means "blocked"; an unexpected failure must not be
         # mistaken for a multi-issue PR, so everything becomes exit 2.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
-    here = _repo_safe(args.pr)
     listed = (
-        ", ".join(
-            f"#{n}" if r.lower() == (here or "").lower() else f"{r}#{n}" for r, n in sorted(issues)
-        )
+        ", ".join(f"#{n}" if r.lower() == here.lower() else f"{r}#{n}" for r, n in sorted(issues))
         or "none"
     )
     if len(issues) <= 1:

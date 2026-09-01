@@ -38,11 +38,12 @@ merely unavailable.
   description only; a closing keyword in a commit message still closes the
   issue on merge to the default branch and never appears there. Neither is
   sufficient alone.
-- **Only currently open issues are counted**, obtained as one
-  `gh issue list --state open` and intersected. A reference to an
-  already-closed issue closes nothing on merge, and counting it demands a
-  waiver for a PR that closes one issue or none — which is what a commit
-  message quoting closing-keyword syntax produces.
+- **Only currently open issues of this PR's repository are counted**,
+  obtained as one `gh issue list --repo <the PR's repo> --state open` and
+  intersected. Cross-repo entries skip this filter — see below. A
+  reference to an already-closed issue closes nothing on merge, and
+  counting it demands a waiver for a PR that closes one issue or none —
+  which is what a commit message quoting closing-keyword syntax produces.
 
   Asking for the whole set rather than each number in turn is deliberate.
   It is one round trip instead of N; `gh issue list` excludes pull
@@ -55,7 +56,11 @@ merely unavailable.
   issue URL is dropped unless it names this PR's repository — a keyword
   there does not close another project's issue. The repository is read
   from the PR's own url (host-agnostic), not from the working directory,
-  since in a fork clone those differ.
+  since in a fork clone those differ. **Every lookup is scoped with that
+  repository explicitly** — the commits endpoint by path, the open-issue
+  list with `--repo`. Leaving either to `gh`'s working-directory
+  resolution intersects against the wrong repo's issues and reports
+  "closes none".
 - **In `closingIssuesReferences`**, a cross-repo entry is *counted*, not
   dropped. GitHub lists it because merging really does close it, and it
   cannot be checked against this repo's open issues — so intersecting
@@ -95,4 +100,13 @@ merely unavailable.
   rule is mechanically checked** — not the trigger, not the disclosure in
   the description. Having the script verify the literal itself would close
   this; it already shells out to `gh`.
+- **State-checking cross-repo references.** Local references are
+  intersected with the open-issue list; foreign ones are counted as-is, so
+  an *already-closed* foreign issue still counts toward the total and can
+  demand a waiver for a PR that really closes one issue. That is the false
+  positive the open-issue filter exists to remove, surviving for foreign
+  refs only. `gh issue list --repo <owner/name> --state open` would close
+  it, at a round trip per distinct foreign repo and a hard failure when
+  that repo is not readable. Left undone because it fails closed: it costs
+  a review round, never a bad merge.
 - Posting statuses or merging. This reports; the caller decides.

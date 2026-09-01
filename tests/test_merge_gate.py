@@ -324,3 +324,110 @@ class TestRepoOf:
 
         with pytest.raises(RuntimeError, match="could not read a repository"):
             merge_gate._repo_of("84")
+
+
+class TestRepositoryScoping:
+    """The open-issue list decides the verdict, so it must name the PR's repo.
+
+    Both of these passed before the flag and the guard existed: _stub_gh
+    answers the issue list whatever repo is asked for, and the display
+    lookup sat outside main's try. Assert on the emitted argv and the exit
+    code rather than on the result, or the regression is invisible again.
+    """
+
+    def test_open_issue_list_is_scoped_to_the_prs_repository(self, monkeypatch):
+        # In a fork clone gh's cwd-resolved repo is not the PR's. Left
+        # unscoped, live references are intersected against the fork's
+        # issues, vanish, and the gate reports "closes none" and exits 0.
+        seen = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            seen.append(cmd)
+            if "issue" in cmd and "list" in cmd:
+                repo = cmd[cmd.index("--repo") + 1]
+                out = json.dumps([{"number": 83}] if repo == "upstream/aiform" else [])
+            elif "url" in cmd:
+                out = json.dumps({"url": "https://github.com/upstream/aiform/pull/84"})
+            elif "api" in cmd:
+                out = ""
+            else:
+                out = json.dumps(
+                    {
+                        "closingIssuesReferences": [
+                            {
+                                "number": 83,
+                                "repository": {"name": "aiform", "owner": {"login": "upstream"}},
+                            }
+                        ]
+                    }
+                )
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        assert merge_gate.issues_closed_by("84") == {("upstream/aiform", 83)}
+
+        listing = next(c for c in seen if "issue" in c and "list" in c)
+        assert "--repo" in listing
+        assert listing[listing.index("--repo") + 1] == "upstream/aiform"
+
+    def test_the_repo_is_resolved_once(self, monkeypatch):
+        # main used to look the url up a second time purely to format the
+        # output; that call is what sat outside the guard.
+        _stub_gh(monkeypatch, {"closingIssuesReferences": [{"number": 83}]})
+        calls = []
+        original = merge_gate.subprocess.run
+
+        def counting(cmd, **kwargs):
+            if "url" in cmd:
+                calls.append(cmd)
+            return original(cmd, **kwargs)
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", counting)
+
+        assert merge_gate.main(["84"]) == 0
+        assert len(calls) == 1
+
+    def test_a_second_url_lookup_cannot_escape_main(self, monkeypatch):
+        # main used to resolve the url again outside its try, catching only
+        # RuntimeError. A KeyError there escaped, Python exited 1, and
+        # SKILL.md reads 1 as "needs the -multi acknowledgement" -- the
+        # false waiver request the 1-vs-2 split exists to prevent. So fail
+        # only the second lookup: pre-fix that escapes, post-fix there is
+        # no second lookup to fail.
+        seen = {"n": 0}
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            if "issue" in cmd and "list" in cmd:
+                out = json.dumps([{"number": 83}])
+            elif "url" in cmd:
+                seen["n"] += 1
+                out = json.dumps(
+                    {"url": "https://github.com/telleztec/aiform/pull/84"} if seen["n"] == 1 else {}
+                )
+            elif "api" in cmd:
+                out = ""
+            else:
+                out = json.dumps({"closingIssuesReferences": [{"number": 83}]})
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        assert merge_gate.main(["84"]) == 0
+
+    def test_a_lookup_failure_is_exit_2_not_1(self, monkeypatch):
+        # The contract SKILL.md keys off: 2 is "could not run", never 1.
+        def fake_run(cmd, capture_output=True, text=True, timeout=None):
+            if "issue" in cmd and "list" in cmd:
+                out = json.dumps([{"number": 83}])
+            elif "url" in cmd:
+                out = json.dumps({})
+            elif "api" in cmd:
+                out = ""
+            else:
+                out = json.dumps({"closingIssuesReferences": []})
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
+
+        assert merge_gate.main(["84"]) == 2
