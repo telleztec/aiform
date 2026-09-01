@@ -262,7 +262,7 @@ class TestMain:
         assert merge_gate.main(["84"]) == 0
         # Exact form, not a substring: "telleztec/aiform#83" contains
         # "#83", so the loose assertion passed when host and repo were
-        # swapped and every local issue rendered as cross-repo.
+        # swapped and every same-repo issue rendered as cross-repo.
         assert "closes #83" in capsys.readouterr().out
 
     def test_zero_issues_passes(self, monkeypatch):

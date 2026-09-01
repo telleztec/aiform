@@ -78,8 +78,8 @@ merely unavailable.
   Bare `owner/name` is still what commit-message references and the result
   pairs use; the host reaches only the lookups. A reference written as an
   issue *url* is therefore matched on `owner/name` alone, so one naming the
-  same path on another host counts as local — an over-count, which fails
-  closed.
+  same path on another host counts as same-repo — an over-count, which
+  fails closed.
 
   **The PR itself is still resolved from the working directory.** Not
   because it must be — `gh pr view` does accept `--repo` — but because the
@@ -137,8 +137,8 @@ merely unavailable.
   can demand a waiver for a PR that really closes one issue. That is the
   false positive the open-issue filter exists to remove, surviving for
   cross-repo refs only. `gh issue list --repo <host>/<owner/name> --state
-  open` would close it, at a round trip per distinct repo and a hard failure
-  when that repo is not readable. Note the `<host>/` — a bare `owner/name`
+  open` would close it, at a round trip per distinct cross-repo repository
+  and a hard failure when that repository is not readable. Note the `<host>/` — a bare `owner/name`
   there resolves against gh's *default* host and would reintroduce the
   silent enterprise drop described above, in the very fix for it. Left
   undone because it fails closed: it costs a review round, never a bad
