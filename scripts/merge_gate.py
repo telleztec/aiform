@@ -68,46 +68,37 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
-def issues_closed_by(pr: str, resolved: tuple[str, str] | None = None) -> set[tuple[str, int]]:
-    """Issues this PR will close, as (repo, number) pairs.
+def _linked_refs(pr: str, repo: str) -> tuple[set[int], set[tuple[str, int]]]:
+    """GitHub's own linked-issue list, split by whether it targets `repo`.
 
-    Two sources, unioned. GitHub's linked-issue list covers the PR
-    description only; a closing keyword in a commit message still closes
-    the issue on merge to the default branch but never appears there.
-
-    `resolved` is `_repo_of`'s answer, looked up here when the caller has
-    not already. Bare `owner/name` is what commit messages and the result
-    pairs use; the host only ever reaches the lookups.
-
-    A reference written as an issue *url* is matched on `owner/name` alone,
-    so one naming the same path on another host counts as local. That
-    over-counts, which fails closed.
+    Split because only same-repo numbers can be checked against this repo's
+    open issues; the caller treats the two halves differently.
     """
-    host, repo = resolved or _repo_of(pr)
     data = _parse_json(
         _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"]), f"PR {pr}"
     )
 
-    local: set[int] = set()
-    foreign: set[tuple[str, int]] = set()
+    same_repo: set[int] = set()
+    cross_repo: set[tuple[str, int]] = set()
     for ref in data.get("closingIssuesReferences") or []:
         owner = (ref.get("repository") or {}).get("owner") or {}
         name = (ref.get("repository") or {}).get("name")
         where = f"{owner.get('login')}/{name}" if name else repo
-        # A reference GitHub lists against another repository still closes
-        # on merge. It cannot be checked against this repo's open issues,
-        # so it is counted as-is rather than dropped by the intersection.
-        (
-            local.add(ref["number"])
-            if where.lower() == repo.lower()
-            else foreign.add((where, ref["number"]))
-        )
+        if where.lower() == repo.lower():
+            same_repo.add(ref["number"])
+        else:
+            cross_repo.add((where, ref["number"]))
+    return same_repo, cross_repo
 
-    # The REST endpoint with --paginate, not `gh pr view --json commits`:
-    # that is a GraphQL connection capped at one page, so a long PR would
-    # silently drop later commits and the gate would fail open. This also
-    # returns the whole message, subject included.
-    messages = _run(
+
+def _commit_messages(pr: str, host: str, repo: str) -> str:
+    """Every commit message on the PR, subject included.
+
+    The REST endpoint with --paginate, not `gh pr view --json commits`: that
+    is a GraphQL connection capped at one page, so a long PR would silently
+    drop later commits and the gate would fail open.
+    """
+    return _run(
         [
             "gh",
             "api",
@@ -119,8 +110,42 @@ def issues_closed_by(pr: str, resolved: tuple[str, str] | None = None) -> set[tu
             ".[].commit.message",
         ]
     )
-    local |= closing_refs(messages, repo)
-    return {(repo, n) for n in local & _open_issues(host, repo)} | foreign
+
+
+def issues_closed_by(pr: str, resolved: tuple[str, str] | None = None) -> set[tuple[str, int]]:
+    """The issues merging this PR will close, as (repo, number) pairs.
+
+    The gate only asks how many there are — one is fine, more needs a human
+    waiver — but it names them when it reports, so identities are kept
+    rather than a count returned.
+
+    Three rules decide the answer, and the last two are deliberately not
+    symmetric:
+
+    - **Two sources.** GitHub's linked-issue list covers the PR description
+      only; a closing keyword in a commit message closes the issue on merge
+      without ever appearing in that list.
+    - **Same-repo references are narrowed to issues that are still open.**
+      An already-closed one would otherwise inflate the count and demand a
+      waiver for a PR that really closes one issue.
+    - **Cross-repo references are counted whatever state they are in**,
+      because that state cannot be read from here. It over-counts rather
+      than under-counts, so it costs a review round and never a bad merge.
+      Recorded in `specs/merge_gate.md` under "Out of scope".
+
+    `resolved` is `_repo_of`'s answer, looked up here when the caller has
+    not already. Bare `owner/name` is what commit messages and the result
+    pairs use; the host only ever reaches the lookups. A reference written
+    as an issue *url* is matched on `owner/name` alone, so one naming the
+    same path on another host counts as same-repo — again an over-count.
+    """
+    host, repo = resolved or _repo_of(pr)
+
+    same_repo, cross_repo = _linked_refs(pr, repo)
+    same_repo |= closing_refs(_commit_messages(pr, host, repo), repo)
+
+    still_open = same_repo & _open_issues(host, repo)
+    return {(repo, n) for n in still_open} | cross_repo
 
 
 def _repo_of(pr: str) -> tuple[str, str]:
