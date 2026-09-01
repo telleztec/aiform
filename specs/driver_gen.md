@@ -2,25 +2,36 @@
 
 ## Purpose
 
-The generation half of `PLAN.md` §5 step 3: draft a new `(provider,
-resource)` driver via the `code-generator-model` role, statically
+The generation half of mechanism 2 (`PLAN.md`, "Driver curation"; §6):
+draft a new `(provider, resource)` driver via the
+`code-generator-model` role, statically
 validate its source against `ResourceDriver`'s contract
 (`aiform/driver.py`), then run it through gate #1
 (`code-review-model`, `llm.review_driver()`), retrying the whole draft
 once if either check fails before giving up. Returns the approved source
 text and its `DriverReview` — it does not write anything to disk.
 
-**Where this sits in mechanism 2's evolution.** `PLAN.md`'s "Driver
-curation" section and §6 describe this pipeline as the first, minimal
-implementation of aiform's own agentic driver-generation mechanism —
-meant to be "tuned and trained progressively" toward the fuller,
-interactive session §7's `aiform driver create` describes (clarifying
-ambiguities, checkpointing at major steps, drawing on an OpenAPI
-reference). This module intentionally stays a single-shot draft/
-validate/review call for now, per `CLAUDE.md`'s MVP-scope discipline —
-building the interactive/OpenAPI-driven shape now would be building
-ahead of the primary orchestration flow this mechanism is sequenced
-after. Extending it that way is future work, not a gap in this spec.
+**Nothing calls this module, and nothing is meant to.** `PLAN.md`'s
+"Driver curation" section and §6 describe this pipeline as the first,
+minimal implementation of aiform's own agentic driver-authoring
+mechanism — the earliest building block of the fuller, interactive
+session §7's `aiform driver create` describes (clarifying ambiguities,
+checkpointing at major steps, drawing on an OpenAPI reference). That
+command doesn't exist and isn't being built, so today this module is
+reachable only from its own tests.
+
+Two things follow, and they are easy to get backwards:
+
+- **It is not waiting to be wired into `plan`/`apply`.** Generating a
+  driver mid-`plan` was designed, then **abandoned** — not deferred (see
+  "Driver curation"). A missing driver is a permanent error. Adding a
+  `generate_driver()` call to the plan path would be reversing a product
+  decision, not finishing an unfinished one.
+- **Its lack of a caller is not a gap to close in this spec.** The
+  module intentionally stays a single-shot draft/validate/review call,
+  per `CLAUDE.md`'s MVP-scope discipline; growing it into the
+  interactive/OpenAPI-driven shape is mechanism 2's own future work,
+  which hasn't started.
 
 **Three judgment calls made explicit here** (not fully specified in
 `PLAN.md`, resolved before writing this spec):
@@ -36,9 +47,10 @@ after. Extending it that way is future work, not a gap in this spec.
    `generate_driver()` never touch the filesystem beyond reading
    `prompts/generate_driver.md`. Writing the approved source to
    `drivers/<provider>/<resource>.py`, computing its `sha256`, and
-   recording it in `.aiform/state.json` are `orchestrator.py`'s job
-   (`PLAN.md` §1), not built yet — this module only drafts, validates,
-   and reviews.
+   recording it in `.aiform/state.json` belong to the `aiform driver
+   create` flow (`PLAN.md` §6/§7), which isn't built — this module only
+   drafts, validates, and reviews. Note this is deliberately *not*
+   `orchestrator.py`'s plan/apply path, which never writes a driver.
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
    necessary empirically** — the first real `generate_driver()` run

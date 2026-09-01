@@ -933,17 +933,19 @@ Returns the destination path.
   table, `--json`, error message formatting), and `--verbose`/`_redact()`
   logging** — `cli.py`, not built yet.
 - **`aiform init`, `aiform plan show`, and everything under `aiform
-  driver ...`** (`PLAN.md` §7) — `cli.py` (`init`/`show`) or the deferred
-  mechanism-2 wiring (`driver ...`), neither this module's concern.
+  driver ...`** (`PLAN.md` §7) — `cli.py` (`init`/`show`) or mechanism 2's
+  unbuilt `driver ...` command surface, neither this module's concern.
   `plan show` in particular needs no orchestrator involvement at all —
   it's a direct `state.load()` plus formatting, entirely in `cli.py`.
-- **On-the-fly driver generation** (`aiform/driver_gen.py`'s
-  `generate_driver()`) — still not wired into `plan`/`apply` here, per
-  `PLAN.md`'s explicit sequencing ("only *after* the primary
-  orchestration flow... is stable and proven"). `ensure_driver_trusted()`
-  only ever re-reviews an existing on-disk file; it never calls
-  `driver_gen.generate_driver()` when a driver is missing, it raises
-  `PlanBlockedError` via `load_driver()` instead.
+- **Driver generation of any kind** (`aiform/driver_gen.py`'s
+  `generate_driver()`) — deliberately unreachable from `plan`/`apply`,
+  permanently. `PLAN.md`'s "Driver curation" abandoned the mid-`plan`
+  generation trigger rather than deferring it, so this is a design
+  boundary, not a wiring task somebody should finish.
+  `ensure_driver_trusted()` only ever re-reviews an existing on-disk
+  file; when a driver is missing it never calls
+  `driver_gen.generate_driver()`, it raises `PlanBlockedError` via
+  `load_driver()` instead — and that is the permanent behavior.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.

@@ -3,7 +3,8 @@
 ## Purpose
 
 The `aiform` command-line surface (`PLAN.md` §7, minus the `driver ...`
-subcommands, which are deferred — see Out of scope): `init`, `plan
+subcommands, which are unbuilt and not currently being built — see Out
+of scope): `init`, `plan
 create`, `plan apply`, `plan destroy`, `plan refresh`, `plan show`.
 Argument parsing, plan/state output formatting, error-message
 formatting, and process exit codes all live here — `orchestrator.py`
@@ -632,10 +633,11 @@ than papering over it with a generic `except Exception`.
 
 - **Every `aiform driver ...` subcommand** (`create`/`refresh`/`show`/
   `delete`/`publish`) — `PLAN.md` §7 lists these under its explicit "Not
-  yet implemented... driver_gen.py implements only the minimal
-  draft/validate/review pipeline these commands are meant to grow into"
-  banner; §10 confirms none of the interactive session shape is
-  designed yet. Not part of this module.
+  yet implemented below, and not currently being built" banner; §10
+  confirms none of the interactive session shape is designed yet. Not
+  part of this module. Note that these are the *only* commands driver
+  generation is ever reached through: no `plan` subcommand specified
+  here generates a driver, and a missing one is a permanent error.
 - **The fuller logging system** named in `PLAN.md` §10's "Logging" item
   is now designed and wired (`specs/log.md`, "Structured logging"
   above) — this bullet is left here, corrected, rather than deleted, so
