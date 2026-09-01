@@ -315,10 +315,12 @@ def verify_api_key(
         # Mirrors the provider probe's status-classification rule, and only
         # that: an explicit verdict status blames the credential, everything
         # else leaves it unverified. A 404 or 405 means the endpoint is
-        # wrong -- a base-URL gateway that does not proxy /v1/models -- and
-        # reporting that as a bad key sends the user to rotate one that
-        # works. cli.py's redirect refusal has no counterpart here: the SDK
-        # follows 3xx itself, so one never reaches this branch -- see #97.
+        # wrong -- a base-URL gateway that does not proxy /v1/models -- not
+        # the key. cli.py's redirect refusal is the piece still missing
+        # here, not one this probe does without: the SDK follows a redirect
+        # and carries x-api-key to the target (#97). What does land here is
+        # the 3xx httpx declines to follow -- no Location header, or a 300
+        # -- and the default leaves it unverified, as cli.py does.
         if exc.status_code in config.ANTHROPIC_KEY_VERDICT_STATUSES:
             return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
         return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))

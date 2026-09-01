@@ -269,6 +269,15 @@ which never reads or writes state.
   proxies `/v1/messages` but not `/v1/models` answers 404 for a key that
   works.
 
+  **403 is kept in both sets even though that argument reaches it too** —
+  an unmatched route on an AWS API Gateway REST API answers 403 rather
+  than 404, so the same gateway that motivates excluding 404 can produce a
+  false `✗`. It stays because against the real APIs a 403 is a genuine
+  verdict: `permission_error` from Anthropic, and on DigitalOcean the
+  scoped-token case the two-probe table above exists to resolve. Keeping a
+  real rejection is worth the narrower false positive, and this is a
+  deliberate trade rather than an oversight.
+
 - **408 and 429 are `?`, never `✗`** — on both providers. A timeout or a
   rate limit says nothing about the credential, and DigitalOcean's
   limiter is shared with anything else using the token (`doctl`

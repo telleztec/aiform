@@ -34,10 +34,10 @@ PROVIDER_DROPLET_PROBES: dict[str, str] = {
 # not: an ANTHROPIC_BASE_URL gateway that proxies /v1/messages but not
 # /v1/models answers those for a key that works. 408, 429 and 5xx are
 # transient, and a busy org key routinely 429s.
-# 403 stays in despite that same gateway argument (an unmatched route on
-# AWS API Gateway answers 403, not 404): against api.anthropic.com itself a
-# 403 is a genuine verdict on the key, and keeping a real rejection is worth
-# the narrower false positive.
+# 403 is kept despite that same gateway argument applying to it (an
+# unmatched route on an AWS API Gateway REST API answers 403, not 404):
+# against api.anthropic.com a 403 is permission_error, a genuine verdict on
+# the key, and keeping a real rejection is worth the narrower false positive.
 ANTHROPIC_KEY_VERDICT_STATUSES = frozenset({400, 401, 403})
 
 # The same rule for the provider token, minus 400. The provider probe URLs
