@@ -300,12 +300,18 @@ class TestRepoOf:
     @pytest.mark.parametrize(
         "url,expected",
         [
-            ("https://github.com/telleztec/aiform/pull/84", "telleztec/aiform"),
+            ("https://github.com/telleztec/aiform/pull/84", ("github.com", "telleztec/aiform")),
             # A GitHub Enterprise host must parse the same way; splitting on
             # "/github.com/" returned garbage and then dropped every
-            # qualified reference as if it named another repo.
-            ("https://github.example.com/telleztec/aiform/pull/84", "telleztec/aiform"),
-            ("https://ghe.corp.net/org/repo/pull/1", "org/repo"),
+            # qualified reference as if it named another repo. The host is
+            # returned too: a bare owner/name sent to --repo resolves
+            # against gh's default host, so dropping it here queries
+            # github.com for a PR that lives on the enterprise instance.
+            (
+                "https://github.example.com/telleztec/aiform/pull/84",
+                ("github.example.com", "telleztec/aiform"),
+            ),
+            ("https://ghe.corp.net/org/repo/pull/1", ("ghe.corp.net", "org/repo")),
         ],
     )
     def test_parses_any_host(self, monkeypatch, url, expected):
@@ -329,10 +335,10 @@ class TestRepoOf:
 class TestRepositoryScoping:
     """The open-issue list decides the verdict, so it must name the PR's repo.
 
-    Both of these passed before the flag and the guard existed: _stub_gh
-    answers the issue list whatever repo is asked for, and the display
-    lookup sat outside main's try. Assert on the emitted argv and the exit
-    code rather than on the result, or the regression is invisible again.
+    Both bugs survived the 42-test suite: _stub_gh answers the issue list
+    whatever repo is asked for, and the display lookup sat outside main's
+    try. Assert on the emitted argv and the exit code rather than on the
+    result, or the regression is invisible again.
     """
 
     def test_open_issue_list_is_scoped_to_the_prs_repository(self, monkeypatch):
@@ -344,8 +350,9 @@ class TestRepositoryScoping:
         def fake_run(cmd, capture_output=True, text=True, timeout=None):
             seen.append(cmd)
             if "issue" in cmd and "list" in cmd:
+                assert "--repo" in cmd, "the open-issue list must name a repository"
                 repo = cmd[cmd.index("--repo") + 1]
-                out = json.dumps([{"number": 83}] if repo == "upstream/aiform" else [])
+                out = json.dumps([{"number": 83}] if repo == "github.com/upstream/aiform" else [])
             elif "url" in cmd:
                 out = json.dumps({"url": "https://github.com/upstream/aiform/pull/84"})
             elif "api" in cmd:
@@ -368,8 +375,14 @@ class TestRepositoryScoping:
         assert merge_gate.issues_closed_by("84") == {("upstream/aiform", 83)}
 
         listing = next(c for c in seen if "issue" in c and "list" in c)
-        assert "--repo" in listing
-        assert listing[listing.index("--repo") + 1] == "upstream/aiform"
+        assert listing[listing.index("--repo") + 1] == "github.com/upstream/aiform"
+
+        # The other half of the same guarantee. Asserting only on the issue
+        # list is how "the fix was half applied" recurred twice already:
+        # hardcoding a wrong path here left all 46 tests green.
+        api = next(c for c in seen if "api" in c)
+        assert "repos/upstream/aiform/pulls/84/commits" in api
+        assert api[api.index("--hostname") + 1] == "github.com"
 
     def test_the_repo_is_resolved_once(self, monkeypatch):
         # main used to look the url up a second time purely to format the

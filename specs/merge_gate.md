@@ -38,9 +38,10 @@ merely unavailable.
   description only; a closing keyword in a commit message still closes the
   issue on merge to the default branch and never appears there. Neither is
   sufficient alone.
-- **Only currently open issues of this PR's repository are counted**,
-  obtained as one `gh issue list --repo <the PR's repo> --state open` and
-  intersected. Cross-repo entries skip this filter — see below. A
+- **Of this PR's own repository, only currently open issues are
+  counted**, obtained as one `gh issue list --repo <the PR's repo>
+  --state open` and intersected. Cross-repo entries skip this filter
+  entirely and are counted in any state — see below. A
   reference to an already-closed issue closes nothing on merge, and
   counting it demands a waiver for a PR that closes one issue or none —
   which is what a commit message quoting closing-keyword syntax produces.
@@ -55,12 +56,29 @@ merely unavailable.
 - **In commit messages**, a reference qualified with `owner/repo` or an
   issue URL is dropped unless it names this PR's repository — a keyword
   there does not close another project's issue. The repository is read
-  from the PR's own url (host-agnostic), not from the working directory,
-  since in a fork clone those differ. **Every lookup is scoped with that
-  repository explicitly** — the commits endpoint by path, the open-issue
-  list with `--repo`. Leaving either to `gh`'s working-directory
-  resolution intersects against the wrong repo's issues and reports
-  "closes none".
+  from the PR's own url, not from the working directory, since in a fork
+  clone those differ. **Every lookup derived from the PR is then scoped to
+  that repository explicitly** — the commits endpoint by path, the
+  open-issue list with `--repo`. Leaving the open-issue list to `gh`'s
+  working-directory resolution intersects against the wrong repo's issues
+  and reports "closes none"; leaving the commits endpoint to it fetches
+  another repo's commits.
+
+  **Scoped means host-qualified.** `_repo_of` returns `(host, owner/name)`
+  and both lookups carry the host — `--repo host/owner/name`, and
+  `--hostname` on `gh api`. A bare `owner/name` resolves against `gh`'s
+  *default* host, so on a GitHub Enterprise clone a scoped lookup would
+  query github.com: the same silent drop, reintroduced by the fix for it.
+  Bare `owner/name` is still what commit-message references and the result
+  pairs use; the host reaches only the lookups.
+
+  **The PR itself is still resolved from the working directory.** A bare
+  PR number is only meaningful relative to a repository, so `gh pr view`
+  takes no `--repo` here and the caller must run from a clone of the PR's
+  repo — which is why the snippet in `github-commit-process` cds to the
+  repo root before its first `gh` call. This narrows the fork-clone hazard
+  rather than closing it: run from the wrong clone, and the gate answers
+  confidently about a different PR.
 - **In `closingIssuesReferences`**, a cross-repo entry is *counted*, not
   dropped. GitHub lists it because merging really does close it, and it
   cannot be checked against this repo's open issues — so intersecting

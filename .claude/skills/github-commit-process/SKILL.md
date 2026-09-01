@@ -465,9 +465,10 @@ the shell that used to live here.
 WATCHED_SHA=<the SHA the loop was started against>
 
 # Before the first gh call, not just before the gate: gh resolves the repo
-# from the working directory, and every command below depends on it.
-ROOT=$(git rev-parse --show-toplevel)
-cd "$ROOT"
+# from the working directory, and every gh command in this block depends on
+# it. `cd ""` is a silent no-op, so check rather than assume.
+ROOT=$(git rev-parse --show-toplevel) || { echo "not in a repo"; exit 2; }
+cd "$ROOT" || exit 2
 
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 

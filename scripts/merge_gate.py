@@ -68,14 +68,18 @@ def _run(command: list[str]) -> str:
     return result.stdout
 
 
-def issues_closed_by(pr: str, repo: str | None = None) -> set[tuple[str, int]]:
+def issues_closed_by(pr: str, resolved: tuple[str, str] | None = None) -> set[tuple[str, int]]:
     """Issues this PR will close, as (repo, number) pairs.
 
     Two sources, unioned. GitHub's linked-issue list covers the PR
     description only; a closing keyword in a commit message still closes
     the issue on merge to the default branch but never appears there.
+
+    `resolved` is `_repo_of`'s answer, looked up here when the caller has
+    not already. Bare `owner/name` is what commit messages and the result
+    pairs use; the host only ever reaches the lookups.
     """
-    repo = repo or _repo_of(pr)
+    host, repo = resolved or _repo_of(pr)
     data = _parse_json(
         _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"]), f"PR {pr}"
     )
@@ -103,6 +107,8 @@ def issues_closed_by(pr: str, repo: str | None = None) -> set[tuple[str, int]]:
         [
             "gh",
             "api",
+            "--hostname",
+            host,
             "repos/" + repo + "/pulls/" + pr + "/commits",
             "--paginate",
             "--jq",
@@ -110,29 +116,38 @@ def issues_closed_by(pr: str, repo: str | None = None) -> set[tuple[str, int]]:
         ]
     )
     local |= closing_refs(messages, repo)
-    return {(repo, n) for n in local & _open_issues(repo)} | foreign
+    return {(repo, n) for n in local & _open_issues(host, repo)} | foreign
 
 
-def _repo_of(pr: str) -> str:
-    """The PR's own repository, not the working directory's.
+def _repo_of(pr: str) -> tuple[str, str]:
+    """(host, owner/name) read from the PR's url.
 
-    In a fork clone those differ, and using the wrong one drops a
-    legitimate same-repo reference as if it named somewhere else. Parsed
-    from the url path so it holds on a GitHub Enterprise host too.
+    `gh` resolves the bare PR number from the working directory; this
+    reads back what it actually resolved, so every lookup derived from the
+    PR is pinned to that repository rather than resolved again. In a fork
+    clone the two differ, and re-resolving drops a legitimate same-repo
+    reference as if it named somewhere else.
+
+    The host is returned alongside because `--repo owner/name` targets
+    gh's *default* host: on a GitHub Enterprise clone, dropping it would
+    silently query github.com instead.
     """
     url = _parse_json(_run(["gh", "pr", "view", pr, "--json", "url"]), f"PR {pr}")["url"]
-    parts = urllib.parse.urlparse(url).path.strip("/").split("/")
-    if len(parts) < 2:
+    parsed = urllib.parse.urlparse(url)
+    parts = parsed.path.strip("/").split("/")
+    if not parsed.netloc or len(parts) < 2:
         raise RuntimeError(f"could not read a repository from the PR url: {url}")
-    return f"{parts[0]}/{parts[1]}"
+    return parsed.netloc, f"{parts[0]}/{parts[1]}"
 
 
-def _open_issues(repo: str) -> set[int]:
+def _open_issues(host: str, repo: str) -> set[int]:
     """Every open issue in the PR's repository, in one call.
 
     Scoped with --repo rather than left to gh's working-directory
     resolution: in a fork clone those differ, and intersecting against the
     wrong repo's issues drops live references and reports "closes none".
+    The host is included because a bare owner/name would resolve against
+    gh's default host, which is the same drop on a GitHub Enterprise clone.
 
     A reference to an already-closed issue closes nothing on merge, and
     counting it demands a waiver for a PR that closes one or none -- which
@@ -149,7 +164,7 @@ def _open_issues(repo: str) -> set[int]:
             "issue",
             "list",
             "--repo",
-            repo,
+            f"{host}/{repo}",
             "--state",
             "open",
             "--limit",
@@ -185,14 +200,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        here = _repo_of(args.pr)
-        issues = issues_closed_by(args.pr, here)
+        resolved = _repo_of(args.pr)
+        issues = issues_closed_by(args.pr, resolved)
     except Exception as exc:
         # Exit 1 means "blocked"; an unexpected failure must not be
         # mistaken for a multi-issue PR, so everything becomes exit 2.
         print(f"Error: {exc}", file=sys.stderr)
         return 2
 
+    here = resolved[1]
     listed = (
         ", ".join(f"#{n}" if r.lower() == here.lower() else f"{r}#{n}" for r, n in sorted(issues))
         or "none"
