@@ -28,15 +28,22 @@ PROVIDER_DROPLET_PROBES: dict[str, str] = {
     "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
 }
 
-# A timeout or a rate limit is not a verdict on a credential. Used by the
-# Anthropic probe, which treats every other 4xx as a verdict because an
-# identity-linked key rejects with 400.
-INCONCLUSIVE_HTTP_STATUSES = frozenset({408, 429})
+# Only these statuses are a verdict on the Anthropic key; every other one
+# leaves it unverified. 400 is here because an identity-linked key rejects
+# with 400 rather than 401 -- the case the probe exists for. 404 and 405 are
+# not: an ANTHROPIC_BASE_URL gateway that proxies /v1/messages but not
+# /v1/models answers those for a key that works. 408, 429 and 5xx are
+# transient, and a busy org key routinely 429s.
+# 403 is kept despite that same gateway argument applying to it (an
+# unmatched route on an AWS API Gateway REST API answers 403, not 404):
+# against api.anthropic.com a 403 is permission_error, a genuine verdict on
+# the key, and keeping a real rejection is worth the narrower false positive.
+ANTHROPIC_KEY_VERDICT_STATUSES = frozenset({400, 401, 403})
 
-# The provider probes invert that default: only these are verdicts on the
-# token. A 404 or 400 against a URL aiform hardcodes is far likelier to be
-# aiform's problem -- a moved endpoint, a proxy, a hijacked DNS answer --
-# than the token's, and must not send a user to rotate a working credential.
+# The same rule for the provider token, minus 400. The provider probe URLs
+# are hardcoded, so a 400 or 404 there is far likelier to be aiform's
+# problem -- a moved endpoint, a proxy, a hijacked DNS answer -- than the
+# token's, and must not send a user to rotate a working credential.
 PROVIDER_TOKEN_VERDICT_STATUSES = frozenset({401, 403})
 
 DEFAULT_CONFIG_PATH = Path(".aiform/config.yaml")

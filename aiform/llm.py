@@ -312,15 +312,18 @@ def verify_api_key(
     try:
         probe.models.list(limit=1)
     except anthropic.APIStatusError as exc:
-        # 4xx is the key's problem; 5xx is Anthropic's, and reporting it as
-        # a bad key sends the user to rotate a credential that works.
-        # An identity-linked key 400s rather than 401s -- matching only
-        # 401/403 here would miss the case this function exists for.
-        # 408/429 are the exception: a timeout or a rate limit says nothing
-        # about the key, and a busy org key routinely 429s.
-        if exc.status_code in config.INCONCLUSIVE_HTTP_STATUSES or exc.status_code >= 500:
-            return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
-        return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
+        # Mirrors the provider probe's status-classification rule, and only
+        # that: an explicit verdict status blames the credential, everything
+        # else leaves it unverified. A 404 or 405 means the endpoint is
+        # wrong -- a base-URL gateway that does not proxy /v1/models -- not
+        # the key. cli.py's redirect refusal is the piece still missing
+        # here, not one this probe does without: the SDK follows a redirect
+        # and carries x-api-key to the target (#97). What does land here is
+        # the 3xx httpx declines to follow -- no Location header, or a 300
+        # -- and the default leaves it unverified, as cli.py does.
+        if exc.status_code in config.ANTHROPIC_KEY_VERDICT_STATUSES:
+            return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
+        return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
     except anthropic.APIError as exc:
         # APIConnectionError and its timeout/DNS subclasses land here.
         # Offline is never a verdict on the key.
