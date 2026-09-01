@@ -79,8 +79,8 @@ resource type (a droplet). Prove the loop end to end before expanding.
 1. You describe a resource in an `.aiform.md` file — structured YAML
    frontmatter (type, name, provider, params) plus a free-form prose
    "Intent" section for nuance a rigid schema can't capture.
-2. `aiform plan create` parses it, refreshes state against the live cloud resource,
-   diffs, and — only when there's something to decide — asks the
+2. `aiform plan create` parses it, refreshes state against the live cloud
+   resource, diffs, and — only when there's something to decide — asks the
    **intent-orchestration-model** (default **Claude Sonnet 5**) to
    categorize the change (create/update/no-op) and explain why. Destroy
    is never one of the values this call can return — deletion is always
@@ -94,14 +94,14 @@ resource type (a droplet). Prove the loop end to end before expanding.
    repo's own spec-first/test-first development loop — a development-time
    process, separate from aiform's four runtime model roles. One of those
    roles does run on this path: at `plan` time the **code-review-model**
-   re-reviews a driver whose file no longer matches its recorded hash,
-   before that driver is trusted again. Putting driver authoring in an end
-   user's hands is the part still to build — see "Not yet implemented"
+   reviews any driver whose file doesn't match a hash already recorded in
+   state, before that driver is trusted. Putting driver authoring in an
+   end user's hands is the part still to build — see "Not yet implemented"
    below.
-4. `aiform plan apply` re-plans, has the **review-orchestration-model** (default
-   **Claude Opus 5**) review anything destructive as a second safety gate,
-   then executes — via the deterministic Python module, not another LLM
-   call.
+4. `aiform plan apply` re-plans, has the **review-orchestration-model**
+   (default **Claude Opus 5**) review anything destructive as a second
+   safety gate, then executes — via the deterministic Python module, not
+   another LLM call.
 
 See [`PLAN.md`](./PLAN.md) for the full detail, including the exact schemas
 and function signatures, and the mapping from each of aiform's four
