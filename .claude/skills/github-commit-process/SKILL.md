@@ -473,10 +473,13 @@ WATCHED_SHA=<the SHA the loop was started against>
 
 # Before the first gh call, not just before the gate: gh resolves the repo
 # from the working directory, and every gh command in this block depends on
-# it. An empty ROOT makes `cd ""` a silent no-op in sh, zsh and bash 3.2
-# (the macOS system bash); bash 5 errors. Depending on which you get is the
-# bug, so check rather than assume.
+# it. Both guards are needed: the first catches rev-parse failing, and the
+# second an empty ROOT, which would make `cd ""` a silent no-op in sh, zsh
+# and bash 3.2 (the macOS system bash) while bash 5 errors -- depending on
+# which you get is the bug. Everything below is relative because of the cd,
+# which is also what keeps it matching `allowed-tools`.
 ROOT=$(git rev-parse --show-toplevel) || { echo "not in a repo"; exit 2; }
+[ -n "$ROOT" ] || { echo "empty repo root"; exit 2; }
 cd "$ROOT" || exit 2
 
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
@@ -488,7 +491,7 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # MULTI is --multi when the human posted /claude-merge-approved-multi,
 # empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
 # means the check could not run at all -- do not confuse the two.
-"$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <number> ${MULTI:-}
+.venv/bin/python scripts/merge_gate.py <number> ${MULTI:-}
 case $? in
   0) ;;
   1) echo "needs /claude-merge-approved-multi -- ask, post nothing"; exit 1;;
