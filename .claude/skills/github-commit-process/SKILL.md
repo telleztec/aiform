@@ -463,6 +463,12 @@ the shell that used to live here.
 
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
+
+# Before the first gh call, not just before the gate: gh resolves the repo
+# from the working directory, and every command below depends on it.
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 
 # One issue: fine. More than one: needs the -multi acknowledgement. Pass
@@ -472,8 +478,6 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # MULTI is --multi when the human posted /claude-merge-approved-multi,
 # empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
 # means the check could not run at all -- do not confuse the two.
-ROOT=$(git rev-parse --show-toplevel)
-cd "$ROOT"   # gh resolves the repo from the working directory
 "$ROOT/.venv/bin/python" "$ROOT/scripts/merge_gate.py" <number> ${MULTI:-}
 case $? in
   0) ;;
