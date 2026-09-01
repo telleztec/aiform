@@ -18,7 +18,9 @@ have tests for.
 
 ```sh
 # From the repo root: gh resolves the repository from the working directory.
-cd "$(git rev-parse --show-toplevel)"
+# Two commands, and `cd` to the printed path -- not `cd "$(...)"`, whose
+# empty substitution is a silent no-op in sh, zsh and bash 3.2.
+git rev-parse --show-toplevel
 .venv/bin/python scripts/merge_gate.py <PR> [--multi]
 ```
 
@@ -77,13 +79,16 @@ merely unavailable.
   same path on another host counts as local — an over-count, which fails
   closed.
 
-  **The PR itself is still resolved from the working directory.** A bare
-  PR number is only meaningful relative to a repository, so `gh pr view`
-  takes no `--repo` here and the caller must run from a clone of the PR's
-  repo — which is why the snippet in `github-commit-process` cds to the
-  repo root before its first `gh` call. This narrows the fork-clone hazard
-  rather than closing it: run from the wrong clone, and the gate answers
-  confidently about a different PR.
+  **The PR itself is still resolved from the working directory.** Not
+  because it must be — `gh pr view` does accept `--repo` — but because the
+  first of those two calls is the one that *answers* which repository this
+  is; pinning it would require its own result. The second could be pinned
+  afterwards and is not, so the two agree by construction instead. The
+  caller must therefore run from a clone of the PR's repo, which is why the
+  snippet in `github-commit-process` cds to the repo root before its first
+  `gh` call. This narrows the fork-clone hazard rather than closing it: run
+  from the wrong clone, and the gate answers confidently about a different
+  PR.
 - **In `closingIssuesReferences`**, a cross-repo entry is *counted*, not
   dropped. GitHub lists it because merging really does close it, and it
   cannot be checked against this repo's open issues — so intersecting

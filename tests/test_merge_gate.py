@@ -499,7 +499,7 @@ class TestRepositoryScoping:
 
         assert merge_gate.main(["84"]) == 2
 
-    def test_an_unorderable_issue_number_is_exit_2_not_1(self, monkeypatch):
+    def test_an_unorderable_issue_number_is_exit_2_not_1(self, monkeypatch, capsys):
         # The formatting half of the same guarantee, and the half no test
         # reached: `number` comes verbatim from gh's JSON, and sorted()
         # compares the repo strings first, so it only reaches the number
@@ -507,6 +507,12 @@ class TestRepositoryScoping:
         # Formatted below the `except` that TypeError escapes and the
         # interpreter exits 1, which SKILL.md reads as "needs -multi".
         # A verbatim revert of the guard left the suite green before this.
+        #
+        # This pins the fail-closed choice, not just "never exit 1": data gh
+        # should not emit means the input is untrustworthy, so it becomes
+        # "could not determine". Making the formatter type-tolerant instead
+        # would report two issues and exit 1, and would have to change this.
+        # Assert the reason too -- any earlier failure also returns 2.
         _stub_gh(
             monkeypatch,
             {
@@ -524,3 +530,4 @@ class TestRepositoryScoping:
         )
 
         assert merge_gate.main(["84"]) == 2
+        assert "not supported between instances of" in capsys.readouterr().err

@@ -220,11 +220,14 @@ Then:
    waiver is an explicit act rather than something inferred from what they
    were assumed to have read. A plain `/claude-merge-approved` on a
    multi-issue PR grants **no** waiver and is not authorization to merge.
-4. **Check it before merging** with `cd "$(git rev-parse --show-toplevel)"`
-   first, then `.venv/bin/python scripts/merge_gate.py <PR>` — `gh` resolves
-   the repository from the working directory, so the gate answers about
-   whatever repo you happen to be standing in otherwise. The watch loop's
-   copy of this call spells the same thing out at greater length.
+4. **Check it before merging.** Run `git rev-parse --show-toplevel`, `cd` to
+   the path it prints, then `.venv/bin/python scripts/merge_gate.py <PR>` —
+   three separate commands. `gh` resolves the repository from the working
+   directory, so the gate answers about whatever repo you are standing in;
+   and `cd "$(git rev-parse --show-toplevel)"` in one breath is not the
+   shortcut it looks like, because an empty substitution leaves `cd ""` a
+   silent no-op in sh, zsh and bash 3.2. The watch loop's copy of this call
+   says the same at greater length.
    Add `--multi` when that is the literal the human posted. Exit 1
    means the PR closes several issues: ask the human to re-read the
    description and post `/claude-merge-approved-multi`. Exit 2 means the
