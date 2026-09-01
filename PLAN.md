@@ -41,7 +41,7 @@ anything expensive to get wrong:
 
 - **`intent-orchestration-model`** — parses the prose Intent section into `intent_notes[]` and categorizes each plan action (create/update/no-op) against the raw diff (`prompts/parse_intent.md`, `prompts/diff_plan.md`, §2 and §5 step 6). This is the model behind every routine `aiform plan create` call — the one that must cost zero tokens on an unchanged second run (§5 step 5, §9 step 4).
 - **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §6). Exercised only by `aiform/driver_gen.py`, which no `plan`/`apply` or CLI path calls; it is reserved for the deliberate `aiform driver create` flow (mechanism 2), not currently being built — see "Driver curation" below. This role therefore costs nothing on a normal `plan`/`apply`.
-- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). The trusted hash is persisted by `apply`, not by `plan`, so repeated `plan create` runs before the first `apply` each pay that call. It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
+- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). The trusted hash is persisted by `apply`, not by `plan`, so `plan create` keeps paying that call until an `apply` has actually executed an action and written the entry (a plan that is entirely no-ops executes nothing, so it persists nothing). It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
 - **`review-orchestration-model`** — reviews the full plan before `apply` executes anything destructive: gate #2 (§5 `apply` step 2, `prompts/review_plan.md`).
 
 Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
@@ -820,8 +820,11 @@ class Driver(ResourceDriver):
      read/edit/vendor the exact code that runs") an actual supported
      workflow rather than something the next `plan create` quietly discards,
      and it's the one driver-trust check that *does* run at `plan create`
-     time in the MVP. If approved, the new hash is recorded as
-     trusted. If `blocking_issues` comes back non-empty, **do not
+     time in the MVP. If approved, the driver is trusted for this run,
+     and the new hash is recorded as trusted when a subsequent `apply`
+     writes the resource's state entry — `plan create` on its own
+     persists no driver record. If `blocking_issues` comes back
+     non-empty, **do not
      overwrite** — fail `aiform plan create` with an explicit error naming
      the concerns (raises `aiform.exceptions.PlanBlockedError`); a
      hand-edit failing review means the human's edit needs fixing, not
@@ -1176,9 +1179,12 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    recorded against any state entry that trusts it") — here it's
    because nothing has been recorded at all yet, not because the file
    changed. One gate #1 (`code-review-model`) re-review call approves
-   the curated driver's on-disk content as-is and records its hash as
-   trusted, from this point forward. Diff shows `create` (step 6's
-   `intent-orchestration-model` categorization call).
+   the curated driver's on-disk content as-is. Note that `plan create`
+   itself persists no driver-trust record — the approval rides on the
+   plan and is written to state by step 3's `apply`, so re-running
+   `plan create` before step 3 pays the gate #1 call again. Diff shows
+   `create` (step 6's `intent-orchestration-model` categorization
+   call).
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
    `driver.create(name, params, credentials)` — a real DO operation, as

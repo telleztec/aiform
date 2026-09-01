@@ -55,7 +55,11 @@ Two things follow, and they are easy to get backwards:
    split: `ensure_driver_trusted()` computes the hash and runs gate #1
    on every `plan`, but only the *apply* path persists the resulting
    `DriverInfo` onto a `StateEntry`, so a driver's hash becomes trusted
-   at `apply` time, not at `plan` time (`specs/orchestrator.md`).
+   at `apply` time, not at `plan` time. `ensure_driver_trusted()`
+   returns the recorded `DriverInfo` with no LLM call once some state
+   entry carries the on-disk hash, so gate #1 fires only until an
+   `apply` has actually executed an action and written that entry
+   (`specs/orchestrator.md`).
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
    necessary empirically** — the first real `generate_driver()` run
