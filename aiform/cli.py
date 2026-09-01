@@ -527,7 +527,7 @@ def _probe(url: str, token: str, timeout: float) -> tuple[Any, _ProbeFailure | N
         # proxy URL in its own message, and that URL can carry credentials.
         return failed(
             KeyState.UNVERIFIED,
-            "the request could not be sent (check any http_proxy/https_proxy setting)",
+            "the request could not be sent (check any https_proxy setting)",
         )
 
     try:

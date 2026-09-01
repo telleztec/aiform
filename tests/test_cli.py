@@ -218,6 +218,20 @@ def offline_preflight(monkeypatch):
     )
 
 
+def _block_sockets(monkeypatch) -> list:
+    """Make every outbound connection fail, and record that it was tried."""
+    attempts = []
+
+    def record(target, *args, **kwargs):
+        attempts.append(target)
+        raise OSError("network disabled for this test")
+
+    monkeypatch.setattr(socket, "create_connection", record)
+    monkeypatch.setattr(socket.socket, "connect", record)
+    monkeypatch.setattr(socket, "getaddrinfo", record)
+    return attempts
+
+
 class FakeStdinTTY:
     def isatty(self) -> bool:
         return True
@@ -330,19 +344,6 @@ class TestInitMakesNoNetworkCalls:
     unstubbed probe fails here rather than silently phoning home.
     """
 
-    @staticmethod
-    def _block_sockets(monkeypatch) -> list:
-        attempts = []
-
-        def record(target, *args, **kwargs):
-            attempts.append(target)
-            raise OSError("network disabled for this test")
-
-        monkeypatch.setattr(socket, "create_connection", record)
-        monkeypatch.setattr(socket.socket, "connect", record)
-        monkeypatch.setattr(socket, "getaddrinfo", record)
-        return attempts
-
     def test_stubbing_covers_every_path_init_takes(self, project_dir: Path, monkeypatch):
         """With the autouse stub active, init must touch no socket.
 
@@ -351,7 +352,7 @@ class TestInitMakesNoNetworkCalls:
         themselves, which are replaced wholesale here. The next test
         covers those.
         """
-        attempts = self._block_sockets(monkeypatch)
+        attempts = _block_sockets(monkeypatch)
 
         assert cli.main(["init"]) == 0
         assert attempts == []
@@ -369,7 +370,7 @@ class TestInitMakesNoNetworkCalls:
         monkeypatch.setattr(cli, "_check_provider_token", _REAL_CHECK_PROVIDER_TOKEN)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        attempts = self._block_sockets(monkeypatch)
+        attempts = _block_sockets(monkeypatch)
 
         assert cli.main(["init"]) == 0
         assert attempts, "probes must have actually tried, or this proves nothing"
@@ -589,6 +590,19 @@ class TestCheckProviderToken:
     """The DigitalOcean half of the preflight. GET /v2/account is free and
     read-only; the account email it returns is what distinguishes a token
     for the wrong one of several accounts from a working one."""
+
+    @pytest.fixture(autouse=True)
+    def no_sockets(self, monkeypatch):
+        # Three tests here hand a malformed token to the real urllib stack,
+        # which reaches no socket only because putheader rejects the header
+        # before endheaders connects. Should that guard ever move after the
+        # connect, they would talk to DigitalOcean for real -- and still pass,
+        # since _probe turns a failed connection into UNVERIFIED and _guarded
+        # swallows anything raised from inside the probe. So the assertion has
+        # to outlive the call rather than be raised during it.
+        attempts = _block_sockets(monkeypatch)
+        yield
+        assert not attempts, "this test must not reach the network"
 
     @pytest.fixture
     def token(self, monkeypatch):
@@ -1012,15 +1026,6 @@ class TestCheckProviderToken:
     def test_malformed_token_still_names_the_token(self, monkeypatch):
         # The complement of the test above: distinguishing the two ValueError
         # sources must not cost the one message that actually helps.
-        #
-        # Alone in this class this drives the real urllib stack, which is safe
-        # only because putheader rejects the value before endheaders opens a
-        # socket. Assert that rather than rely on it: if the guard ever moved
-        # after connect, this test would quietly start talking to DigitalOcean.
-        def no_connect(*args, **kwargs):
-            raise AssertionError("the malformed-token path must not reach the network")
-
-        monkeypatch.setattr(socket.socket, "connect", no_connect)
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_supersecretvalue\n")
 
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
