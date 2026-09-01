@@ -312,11 +312,13 @@ def verify_api_key(
     try:
         probe.models.list(limit=1)
     except anthropic.APIStatusError as exc:
-        # Mirrors the provider probe in cli.py: only an explicit verdict
-        # status blames the credential, everything else leaves it
-        # unverified. A 404 or 405 means the endpoint is wrong -- a
-        # base-URL gateway that does not proxy /v1/models -- and reporting
-        # that as a bad key sends the user to rotate one that works.
+        # Mirrors the provider probe's status-classification rule, and only
+        # that: an explicit verdict status blames the credential, everything
+        # else leaves it unverified. A 404 or 405 means the endpoint is
+        # wrong -- a base-URL gateway that does not proxy /v1/models -- and
+        # reporting that as a bad key sends the user to rotate one that
+        # works. cli.py's redirect refusal has no counterpart here: the SDK
+        # follows 3xx itself, so one never reaches this branch -- see #97.
         if exc.status_code in config.ANTHROPIC_KEY_VERDICT_STATUSES:
             return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
         return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))

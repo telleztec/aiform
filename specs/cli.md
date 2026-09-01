@@ -147,7 +147,7 @@ which never reads or writes state.
   | configured and accepted | `✓` | probe returned 2xx |
   | not configured | `✗` | env var unset / `resolve_credentials` raised |
   | configured but rejected | `✗` | probe returned a verdict status (below) — **carries the API's own error text** |
-  | configured, unverifiable | `?` | probe could not reach the API |
+  | configured, unverifiable | `?` | probe could not reach the API, or returned a non-verdict status |
 
   The `?` state is load-bearing: reporting `✗` for a working key because
   the user is offline is its own defect. Any connection-level failure —
