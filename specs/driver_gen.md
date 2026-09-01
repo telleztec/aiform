@@ -52,13 +52,13 @@ Two things follow, and they are easy to get backwards:
    driver at all. Computing a driver's `sha256` and recording it in
    `.aiform/state.json`, by contrast, are `orchestrator.py`'s job and
    are shipped today — that half is not waiting on anything. Note the
-   split: `ensure_driver_trusted()` computes the hash and runs gate #1
-   on every `plan`, but only the *apply* path persists the resulting
+   split: `ensure_driver_trusted()` hashes the on-disk driver and checks
+   it against state on every `plan`, but calls gate #1 only when no
+   state entry carries that hash — on a match it returns the recorded
+   `DriverInfo` with no LLM call. Only the *apply* path persists that
    `DriverInfo` onto a `StateEntry`, so a driver's hash becomes trusted
-   at `apply` time, not at `plan` time. `ensure_driver_trusted()`
-   returns the recorded `DriverInfo` with no LLM call once some state
-   entry carries the on-disk hash, so gate #1 fires only until an
-   `apply` has actually executed an action and written that entry
+   at `apply` time, not at `plan` time, and gate #1 keeps firing until
+   an `apply` has actually executed an action and written the entry
    (`specs/orchestrator.md`).
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
