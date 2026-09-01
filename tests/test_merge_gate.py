@@ -23,6 +23,7 @@ class TestClosingRefs:
             ("Closes #12, closes #13", {12, 13}),
             ("fixes telleztec/aiform#92", {92}),
             ("closes https://github.com/telleztec/aiform/issues/93", {93}),
+            ("Fixes GH-74", {74}),
         ],
     )
     def test_forms_github_honours(self, text, expected):
@@ -44,9 +45,12 @@ class TestClosingRefs:
         assert merge_gate.closing_refs(None) == set()
 
 
-def _stub_gh(monkeypatch, payload, returncode=0, stderr=""):
+def _stub_gh(monkeypatch, payload, commits="", returncode=0, stderr=""):
+    """Two calls now: `gh pr view` for linked issues, `gh api` for commits."""
+
     def fake_run(cmd, capture_output=True, text=True):
-        return subprocess.CompletedProcess(cmd, returncode, json.dumps(payload), stderr)
+        out = commits if "api" in cmd else json.dumps(payload)
+        return subprocess.CompletedProcess(cmd, returncode, out, stderr)
 
     monkeypatch.setattr(merge_gate.subprocess, "run", fake_run)
 
@@ -60,8 +64,8 @@ class TestIssuesClosedBy:
             monkeypatch,
             {
                 "closingIssuesReferences": [{"number": 83}],
-                "commits": [{"messageHeadline": "x", "messageBody": "Closes #74"}],
             },
+            commits="x\n\nCloses #74",
         )
 
         assert merge_gate.issues_closed_by("84") == {83, 74}
@@ -73,8 +77,8 @@ class TestIssuesClosedBy:
             monkeypatch,
             {
                 "closingIssuesReferences": [],
-                "commits": [{"messageHeadline": "Fixes #74: stop the leak", "messageBody": ""}],
             },
+            commits="Fixes #74: stop the leak",
         )
 
         assert merge_gate.issues_closed_by("84") == {74}
@@ -86,8 +90,8 @@ class TestIssuesClosedBy:
             monkeypatch,
             {
                 "closingIssuesReferences": [{"number": 83}],
-                "commits": [{"messageHeadline": "Closes #83", "messageBody": ""}],
             },
+            commits="Closes #83",
         )
 
         assert merge_gate.issues_closed_by("84") == {83}
@@ -109,27 +113,27 @@ class TestIssuesClosedBy:
             merge_gate.issues_closed_by("84")
 
     def test_null_fields_are_not_a_crash(self, monkeypatch):
-        _stub_gh(monkeypatch, {"closingIssuesReferences": None, "commits": None})
+        _stub_gh(monkeypatch, {"closingIssuesReferences": None})
 
         assert merge_gate.issues_closed_by("84") == set()
 
 
 class TestMain:
     def test_single_issue_passes_without_multi(self, monkeypatch, capsys):
-        _stub_gh(monkeypatch, {"closingIssuesReferences": [{"number": 83}], "commits": []})
+        _stub_gh(monkeypatch, {"closingIssuesReferences": [{"number": 83}]})
 
         assert merge_gate.main(["84"]) == 0
         assert "#83" in capsys.readouterr().out
 
     def test_zero_issues_passes(self, monkeypatch):
-        _stub_gh(monkeypatch, {"closingIssuesReferences": [], "commits": []})
+        _stub_gh(monkeypatch, {"closingIssuesReferences": []})
 
         assert merge_gate.main(["84"]) == 0
 
     def test_multiple_issues_blocked_without_multi(self, monkeypatch, capsys):
         _stub_gh(
             monkeypatch,
-            {"closingIssuesReferences": [{"number": 83}, {"number": 74}], "commits": []},
+            {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
         )
 
         assert merge_gate.main(["84"]) == 1
@@ -140,10 +144,33 @@ class TestMain:
     def test_multiple_issues_allowed_with_multi(self, monkeypatch):
         _stub_gh(
             monkeypatch,
-            {"closingIssuesReferences": [{"number": 83}, {"number": 74}], "commits": []},
+            {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
         )
 
         assert merge_gate.main(["84", "--multi"]) == 0
+
+    def test_missing_gh_exits_two_not_one(self, monkeypatch):
+        # Exit 1 means BLOCKED, which callers read as "needs -multi". A
+        # broken toolchain must not masquerade as a multi-issue PR.
+        def boom(cmd, capture_output=True, text=True):
+            raise FileNotFoundError(2, "No such file or directory", "gh")
+
+        monkeypatch.setattr(merge_gate.subprocess, "run", boom)
+
+        assert merge_gate.main(["84"]) == 2
+
+    def test_blocked_message_names_splitting_before_the_waiver(self, monkeypatch, capsys):
+        # The rule says splitting is the default and the waiver a last
+        # resort; the gate must not advertise the escape hatch first.
+        _stub_gh(
+            monkeypatch,
+            {"closingIssuesReferences": [{"number": 83}, {"number": 74}]},
+        )
+
+        merge_gate.main(["84"])
+        err = capsys.readouterr().err
+
+        assert err.index("Split it") < err.index("/claude-merge-approved-multi")
 
     def test_lookup_failure_exits_two_not_zero(self, monkeypatch):
         # Distinct from BLOCKED so a caller cannot mistake an outage for a pass.

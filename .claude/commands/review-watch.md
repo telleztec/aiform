@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*)
+allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*), Bash(.venv/bin/python scripts/merge_gate.py:*)
 description: Start the background loop that watches a PR for /claude-merge-approved, /claude-merge-approved-multi or /claude-merge-rejected
 argument-hint: [<PR#>]
 disable-model-invocation: false
@@ -45,7 +45,7 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      first — commits may have landed while the loop ran — then, **before
      posting anything**, check how many issues this PR closes.
 
-     Run `python scripts/merge_gate.py <PR>`, adding `--multi` when that is
+     Run `.venv/bin/python scripts/merge_gate.py <PR>`, adding `--multi` when that is
      the literal the human posted. Non-zero means stop: post nothing, ask
      the human to re-read the description and post
      `/claude-merge-approved-multi`, then restart this loop **watermarked on

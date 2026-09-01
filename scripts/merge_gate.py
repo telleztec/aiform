@@ -23,7 +23,7 @@ import sys
 # issue reference: #12, owner/repo#12, or a full issue URL.
 _CLOSING = re.compile(
     r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
-    r"(?:[\w.-]+/[\w.-]+)?#(\d+)"
+    r"(?:[\w.-]+/[\w.-]+)?(?:#|GH-)(\d+)"
     r"|\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b:?\s+"
     r"https?://\S*?/issues/(\d+)",
     re.IGNORECASE,
@@ -34,19 +34,15 @@ def closing_refs(text: str) -> set[int]:
     return {int(n) for match in _CLOSING.finditer(text or "") for n in match.groups() if n}
 
 
-def _gh_json(pr: str, fields: str) -> dict:
+def _run(command: list[str]) -> str:
     """Fail closed: any lookup problem is an error, never an empty result."""
-    result = subprocess.run(
-        ["gh", "pr", "view", pr, "--json", fields],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"gh pr view {pr} --json {fields} failed: {result.stderr.strip()}")
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"gh returned unparseable JSON for PR {pr}: {exc}") from exc
+        result = subprocess.run(command, capture_output=True, text=True)
+    except OSError as exc:
+        raise RuntimeError(f"could not run {command[0]}: {exc}") from exc
+    if result.returncode != 0:
+        raise RuntimeError(f"{' '.join(command)} failed: {result.stderr.strip()}")
+    return result.stdout
 
 
 def issues_closed_by(pr: str) -> set[int]:
@@ -54,15 +50,30 @@ def issues_closed_by(pr: str) -> set[int]:
 
     GitHub's linked-issue list covers the PR description only; a closing
     keyword in a commit message still closes the issue on merge to the
-    default branch but never appears there. Commit subjects live in
-    messageHeadline, separately from messageBody.
+    default branch but never appears there.
     """
-    data = _gh_json(pr, "closingIssuesReferences,commits")
+    linked = _run(["gh", "pr", "view", pr, "--json", "closingIssuesReferences"])
+    try:
+        data = json.loads(linked)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"gh returned unparseable JSON for PR {pr}: {exc}") from exc
     found = {ref["number"] for ref in data.get("closingIssuesReferences") or []}
-    for commit in data.get("commits") or []:
-        found |= closing_refs(commit.get("messageHeadline", ""))
-        found |= closing_refs(commit.get("messageBody", ""))
-    return found
+
+    # The REST endpoint with --paginate, not `gh pr view --json commits`:
+    # that is a GraphQL connection capped at one page, so a long PR would
+    # silently drop later commits and the gate would fail open. This also
+    # returns the whole message, subject included.
+    messages = _run(
+        [
+            "gh",
+            "api",
+            "repos/{owner}/{repo}/pulls/" + pr + "/commits",
+            "--paginate",
+            "--jq",
+            ".[].commit.message",
+        ]
+    )
+    return found | closing_refs(messages)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -93,8 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"BLOCKED: PR {args.pr} closes {len(issues)} issues ({listed}) "
         f"but was approved with the plain trigger.\n"
-        f"Ask the human to re-read the description and post "
-        f"/claude-merge-approved-multi, then re-run with --multi.",
+        f"Split it into one PR per issue if you can -- that is the default.\n"
+        f"If it genuinely cannot be split, ask the human to re-read the "
+        f"description and post /claude-merge-approved-multi, then re-run "
+        f"with --multi.",
         file=sys.stderr,
     )
     return 1

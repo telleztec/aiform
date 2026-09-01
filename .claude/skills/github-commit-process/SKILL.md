@@ -220,8 +220,8 @@ Then:
    waiver is an explicit act rather than something inferred from what they
    were assumed to have read. A plain `/claude-merge-approved` on a
    multi-issue PR grants **no** waiver and is not authorization to merge.
-4. **Check it before merging** with `python scripts/merge_gate.py <PR>`
-   (add `--multi` when that is the literal the human posted). If it
+4. **Check it before merging** with `.venv/bin/python scripts/merge_gate.py <PR>`,
+   adding `--multi` when that is the literal the human posted. If it
    refuses, ask the human to re-read the description and post
    `/claude-merge-approved-multi`; do not post any status until it passes.
 
@@ -467,7 +467,9 @@ SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 # --multi when that is the literal the human posted. Non-zero means stop --
 # do not post the status, because once human-approval is on the SHA all
 # three contexts are green and nothing downstream gets another signal.
-python scripts/merge_gate.py <number> [--multi] || exit 1
+.venv/bin/python scripts/merge_gate.py <number> || exit 1
+# ...or, when the human posted the -multi form:
+.venv/bin/python scripts/merge_gate.py <number> --multi || exit 1
 
 [ "$SHA" = "$WATCHED_SHA" ] || { echo "head moved: approval does not cover $SHA"; exit 1; }
 
