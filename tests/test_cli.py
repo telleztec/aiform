@@ -56,6 +56,11 @@ class FakeClient:
         self.closed = True
 
 
+class FakeHttpxClient:
+    def __init__(self, **kwargs):
+        self.follow_redirects = kwargs.get("follow_redirects", True)
+
+
 FAKE_DRIVER_SOURCE = """\
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
@@ -264,6 +269,11 @@ def patch_client(monkeypatch, responses: list[str]) -> list[FakeClient]:
         return client
 
     monkeypatch.setattr(cli.anthropic, "Anthropic", _build)
+    # And the httpx client build_client hands it: nothing here needs a real
+    # transport or SSL context, and nothing closes the ones the real class
+    # would open. tests/test_llm.py keeps the real one, where whether
+    # DefaultHttpxClient honours follow_redirects=False is the actual claim.
+    monkeypatch.setattr(cli.anthropic, "DefaultHttpxClient", FakeHttpxClient)
     return built
 
 

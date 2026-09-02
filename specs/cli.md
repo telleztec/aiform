@@ -498,22 +498,32 @@ model calls did this invocation make" — and nothing broader):
   every `.create()` call and only constructs the real client **lazily,
   on the first such call** — never at `_CountingClient()` construction
   time.
-- This laziness is load-bearing, not an optimization: constructing the
-  SDK client eagerly reads `ANTHROPIC_API_KEY` at construction, which
-  would make a truly zero-call `plan create` run newly *require* that
-  variable to be set — silently regressing the exact
-  cost/environment-footprint property this counter exists to verify.
-  `llm._anthropic_call` already gets this right for the same reason (it
-  builds only inside the function actually making a call);
-  `_CountingClient` preserves it end to end.
+- This laziness is load-bearing, not an optimization: an eager
+  construction opens an httpx connection pool and SSL context that a
+  zero-call run would then have to close for nothing, and — since
+  `llm.build_client()` passes `http_client=` — closing it is now the
+  caller's job rather than the SDK's. The property this counter exists
+  to verify is that an unchanged second run costs nothing; building and
+  tearing down a client is not *nothing*.
+
+  **Corrected:** earlier revisions of this bullet said eager
+  construction "reads `ANTHROPIC_API_KEY` at construction", so a
+  zero-call run would newly require the variable to be set. That is
+  false and was never true of any `anthropic` version in range —
+  `anthropic.Anthropic()` constructs fine with `api_key=None` and raises
+  `TypeError: Could not resolve authentication method` only at the first
+  request. The conclusion survives; the reason given for it did not.
+  `llm._anthropic_call` builds only inside the function actually making
+  a call, for the same reason; `_CountingClient` preserves it end to end.
 - **It builds through `llm.build_client()`, not `anthropic.Anthropic()`
   directly** (`specs/llm.md`), so the client refuses redirects. This is
   not a stylistic preference: `_dispatch` injects a `_CountingClient`
   into *every* `plan create`/`apply`/`destroy`, which means
   `llm._anthropic_call`'s own client-building branch is never reached
   from this CLI. Hardening only that branch would have closed the #101
-  leak on no shipping code path — the key and the whole prompt would
-  still have followed a 3xx from here.
+  leak on no shipping code path — the key would still have followed a
+  3xx from here, and the prompt with it on a 307 or 308 (`specs/llm.md`
+  is exact about which statuses carry a body).
 - `_CountingClient.close()` closes the real client if one was built and
   does nothing if none was, and `_dispatch` calls it in the same
   `finally` that reports the count. `llm.build_client()` passes

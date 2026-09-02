@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import json
 import logging
 from datetime import datetime
@@ -165,6 +166,34 @@ class TestNoCredentialsInThisFile:
         assert "credentials" not in source.lower()
 
 
+class TestBuildClientIsTheOnlyConstructor:
+    def test_no_other_module_constructs_an_sdk_client(self):
+        # The redirect refusal is only worth anything if it holds at every
+        # construction site: #97 hardened the probe and left the model-call
+        # path following redirects until #101, and the CLI's own wrapper was
+        # a third site neither of them touched. Pinned structurally, the way
+        # CLAUDE.md pins the "credentials" rule, rather than left to prose.
+        # (drivers/ is covered separately -- driver_gen rejects a driver that
+        # so much as imports anthropic.)
+        sites = set()
+        for path in sorted(Path(llm.__file__).resolve().parent.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.FunctionDef):
+                    continue
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "Anthropic"
+                        and isinstance(inner.func.value, ast.Name)
+                        and inner.func.value.id == "anthropic"
+                    ):
+                        sites.add(f"{path.name}:{node.name}")
+
+        assert sites == {"llm.py:build_client"}
+
+
 class TestModelSources:
     def test_anthropic_is_the_only_registered_source(self):
         assert set(llm.MODEL_SOURCES) == {ModelSource.ANTHROPIC}
@@ -211,13 +240,23 @@ class TestModelSources:
 
 class TestAnthropicCallRefusesRedirects:
     """The model-call half of the rule TestVerifyApiKeyRefusesRedirects
-    enforces on the probe, and the more damaging half. The probe carries
-    only x-api-key; this path carries the system prompt and the user content
-    with it -- a plan summary, or a driver's source -- and then parses the
-    target's 200 back as a model response that plan/apply acts on. #101.
+    enforces on the probe, and the more damaging half. The probe leaks only
+    x-api-key and gets a forged endpoint; this path can leak the system
+    prompt and the user content too -- a plan summary, or a driver's source
+    -- and parses the target's 200 back as a model response that plan/apply
+    acts on. #101.
+
+    Both statuses are pinned because httpx does not treat them alike: it
+    downgrades POST to GET on 301/302/303, so those carry the key with an
+    empty body, while 307/308 preserve the method and carry the request body
+    with it. 302 is what a captive portal sends; 307 is where the prompt
+    itself would travel.
     """
 
-    def test_the_key_and_prompt_never_reach_a_redirect_target(self, api_key_set, monkeypatch):
+    @pytest.mark.parametrize("status", [302, 307])
+    def test_the_key_and_prompt_never_reach_a_redirect_target(
+        self, status, api_key_set, monkeypatch
+    ):
         # The test the fix exists for. Only the transport is injected -- the
         # client is built by _anthropic_call itself, through the real SDK and
         # the real httpx redirect machinery, so follow_redirects is the
@@ -225,17 +264,17 @@ class TestAnthropicCallRefusesRedirects:
         #
         # The counterfactual: drop follow_redirects=False and keep
         # http_client=, and this records a second hop to evil.example.com
-        # carrying x-api-key and the prompt, and returns "forged" as the
-        # model's answer. Drop http_client= entirely and the patched
-        # constructor below is never called, so guard_client raises rather
-        # than letting a live request off the unit suite.
+        # carrying x-api-key -- and, on the 307, the prompt as well -- and
+        # returns "forged" as the model's answer. Drop http_client= entirely
+        # and the patched constructor below is never called, so guard_client
+        # raises rather than letting a live request off the unit suite.
         hops = []
 
         def handler(request):
             hops.append((request, request.read()))
             if request.url.host == "api.anthropic.com":
                 return httpx.Response(
-                    302, headers={"Location": "https://evil.example.com/v1/messages"}
+                    status, headers={"Location": "https://evil.example.com/v1/messages"}
                 )
             return httpx.Response(
                 200,
@@ -282,8 +321,9 @@ class TestAnthropicCallRefusesRedirects:
             outcome = exc
 
         assert [request.url.host for request, _ in hops] == ["api.anthropic.com"]
-        # The two things that make this worth testing: both are on the wire,
-        # and httpx would have carried both across the redirect.
+        # What is on the wire in the hop that is allowed, and so what a
+        # followed redirect would have had to carry onward: the key on
+        # either status, the body on the 307.
         assert "x-api-key" in hops[0][0].headers
         assert b"SENTINEL-PROMPT-BODY" in hops[0][1]
         # The redirect target's 200 must never come back as a model answer.
@@ -297,7 +337,7 @@ class TestAnthropicCallRefusesRedirects:
         # quietly inert. This is the model path's equivalent of the probe
         # test's canned-detail pin; there is no detail string here.
         assert isinstance(outcome, anthropic.APIStatusError)
-        assert outcome.status_code == 302
+        assert outcome.status_code == status
 
     def test_the_client_it_builds_refuses_redirects(self, api_key_set, monkeypatch):
         # The guard above only holds because the constructed client refuses

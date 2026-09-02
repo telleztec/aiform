@@ -331,6 +331,20 @@ target. This is the same rule the provider probe applies in `specs/cli.md`,
 and it needs stating separately because the reasoning recorded there does not
 carry over: that one is about `Authorization`.
 
+**Be exact about what a followed redirect would carry**, since the statuses
+differ and an unqualified sentence here is what hid #97. httpx downgrades
+POST to GET on **301/302/303**, so those carry the key with an *empty* body;
+**307/308** preserve the method and carry the request body too — on the
+model-call path, the system prompt and the user content. The key leaks on
+any of them, the prompt only on the second pair. A captive portal typically
+sends a 302, so the common case is the key alone.
+
+The other thing this does **not** buy: a hostile `ANTHROPIC_BASE_URL`
+receives the first hop directly, with no redirect involved, and refusing 3xx
+only stops it recruiting a *second* recipient. The base URL is trusted input
+by construction. Against a captive portal, which intercepts a request aimed
+at the real API, the refusal is the whole defence.
+
 `DefaultHttpxClient` rather than a bare `httpx.Client` keeps the SDK's own
 connection limits and keepalive socket options, and is public API back to
 `pyproject.toml`'s declared floor.
@@ -344,7 +358,10 @@ its own (`specs/cli.md`).
 It exists as one function rather than repeated kwargs because the property is
 only worth anything if it holds at **every** construction site. #97 hardened
 the probe and left the model-call path following redirects for another
-release (#101); a single constructor is what stops the two drifting again.
+release (#101), and the CLI's own wrapper was a third site neither touched;
+a single constructor is what stops them drifting again. Pinned structurally,
+not by prose: `TestBuildClientIsTheOnlyConstructor` asserts that the only
+`anthropic.Anthropic(...)` call in `aiform/` is the one in this function.
 
 ### `_anthropic_call(...)` (private)
 
@@ -370,18 +387,17 @@ clear failure.
 
 **The client it builds when none is injected comes from `build_client()`,
 and is closed in a `finally`** — the redirect refusal and the close
-obligation both apply here, and this path carries more than the probe does:
-the system prompt and the user content (a plan summary, a driver's source)
-travel with the key, and the redirect target's `200` would be parsed back as
-a **model response** that `plan`/`apply` then acts on. That is #101, and it
-is why the rule cannot live on the probe alone.
+obligation both apply here, and both this path's stakes are higher than the
+probe's. What travels: the key on any 3xx, as everywhere; the system prompt
+and the user content (a plan summary, a driver's source) on a 307 or 308,
+per `build_client`'s own note above; and either way the redirect target's
+`200` would be parsed back as a **model response** that `plan`/`apply` then
+acts on. That last half holds on every status, and it is the one #101 turns
+on — the probe's target could forge a green check in `init`, this one can
+forge model output an `apply` executes.
 
-Be precise about what this does *not* buy, since an unqualified sentence is
-what hid #97. A hostile `ANTHROPIC_BASE_URL` receives the key and the prompt
-on the **first** hop, with no redirect involved; refusing 3xx stops it
-recruiting a *second* recipient and nothing more. Against a captive portal,
-which intercepts a request aimed at the real API, the refusal is the whole
-defence.
+The limits of the refusal are `build_client`'s, recorded there rather than
+restated here.
 
 A refused 3xx surfaces as a raw `anthropic.APIStatusError` — there is no
 canned `detail` here as there is on the probe, and `cli._HANDLED_EXCEPTIONS`

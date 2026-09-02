@@ -81,8 +81,8 @@ _HANDLED_EXCEPTIONS = (
 class _CountingMessages:
     """Duck-typed like anthropic.Anthropic().messages -- the only shape
     llm._anthropic_call() actually calls. Defers constructing the real
-    client until the first call actually happens, so a run that makes
-    zero Anthropic API calls never requires ANTHROPIC_API_KEY to be set,
+    client until the first call actually happens, so a run that makes zero
+    Anthropic API calls builds no connection pool and has none to close,
     matching llm._anthropic_call()'s own laziness."""
 
     def __init__(self, parent: "_CountingClient"):
@@ -109,7 +109,6 @@ class _CountingClient:
         # run that constructed no client at all.
         if self._real is not None:
             self._real.close()
-            self._real = None
 
 
 def _confirm(prompt: str) -> bool:
@@ -693,9 +692,8 @@ def _dispatch(args: argparse.Namespace) -> int:
                 # gate #2 PlanBlockedError after the driver-review/
                 # categorization calls already happened) -- the case where
                 # a user most wants to know what was actually spent. The
-                # close belongs here for its own reason: llm.build_client
-                # passes http_client=, which costs the SDK wrapper's
-                # __del__, so the pool is this function's to release.
+                # close belongs here for its own reason: the pool
+                # llm.build_client hands out is this function's to release.
                 _report_verbose_calls(args, client)
                 client.close()
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)

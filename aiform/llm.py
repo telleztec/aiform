@@ -80,13 +80,25 @@ PLAN_REVIEW_SCHEMA: dict[str, Any] = {
 def build_client(**kwargs: Any) -> anthropic.Anthropic:
     """Construct the SDK client every Anthropic request in this project uses.
 
-    `follow_redirects` defaults to True in the SDK's httpx client, and these
-    requests carry `x-api-key` -- and, on the model-call path, the whole
-    prompt. httpx strips `Authorization` on a cross-origin redirect but never
-    a custom header, so a 3xx from a captive portal, or from a hostile
-    `ANTHROPIC_BASE_URL`, would hand both to the `Location` target (#97,
-    #101). `DefaultHttpxClient` rather than a bare `httpx.Client` keeps the
-    SDK's own connection limits and keepalive socket options.
+    `follow_redirects` defaults to True in the SDK's httpx client, and every
+    request built here carries `x-api-key`. httpx strips `Authorization` on a
+    cross-origin redirect but never a custom header, so a 3xx from a captive
+    portal, or from a hostile `ANTHROPIC_BASE_URL`, would hand the key to the
+    `Location` target (#97, #101).
+
+    Be exact about the body, since the statuses differ: httpx downgrades
+    POST to GET on 301/302/303, so those carry the key alone, while 307/308
+    preserve the method and carry the request body too -- on the model-call
+    path, the system prompt and user content. The key leaks on any of them.
+
+    `DefaultHttpxClient` rather than a bare `httpx.Client` keeps the SDK's own
+    connection limits and keepalive socket options.
+
+    What this does not buy, stated because an unqualified sentence is what
+    hid #97: a hostile `ANTHROPIC_BASE_URL` receives the first hop directly,
+    with no redirect involved, and refusing 3xx only stops it recruiting a
+    second recipient. Against a captive portal, which intercepts a request
+    aimed at the real API, the refusal is the whole defence.
 
     The caller owns the returned client and must close it: passing
     `http_client` swaps the SDK's `SyncHttpxClientWrapper` -- whose `__del__`
@@ -367,8 +379,8 @@ def verify_api_key(
     else:
         return KeyCheck(state=KeyState.OK)
     finally:
-        # build_client's caller owns the close. Only the client this function
-        # built is its to close; an injected one is the caller's.
+        # Only the client this function built is its to close; an injected one
+        # is the caller's.
         if client is None:
             probe.close()
 
