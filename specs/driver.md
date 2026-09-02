@@ -85,7 +85,8 @@ in Behavior below.
   still-abstract method(s).
 - `LIKELY_REPLACE_FIELDS` defaults to `[]` on the base class. A subclass
   that doesn't override it inherits that empty list; one that does
-  (`LIKELY_REPLACE_FIELDS = ["image", "region"]`, per §4's example driver)
+  (`LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys",
+  "monitoring"]`, per §4's example driver)
   shadows it with its own class attribute. This default is a **shared**
   class attribute — a driver (or `driver_gen.py`) must
   reassign it, never mutate it in place (`.append(...)`), or it corrupts

@@ -41,7 +41,7 @@ PARAM_SCHEMA = {
     "required": ["region", "size", "image"],
     "additionalProperties": True,
 }
-LIKELY_REPLACE_FIELDS = ["image", "region"]
+LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys", "monitoring"]
 NON_DIFFABLE_FIELDS = ["ssh_keys"]
 ```
 
@@ -208,26 +208,64 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   state's `ssh_keys` value forward before this method is ever called —
   by the time `update()` sees `current`, an unchanged `ssh_keys` looks
   unchanged and a genuinely changed one looks changed, the same as any
-  other field. If the diff touches anything other than `size` alone
-  (i.e. `region`, `image`, `ssh_keys`, `backups`, `monitoring`, or
-  `tags` changed) → raise `DriverUpdateNotSupported` naming the changed
-  field(s) in `unsupported_fields`. `region` and `image` genuinely
-  cannot be changed in place on DigitalOcean (a region move requires a
-  snapshot+recreate; an image change requires a destructive rebuild) —
-  this matches `LIKELY_REPLACE_FIELDS` exactly. `ssh_keys` also
-  genuinely cannot be changed in place — DigitalOcean has no API for it
-  at all, `ssh_keys` is accepted only at creation time — so a real
-  `ssh_keys` edit correctly falls back to destroy+recreate via this same
-  path, through the normal gate #2 review, rather than being silently
-  dropped. `backups`/`monitoring`/`tags` are deliberately *not*
-  attempted in place either, even though DO likely exposes narrower
-  endpoints for some of them — out of scope for this MVP driver, see
-  below. All six fields here are correctly diffable (see Behavior's
-  `read()` note, plus the carry-forward above for `ssh_keys`
-  specifically) — they only show as "changed" when they genuinely were,
-  so leaving them un-updatable-in-place is a real scoping choice, not a
-  masked reliability gap.
-- If the diff is `size` alone: DigitalOcean resize
+  other field.
+
+  **Per-field in-place capability.** Verified against DigitalOcean's
+  official OpenAPI specification (the `digitalocean/openapi`
+  repository), not recalled from training data:
+
+  | Field | In place? | Mechanism |
+  |---|---|---|
+  | `size` | yes | `resize` droplet action (see below) |
+  | `tags` | yes | `POST`/`DELETE /v2/tags/{name}/resources` |
+  | `backups` | yes | `enable_backups`/`disable_backups` droplet actions |
+  | `monitoring` | no | no monitoring action exists in `droplet_actions.yml`'s `type` enum; the do-agent runs inside the guest |
+  | `region` | no | a region move requires snapshot+recreate |
+  | `image` | no | an image change requires a destructive rebuild |
+  | `ssh_keys` | no | not cloud-side state at all — see Edge cases |
+
+  `update()` partitions `diff_fields` into the in-place-capable set
+  (`size`, `tags`, `backups`) and everything else. **If any
+  replace-forcing field is present, raise `DriverUpdateNotSupported`
+  before mutating anything**, with **only** the genuinely
+  replace-forcing fields in `unsupported_fields` — not the whole diff.
+  A `size`+`region` diff names `region` alone: the `size` half is
+  irrelevant once a replace is required.
+
+  This is still all-or-nothing per diff — `aiform/driver.py`'s contract
+  and `prompts/generate_driver.md` both require it, and nothing here
+  introduces partial application. Only the definition of
+  "replace-forcing" is corrected. The previous rule was
+  `diff_fields != ["size"]`, which destroyed and recreated a droplet on
+  a tags-only edit (issue #77) — the exact Terraform `ForceNew`
+  pathology `README.md` names as the reason aiform exists — and which
+  also rejected a `size`+`tags` combination even though both halves are
+  individually supported.
+
+  **Ordering: `size` first, then `tags`, then `backups`.** The resize is
+  the only step that can raise `DriverUpdateNotSupported` mid-flight (a
+  `400`/`422` rejection, step 4 below), and that exception makes
+  `orchestrator.py`'s `apply_plan()` run a single-resource gate #2
+  review followed by a `confirm_fn("Replace ...?")` the user may
+  decline. Tags mutated before that point would leave the droplet
+  altered while state says otherwise. Hence the invariant, which this
+  driver's test suite asserts mechanically:
+
+  > `update()` never raises `DriverUpdateNotSupported` after mutating
+  > anything other than a power state it restores.
+
+  The reverse failure needs no such guarantee because it is
+  self-healing: if the resize succeeds and a later `tags` call fails
+  transiently, a real error propagates, state is never written, and the
+  next `plan` refreshes and converges on the remaining diff.
+
+  All seven fields are correctly diffable (see Behavior's `read()` note,
+  plus the carry-forward above for `ssh_keys` specifically) — they only
+  show as "changed" when they genuinely were, so the four that remain
+  replace-forcing are a real CSP constraint, not a masked reliability
+  gap.
+- **If `size` is in the diff** (this step runs first, per the
+  ordering above): DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —
   **low-medium confidence, verify against DO's docs if this fails**:
   requires the droplet to be powered off first. The expected sequence:
@@ -423,6 +461,73 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   *unexpected* and should surface as a loud error for a human to
   investigate, not trigger an automatic destroy+recreate against a
   droplet that might still complete the resize a moment later.
+- **If `tags` is in the diff** (runs after the resize step, if any).
+  Compute the two sets against `current.get("tags", [])`:
+  `add` is every tag in `desired["tags"]` not currently present,
+  `remove` every currently-present tag absent from `desired["tags"]`.
+  Then:
+  1. For each added tag, **ensure the tag object exists first**:
+     `GET /v2/tags/{name}`, and on `404`, `POST /v2/tags {"name": ...}`.
+     Creating a droplet with `tags` auto-creates them, but
+     `POST /v2/tags/{name}/resources` does **not** — DigitalOcean's
+     OpenAPI documents a `404` response on that endpoint for exactly
+     this case. Deliberately *not* "assign, and create on a `404`":
+     that would require deciding whether the `404` meant the tag or the
+     droplet, and this driver has an explicit rule against inferring
+     CSP status-code semantics from an ambiguous response (see
+     `_RESIZE_REJECTED_STATUSES` above). Costs two requests for an
+     existing tag and three for a new one, only when `tags` is actually
+     in the diff.
+  2. `POST /v2/tags/{name}/resources` per added tag and `DELETE
+     /v2/tags/{name}/resources` per removed one, both with body
+     `{"resources": [{"resource_id": <id>, "resource_type": "droplet"}]}`
+     — `resource_id` is a **string** per DO's `tags_resource.yml`, even
+     though a droplet id is numeric. `204 No Content` on success.
+  3. The tag name is interpolated into the request path, so it is
+     URL-quoted (`urllib.parse.quote(tag, safe="")`). DO's own pattern
+     is `^[a-zA-Z0-9_\-\:]+$` with a 255-character cap, so quoting is a
+     no-op for any valid name; it exists so a malformed one cannot
+     inject an extra path segment.
+  - **Tag names are case-stable.** DigitalOcean canonicalizes the
+    capitalization at first creation and the URL must use that
+    canonical form. Asking for `PROD` when `prod` already exists is a
+    real, if unlikely, failure — it surfaces as DO's own error via the
+    rule below, never as a silent no-op.
+  - **This path never raises `DriverUpdateNotSupported`.** Any
+    `HTTPError` propagates as a genuine driver error. A tag DO rejects
+    as invalid would be rejected at `create()` too, so a
+    destroy+recreate is no remedy — converting it would be exactly the
+    misclassification `aiform/driver.py`'s `update()` docstring and
+    `prompts/review_driver.md` item 4 forbid.
+  - **Knowledge-confidence**: the tag-must-exist-first behavior is read
+    off DigitalOcean's published OpenAPI responses, not observed live.
+    Confirm it in the system-test run — if
+    `POST /v2/tags/{name}/resources` turns out to auto-create after
+    all, the existence check is redundant but harmless.
+- **If `backups` is in the diff** (runs last).
+  `POST /v2/droplets/{id}/actions` with `{"type": "enable_backups"}` or
+  `{"type": "disable_backups"}`; both are members of
+  `droplet_actions.yml`'s `type` enum. Poll until
+  `("backups" in droplet["features"]) == desired["backups"]`, through
+  the same `_poll_until` seam every other action here uses, so a
+  DO-side delay surfaces as the usual `TimeoutError` naming the step
+  rather than as a wrong return value.
+  - **No `backup_policy` is sent.** `enable_backups` accepts an
+    optional one and defaults to daily when it is omitted;
+    `PARAM_SCHEMA` models `backups` as a bare boolean, so there is
+    nothing for this driver to express. A weekly policy is therefore
+    inexpressible today — a real limitation, named rather than hidden,
+    and a `PARAM_SCHEMA` change if it is ever wanted.
+  - Same never-`DriverUpdateNotSupported` rule as `tags` above.
+- **The returned attributes come from one final `GET`**, issued after
+  *all* mutation steps rather than reusing the resize step's own last
+  poll response — otherwise a `size`+`tags` update would return the
+  pre-tag droplet. `ssh_keys`/`backups`/`monitoring` are still echoed
+  from `desired`/`current` exactly as before, which stays correct in
+  both directions: when the field is in the diff, `desired` holds the
+  value just applied; when it isn't, `current`'s value is preserved.
+  This costs one extra `GET` on a size-only update, on a path that
+  already makes six or more requests.
 - **`create()`'s convergence poll timing out orphans a real droplet.**
   If the `POST /v2/droplets` call already succeeded (the droplet exists
   and is billing) but the subsequent poll to `status == "active"`
@@ -488,6 +593,16 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   - `update()`'s resize path logs once, INFO, on entering the sequence
     (`id`/`status`/`current_size`/`target_size`) — the context every
     subsequent step-level line needs but doesn't itself carry.
+  - `update()`'s `tags` step logs once, INFO, before issuing any tag
+    request (`id`/`tags_added`/`tags_removed`); the individual
+    `GET`/`POST`/`DELETE` calls are not logged separately. This is the
+    only multi-request step here with no polling of its own, so that
+    one line is the sole record of what it set out to do if a later
+    call in the loop fails partway through.
+  - `update()`'s `backups` step logs once, INFO, on entry (`id`/`step`,
+    the latter being `enable_backups` or `disable_backups`). Its
+    convergence poll is already covered by `_poll_until`'s own line,
+    under `step` `enable-backups`/`disable-backups`.
   - The `except urllib.error.HTTPError` block around the resize action
     logs WARNING **once**, but the message and meaning depend on which
     of the two classification branches (`specs/digitalocean_compute.md`'s
@@ -607,15 +722,40 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     `params` unchanged (see Behavior above) — that part of the original
     design was already correct; only the *ongoing, post-refresh*
     comparison was the actual bug.
+- **Why `ssh_keys` is replace-forcing is a stronger claim than "DO has
+  no API for it".** The `update()` section above gives the API reason;
+  the underlying one is that `ssh_keys` is not cloud-side state in the
+  first place. DigitalOcean's own create schema (`droplet_create.yml`)
+  describes the field as *"the IDs or fingerprints of the SSH keys that
+  you wish to embed in the Droplet's root account upon creation"* —
+  cloud-init writes the public keys into the guest's
+  `/root/.ssh/authorized_keys` at first boot, and DO keeps no record of
+  them afterwards. That, not a missing endpoint, is the root cause of
+  `read()`'s inability to recover the field, and therefore of
+  `NON_DIFFABLE_FIELDS` and `refresh_resource()`'s carry-forward
+  existing at all. Worth stating plainly, because it makes the current
+  behavior questionable rather than merely inconvenient: a
+  destroy+recreate converges against a *remembered* value aiform can
+  never observe, so a droplet whose `authorized_keys` someone already
+  fixed by hand is still destroyed on the next `plan`. `rebuild` is not
+  an escape hatch either — it preserves the id and IP but wipes the
+  disk and re-injects the droplet's *original* keys, not new ones.
+  Whether the honest behavior is a hard refusal naming the field rather
+  than a silent replace is tracked as its own issue; deliberately not
+  changed here, since the orchestrator reads
+  `DriverUpdateNotSupported` as "replace it" and a refusal would need a
+  distinct error path and a `PLAN.md` §4 contract change.
 
 ## Out of scope
 
-- **In-place update support for `ssh_keys`/`backups`/`monitoring`/`tags`**
-  — DO likely exposes narrower endpoints for some of these (e.g.
-  `enable_backups`/`disable_backups` actions), but supporting them is
-  real future work, not required for this MVP driver; any diff touching
-  them raises `DriverUpdateNotSupported` and falls back to
-  destroy+recreate, same as a genuinely non-updatable field.
+- **In-place update support for `ssh_keys`/`monitoring`** — neither has
+  any DigitalOcean API surface at all (see the capability table under
+  `update()` above), so a diff touching either raises
+  `DriverUpdateNotSupported` and falls back to destroy+recreate.
+  `backups` and `tags` were listed here too until issue #77; both are
+  now applied in place, since DO does expose narrower endpoints for
+  them and the destroy+recreate this deferral implied was destroying
+  live droplets on trivial edits.
 - **A live integration test against DO's real API with a real
   `DIGITALOCEAN_TOKEN`** — this spec and the hand-written test suite that
   checks an implementation against it are both built and validated
