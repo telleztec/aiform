@@ -38,6 +38,18 @@ def actions_url(droplet_id: str) -> str:
     return f"{BASE_URL}/droplets/{droplet_id}/actions"
 
 
+def tags_url() -> str:
+    return f"{BASE_URL}/tags"
+
+
+def tag_url(name: str) -> str:
+    return f"{BASE_URL}/tags/{name}"
+
+
+def tag_resources_url(name: str) -> str:
+    return f"{BASE_URL}/tags/{name}/resources"
+
+
 def make_droplet(
     id=123,
     status="active",
@@ -541,19 +553,23 @@ class TestDelete:
         assert len(fake_urlopen.calls) == 1
 
 
-class TestUpdateRejectsNonSizeDiffs:
+class TestUpdateRejectsReplaceForcingDiffs:
+    # tags/backups are deliberately absent: DigitalOcean can apply both in
+    # place, and treating them as replace-forcing destroyed live droplets
+    # on a trivial edit (issue #77). The four below have no DO API surface
+    # at all -- see specs/digitalocean_compute.md's capability table.
     @pytest.mark.parametrize(
         "field,value",
         [
             ("region", "nyc3"),
             ("image", "ubuntu-22-04-x64"),
             ("ssh_keys", ["a-different-key"]),
-            ("backups", True),
             ("monitoring", False),
-            ("tags", ["something-else"]),
         ],
     )
-    def test_non_size_field_change_raises_unsupported(self, driver, fake_urlopen, field, value):
+    def test_replace_forcing_field_change_raises_unsupported(
+        self, driver, fake_urlopen, field, value
+    ):
         current = make_attrs()
         desired = make_attrs(**{field: value})
 
@@ -570,6 +586,34 @@ class TestUpdateRejectsNonSizeDiffs:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert "region" in excinfo.value.unsupported_fields
+
+    def test_unsupported_fields_names_only_the_replace_forcing_fields(self, driver, fake_urlopen):
+        # size and tags are both applicable in place; region is not. Only
+        # region belongs in unsupported_fields -- reporting the whole diff
+        # misstates why the replace is happening.
+        current = make_attrs()
+        desired = make_attrs(size="s-2vcpu-4gb", tags=["aiform", "production"], region="nyc3")
+
+        with pytest.raises(DriverUpdateNotSupported) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.unsupported_fields == ["region"]
+
+    def test_replace_forcing_field_mixed_with_in_place_ones_mutates_nothing(
+        self, driver, fake_urlopen
+    ):
+        # The ordering invariant: update() must never raise
+        # DriverUpdateNotSupported after mutating anything. The orchestrator
+        # answers this exception with a gate #2 review and a "Replace ...?"
+        # confirmation the user may decline -- a tag applied before that
+        # point would leave the droplet altered while state says otherwise.
+        current = make_attrs()
+        desired = make_attrs(size="s-2vcpu-4gb", tags=["aiform", "production"], region="nyc3")
+
+        with pytest.raises(DriverUpdateNotSupported):
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
 
     def test_rejecting_a_non_size_diff_makes_no_api_calls(self, driver, fake_urlopen):
         current = make_attrs()
@@ -1034,6 +1078,320 @@ class TestUpdateResizeInPlace:
         assert "123" in str(excinfo.value)
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert "power_on" not in types
+
+
+class TestUpdateTagsInPlace:
+    def _final_get(self, fake, tags):
+        fake.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(tags=tags)))
+
+    def test_added_tag_absent_from_the_account_is_created_then_assigned(self, driver, fake_urlopen):
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script("GET", tag_url("production"), http_error(tag_url("production"), 404))
+        fake_urlopen.script(
+            "POST", tags_url(), FakeHTTPResponse(201, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["aiform", "production"])
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        assert [(c["method"], c["url"]) for c in fake_urlopen.calls] == [
+            ("GET", tag_url("production")),
+            ("POST", tags_url()),
+            ("POST", tag_resources_url("production")),
+            ("GET", droplet_url("123")),
+        ]
+        create_call = next(c for c in fake_urlopen.calls if c["url"] == tags_url())
+        assert create_call["body"] == {"name": "production"}
+
+    def test_added_tag_that_already_exists_is_not_recreated(self, driver, fake_urlopen):
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["aiform", "production"])
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        assert tags_url() not in [c["url"] for c in fake_urlopen.calls]
+
+    def test_assignment_body_uses_a_string_resource_id_and_droplet_type(self, driver, fake_urlopen):
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["aiform", "production"])
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        assign = next(c for c in fake_urlopen.calls if c["url"] == tag_resources_url("production"))
+        # DO's tags_resource.yml types resource_id as a string, even though a
+        # droplet id is numeric.
+        assert assign["body"] == {"resources": [{"resource_id": "123", "resource_type": "droplet"}]}
+        assert assign["content_type"] == "application/json"
+
+    def test_removed_tag_is_unassigned_with_delete(self, driver, fake_urlopen):
+        current = make_attrs(tags=["aiform", "retired"])
+        desired = make_attrs(tags=["aiform"])
+
+        fake_urlopen.script("DELETE", tag_resources_url("retired"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["aiform"])
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        unassign = next(c for c in fake_urlopen.calls if c["method"] == "DELETE")
+        assert unassign["url"] == tag_resources_url("retired")
+        assert unassign["body"] == {
+            "resources": [{"resource_id": "123", "resource_type": "droplet"}]
+        }
+        # A removal must not create the tag object it is about to detach.
+        assert tags_url() not in [c["url"] for c in fake_urlopen.calls]
+
+    def test_a_tags_only_edit_never_powers_the_droplet_off(self, driver, fake_urlopen):
+        # The whole point of issue #77: this used to destroy and recreate.
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["aiform", "production"])
+
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        assert action_calls(fake_urlopen, "123") == []
+        assert result["id"] == "123"
+        assert result["tags"] == ["aiform", "production"]
+
+    def test_tag_name_is_url_quoted_into_the_path(self, driver, fake_urlopen):
+        # DO's own pattern would reject this name, so quoting is a no-op for
+        # anything valid -- it exists so a malformed name cannot inject an
+        # extra path segment into the request URL.
+        current = make_attrs(tags=[])
+        desired = make_attrs(tags=["we/ird"])
+
+        fake_urlopen.script("GET", tag_url("we%2Fird"), http_error(tag_url("we%2Fird"), 404))
+        fake_urlopen.script("POST", tags_url(), FakeHTTPResponse(201, {"tag": {"name": "we/ird"}}))
+        fake_urlopen.script("POST", tag_resources_url("we%2Fird"), FakeHTTPResponse(204, None))
+        self._final_get(fake_urlopen, ["we/ird"])
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        assert tag_resources_url("we%2Fird") in [c["url"] for c in fake_urlopen.calls]
+        # The body carries the unquoted name; only the path is escaped.
+        assert next(c for c in fake_urlopen.calls if c["url"] == tags_url())["body"] == {
+            "name": "we/ird"
+        }
+
+    def test_transient_error_assigning_a_tag_reraises_and_is_not_unsupported(
+        self, driver, fake_urlopen
+    ):
+        # Converting this into DriverUpdateNotSupported would answer a 5xx
+        # with a destroy+recreate -- the same misclassification the resize
+        # path already guards against.
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script(
+            "POST",
+            tag_resources_url("production"),
+            http_error(tag_resources_url("production"), 500),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 500
+
+    def test_error_checking_whether_a_tag_exists_reraises_rather_than_creating(
+        self, driver, fake_urlopen
+    ):
+        # Only a 404 means "absent"; a 500 says nothing about existence, and
+        # blindly creating on it would mask a real outage.
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script("GET", tag_url("production"), http_error(tag_url("production"), 500))
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 500
+        assert tags_url() not in [c["url"] for c in fake_urlopen.calls]
+
+
+class TestUpdateBackupsInPlace:
+    def test_enabling_backups_posts_enable_backups_and_polls_features(self, driver, fake_urlopen):
+        current = make_attrs(backups=False)
+        desired = make_attrs(backups=True)
+
+        fake_urlopen.script(
+            "POST", actions_url("123"), FakeHTTPResponse(201, {"action": {"id": 1}})
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(backups_enabled=False)),
+            FakeHTTPResponse(200, make_droplet(backups_enabled=True)),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["enable_backups"]
+        # PARAM_SCHEMA models backups as a bare boolean, so there is no policy
+        # to express; DO defaults to daily when the key is omitted.
+        assert "backup_policy" not in action_calls(fake_urlopen, "123")[0]["body"]
+
+    def test_disabling_backups_posts_disable_backups(self, driver, fake_urlopen):
+        current = make_attrs(backups=True)
+        desired = make_attrs(backups=False)
+
+        fake_urlopen.script(
+            "POST", actions_url("123"), FakeHTTPResponse(201, {"action": {"id": 1}})
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(backups_enabled=True)),
+            FakeHTTPResponse(200, make_droplet(backups_enabled=False)),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["disable_backups"]
+
+    def test_backups_change_never_powers_the_droplet_off(self, driver, fake_urlopen):
+        current = make_attrs(backups=False)
+        desired = make_attrs(backups=True)
+
+        fake_urlopen.script(
+            "POST", actions_url("123"), FakeHTTPResponse(201, {"action": {"id": 1}})
+        )
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=True))
+        )
+
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert "power_off" not in types
+        assert result["id"] == "123"
+        assert result["backups"] is True
+
+    def test_backups_poll_timeout_raises_timeout_error_naming_id(self, driver, fake_urlopen):
+        current = make_attrs(backups=False)
+        desired = make_attrs(backups=True)
+
+        fake_urlopen.script(
+            "POST", actions_url("123"), FakeHTTPResponse(201, {"action": {"id": 1}})
+        )
+        # Never converges -- a single-item script repeats forever.
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=False))
+        )
+
+        with pytest.raises(TimeoutError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "123" in str(excinfo.value)
+
+    def test_transient_error_toggling_backups_reraises_and_is_not_unsupported(
+        self, driver, fake_urlopen
+    ):
+        current = make_attrs(backups=False)
+        desired = make_attrs(backups=True)
+
+        fake_urlopen.script("POST", actions_url("123"), http_error(actions_url("123"), 500))
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.code == 500
+
+
+class TestUpdateCombinedInPlaceDiff:
+    def test_size_and_tags_together_resize_first_then_tag(self, driver, fake_urlopen):
+        # Both halves are individually supported; the old `!= ["size"]` rule
+        # rejected the combination outright.
+        current = make_attrs(status="active", size="s-1vcpu-2gb", tags=["aiform"])
+        desired = make_attrs(size="s-2vcpu-4gb", tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1}}),
+            FakeHTTPResponse(201, {"action": {"id": 2}}),
+            FakeHTTPResponse(201, {"action": {"id": 3}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(
+                200,
+                make_droplet(status="active", size="s-2vcpu-4gb", tags=["aiform", "production"]),
+            ),
+        )
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+
+        result = driver.update("123", current, desired, CREDENTIALS)
+
+        urls = [c["url"] for c in fake_urlopen.calls]
+        last_action = max(i for i, u in enumerate(urls) if u == actions_url("123"))
+        first_tag = min(i for i, u in enumerate(urls) if u.startswith(f"{BASE_URL}/tags"))
+        assert last_action < first_tag, "the resize must complete before any tag call"
+        assert [c["body"]["type"] for c in action_calls(fake_urlopen, "123")] == [
+            "power_off",
+            "resize",
+            "power_on",
+        ]
+        # The returned attributes come from a GET taken after the tag work,
+        # not from the resize path's own last poll.
+        assert result["size"] == "s-2vcpu-4gb"
+        assert result["tags"] == ["aiform", "production"]
+
+    def test_a_rejected_resize_raises_before_any_tag_call(self, driver, fake_urlopen):
+        current = make_attrs(status="active", size="s-1vcpu-2gb", tags=["aiform"])
+        desired = make_attrs(size="s-2vcpu-4gb", tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1}}),
+            http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"}),
+            FakeHTTPResponse(201, {"action": {"id": 3}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off")),
+            FakeHTTPResponse(200, make_droplet(status="active")),
+        )
+
+        with pytest.raises(DriverUpdateNotSupported) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert excinfo.value.unsupported_fields == ["size"]
+        assert not [c for c in fake_urlopen.calls if c["url"].startswith(f"{BASE_URL}/tags")]
 
 
 class TestLogging:
