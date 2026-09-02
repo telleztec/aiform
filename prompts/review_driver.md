@@ -41,6 +41,20 @@ Check specifically for:
    a style concern: a real driver shipped this exact bug (caught live
    by an earlier gate #1 review, not caught by this checklist item
    until it was added after that incident).
+   **Also watch for the mirror image: an in-place-vs-replace rule that
+   is too broad.** A driver that declares a diff replace-forcing when
+   the provider can in fact apply it in place will destroy and recreate
+   a live resource — new address, new host keys, data gone — on an edit
+   the user reasonably expects to be trivial. Judge this against what
+   the provider's API actually supports, not against what the driver's
+   own comments assert about it. **This is a blocking issue**, and it
+   is specifically *not* covered by the "more conservative than
+   necessary" `concerns` example below: the dividing line is
+   destruction. A driver that declines an update it could have made is
+   a concern; one that destroys a live resource instead of making it is
+   blocking. A real driver shipped exactly this too — a `tags`-only
+   edit recreated the droplet — and an earlier run of this very
+   checklist recorded it as a non-blocking concern and approved it.
 5. **Error handling raises rather than swallows.** CSP API errors should
    propagate (or be re-raised with context), not be caught and silently
    ignored. A bare `except: pass` anywhere is a blocking issue.
@@ -75,6 +89,8 @@ anything from the list above that's actually violated — these block
 approval outright. Use `concerns` for anything narrower or lower-stakes
 that's still worth a human's attention (e.g. `update()` being more
 conservative than necessary, missing a nice-to-have parameter) but
-doesn't itself make the driver unsafe to trust. Don't inflate concerns
+doesn't itself make the driver unsafe to trust — subject to the limit
+item 4 sets: conservatism that costs the user a destroyed and recreated
+resource is blocking, not a concern. Don't inflate concerns
 into blocking issues, and don't downgrade a real blocking issue into a
 concern because the rest of the file looks solid.
