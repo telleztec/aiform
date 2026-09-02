@@ -260,6 +260,8 @@ class Driver(ResourceDriver):
         # decline -- so it runs before anything else is mutated. The
         # invariant: update() never raises DriverUpdateNotSupported after
         # changing anything but a power state it restores.
+        self._reject_malformed_values(id, diff_fields, desired)
+
         if "size" in diff_fields:
             self._resize_in_place(id, current, desired, credentials)
         if "tags" in diff_fields:
@@ -280,11 +282,40 @@ class Driver(ResourceDriver):
         attrs["monitoring"] = desired.get("monitoring", current.get("monitoring", False))
         return attrs
 
-    def _tag_resources_url(self, tag: str) -> str:
-        # The tag goes into the request path. DO's own pattern is
-        # ^[a-zA-Z0-9_\-\:]+$, so quoting is a no-op for any valid name; it
-        # is here so a malformed one cannot inject an extra path segment.
-        return f"{BASE_URL}/tags/{urllib.parse.quote(tag, safe='')}/resources"
+    def _reject_malformed_values(self, id, diff_fields, desired):
+        # Nothing upstream checks params against PARAM_SCHEMA -- driver.py's
+        # own docstring claims the orchestrator does, but it does not -- so
+        # these values arrive exactly as YAML parsed them. Both checks guard
+        # a step that acts on the value locally before any API call could
+        # reject it: `tags: web` (a scalar, not a one-item list) would
+        # otherwise be iterated character by character, creating tags "w",
+        # "e" and "b" and unassigning every real one; `backups: "false"` is
+        # a non-empty string, so a bool() coercion would enable billed
+        # backups for a user who asked to switch them off.
+        #
+        # ValueError, not DriverUpdateNotSupported: a malformed value is not
+        # a diff the CSP declined, and a destroy+recreate would only feed
+        # the same value to create(). Raised before any mutation, so the
+        # ordering invariant above still holds.
+        if "tags" in diff_fields:
+            tags = desired["tags"]
+            if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+                raise ValueError(
+                    f"droplet {id}: params 'tags' must be a list of strings, got {tags!r}"
+                )
+        if "backups" in diff_fields and not isinstance(desired["backups"], bool):
+            raise ValueError(
+                f"droplet {id}: params 'backups' must be true or false, got {desired['backups']!r}"
+            )
+
+    def _tag_url(self, tag: str, suffix: str = "") -> str:
+        # The tag goes into the request path, so a malformed name must not
+        # be able to inject an extra path segment. ':' stays unescaped
+        # because DO's own pattern (^[a-zA-Z0-9_\-\:]+$) allows it and DOKS
+        # really uses it (k8s:<cluster-id>) -- percent-encoding it would
+        # risk a 404 on a name create() accepts. Both callers route through
+        # here so the escaping cannot drift between them.
+        return f"{BASE_URL}/tags/{urllib.parse.quote(tag, safe=':')}{suffix}"
 
     def _ensure_tag_exists(self, tag, credentials):
         # Creating a droplet with tags auto-creates them, but assigning to an
@@ -292,9 +323,8 @@ class Driver(ResourceDriver):
         # an unknown tag. Checking first rather than creating on that 404
         # keeps the two "not found" cases (tag vs droplet) from having to be
         # told apart from one status code.
-        quoted = urllib.parse.quote(tag, safe="")
         try:
-            self._request("GET", f"{BASE_URL}/tags/{quoted}", credentials)
+            self._request("GET", self._tag_url(tag), credentials)
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
@@ -312,14 +342,15 @@ class Driver(ResourceDriver):
         body = {"resources": [{"resource_id": str(id), "resource_type": "droplet"}]}
         for tag in added:
             self._ensure_tag_exists(tag, credentials)
-            self._request("POST", self._tag_resources_url(tag), credentials, body=body)
+            self._request("POST", self._tag_url(tag, "/resources"), credentials, body=body)
         for tag in removed:
-            self._request("DELETE", self._tag_resources_url(tag), credentials, body=body)
+            self._request("DELETE", self._tag_url(tag, "/resources"), credentials, body=body)
 
     def _set_backups(self, id, enabled, credentials):
         # No backup_policy is sent: PARAM_SCHEMA models backups as a bare
         # boolean, and DO defaults to daily when the key is omitted.
-        enabled = bool(enabled)
+        # `enabled` is a real bool -- _reject_malformed_values guarantees it
+        # rather than coercing, so a truthy string cannot turn backups on.
         action = "enable_backups" if enabled else "disable_backups"
         logger.info("", extra={"id": id, "step": action})
         self._do_action_and_wait(

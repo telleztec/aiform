@@ -1187,6 +1187,7 @@ class TestUpdateTagsInPlace:
         driver.update("123", current, desired, CREDENTIALS)
 
         assert tag_resources_url("we%2Fird") in [c["url"] for c in fake_urlopen.calls]
+        assert tag_resources_url("we/ird") not in [c["url"] for c in fake_urlopen.calls]
         # The body carries the unquoted name; only the path is escaped.
         assert next(c for c in fake_urlopen.calls if c["url"] == tags_url())["body"] == {
             "name": "we/ird"
@@ -1394,6 +1395,95 @@ class TestUpdateCombinedInPlaceDiff:
         assert not [c for c in fake_urlopen.calls if c["url"].startswith(f"{BASE_URL}/tags")]
 
 
+class TestUpdateRejectsMalformedValues:
+    """A YAML scalar or a quoted boolean reaches update() exactly as parsed --
+    nothing upstream validates params against PARAM_SCHEMA. Both of these
+    used to be harmless because a tags/backups diff never reached a local
+    mutation path; now they do, so they are rejected before any API call.
+    """
+
+    @pytest.mark.parametrize("bad", ["web", None, ["ok", 7], 42])
+    def test_tags_that_are_not_a_list_of_strings_raise_before_any_call(
+        self, driver, fake_urlopen, bad
+    ):
+        current = make_attrs(tags=["aiform"])
+        desired = make_attrs(tags=bad)
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "tags" in str(excinfo.value)
+        assert fake_urlopen.calls == []
+
+    def test_a_scalar_tags_value_is_not_iterated_character_by_character(self, driver, fake_urlopen):
+        # `tags: web` in YAML is the string "web", not ["web"]. Iterating it
+        # would compute added=["w","e","b"] and removed=["aiform"] -- junk
+        # tags created and the real one detached from a live droplet.
+        with pytest.raises(ValueError):
+            driver.update("123", make_attrs(tags=["aiform"]), make_attrs(tags="web"), CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    # 0 and 1 are deliberately absent: Python has 0 == False and 1 == True,
+    # so an int matching the live value produces no diff at all and never
+    # reaches this guard, while one that does not match is caught anyway.
+    @pytest.mark.parametrize("bad", ["false", "true", 1, None])
+    def test_backups_that_is_not_a_bool_raises_rather_than_being_coerced(
+        self, driver, fake_urlopen, bad
+    ):
+        # bool("false") is True: coercing would switch billed backups ON for
+        # a user who asked for them off.
+        current = make_attrs(backups=False)
+        desired = make_attrs(backups=bad)
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "backups" in str(excinfo.value)
+        assert fake_urlopen.calls == []
+
+    def test_an_int_equal_to_the_live_bool_is_simply_no_diff(self, driver, fake_urlopen):
+        # Not an endorsement of `backups: 0`, just the honest consequence of
+        # 0 == False: there is nothing to apply, so nothing happens.
+        result = driver.update("123", make_attrs(backups=False), make_attrs(backups=0), CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+        assert result["backups"] is False
+
+    def test_a_malformed_value_is_not_reported_as_an_unsupported_diff(self, driver, fake_urlopen):
+        # DriverUpdateNotSupported would send the orchestrator into a
+        # destroy+recreate, which feeds the same bad value to create().
+        with pytest.raises(ValueError):
+            driver.update("123", make_attrs(), make_attrs(tags="web"), CREDENTIALS)
+
+        with pytest.raises(ValueError):
+            driver.update("123", make_attrs(), make_attrs(backups="false"), CREDENTIALS)
+
+
+class TestInPlaceFieldSetIsConsistent:
+    def test_likely_replace_fields_is_the_complement_of_the_in_place_set(self, driver):
+        # These encode one fact -- which PARAM_SCHEMA fields DO can change on
+        # a live droplet -- in two hand-written places, and the literal is
+        # copied into PLAN.md, specs/driver.md and specs/digitalocean_compute.md
+        # as well. Left inconsistent, `plan` mispredicts in whichever
+        # direction was forgotten. LIKELY_REPLACE_FIELDS stays a literal
+        # (PLAN.md section 4 quotes it verbatim and CLAUDE.md treats that as
+        # authoritative); this test is what keeps the two in step.
+        from drivers.digitalocean.compute import _IN_PLACE_UPDATABLE_FIELDS
+
+        expected = [
+            f for f in driver.PARAM_SCHEMA["properties"] if f not in _IN_PLACE_UPDATABLE_FIELDS
+        ]
+        assert sorted(driver.LIKELY_REPLACE_FIELDS) == sorted(expected)
+
+    def test_every_in_place_field_is_declared_in_param_schema(self, driver):
+        from drivers.digitalocean.compute import _IN_PLACE_UPDATABLE_FIELDS
+
+        # update()'s diff loop iterates PARAM_SCHEMA, so a name here that is
+        # absent there is silently dead code.
+        assert set(_IN_PLACE_UPDATABLE_FIELDS) <= set(driver.PARAM_SCHEMA["properties"])
+
+
 class TestLogging:
     def test_logger_is_a_real_descendant_of_the_aiform_logger(self):
         # The actual hazard this whole class guards against: load_driver()
@@ -1460,6 +1550,54 @@ class TestLogging:
         assert record.outcome == "timeout"
         assert record.attempts_used == 30
         assert record.levelno == logging.ERROR
+
+    def test_tags_step_logs_what_it_set_out_to_change(self, driver, fake_urlopen, caplog):
+        # specs/digitalocean_compute.md calls this the sole record of the
+        # tags step's intent when a later call in the loop fails partway
+        # through -- the step makes several requests and polls none of them.
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(tags=["aiform", "retired"])
+        desired = make_attrs(tags=["aiform", "production"])
+
+        fake_urlopen.script(
+            "GET", tag_url("production"), FakeHTTPResponse(200, {"tag": {"name": "production"}})
+        )
+        fake_urlopen.script("POST", tag_resources_url("production"), FakeHTTPResponse(204, None))
+        fake_urlopen.script("DELETE", tag_resources_url("retired"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(tags=["aiform"]))
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "tags_added", None) is not None)
+        assert record.id == "123"
+        assert record.tags_added == ["production"]
+        assert record.tags_removed == ["retired"]
+
+    @pytest.mark.parametrize(
+        "enabled,expected_step", [(True, "enable_backups"), (False, "disable_backups")]
+    )
+    def test_backups_step_logs_which_action_it_is_taking(
+        self, driver, fake_urlopen, caplog, enabled, expected_step
+    ):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(backups=not enabled)
+        desired = make_attrs(backups=enabled)
+
+        fake_urlopen.script(
+            "POST", actions_url("123"), FakeHTTPResponse(201, {"action": {"id": 1}})
+        )
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(backups_enabled=enabled))
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        steps = [getattr(r, "step", None) for r in caplog.records]
+        assert expected_step in steps
+        # _poll_until's own line uses the hyphenated form for the same step.
+        assert expected_step.replace("_", "-") in steps
 
     def test_entering_resize_logs_current_and_target_context(self, driver, fake_urlopen, caplog):
         caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")

@@ -259,11 +259,25 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   transiently, a real error propagates, state is never written, and the
   next `plan` refreshes and converges on the remaining diff.
 
-  All seven fields are correctly diffable (see Behavior's `read()` note,
-  plus the carry-forward above for `ssh_keys` specifically) — they only
-  show as "changed" when they genuinely were, so the four that remain
-  replace-forcing are a real CSP constraint, not a masked reliability
-  gap.
+  All seven fields are diffable (see Behavior's `read()` note, plus the
+  carry-forward above for `ssh_keys` specifically), so the four that
+  remain replace-forcing are a real CSP constraint rather than a masked
+  reliability gap. **One caveat, and it is not yet closed**: `tags` is
+  compared with `!=` on a list, here and in `planner.py`'s
+  `diff_attributes()`, so it registers as "changed" whenever the two
+  lists differ as sequences rather than as sets. Two ways in: DO
+  returning the same tags in a different order (whether it ever does is
+  unverified), and a duplicate entry in the user's own `tags:` (which
+  needs no DO misbehavior at all — DO stores the set, so
+  `["web", "web"]` can never match what comes back). Before this change such a mismatch destroyed and
+  recreated the droplet on every `apply`; now it costs a perpetual
+  no-progress `update` — an `intent-orchestration-model` call per
+  `plan` and one `GET` per `apply`, converging never. The live
+  lifecycle test asserts convergence to `no-op` immediately after its
+  tags edit (`specs/system_test.md` case 6b) specifically so this
+  surfaces as a test failure against the real API instead of staying a
+  guess. If it does surface, the fix is an order-insensitive comparison
+  for this field, not a diff exclusion.
 - **If `size` is in the diff** (this step runs first, per the
   ordering above): DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —
@@ -484,10 +498,15 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
      — `resource_id` is a **string** per DO's `tags_resource.yml`, even
      though a droplet id is numeric. `204 No Content` on success.
   3. The tag name is interpolated into the request path, so it is
-     URL-quoted (`urllib.parse.quote(tag, safe="")`). DO's own pattern
-     is `^[a-zA-Z0-9_\-\:]+$` with a 255-character cap, so quoting is a
-     no-op for any valid name; it exists so a malformed one cannot
-     inject an extra path segment.
+     URL-quoted (`urllib.parse.quote(tag, safe=":")`) so a malformed
+     name cannot inject an extra path segment. `:` is deliberately
+     left unescaped: DO's own pattern is `^[a-zA-Z0-9_\-\:]+$` with a
+     255-character cap, and DOKS really does use colon-bearing tags
+     (`k8s:<cluster-id>`), so percent-encoding it would risk a `404` on
+     the existence check for a name `create()` accepts happily. With
+     `:` exempted, quoting is a no-op for every name valid under that
+     pattern — which is the property the code comment claims, and it
+     was false while `safe=""` encoded the colon.
   - **Tag names are case-stable.** DigitalOcean canonicalizes the
     capitalization at first creation and the URL must use that
     canonical form. Asking for `PROD` when `prod` already exists is a
@@ -519,6 +538,36 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     inexpressible today — a real limitation, named rather than hidden,
     and a `PARAM_SCHEMA` change if it is ever wanted.
   - Same never-`DriverUpdateNotSupported` rule as `tags` above.
+- **Malformed `tags`/`backups` values are rejected before any mutation.**
+  Nothing upstream validates `params` against `PARAM_SCHEMA` — the
+  `create()` docstring in `aiform/driver.py` claims the orchestrator
+  does, and `specs/orchestrator.md`'s judgment call 2 records that it
+  does not — so these values reach `update()` exactly as YAML parsed
+  them. That was harmless while every `tags`/`backups` diff went
+  straight to a replace; it is not harmless now that both are applied
+  locally, before any API call could reject them:
+  - `tags: web` (a scalar, not a one-item list) is the string `"web"`.
+    Iterating it yields `added = ["w", "e", "b"]` and
+    `removed = <every current tag>` — junk tags created on the account
+    and the real ones detached from a live droplet. `tags:` with no
+    value is `None`, which raises `TypeError` mid-iteration.
+  - `backups: "false"` is a non-empty string, so a `bool()` coercion
+    reads it as `True` and switches **billed** backups on for a user
+    who asked for them off.
+  So `update()` checks, before dispatching any step, that `tags` is a
+  list of strings and `backups` is a real `bool`, and raises
+  `ValueError` naming the field and the value it got. **`ValueError`,
+  not `DriverUpdateNotSupported`**: a malformed value is not a diff the
+  CSP declined, and the destroy+recreate that exception triggers would
+  only hand the same value to `create()`. It propagates through
+  `orchestrator.py`'s `apply_plan()` as a `DriverExecutionError` like
+  any other driver failure. This is a driver-local guard on the two
+  values it acts on directly, not a general fix — the general gap is
+  tracked separately.
+  An integer `0`/`1` is *not* rejected, and needs no special case:
+  Python has `0 == False`, so an int matching the live value produces
+  no diff at all and never reaches the guard, while one that does not
+  match is caught by it.
 - **The returned attributes come from one final `GET`**, issued after
   *all* mutation steps rather than reusing the resize step's own last
   poll response — otherwise a `size`+`tags` update would return the
