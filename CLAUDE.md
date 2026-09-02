@@ -31,11 +31,16 @@ exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
 The "Suggested implementation order" below is now a record of how it was
 built, not a list of what's left.
 
-The one piece of `PLAN.md` still unbuilt is the **on-the-fly driver
-generation pipeline**: `driver_gen.py` itself exists and is tested, but
-nothing in the `plan`/`apply` path calls it — a missing driver is an error
-today, not a trigger to generate one. See `PLAN.md`'s "Driver curation"
-section.
+**On-the-fly driver generation is abandoned, not pending.** A missing
+`(provider, resource)` driver is a permanent error — `plan` never
+generates one, and no future version will. `driver_gen.py` exists and is
+tested, but **no code path calls it**; it is retained as the earliest
+building block of the deliberate `aiform driver create` flow
+(`PLAN.md`'s mechanism 2), which is a committed direction that **nobody
+is building right now**. Today a driver comes into existence exactly one
+way: a developer on this repo hand-authors it through `PROCESS.md`'s
+loop. Don't treat `driver_gen.py`'s lack of a caller as a gap to close —
+see `PLAN.md`'s "Driver curation" section.
 
 ## Non-negotiable design rules
 
@@ -60,13 +65,20 @@ to make something easier to build.
   Everything routine and repeated on the `plan` hot path runs through this
   role — it's the one that must cost zero tokens on an unchanged second run.
 - **`code-generator-model`**, default **Claude Sonnet 5** (`claude-sonnet-5`):
-  drafts a new resource driver's Python source. Only exercised by the
-  deferred on-the-fly driver-generation pipeline (`aiform/driver_gen.py`),
-  not by a normal `plan`/`apply` — see `PLAN.md`'s "Driver curation".
+  drafts a new resource driver's Python source. Exercised only by
+  `aiform/driver_gen.py`, which nothing calls; reserved for the
+  deliberate `aiform driver create` flow, not reachable from a normal
+  `plan`/`apply` — see `PLAN.md`'s "Driver curation".
 - **`code-review-model`**, default **Claude Opus 5** (`claude-opus-5`):
-  gate #1 — approving a driver (a hash-mismatched re-review today; a
-  newly-generated driver once on-the-fly generation is wired up) before
-  it's trusted for reuse.
+  gate #1 — approving a driver before it's trusted for reuse. Live today
+  on one `plan`-time path: an on-disk driver whose sha256 matches no
+  state entry that trusts it. That is both the hand-edited/upgraded
+  driver case *and* a driver never recorded in this project's state —
+  so a brand-new project's first `plan create` pays one such call
+  (`PLAN.md` §9 step 2). Note that only `apply` persists the trusted
+  hash — and only when it actually executes an action — so `plan
+  create` keeps paying that call until then. It is also the gate a
+  draft passes through inside `driver_gen.py`.
 - **`review-orchestration-model`**, default **Claude Opus 5**
   (`claude-opus-5`): gate #2 — reviewing a plan before `apply` executes
   anything destructive.
@@ -88,7 +100,7 @@ to make something easier to build.
   entry in `aiform/llm.py`, not a reason to introduce a plugin system or ABC
   hierarchy — keep it to that one seam.
 - On repeat `apply`/`plan` runs against unchanged input, the execution path
-  must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §8 step 4).
+  must make **zero** Anthropic API calls (see `PLAN.md` §5 step 5, §9 step 4).
   If you find yourself adding an LLM call inside the driver-execution path,
   stop — that call belongs in the planning phase, not here.
 
@@ -159,16 +171,16 @@ to make something easier to build.
 - Don't add abstractions, config knobs, or error handling for scenarios
   that can't happen yet. The MVP is single-provider, single-resource-kind,
   no dependency graph — build for that, not for a hypothetical future
-  multi-cloud graph engine. `PLAN.md` §9 already names what's deferred and
+  multi-cloud graph engine. `PLAN.md` §10 already names what's deferred and
   why; don't quietly start building toward it early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
   names, argument order, exception type and its two fields (`reason`,
   `unsupported_fields`), the two schema class attributes. Every future
-  generated driver depends on this contract being stable.
+  driver depends on this contract being stable.
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
   the full layout, including `tests/drivers/test_digitalocean_compute.py`
-  for the first generated driver.
+  for the first curated driver.
 
 ## Implementation order (historical)
 
@@ -189,12 +201,14 @@ provider follows the same shape:
 3. `aiform/driver.py` — the `ResourceDriver` ABC + `DriverUpdateNotSupported`,
    then `aiform/driver_gen.py` — driver generation + AST validation + gate
    #1 (`code-review-model`).
-4. `drivers/digitalocean/compute.py` — the first generated driver. Even
-   though `code-review-model` reviews it automatically, read it yourself
-   the first time; it establishes the pattern every future driver follows.
+4. `drivers/digitalocean/compute.py` — the first curated driver,
+   hand-authored through `PROCESS.md`'s loop (not generated: three real
+   `generate_driver()` attempts against it failed, which is why drivers
+   are curated at all — see `PLAN.md`'s "Driver curation"). Read it
+   yourself; it establishes the pattern every future driver follows.
 5. `aiform/planner.py`, `aiform/orchestrator.py`, `aiform/cli.py` — wire
    everything into the `plan`/`apply` commands and validate against the full
-   MVP walkthrough in `PLAN.md` §8, including the "second plan run makes
+   MVP walkthrough in `PLAN.md` §9, including the "second plan run makes
    zero Anthropic API calls" claim — actually verify that with `--verbose`
    logging or a request counter, don't just assume it.
 

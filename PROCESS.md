@@ -23,10 +23,22 @@ One pass of this loop = one module = one PR. Don't batch multiple modules
 into one pass to save time — that's exactly the "overwhelming PR" failure
 mode this process exists to avoid.
 
-1. **Spec.** First, grep `PLAN.md` §9 ("Not Yet Implemented") and §10
-   ("Planned, not yet designed in detail") for an existing entry on the
-   same topic — a new spec that duplicates or contradicts one of those
-   without noticing costs a whole separate reconciliation PR to fix
+The same rule applies to bug fixes, where the unit is an issue rather than
+a module: **one GitHub issue is closed by one PR.** A PR may close zero
+issues — process changes and chores don't need one invented — but never
+two without an explicit human waiver: the issues disclosed in the PR
+description, and the human approving with `/claude-merge-approved-multi`
+rather than the plain trigger. If an issue turns out to be
+too big for a single PR, split the *issue*; two PRs both claiming to fix
+one issue leave it half-fixed with no record of which half landed.
+`.claude/skills/github-commit-process/SKILL.md`'s "One issue, one PR"
+section is the authority; this paragraph exists so the loop reads
+completely on its own.
+
+1. **Spec.** First, grep `PLAN.md` §10 ("Not Yet Implemented", including
+   its "Planned, not yet designed in detail" subsection) for an existing
+   entry on the same topic — a new spec that duplicates or contradicts
+   one of those without noticing costs a whole separate reconciliation PR to fix
    later (this happened once: `specs/resource_tagging.md` shipped
    without checking §10's pre-existing "Resource tagging convention"
    entry, caught only by a later `/code-review` pass). If one exists,
@@ -57,7 +69,10 @@ mode this process exists to avoid.
    independent; neither blocks the other.
 6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
-   `.claude/skills/github-commit-process/SKILL.md`. CI must be green.
+   `.claude/skills/github-commit-process/SKILL.md`. A PR closes at most
+   one GitHub issue; if the pair is two issues, that needs a human waiver
+   (SKILL.md's "Closing more than one issue"), not a second exception.
+   CI must be green.
    Human reviews and approves — nothing merges without that, same rule as
    always.
 7. **Move on.** The next module's spec may treat this module's interface
@@ -94,7 +109,7 @@ Keep it short — half a page, not a design essay. Sections:
   maps to one or a few tests.
 - **Edge cases / errors** — what's explicitly handled, what raises what.
 - **Out of scope** — what this module deliberately does not do yet,
-  referencing `PLAN.md` §9 if it's a known deferred item.
+  referencing `PLAN.md` §10 if it's a known deferred item.
 
 ## Mapping onto CLAUDE.md's implementation order
 
@@ -153,7 +168,8 @@ Step 6 of the loop above says "nothing merges without human approval."
 Concretely, a merge needs **three gates, all green on the exact head SHA**:
 
 - **`human-approval`** — posted when the repo owner leaves
-  `/claude-merge-approved` as a PR comment or review body. A native GitHub
+  `/claude-merge-approved` as a PR comment or review body — or
+  `/claude-merge-approved-multi`, when the PR closes more than one issue. A native GitHub
   "Approve" review doesn't substitute: GitHub blocks a PR's author from
   approving their own PR, and every PR here is opened by the same account.
 - **`llm-review`** — means the SHA's content was read by a reviewer (Opus 5

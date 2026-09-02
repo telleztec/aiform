@@ -40,8 +40,8 @@ do routine, repeated work; two "review-tier" roles act as approval gates for
 anything expensive to get wrong:
 
 - **`intent-orchestration-model`** — parses the prose Intent section into `intent_notes[]` and categorizes each plan action (create/update/no-op) against the raw diff (`prompts/parse_intent.md`, `prompts/diff_plan.md`, §2 and §5 step 6). This is the model behind every routine `aiform plan create` call — the one that must cost zero tokens on an unchanged second run (§5 step 5, §9 step 4).
-- **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §5 step 3a). Only exercised by the deferred on-the-fly driver-generation pipeline (`aiform/driver_gen.py`) — see "Driver curation" below; not on the hot path of a normal `plan`/`apply` in the MVP.
-- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3c). In the MVP this fires live only for the `plan`-time hash-mismatch re-review case (§5 step 3) — a driver already on disk whose sha256 no longer matches its trusted record (a hand-edit, or an untrusted file) gets re-reviewed before being trusted again. It's also the gate the deferred on-the-fly generation pipeline uses once wired up.
+- **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §6). Exercised only by `aiform/driver_gen.py`, which no `plan`/`apply` or CLI path calls; it is reserved for the deliberate `aiform driver create` flow (mechanism 2), not currently being built — see "Driver curation" below. This role therefore costs nothing on a normal `plan`/`apply`.
+- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). The trusted hash is persisted by `apply`, not by `plan`, so `plan create` keeps paying that call until an `apply` has actually executed an action and written the entry (a plan that is entirely no-ops executes nothing, so it persists nothing). It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
 - **`review-orchestration-model`** — reviews the full plan before `apply` executes anything destructive: gate #2 (§5 `apply` step 2, `prompts/review_plan.md`).
 
 Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
@@ -93,19 +93,26 @@ fuller interactive session §7 describes — while mechanism 1 keeps
 building and curating the drivers aiform ships with, exactly as it does
 today.
 
-**Driver creation is never automatic, and it is never something aiform's
-own authors do on an end user's behalf.** There are two ways a driver
-becomes usable — **both permanently supported, side by side, neither
-superseding the other** — and both require either a human in this repo's
-own development loop, or (once built) an explicit, per-instance approval
-from the *aiform user* who needs the driver — never a silent, unattended
-generate-and-trust step:
+**Driver creation is never automatic.** Today it is something aiform's
+own maintainers do, and the long-term goal is that it not stay that way —
+but neither now nor later does it happen without somebody deliberately
+asking for it. There are two ways a driver becomes usable — **both
+permanently supported, side by side, neither superseding the other** — and
+both require either a human in this repo's own development loop, or (once
+built) an explicit, per-instance approval from the *aiform user* who needs
+the driver — never a silent, unattended generate-and-trust step:
 
-**MVP: drivers are curated, not generated at `plan` time.** The set of
-usable `(provider, resource)` drivers is fixed by aiform's own maintainers
-and ships as part of the aiform package itself
-(`drivers/<provider>/<resource>.py`) — not generated per end-user-project.
-Two ways a driver gets added:
+**Drivers are written ahead of time, never generated at `plan` time.**
+Both halves of that are permanent, under either mechanism below.
+
+What is *not* permanent is who authors them. Today every driver aiform
+can use is one its own maintainers built, shipping as part of the
+aiform package itself (`drivers/<provider>/<resource>.py`); mechanism 2
+is the plan for letting an end user author one into their own local
+repository of drivers (§7), from inside `aiform`, without going through
+this repo. That changes **who** may add a driver, not **when** — under
+both mechanisms authoring stays a deliberate step taken ahead of any
+`plan` run. Two ways a driver gets added:
 
 1. **Via Claude Code, now.** The same spec-first/test-first/Opus-reviewed
    development loop (`PROCESS.md`) used for every other module in this
@@ -117,7 +124,7 @@ Two ways a driver gets added:
    not by an unattended `generate_driver()` call), reviewed via
    `/code-review`, and merged through the normal PR process with human
    approval. This is how `drivers/digitalocean/compute.py` gets built.
-2. **aiform's own agentic generation — a feature of `aiform` itself, not
+2. **aiform's own agentic authoring — a feature of `aiform` itself, not
    of this repo's maintainers.** Where mechanism 1 puts a human in the
    loop with Claude Code driving this repo's own spec-first/test-first/
    reviewed process, mechanism 2 is `aiform` doing the equivalent *to
@@ -126,40 +133,55 @@ Two ways a driver gets added:
    no human author present. This is the self-service path by which
    contributors outside this repo grow the driver ecosystem over time —
    a permanent, parallel capability, not a stopgap that gets retired
-   once mechanism 1 no longer scales. Two entry points into the same
-   underlying pipeline: automatically, when `aiform`, at `plan` time,
-   notices a missing `(provider, resource)` driver and offers to
-   generate one; or proactively, via `aiform driver create` (§7).
-   Either way, the result requires the *aiform user*'s explicit,
+   once mechanism 1 no longer scales. It has exactly **one** entry
+   point: `aiform driver create` (§7), a command somebody deliberately
+   invokes. The result requires the *aiform user*'s explicit,
    per-instance approval before it's trusted — analogous to how Claude
-   Code prompts for tool-use permission — and is never trusted
-   silently. `aiform/driver_gen.py` already implements the first,
-   minimal version of this pipeline (draft → static-validate → gate #1
-   review — built, tested, and itself Opus-reviewed via the normal dev
-   loop): a single-shot draft with a combined 2-draft-attempt budget
-   (not 2 retries on top of a first attempt — see
-   `specs/driver_gen.md`), not yet the fuller interactive session §7
-   describes; §6 and §10 detail that target shape and how it relates to
-   this pipeline. What's deferred today: wiring the current pipeline
-   into `plan`/`apply` behind the approval prompt, `aiform driver
-   create`/`refresh` themselves, and the generation-reliability work
-   called out above before any of it runs unattended. **Sequencing**:
-   wiring this mechanism into the live `plan`/`apply` flow is
-   deliberately sequenced to happen only *after* the primary
-   orchestration flow (plan/diff/apply against curated drivers) is
-   stable and proven — see "MVP scope (locked)" above. `aiform/orchestrator.py`
-   and `aiform/cli.py` are both now written and wired into a working
-   `plan create`/`apply`/`destroy`/`refresh`/`show` command surface (§7),
-   exercised by both the unit suite and the live `tests/system/` suite —
-   but `driver_gen.py`'s pipeline is still not called from anywhere in
-   that flow, so the sequencing precondition itself is satisfied without
-   this mechanism having been wired in yet; the interactive/OpenAPI-driven
-   target shape (§7) remains sequenced after that baseline pipeline in turn.
-   Not yet implemented; see §10.
+   Code prompts for tool-use permission — and is never trusted silently.
 
-`aiform plan create` against a `(provider, resource)` pair with no driver on disk
-fails with a clear, actionable error in the MVP — it does not attempt
-generation. §5 below reflects this.
+   **The mid-`plan` trigger is abandoned, not deferred.** An earlier
+   version of this section gave mechanism 2 a second entry point:
+   `aiform`, at `plan` time, noticing a missing `(provider, resource)`
+   driver and offering to generate one. That is no longer the
+   direction, for two independent reasons. First, the reliability
+   retrospective above — a driver drafted with nobody present to catch
+   a wrong credentials key is precisely the failure those three
+   attempts produced. Second, and this one would stand even if
+   generation were perfectly reliable: authoring a driver is a
+   deliberate act somebody invokes, not a step that happens silently
+   inside an unrelated `plan`. A missing driver is therefore a
+   **permanent** error (§5 step 3), by design — not a gap waiting to be
+   filled in later. Don't re-propose it.
+
+   **Where this stands today.** `aiform/driver_gen.py` implements the
+   first, minimal version of mechanism 2's pipeline (draft →
+   static-validate → gate #1 review — built, tested, and itself
+   Opus-reviewed via the normal dev loop): a single-shot draft with a
+   combined 2-draft-attempt budget (not 2 retries on top of a first
+   attempt — see `specs/driver_gen.md`), not the fuller interactive
+   session §7 describes; §6 and §10 detail that target shape and how it
+   relates to this pipeline. **Nothing calls that module** — no `plan`,
+   `apply`, or CLI path reaches it, and none is meant to. It is
+   retained as the earliest building block of `aiform driver create`,
+   not as a component waiting to be wired into the plan flow.
+
+   **Mechanism 2 is not currently being built.** `aiform driver
+   create`/`refresh` don't exist, and the generation-reliability work
+   the retrospective above calls for hasn't started. It remains a
+   committed direction (see §10), sequenced to begin only *after* the
+   primary orchestration flow (plan/diff/apply against curated drivers)
+   is stable and proven — see "MVP scope (locked)" above. That
+   precondition is now largely met: `aiform/orchestrator.py` and
+   `aiform/cli.py` are both written and wired into a working `plan
+   create`/`apply`/`destroy`/`refresh`/`show` command surface (§7),
+   exercised by both the unit suite and the live `tests/system/` suite.
+   Until mechanism 2 is built, **mechanism 1 is the only way a driver
+   comes into existence.**
+
+`aiform plan create` against a `(provider, resource)` pair with no driver on
+disk fails with a clear, actionable error — permanently, not just in the
+MVP. It does not attempt generation, and no future version makes it do so.
+§5 below reflects this.
 
 ## Resource deletion: explicit only, two mechanisms
 
@@ -316,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
-│   ├── driver_gen.py                # draft/validate/review pipeline; built, not yet wired into plan/apply (deferred on-the-fly generation, see "Driver curation")
+│   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
 │   └── exceptions.py               # DriverUpdateNotSupported, ResourceNotFoundError, DriverExecutionError, PlanBlockedError
@@ -352,7 +374,7 @@ aiform/
         └── test_cli_digitalocean.py
 ```
 
-**Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system curates and reuses — everything else in `aiform/` is hand-written, static orchestration code, and in the MVP the driver itself is hand-authored too (see "Driver curation" above), not generated.
+**Driver convention**: `drivers/<provider>/<resource>.py`, where `<provider>` and `<resource>` are exactly the lowercase `provider:` and `resource:` frontmatter values from an `.aiform.md` file. MVP: `drivers/digitalocean/compute.py`. This is the *only* per-(provider, resource) file the system curates and reuses — everything else in `aiform/` is hand-written, static orchestration code, and the driver itself is hand-authored too (see "Driver curation" above), never generated at `plan` time.
 
 **State file location**: `.aiform/state.json`, overridable with `--state-file`.
 
@@ -379,7 +401,7 @@ params:                    # required — structured, resource-specific
 ---
 ```
 
-`resource: compute` is the abstract, provider-agnostic kind (§ Terminology) — never a provider-specific product name like "droplet". `params` is intentionally an open, resource-specific object — its expected shape is not fixed at the aiform.md-format level. It is validated against the target driver's `PARAM_SCHEMA` (§4). In the MVP a driver must already exist (curated — see "Driver curation" above) for `(provider, resource)`; if none does, `aiform plan create` fails with a clear error rather than accepting `params` as-is (that fallback — `params` handed to a generation prompt as ground truth for what a new driver needs to accept — is part of the deferred on-the-fly generation flow, not live today).
+`resource: compute` is the abstract, provider-agnostic kind (§ Terminology) — never a provider-specific product name like "droplet". `params` is intentionally an open, resource-specific object — its expected shape is not fixed at the aiform.md-format level. It is validated against the target driver's `PARAM_SCHEMA` (§4). A driver must already exist (curated — see "Driver curation" above) for `(provider, resource)`; if none does, `aiform plan create` fails with a clear error rather than accepting `params` as-is. Handing `params` to a generation prompt as ground truth for what a new driver needs to accept belongs to the deliberate `aiform driver create` flow (§6, §7), never to `plan create`.
 
 ### Prose "Intent" section
 
@@ -506,7 +528,8 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 - `driver.sha256` — hash of the driver source on disk at the moment
   its `code-review-model` review was recorded. On every `plan`, the
   orchestrator recomputes the on-disk hash and compares; a mismatch
-  (hand-edit, or a newer generation) invalidates the "trusted,
+  (a hand-edit, an untrusted file, or a package upgrade shipping a
+  revised curated driver) invalidates the "trusted,
   reviewed" status and forces re-review before the driver is used
   again. This is the drift-detection mechanism for the driver itself,
   not just the resource.
@@ -592,9 +615,9 @@ class ResourceDriver(ABC):
     # Declares the `params` shape this driver accepts. Used by the
     # orchestrator to validate a parsed aiform.md spec before ever
     # calling create()/update(), and shown to the code-review-model at
-    # review time (dev-time /code-review for curated drivers in the
-    # MVP; generation review once on-the-fly generation is wired up)
-    # as ground truth for what the driver claims to handle.
+    # review time (dev-time /code-review for curated drivers, and
+    # gate #1's re-review of a hand-edited one) as ground truth for
+    # what the driver claims to handle.
     PARAM_SCHEMA: dict[str, Any]
 
     # Optional, advisory only (never authoritative — update() is the
@@ -782,14 +805,13 @@ class Driver(ResourceDriver):
    - **Driver file missing** → `aiform plan create` fails immediately with a
      clear, actionable error (raises
      `aiform.exceptions.PlanBlockedError`) naming the unsupported
-     `(provider, resource)` pair — drivers are curated in the MVP (see
-     "Driver curation" above), not generated at `plan create` time. A future
-     version replaces this branch with an interactive prompt offering
-     to generate one, subject to explicit user approval before it's
-     trusted; the **Generation** and **Code-Review-Model** steps in §6
-     below describe the pipeline that prompt would drive
-     (`aiform/driver_gen.py` already implements it) — not invoked by
-     `plan create` today.
+     `(provider, resource)` pair. Drivers are written ahead of time
+     (see "Driver curation" above), never generated at `plan create`
+     time. **This is permanent, not an MVP placeholder**: no future
+     version turns this branch into an offer to generate a driver.
+     Authoring one is a separate step somebody invokes deliberately
+     (`aiform driver create`, §7) — never something `plan` triggers on
+     the user's behalf.
    - **Driver file present, but its on-disk sha256 doesn't match the
      sha256 recorded against any state entry that trusts it**
      (hand-edit, or an untrusted file dropped in from elsewhere) →
@@ -798,8 +820,11 @@ class Driver(ResourceDriver):
      read/edit/vendor the exact code that runs") an actual supported
      workflow rather than something the next `plan create` quietly discards,
      and it's the one driver-trust check that *does* run at `plan create`
-     time in the MVP. If approved, the new hash is recorded as
-     trusted. If `blocking_issues` comes back non-empty, **do not
+     time in the MVP. If approved, the driver is trusted for this run,
+     and the new hash is recorded as trusted when a subsequent `apply`
+     writes the resource's state entry — `plan create` on its own
+     persists no driver record. If `blocking_issues` comes back
+     non-empty, **do not
      overwrite** — fail `aiform plan create` with an explicit error naming
      the concerns (raises `aiform.exceptions.PlanBlockedError`); a
      hand-edit failing review means the human's edit needs fixing, not
@@ -947,14 +972,19 @@ once verified.
 
 ## 6. Driver Build (Not Yet Implemented)
 
+This section describes mechanism 2's pipeline — what happens inside a
+deliberate `aiform driver create` (§7), which nobody is building right
+now. **It is not, and will never be, something `plan`/`apply` invokes**;
+a missing driver stays an error (§5 step 3, "Driver curation" above).
+
 Not every step below is equally unbuilt. The **Generation** and **Model**
 steps describe the target, OpenAPI-fed, interactive shape mechanism 2
-("Driver curation" above) is meant to grow into over time — not what
-`driver_gen.py` implements today. The **Code-Review-Model** and
-**Approval rule** steps, by contrast, document `driver_gen.py`'s actual,
-already-built, already-tested gate #1 logic (`specs/driver_gen.md`) —
-just not yet reachable from `plan`/`apply`. See "Driver curation" for how
-the pieces relate.
+is meant to grow into over time — not what `driver_gen.py` implements
+today. The **Code-Review-Model** and **Approval rule** steps, by
+contrast, document `driver_gen.py`'s actual, already-built,
+already-tested gate #1 logic (`specs/driver_gen.md`) — reachable today
+only from that module's own API and its tests, since no command calls
+it. See "Driver curation" for how the pieces relate.
 
 1. **Generation** 
    - `create` The create command needs to point aiform to REST
@@ -967,11 +997,11 @@ the pieces relate.
      both error handling, retry, and failover decisions. In the MVP we
      will seek to exclusively use openAPI specifications. 
 1. Code-Review-Model
-   - **Gate #1 — `code-review-model`** (`llm.review_driver()` — used live today only by 
-   the re-review branch above; also the gate for the driver generation path
+   - **Gate #1 — `code-review-model`** (`llm.review_driver()` — used live today only by
+   the re-review branch above; also the gate `driver_gen.py` runs a draft through)
    - The `code-review-model` (default `claude-opus-5`) reviews the full source — the
-   existing on-disk file in the live re-review case, or a freshly generated draft 
-   once generation is wired up — against `prompts/review_driver.md`'s checklist 
+   existing on-disk file in the live re-review case, or a freshly drafted one inside
+   `driver_gen.py` — against `prompts/review_driver.md`'s checklist 
    (idempotent `delete`, correct credential sourcing, no LLM calls, sane 
    in-place-vs-replace logic in `update`, error handling that raises rather than 
    swallows). Structured verdict, via `llm.review_driver(driver_source_text)`:
@@ -998,21 +1028,21 @@ the pieces relate.
         via Anthropic).
 
 1. **Approval rule**: a review with `approved: true` is trusted in place
-   (live re-review case) or, once generation is wired up, written to
+   (live re-review case) or, in `aiform driver create`, written to
    disk — **not** merely a `blocking_issues`-free one: the structured
    verdict allows `approved: false` with empty `blocking_issues` (a
    review that declines to approve without citing a specific blocker),
    and that must still count as non-approval, never a pass. Non-empty
    `concerns` on an approved result are printed as advisory warnings
    but do not block. The re-review path never retries automatically.
-   (For the deferred generation path: `not review.approved` → retry
-   generation once with `review.blocking_issues or review.concerns`
-   fed back to the `code-generator-model` — max 2 attempts total,
-   shared across a static-validation failure and a gate #1
-   non-approval, per `specs/driver_gen.md` — then fail with an explicit
-   error if still blocked, asking the user to hand-fix or hand-author
-   the driver — this is `driver_gen.py`'s existing, tested behavior,
-   just not reachable from `plan` yet.)
+   (Inside `driver_gen.py`: `not review.approved` → retry generation
+   once with `review.blocking_issues or review.concerns` fed back to
+   the `code-generator-model` — max 2 attempts total, shared across a
+   static-validation failure and a gate #1 non-approval, per
+   `specs/driver_gen.md` — then fail with an explicit error if still
+   blocked, asking the user to hand-fix or hand-author the driver. That
+   is existing, tested behavior; it just has no caller, because the
+   command that would call it isn't built.)
 
 1. **Model** 
    - The `code-generator-model` (default `claude-sonnet-5`,
@@ -1028,8 +1058,8 @@ the pieces relate.
      `delete` with the right argument names, and no `import anthropic`
      / `os.environ.get("ANTHROPIC` pattern is present.
 1. **Testing**
-   - Once gate #1 approves a freshly-generated driver, the generation
-     process includes a system test — run only after approval, never
+   - Once gate #1 approves a freshly-drafted driver, `aiform driver
+     create` includes a system test — run only after approval, never
      before, consistent with "untrusted code isn't executed pre-review"
      above — that verifies the generated operations actually work
      against the real CSP API. The system test is part of the generated
@@ -1076,10 +1106,12 @@ aiform plan show [--state-file PATH]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
     
---- Not yet implemented below (§6, mechanism 2's target interactive
-    shape — see "Driver curation"); driver_gen.py implements only the
-    minimal draft/validate/review pipeline these commands are meant to
-    grow into, and is not yet wired into any of them. ---
+--- Not yet implemented below, and not currently being built (§6,
+    mechanism 2's target interactive shape — see "Driver curation").
+    driver_gen.py implements only the minimal draft/validate/review
+    pipeline these commands are meant to grow into; nothing calls it.
+    These are the ONLY way driver generation is ever reached — `plan`
+    and `apply` never generate a driver. ---
 
 aiform driver create [--reference-page URL | --reference-file PATH-YML]
     Starts an AI coding session with the user, prompting the user if there are
@@ -1147,9 +1179,12 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    recorded against any state entry that trusts it") — here it's
    because nothing has been recorded at all yet, not because the file
    changed. One gate #1 (`code-review-model`) re-review call approves
-   the curated driver's on-disk content as-is and records its hash as
-   trusted, from this point forward. Diff shows `create` (step 6's
-   `intent-orchestration-model` categorization call).
+   the curated driver's on-disk content as-is. Note that `plan create`
+   itself persists no driver-trust record — the approval rides on the
+   plan and is written to state by step 3's `apply`, so re-running
+   `plan create` before step 3 pays the gate #1 call again. Diff shows
+   `create` (step 6's `intent-orchestration-model` categorization
+   call).
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
    `driver.create(name, params, credentials)` — a real DO operation, as
@@ -1184,27 +1219,33 @@ functionality this project is committing to build later.
 Static API keys are long-lived secrets you store and rotate by hand. Workload identity
 federation uses short-lived tokens issued by your cloud or CI provider. No keys in env vars,
 config files, or secret managers Tokens rotate automatically and expire in minutes
-- **Driver set is curated and closed in the MVP.** Only `(provider,
-  resource)` pairs aiform's own maintainers have hand-built via
-  `PROCESS.md`'s dev loop are usable — `digitalocean`/`compute` is the only
-  one. A user needing an unsupported pair has no self-service path
-  today; they'd have to request it (or contribute it)
-  upstream. On-the-fly generation with an explicit per-use user
-  approval prompt is the planned fix (see "Driver curation" above),
-  deferred specifically because three real generation attempts
-  (documented there) showed it isn't reliable enough yet to run
-  unattended — that's a reliability problem to solve, not just an
+- **Driver set is curated and closed.** Only `(provider, resource)`
+  pairs aiform's own maintainers have hand-built via `PROCESS.md`'s dev
+  loop are usable — `digitalocean`/`compute` is the only one. A user
+  needing an unsupported pair has no self-service path today; they'd
+  have to request it (or contribute it) upstream. The planned fix is
+  the **deliberate** self-service authoring flow — `aiform driver
+  create` (mechanism 2, "Driver curation" above and §7), a command
+  somebody invokes on purpose. **On-the-fly generation inside `plan` is
+  not the fix and is not deferred work — it is abandoned**, both
+  because three real generation attempts (documented under "Driver
+  curation") showed drafting isn't reliable enough to run unattended,
+  and because driver authoring is a deliberate act rather than a
+  side-effect of planning. The reliability problem is real and still
+  has to be solved before mechanism 2 ships at all; it is not merely an
   engineering task to wire up.
-- **Self-service driver creation is not implemented.** Mechanism 2
-  ("Driver curation" above, and §6) has a built, tested first stage
-  (`aiform/driver_gen.py`'s draft/validate/review pipeline) but nothing
-  wires it into `plan`/`apply` behind the approval prompt yet, and
-  `aiform driver create`/`refresh` (§7) don't exist — see the "planned,
-  not yet designed" item below for that target shape. Until any of that
-  lands, a new `(provider, resource)` pair is added exactly one way: a
-  human (in this repo, via `PROCESS.md`'s loop) hand-authors it via
-  mechanism 1, which keeps running unchanged regardless of mechanism 2's
-  progress.
+- **Self-service driver creation is not implemented, and is not
+  currently being built.** Mechanism 2 ("Driver curation" above, and
+  §6) has a built, tested first stage — `aiform/driver_gen.py`'s
+  draft/validate/review pipeline — that **no code path calls**. It is
+  retained as the earliest building block of `aiform driver
+  create`/`refresh` (§7), which don't exist; see the "planned, not yet
+  designed" item below for that target shape. It is deliberately *not*
+  waiting to be wired into `plan`/`apply` — that wiring is abandoned,
+  per the bullet above. Until mechanism 2 is actually built, a new
+  `(provider, resource)` pair is added exactly one way: a human (in
+  this repo, via `PROCESS.md`'s loop) hand-authors it via mechanism 1,
+  which keeps running unchanged regardless of mechanism 2's progress.
 - **Driver submission and publishing is not implemented.** There is
   currently no way for someone outside this repo to contribute a
   driver and have other aiform users install and trust it. A
@@ -1409,8 +1450,8 @@ entry's own note below.
   inline status-code allowlist local to this single driver — flagged
   during `/code-review` on PR #56 as valid but premature to generalize
   with only one driver in the codebase (`aiform/driver_gen.py`'s
-  generation pipeline, the path that would produce a second/third
-  driver, is itself still deferred). When a second or third driver
+  pipeline, the path that would produce a second/third driver without a
+  human author, has no caller and isn't being built). When a second or third driver
   actually gets built, this "which HTTPError statuses mean 'genuinely
   rejected' vs. 'transient, don't misclassify'" judgment call should
   move out of each driver's own `update()`/`create()` and into whatever
@@ -1461,8 +1502,11 @@ entry's own note below.
   entry was cross-referenced.
 - **`aiform driver create`/`refresh`/`show`/`delete`/`publish` — the
   target interactive shape of mechanism 2** ("Driver curation" above,
-  §6). §7 settles the CLI surface: `driver` is a noun with its own verb
-  lifecycle (`create`, `refresh`, `show`, `delete`, `publish`).
+  §6), committed to but not started. §7 settles the CLI surface:
+  `driver` is a noun with its own verb lifecycle (`create`, `refresh`,
+  `show`, `delete`, `publish`) — deliberately a separate command
+  surface from `plan`, so that authoring a driver is never reachable as
+  a side-effect of planning one.
   `create`/`refresh` are meant to be genuinely interactive — modeled on
   how Claude Code builds code, a back-and-forth session that clarifies
   ambiguities and checkpoints for permission at major steps, drawing on
