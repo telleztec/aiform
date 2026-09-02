@@ -28,12 +28,10 @@ counter, don't just assume it") — `_CountingClient` and the `"[verbose]
 (`_report_verbose_calls`) are exactly that counter; this suite is its
 first real caller against a live API.
 
-If mechanism 2 (`aiform driver create`, `PLAN.md`'s "Driver curation")
-is ever built, the "system test" §6 describes for a freshly drafted
+Once mechanism 2 (`aiform driver create`, `PLAN.md`'s "Driver curation")
+is built, the "system test" §6 describes for a freshly drafted
 driver is a variant of this same suite pointed at that driver instead of
-the curated one — not a separate concept. Note that it would run under
-`aiform driver create`, never under `plan`/`apply`, which never generate
-a driver. That variant is not designed here; see Out of scope.
+the curated one — not a separate concept.
 
 ## Interface
 
@@ -432,14 +430,10 @@ reliably being present.
   built as their own small `PROCESS.md` pass, not part of implementing
   this spec's `tests/system/test_cli_digitalocean.py`.
 - **The generated-driver variant of this same system test** (`PLAN.md`
-  §6: run only after gate #1 approves a freshly drafted driver, as part
-  of that driver's own generated test suite) — not designed here;
-  blocked on mechanism 2 (`aiform driver create`) being built at all,
-  which nobody is doing right now (`PLAN.md` §10, "Self-service driver
-  creation is not implemented, and is not currently being built"). If it
-  lands, it likely reuses this suite's fixtures/teardown pattern against
-  a generated driver module instead of the curated one, rather than
-  inventing a second mechanism.
+  §6: run only after gate #1 approves a freshly generated driver, as
+  part of that driver's own generated test suite) — not designed here;
+  blocked on mechanism 2 being wired into `plan`/`apply` at all
+  (`PLAN.md` §10, "Self-service driver creation is not implemented").
 - **A second provider or resource kind.** MVP is `digitalocean`/`compute`
   only (`PLAN.md` §10, "Only one resource kind is implemented") — this
   suite tests exactly that one `(provider, resource)` pair.
