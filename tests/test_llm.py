@@ -168,12 +168,12 @@ class TestNoCredentialsInThisFile:
 
 # The direct-API client under every name it answers to: Client is the same
 # object as Anthropic, and the Async pair takes the same redirect default.
-# NOT every client class the SDK exports -- 0.120.2 has 16 at top level, the
-# other 12 being the AnthropicBedrock/Vertex/Foundry/AWS family and their
-# async twins. Those are deliberately absent: no MODEL_SOURCES entry
-# constructs one, and CLAUDE.md says not to build for a source that does not
-# exist yet. A guard entry can arrive with the source that needs it -- until
-# then this check would not catch `anthropic.AnthropicBedrock(...)`.
+# NOT every client the SDK exports: 0.120.2 also exports the
+# AnthropicBedrock/Vertex/Foundry/AWS family and their async twins, and how
+# many there are varies across the version range pyproject.toml permits.
+# Those are deliberately absent -- no MODEL_SOURCES entry constructs one --
+# so this check would not catch `anthropic.AnthropicBedrock(...)`. A guard
+# entry can arrive with the source that needs it.
 _SDK_CLIENT_NAMES = frozenset({"Anthropic", "AsyncAnthropic", "Client", "AsyncClient"})
 
 

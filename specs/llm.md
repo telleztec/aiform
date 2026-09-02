@@ -367,9 +367,11 @@ anywhere in `aiform/` is the one in this function, and that no module in
 `aiform/` imports the SDK under an alias or with `from anthropic import ...`,
 which is what leaves that call reachable only through the module name. It is
 a regression guard for a second module quietly constructing one, not an
-airtight sandbox: a rebound local, a `getattr`, and the SDK's twelve other
+airtight sandbox: a rebound local, a `getattr`, and the SDK's other
 top-level client classes (the Bedrock/Vertex family, which no
-`MODEL_SOURCES` entry constructs) all pass it. The test names its own gaps.
+`MODEL_SOURCES` entry constructs — how many there are varies across the
+`anthropic` range `pyproject.toml` permits) all pass it. The test names its
+own gaps.
 
 ### `_anthropic_call(...)` (private)
 
