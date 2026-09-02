@@ -13,7 +13,16 @@ dependencies = [
     # verify_api_key probes, only needs 0.41 -- the lower of the two would
     # let init report a green key and every plan create then die on an
     # unexpected-keyword TypeError.)
-    "anthropic>=0.77",
+    # The <1 cap is load-bearing, not caution. anthropic 1.x swapped its
+    # HTTP stack from httpx to httpx2, so DefaultHttpxClient subclasses
+    # httpx2.Client there. tests/test_llm.py proves the #97 redirect leak is
+    # closed by injecting an httpx.MockTransport into that client; against a
+    # 1.x client the transport is foreign, the request fails as an
+    # APIConnectionError, and the test passes identically with
+    # follow_redirects=True -- a silent false green on the one test that
+    # exists to stop a token leak recurring. Lift this only together with
+    # porting that test to whichever stack the SDK then uses.
+    "anthropic>=0.77,<1",
 ]
 
 [project.scripts]
@@ -24,6 +33,13 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.16",
     "pre-commit>=4.0",
+    # tests/test_llm.py drives verify_api_key's redirect refusal through an
+    # httpx.MockTransport. Declared explicitly rather than leaned on as a
+    # transitive of anthropic: it is one only while the <1 cap above holds,
+    # and an undeclared import would break the suite the moment that changes.
+    # It must stay the same stack anthropic uses, or the mock is foreign --
+    # see the cap's comment.
+    "httpx>=0.28",
 ]
 
 [tool.pytest.ini_options]

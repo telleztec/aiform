@@ -426,6 +426,7 @@ Returns a `KeyCheck` (`aiform/models.py`) — `state` plus an optional
 | `KeyState.OK` | probe returned 2xx | `None` |
 | `KeyState.MISSING` | `ANTHROPIC_API_KEY` unset | `None` |
 | `KeyState.REJECTED` | API returned **400, 401 or 403** (`config.ANTHROPIC_KEY_VERDICT_STATUSES`) | the API's own error message |
+| `KeyState.UNVERIFIED` | API returned **3xx** | `"unexpected redirect (HTTP {code})"` — canned, never the body |
 | `KeyState.UNVERIFIED` | any other status, or unreachable | the API's error, or the connection error |
 
 `REJECTED` covers `AuthenticationError` (401), `PermissionDeniedError`
@@ -444,6 +445,41 @@ key that then works fine on the `plan`/`apply` path. None of these may ever
 be reported as `REJECTED`; telling a user to rotate a working credential is
 the same class of error as passing a broken one. Constructed
 with `max_retries=0` and the given `timeout` so `init` cannot hang.
+
+**A redirect is refused, not followed** — the client is constructed with
+`follow_redirects=False` (via `anthropic.DefaultHttpxClient`, which keeps the
+SDK's own connection limits and keepalive socket options). This is the same
+rule the provider probe applies in `specs/cli.md`, and it needs stating
+separately because the reasoning recorded there does not carry over: httpx
+strips `Authorization` on a cross-origin redirect, but this SDK authenticates
+with **`x-api-key`**, a custom header httpx does not strip. Left at the SDK's
+default the probe would follow a 3xx from a captive portal or a hostile
+`ANTHROPIC_BASE_URL`, hand the key to the `Location` target, and then report
+that target's 2xx as `OK` — a leaked credential and a green check for it.
+
+Be precise about what this does *not* buy, since an unqualified sentence
+here is what hid #97. A hostile `ANTHROPIC_BASE_URL` receives `x-api-key`
+on the **first** hop, with no redirect involved; refusing 3xx stops it
+recruiting a *second* recipient and nothing more. The base URL is trusted
+input by construction — the `401` note below is the other half of that
+same trust. Against a captive portal, which intercepts a request aimed at
+the real API, the refusal is the whole defence.
+
+The `detail` for a 3xx is **canned**, not the API's error message: the body
+of a redirect belongs to whoever sent it, and `init` prints this string.
+
+Known and deliberately not fixed here: the **non**-3xx paths still echo the
+API's own `error.message` verbatim, unbounded and unredacted, where the
+provider probe caps the read (`_MAX_PROBE_BODY`) and redacts
+(`_redact(detail, token)`). A hostile `ANTHROPIC_BASE_URL` answering `401`
+therefore still chooses what `init` prints. Recorded rather than left
+implicit — an unqualified sentence in `specs/cli.md` is precisely what
+hid #97 — and the redaction half is in tension with CLAUDE.md's rule that
+`llm.py` never handles the key value.
+
+Both halves apply only to the client this function builds. An injected
+`client` carries its own transport configuration — its own redirect policy
+exactly as it carries its own `timeout` — and cannot be hardened from here.
 
 **This function takes no `credentials` parameter and introduces no
 `credentials` identifier** — the SDK resolves `ANTHROPIC_API_KEY` from

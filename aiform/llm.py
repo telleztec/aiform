@@ -300,27 +300,44 @@ def verify_api_key(
     api_key on an injected client -- is therefore reported MISSING by
     design, not probed.
 
-    `timeout` applies only to the client this builds; an injected `client`
-    carries its own. Nothing secret-bearing is accepted as a parameter,
-    which is what keeps this file's grep-verifiable property (CLAUDE.md)
-    intact.
+    `timeout` applies only to the client this builds, and so does its
+    refusal to follow redirects; an injected `client` carries its own
+    transport config and cannot be hardened from here. Nothing
+    secret-bearing is accepted as a parameter, which is what keeps this
+    file's grep-verifiable property (CLAUDE.md) intact.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return KeyCheck(state=KeyState.MISSING)
 
-    probe = client or anthropic.Anthropic(timeout=timeout, max_retries=0)
+    # follow_redirects defaults to True in the SDK's httpx client, and this
+    # request carries x-api-key. httpx strips Authorization on a cross-origin
+    # redirect but never a custom header, so a 3xx from a captive portal --
+    # or from a hostile ANTHROPIC_BASE_URL -- would hand the key to the
+    # Location target (#97). This bounds the recipients to one: a hostile
+    # base URL already holds the key from the first hop, which no redirect
+    # policy undoes. DefaultHttpxClient rather than a bare httpx.Client
+    # keeps the SDK's own connection limits and keepalive socket options.
+    probe = client or anthropic.Anthropic(
+        timeout=timeout,
+        max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(follow_redirects=False),
+    )
     try:
         probe.models.list(limit=1)
     except anthropic.APIStatusError as exc:
-        # Mirrors the provider probe's status-classification rule, and only
-        # that: an explicit verdict status blames the credential, everything
-        # else leaves it unverified. A 404 or 405 means the endpoint is
-        # wrong -- a base-URL gateway that does not proxy /v1/models -- not
-        # the key. cli.py's redirect refusal is the piece still missing
-        # here, not one this probe does without: the SDK follows a redirect
-        # and carries x-api-key to the target (#97). What does land here is
-        # the 3xx httpx declines to follow -- no Location header, or a 300
-        # -- and the default leaves it unverified, as cli.py does.
+        # Mirrors the provider probe's status-classification rule: an
+        # explicit verdict status blames the credential, everything else
+        # leaves it unverified. A 404 or 405 means the endpoint is wrong --
+        # a base-URL gateway that does not proxy /v1/models -- not the key.
+        if 300 <= exc.status_code < 400:
+            # The refused redirect, and the 3xx httpx declines to follow on
+            # its own (no Location, or a 300), land here alike. The detail is
+            # canned rather than _api_error_detail's: the body belongs to
+            # whoever sent the 3xx, and this string is printed by init.
+            return KeyCheck(
+                state=KeyState.UNVERIFIED,
+                detail=f"unexpected redirect (HTTP {exc.status_code})",
+            )
         if exc.status_code in config.ANTHROPIC_KEY_VERDICT_STATUSES:
             return KeyCheck(state=KeyState.REJECTED, detail=_api_error_detail(exc))
         return KeyCheck(state=KeyState.UNVERIFIED, detail=_api_error_detail(exc))
@@ -328,8 +345,15 @@ def verify_api_key(
         # APIConnectionError and its timeout/DNS subclasses land here.
         # Offline is never a verdict on the key.
         return KeyCheck(state=KeyState.UNVERIFIED, detail=str(exc) or type(exc).__name__)
-
-    return KeyCheck(state=KeyState.OK)
+    else:
+        return KeyCheck(state=KeyState.OK)
+    finally:
+        # Passing http_client swaps the SDK's SyncHttpxClientWrapper -- whose
+        # __del__ closes the pool -- for a plain client that has none, so the
+        # probe's socket would otherwise outlive it. Only the client this
+        # function built is its to close; an injected one is the caller's.
+        if client is None:
+            probe.close()
 
 
 def _api_error_detail(exc: anthropic.APIStatusError) -> str:
