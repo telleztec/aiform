@@ -432,7 +432,7 @@ reliably being present.
 - **The generated-driver variant of this same system test** (`PLAN.md`
   §6: run only after gate #1 approves a freshly generated driver, as
   part of that driver's own generated test suite) — not designed here;
-  blocked on mechanism 2 being wired into `plan`/`apply` at all
+  blocked on mechanism 2 (`aiform driver create`) being built at all
   (`PLAN.md` §10, "Self-service driver creation is not implemented").
 - **A second provider or resource kind.** MVP is `digitalocean`/`compute`
   only (`PLAN.md` §10, "Only one resource kind is implemented") — this
