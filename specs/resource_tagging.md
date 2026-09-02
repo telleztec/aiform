@@ -211,12 +211,13 @@ prerequisite before implementation, not an afterthought.
   inside the driver, invisible to the diff, avoids that failure mode
   structurally rather than by convention.
 
-  A second consequence of the same fix, in this design's favour:
-  `update()` computes its tag removals from `current`, which is already
-  marker-stripped by `_tags_for_attributes`. The marker is therefore
-  never in the `remove` set and cannot be un-assigned by an ordinary
-  tags edit — the invariant holds through the in-place path without
-  needing a special case there. **This also means the feature is
+  A second consequence of the same fix, in this design's favour — stated
+  for when these helpers land, since none of them exist yet:
+  `update()` computes its tag removals from `current`, and once
+  `_tags_for_attributes` strips the marker out of that value, the marker
+  can never appear in the `remove` set. So an ordinary tags edit will
+  not be able to un-assign it, and the in-place path will need no
+  special case of its own. **This also means the feature is
   intentionally not a backfill mechanism** — see Out of scope.
 - **Review checklist follow-up required, not optional.** A driver whose
   `create()` calls `_tags_for_create` but whose `read()`/`update()`
@@ -225,7 +226,7 @@ prerequisite before implementation, not an afterthought.
   gate #1 (`code-review-model`) needs to catch, not something any
   existing static check covers — `prompts/review_driver.md` needs a new
   numbered checklist item alongside its existing "urllib.request only"
-  item (item 8) and idempotent-delete item (item 3): a driver that
+  item (item 9) and idempotent-delete item (item 3): a driver that
   attaches the marker on create but leaks it back out anywhere (or
   strips a tag it never attached) is a `blocking_issues` entry, not a
   `concerns` one. Not written in this spec — a small, separate edit to
