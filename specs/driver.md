@@ -85,7 +85,8 @@ in Behavior below.
   still-abstract method(s).
 - `LIKELY_REPLACE_FIELDS` defaults to `[]` on the base class. A subclass
   that doesn't override it inherits that empty list; one that does
-  (`LIKELY_REPLACE_FIELDS = ["image", "region"]`, per §4's example driver)
+  (`LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys",
+  "monitoring"]`, per §4's example driver)
   shadows it with its own class attribute. This default is a **shared**
   class attribute — a driver (or `driver_gen.py`) must
   reassign it, never mutate it in place (`.append(...)`), or it corrupts
@@ -118,6 +119,19 @@ in Behavior below.
   `specs/digitalocean_compute.md` for the full worked case, including
   why `backups` — also affected, but for a different reason — is fixed
   differently (in `read()` itself, not via carry-forward).
+- **`update()` ordering requirement.** A driver must not raise
+  `DriverUpdateNotSupported` after mutating anything other than a power
+  state the same call restores. `orchestrator.py`'s `apply_plan()`
+  answers that exception with the single-resource review and a
+  `Replace ...?` confirmation, and a declined confirmation returns
+  `aborted` having written nothing to state — so a field already changed
+  on the CSP side is live and untracked, with no record that it moved.
+  A driver applying several fields in one `update()` must therefore
+  attempt the one that can still be refused first.
+  `drivers/digitalocean/compute.py` orders `size` ahead of `tags` and
+  `backups` on that basis (`specs/digitalocean_compute.md`), and its
+  test suite asserts it mechanically rather than trusting the ordering
+  to survive a future edit.
 - `PARAM_SCHEMA` is a bare type annotation with no default — **not** an
   `@abstractmethod`, so Python's `abc` machinery does not enforce its
   presence at instantiation time. A subclass that omits it can still be

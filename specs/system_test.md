@@ -184,13 +184,40 @@ independent, in its own test function with its own `tmp_path`.
    `llm.py`), not something this test asserts via output; instead
    assert state's attributes match a direct `read()` against the live
    droplet.
-6. **In-place update (size only)** — edit the fixture's `.aiform.md` to
-   change only `size` to a different valid size; `plan create` shows an
-   `update` action (not `create`/`destroy`); `plan apply --yes` drives
-   `drivers/digitalocean/compute.py`'s resize path (power_off → resize
-   `disk: false` → power_on) against the real API; assert the droplet's
-   size actually changed (direct `GET`) and its `id` is unchanged
-   (proves this was an in-place update, not a replace).
+6. **In-place update**, in two parts against the same droplet — both
+   assert the `id` is unchanged, which is what proves an in-place
+   update rather than a replace.
+   - **6a, size only** — edit the fixture's `.aiform.md` to change only
+     `size` to a different valid size; `plan create` shows an `update`
+     action (not `create`/`destroy`); `plan apply --yes` drives
+     `drivers/digitalocean/compute.py`'s resize path (power_off →
+     resize `disk: false` → power_on) against the real API; assert the
+     droplet's size actually changed (direct `GET`).
+   - **6b, tags only** — add one extra tag alongside the fixture's
+     `aiform-system-test` sweep tag (`write_aiform_md`'s `extra_tags`,
+     which never displaces that one). `plan create` must show `update`
+     **without** `(likely replace)`, and the apply must leave the
+     droplet's `id` untouched with both tags live on it. This is the
+     regression guard for issue #77, where any diff that was not
+     exactly `["size"]` destroyed and recreated the droplet — the
+     precise Terraform `ForceNew` pathology `README.md` names as the
+     reason aiform exists. `--yes` cannot paper over a regression here:
+     the mid-apply `Replace ...?` confirmation is not skippable by it
+     (`orchestrator.py`'s `apply_plan()`), so a driver that still
+     forced a replace fails this apply outright on a non-TTY rather
+     than quietly recreating the droplet. Then re-run `plan create` with
+     the file untouched and assert `= <key>: no-op`: `tags` is compared
+     as an ordered list on both sides of the diff
+     (`specs/digitalocean_compute.md`'s caveat under `update()`), so if
+     DigitalOcean ever returns tags in an order other than the one they
+     were submitted in, this is where it surfaces — as a failure here
+     rather than as a plan that silently never converges and pays an
+     `intent-orchestration-model` call on every run. Mocks cannot answer
+     that question; only the real API can.
+   - The extra tag is a fixed name, not a per-run unique one: assigning
+     a tag creates a tag object on the account, and a unique name per
+     run would accumulate them indefinitely. Tag objects are not swept
+     by the orphan cleanup, which is scoped to droplets.
 7. **Forced replace (region or image)** — edit `.aiform.md` to change
    `region` or `image` (both in `LIKELY_REPLACE_FIELDS`); `plan create`
    flags it as a likely-replace; `plan apply --yes` triggers gate #2

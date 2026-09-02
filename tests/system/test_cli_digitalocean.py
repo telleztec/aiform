@@ -21,6 +21,7 @@ from drivers.digitalocean import compute as do_compute
 from tests.system.conftest import (
     ALTERNATE_REGION,
     ALTERNATE_SIZE,
+    SYSTEM_TEST_TAG,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
     live_token,
@@ -30,6 +31,10 @@ from tests.system.conftest import (
 )
 
 pytestmark = pytest.mark.system
+
+# Fixed rather than per-run: assigning a tag creates a tag object on the
+# account, and a unique one per run would accumulate them forever.
+IN_PLACE_TAG = "aiform-system-test-inplace"
 
 
 def _resource_key(name: str) -> str:
@@ -153,7 +158,7 @@ class TestFullLifecycleSequence:
         assert st.resources[key].attributes["region"] == live["region"]["slug"]
         assert st.resources[key].attributes["size"] == live["size_slug"]
 
-        # Case 6: in-place update (size only).
+        # Case 6a: in-place update (size only).
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
         code = cli.main(["plan", "create", "--state-file", str(state_path)])
         assert code == 0
@@ -166,6 +171,48 @@ class TestFullLifecycleSequence:
         assert live is not None
         assert live["size_slug"] == ALTERNATE_SIZE
         assert str(live["id"]) == droplet_id  # in-place: id unchanged
+
+        # Case 6b: in-place update (tags only) -- the regression guard for
+        # issue #77, where any diff that wasn't exactly ["size"] destroyed
+        # and recreated the droplet. Two things must hold: `plan` must not
+        # predict a replace, and the droplet id must survive the apply.
+        # --yes cannot mask a regression here: the mid-apply "Replace ...?"
+        # confirmation is not skippable by it, so a driver that still forced
+        # a replace would fail this apply outright on a non-TTY.
+        write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE, extra_tags=[IN_PLACE_TAG])
+        code = cli.main(["plan", "create", "--state-file", str(state_path)])
+        assert code == 0
+        tags_plan = capsys.readouterr().out
+        assert f"~ {key}: update" in tags_plan
+        # Model output, not driver output: likely_replace comes verbatim from
+        # the intent-orchestration model (planner.py), which is only *hinted*
+        # by LIKELY_REPLACE_FIELDS and can in principle flag an unhinted
+        # field. Case 7 already depends on the mirror of this assertion. If
+        # this line ever fails while the two id assertions below pass, the
+        # driver is fine and the plan wording is the thing to look at -- a
+        # spurious `true` only routes the update through the pre-apply
+        # review, it does not cause a replace.
+        assert "(likely replace)" not in tags_plan
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        captured = capsys.readouterr()
+        _assert_ok(code, captured, "case 6b: tags-only in-place apply")
+
+        live = get_droplet_or_none(token, droplet_id)
+        assert live is not None
+        assert str(live["id"]) == droplet_id  # in-place: the droplet survives
+        assert sorted(live["tags"]) == sorted([SYSTEM_TEST_TAG, IN_PLACE_TAG])
+        assert state.load(state_path).resources[key].id == droplet_id
+
+        # And it must converge. `tags` is compared as a list, so if DO ever
+        # returns the same tags in a different order than they were
+        # submitted, this plan reports `update` again -- forever, one
+        # intent-orchestration-model call per run. Mocks cannot answer
+        # whether DO preserves order; this assertion makes the real API
+        # answer it. Case 4 checks the same property for the initial create.
+        code = cli.main(["plan", "create", "--state-file", str(state_path)])
+        assert code == 0
+        assert f"= {key}: no-op" in capsys.readouterr().out
 
         # Case 7: forced replace (region).
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE, region=ALTERNATE_REGION)

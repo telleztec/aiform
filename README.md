@@ -68,8 +68,10 @@ All of the core modules are now built and tested against their specs:
 along with `plan create`, `plan apply`, `plan destroy`, `plan refresh`, and
 `plan show` — aiform says "hello world" against DigitalOcean, creating,
 refreshing, resizing, and destroying droplets. In-place updates are narrower
-than the pitch above suggests: the curated driver resizes a droplet in place,
-and any other changed field forces a replace.
+than the pitch above suggests: the curated driver applies `size`, `tags` and
+`backups` to a live droplet, while a change to `region`, `image`, `ssh_keys`
+or `monitoring` forces a replace — those four have no DigitalOcean API that
+could apply them without rebuilding the droplet.
 
 MVP scope is intentionally narrow: one cloud provider (DigitalOcean), one
 resource type (a droplet). Prove the loop end to end before expanding.

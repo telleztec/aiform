@@ -742,7 +742,7 @@ class Driver(ResourceDriver):
         "required": ["region", "size", "image"],
         "additionalProperties": True,
     }
-    LIKELY_REPLACE_FIELDS = ["image", "region"]
+    LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys", "monitoring"]
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def create(self, name, params, credentials): ...
