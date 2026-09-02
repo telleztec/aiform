@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The hand-written contract every generated `(provider, resource)` driver
+The hand-written contract every `(provider, resource)` driver
 implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
 driver's internals, only the four methods below. Pure interface + one
@@ -14,10 +14,10 @@ import logic.
 code defines it inside `driver.py`, alongside `ResourceDriver`. Per
 `CLAUDE.md`'s "follow the `ResourceDriver` interface in `PLAN.md` §4
 exactly," this spec treats §4 as authoritative: `DriverUpdateNotSupported`
-is defined here, in `driver.py`. `exceptions.py` (not yet built) can
-re-export it later if convenient; §1's comment is stale and should be
-corrected whenever `exceptions.py` is actually written, not silently
-worked around.
+is defined here, in `driver.py`, and that is where it lives today.
+`exceptions.py` has since been written and does *not* re-export it, so
+§1's comment remains stale — still to be corrected (or the re-export
+added), not silently worked around.
 
 **Second flagged discrepancy, now resolved**: `create()`'s original
 two-argument signature (`params`, `credentials`) had no way for a driver
@@ -87,7 +87,7 @@ in Behavior below.
   that doesn't override it inherits that empty list; one that does
   (`LIKELY_REPLACE_FIELDS = ["image", "region"]`, per §4's example driver)
   shadows it with its own class attribute. This default is a **shared**
-  class attribute — a driver (or `driver_gen.py`, once built) must
+  class attribute — a driver (or `driver_gen.py`) must
   reassign it, never mutate it in place (`.append(...)`), or it corrupts
   the inherited empty list for every other driver that hasn't overridden
   it yet.
@@ -125,7 +125,7 @@ in Behavior below.
   `instance.PARAM_SCHEMA`) without it having been set raises a plain
   `AttributeError`, at access time, not at class-definition or
   instantiation time. Enforcing "every driver declares a schema" is
-  `driver_gen.py`'s static-validation job (not built yet), not this
+  `driver_gen.py`'s static-validation job, not this
   module's — matching §4's own framing ("used by the orchestrator to
   validate... shown to the code-review-model... as ground truth").
 - `DriverUpdateNotSupported(reason, unsupported_fields=None)`:
@@ -146,7 +146,7 @@ in Behavior below.
 - `PARAM_SCHEMA`/`LIKELY_REPLACE_FIELDS` are never validated for shape by
   this module (e.g. nothing here checks `PARAM_SCHEMA` is a well-formed
   JSON Schema) — that's `driver_gen.py`'s and the orchestrator's
-  responsibility, once built, not `driver.py`'s.
+  responsibility, not `driver.py`'s.
 - `DriverUpdateNotSupported(reason, unsupported_fields=[])` (explicit empty
   list, not omitted) behaves identically to the omitted case — both end up
   as `.unsupported_fields == []`; the module doesn't distinguish "caller
@@ -178,16 +178,16 @@ calling them from its own methods, or doesn't).
 ## Out of scope
 
 - `ResourceNotFoundError`, `DriverExecutionError`, `PlanBlockedError` —
-  these belong to `aiform/exceptions.py` (`PLAN.md` §1), not yet built.
+  these belong to `aiform/exceptions.py` (`PLAN.md` §1), since built.
   `driver.py` only defines `DriverUpdateNotSupported`, per the flagged
   discrepancy above.
 - Dynamic driver import (`importlib.util.spec_from_file_location`),
   instantiating `module.Driver()`, and credential wiring — all
   `orchestrator.py`'s "Orchestrator invocation contract" (`PLAN.md` §4),
-  not built yet.
-- Static AST validation of a generated driver's source (no `anthropic`
-  import, no `ANTHROPIC_API_KEY` read, etc.) — `driver_gen.py`, not built
-  yet.
+  since built. Not this module's concern either way.
+- Static AST validation of a drafted driver's source (no `anthropic`
+  import, no `ANTHROPIC_API_KEY` read, etc.) — `driver_gen.py`'s job, not
+  this module's.
 - Any actual CSP API calls, or a concrete `Driver` subclass —
   `drivers/digitalocean/compute.py` is a separate, later step that
   *implements* this contract; this module only *defines* it.

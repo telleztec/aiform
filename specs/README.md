@@ -30,7 +30,7 @@ contract), point at the section instead of restating it.
 
 ## Out of scope
 
-- What this module deliberately does not do yet. Reference `PLAN.md` §9
+- What this module deliberately does not do yet. Reference `PLAN.md` §10
   if it's a known, already-flagged deferred item — don't re-litigate
   something that's already been decided there.
 ```

@@ -35,10 +35,10 @@ one issue leave it half-fixed with no record of which half landed.
 section is the authority; this paragraph exists so the loop reads
 completely on its own.
 
-1. **Spec.** First, grep `PLAN.md` §9 ("Not Yet Implemented") and §10
-   ("Planned, not yet designed in detail") for an existing entry on the
-   same topic — a new spec that duplicates or contradicts one of those
-   without noticing costs a whole separate reconciliation PR to fix
+1. **Spec.** First, grep `PLAN.md` §10 ("Not Yet Implemented", including
+   its "Planned, not yet designed in detail" subsection) for an existing
+   entry on the same topic — a new spec that duplicates or contradicts
+   one of those without noticing costs a whole separate reconciliation PR to fix
    later (this happened once: `specs/resource_tagging.md` shipped
    without checking §10's pre-existing "Resource tagging convention"
    entry, caught only by a later `/code-review` pass). If one exists,
@@ -109,7 +109,7 @@ Keep it short — half a page, not a design essay. Sections:
   maps to one or a few tests.
 - **Edge cases / errors** — what's explicitly handled, what raises what.
 - **Out of scope** — what this module deliberately does not do yet,
-  referencing `PLAN.md` §9 if it's a known deferred item.
+  referencing `PLAN.md` §10 if it's a known deferred item.
 
 ## Mapping onto CLAUDE.md's implementation order
 

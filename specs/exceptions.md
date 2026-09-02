@@ -6,7 +6,7 @@ Shared exception types referenced by name from other already-merged
 modules and specs (`aiform/driver.py`'s `read()` docstring, `PLAN.md`
 §4/§5) before this module itself existed. Built now, out of the
 suggested implementation order, because `drivers/digitalocean/compute.py`
-(the first generated driver) cannot correctly satisfy `read()`'s
+(the first curated driver) cannot correctly satisfy `read()`'s
 contract without `ResourceNotFoundError` actually existing — not a
 speculative addition, a genuinely load-bearing gap.
 
