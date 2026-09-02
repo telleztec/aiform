@@ -197,14 +197,26 @@ prerequisite before implementation, not an afterthought.
   merging the marker into `resource_spec.params["tags"]` at the
   orchestrator level: that approach would make an already-live
   resource's real (unmarked) tags disagree with the newly-marker-
-  including desired params on the very next `plan`, and — because
-  `drivers/digitalocean/compute.py`'s `update()` only accepts a
-  `size`-alone diff in place (`specs/digitalocean_compute.md`'s Behavior
-  section) — a `tags`-only diff would raise `DriverUpdateNotSupported`
-  and trigger a full destroy+recreate of every existing tagged resource
-  the first time this shipped. Keeping the marker entirely inside the
-  driver, invisible to the diff, avoids that failure mode structurally
-  rather than by convention. **This also means the feature is
+  including desired params on the very next `plan`. **The consequence
+  named here has since changed, and the conclusion has not.** When this
+  was written, `drivers/digitalocean/compute.py`'s `update()` accepted
+  only a `size`-alone diff in place, so a `tags`-only diff raised
+  `DriverUpdateNotSupported` and would have destroyed and recreated
+  every existing tagged resource the first time this shipped. That bug
+  is fixed (issue #77): a `tags` diff is now applied in place, so the
+  same mistake would today cause perpetual tag churn — every `plan`
+  proposing to re-add a marker the driver strips straight back out —
+  rather than mass destruction. Less catastrophic, still wrong, and
+  still a permanently non-converging plan. Keeping the marker entirely
+  inside the driver, invisible to the diff, avoids that failure mode
+  structurally rather than by convention.
+
+  A second consequence of the same fix, in this design's favour:
+  `update()` computes its tag removals from `current`, which is already
+  marker-stripped by `_tags_for_attributes`. The marker is therefore
+  never in the `remove` set and cannot be un-assigned by an ordinary
+  tags edit — the invariant holds through the in-place path without
+  needing a special case there. **This also means the feature is
   intentionally not a backfill mechanism** — see Out of scope.
 - **Review checklist follow-up required, not optional.** A driver whose
   `create()` calls `_tags_for_create` but whose `read()`/`update()`
@@ -232,9 +244,10 @@ prerequisite before implementation, not an afterthought.
   return, permanently zeroing that entry out of `attributes["tags"]`
   while `desired_params["tags"]` (never touched, per this spec's core
   "never enters the diff engine" invariant) still has it — a permanent
-  `tags` mismatch on every future `plan`, and since `update()` only
-  accepts a `size`-alone diff in place, a permanent destroy+recreate
-  loop on every `apply`. This is why `_tags_for_create` raises
+  `tags` mismatch on every future `plan`, and a permanent re-tagging
+  loop on every `apply` — before issue #77 this was a permanent
+  destroy+recreate loop instead, since `update()` then accepted only a
+  `size`-alone diff in place. This is why `_tags_for_create` raises
   `ValueError` on this input instead (see Behavior above): the failure
   surfaces immediately, before any CSP call is made, naming the reserved
   tag, instead of manifesting later as an unexplained replace loop.
