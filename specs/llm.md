@@ -457,6 +457,14 @@ default the probe would follow a 3xx from a captive portal or a hostile
 `ANTHROPIC_BASE_URL`, hand the key to the `Location` target, and then report
 that target's 2xx as `OK` — a leaked credential and a green check for it.
 
+Be precise about what this does *not* buy, since an unqualified sentence
+here is what hid #97. A hostile `ANTHROPIC_BASE_URL` receives `x-api-key`
+on the **first** hop, with no redirect involved; refusing 3xx stops it
+recruiting a *second* recipient and nothing more. The base URL is trusted
+input by construction — the `401` note below is the other half of that
+same trust. Against a captive portal, which intercepts a request aimed at
+the real API, the refusal is the whole defence.
+
 The `detail` for a 3xx is **canned**, not the API's error message: the body
 of a redirect belongs to whoever sent it, and `init` prints this string.
 

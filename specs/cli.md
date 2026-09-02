@@ -233,9 +233,13 @@ which never reads or writes state.
   probes carry a provider token, so the opener rejects 3xx and reports `?`
   rather than chasing it and leaking the token to wherever it pointed.
 
-  The emphasis matters, and cost us once. What `httpx` strips on a
-  cross-origin redirect is `Authorization` and `Cookie` — **not** a custom
-  auth header. The Anthropic probe in `specs/llm.md` sends `x-api-key`, so
+  The emphasis matters, and cost us once. `httpx` strips less, and less
+  uniformly, than "it drops auth headers cross-origin" suggests: `Cookie`
+  is popped on **every** redirect (the `pop` sits outside the
+  `_same_origin` guard in `_redirect_headers`), while `Authorization` is
+  dropped only cross-origin — and not even then on a same-host
+  `http`→`https` upgrade. A custom auth header is dropped on **no**
+  redirect, ever. The Anthropic probe in `specs/llm.md` sends `x-api-key`, so
   "httpx drops it" was never true of that probe, and it followed redirects
   with the key attached until #97. Both probes now refuse a 3xx; read this
   bullet as the shared policy rather than a fact about one HTTP client.

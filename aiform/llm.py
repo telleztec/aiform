@@ -311,10 +311,12 @@ def verify_api_key(
 
     # follow_redirects defaults to True in the SDK's httpx client, and this
     # request carries x-api-key. httpx strips Authorization on a cross-origin
-    # redirect but not a custom header, so a 3xx from a captive portal or a
-    # hostile ANTHROPIC_BASE_URL would hand the key to the Location target
-    # (#97). DefaultHttpxClient rather than a bare httpx.Client keeps the
-    # SDK's own connection limits and keepalive socket options.
+    # redirect but never a custom header, so a 3xx from a captive portal --
+    # or from a hostile ANTHROPIC_BASE_URL -- would hand the key to the
+    # Location target (#97). This bounds the recipients to one: a hostile
+    # base URL already holds the key from the first hop, which no redirect
+    # policy undoes. DefaultHttpxClient rather than a bare httpx.Client
+    # keeps the SDK's own connection limits and keepalive socket options.
     probe = client or anthropic.Anthropic(
         timeout=timeout,
         max_retries=0,
