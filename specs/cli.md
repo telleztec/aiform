@@ -238,8 +238,10 @@ which never reads or writes state.
   is popped on **every** redirect (the `pop` sits outside the
   `_same_origin` guard in `_redirect_headers`), while `Authorization` is
   dropped only cross-origin — and not even then on a same-host
-  `http`→`https` upgrade. A custom auth header is dropped on **no**
-  redirect, ever. The Anthropic probe in `specs/llm.md` sends `x-api-key`, so
+  `http`→`https` upgrade, though that carve-out is narrower than it
+  sounds: `_is_https_redirect` also demands the default ports on both
+  ends, so `http://host:8080` → `https://host` *does* lose it. A custom
+  auth header is dropped on **no** redirect, ever. The Anthropic probe in `specs/llm.md` sends `x-api-key`, so
   "httpx drops it" was never true of that probe, and it followed redirects
   with the key attached until #97. Both probes now refuse a 3xx; read this
   bullet as the shared policy rather than a fact about one HTTP client.
