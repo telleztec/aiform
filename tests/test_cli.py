@@ -1261,12 +1261,26 @@ class TestPlanCreate:
         assert code == 2
         assert built[0].closed
 
-    def test_a_zero_call_run_closes_without_building_a_client(
+    def test_a_zero_call_run_is_closed_without_building_a_client(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
         # The close must not undo _CountingClient's laziness: a run that
         # makes no model call must still never construct one, or a
         # zero-call plan newly requires ANTHROPIC_API_KEY to be set.
+        #
+        # Recorded rather than left to fail_if_anthropic_constructed, which
+        # test_second_run_on_unchanged_project_makes_zero_llm_calls already
+        # applies to this same scenario: `closed == [None]` says close() was
+        # reached exactly once *and* found nothing to close, which is the
+        # half of the property that is this change's to keep.
+        closed = []
+
+        class _RecordingCountingClient(cli._CountingClient):
+            def close(self):
+                closed.append(self._real)
+                super().close()
+
+        monkeypatch.setattr(cli, "_CountingClient", _RecordingCountingClient)
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
@@ -1275,6 +1289,7 @@ class TestPlanCreate:
         patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
         assert cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)]) == 0
         capsys.readouterr()
+        closed.clear()
 
         fail_if_anthropic_constructed(monkeypatch)
         code = cli.main(["plan", "create", "--state-file", str(state_file), "--verbose"])
@@ -1282,6 +1297,7 @@ class TestPlanCreate:
 
         assert code == 0
         assert "[verbose] 0 Anthropic API call(s) made" in err
+        assert closed == [None]
 
 
 class TestPlanApply:

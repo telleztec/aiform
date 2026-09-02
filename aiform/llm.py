@@ -107,7 +107,7 @@ def _anthropic_call(
     client: anthropic.Anthropic | None = None,
 ) -> ModelCallResult:
     owned = client is None
-    if owned:
+    if client is None:
         client = build_client()
 
     kwargs: dict[str, Any] = {
