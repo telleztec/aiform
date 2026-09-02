@@ -613,9 +613,11 @@ class TestRealPromptFiles:
 class FakeHTTPResponse:
     """The subset of an HTTP response anthropic.APIStatusError reads.
 
-    Deliberately not httpx: anthropic 1.x is built on httpx2, so importing
-    either by name makes this suite depend on which major version resolved
-    -- which is exactly how CI broke on a green local run.
+    Duck-typed rather than a real response object, which is cheaper and
+    needs no transport. The original reason given -- avoiding a dependency
+    on which anthropic major resolved, since 1.x is built on httpx2 -- no
+    longer applies: pyproject caps anthropic<1, so the stack is now
+    deterministic and this module imports httpx directly at the top.
     """
 
     def __init__(self, status_code: int):
