@@ -1276,10 +1276,10 @@ class TestPlanCreate:
     ):
         # The close must not undo _CountingClient's laziness: a run that
         # makes no model call must still construct nothing -- no pool, no
-        # SSL context, and so nothing for this module to close. (Not
-        # "or it would newly require ANTHROPIC_API_KEY": the SDK reads that
-        # variable at construction but does not require it, see
-        # specs/cli.md's correction.)
+        # SSL context, and so nothing for this module to close. Not, as an
+        # earlier version of this comment had it, because construction would
+        # otherwise require ANTHROPIC_API_KEY: the SDK reads that variable at
+        # construction but does not require it -- see specs/cli.md's errata.
         #
         # Recorded rather than left to fail_if_anthropic_constructed, which
         # test_second_run_on_unchanged_project_makes_zero_llm_calls already

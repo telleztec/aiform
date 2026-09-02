@@ -166,18 +166,28 @@ class TestNoCredentialsInThisFile:
         assert "credentials" not in source.lower()
 
 
-# anthropic.Client is the same object as anthropic.Anthropic, so a call
-# through either name constructs a client and has to be caught.
-_SDK_CLIENT_NAMES = frozenset({"Anthropic", "Client"})
+# Every client class the package exports at top level. Client is the same
+# object as Anthropic, and the Async pair would take the same redirect
+# default, so a call through any of the four has to be caught.
+_SDK_CLIENT_NAMES = frozenset({"Anthropic", "AsyncAnthropic", "Client", "AsyncClient"})
 
 
 def _package_modules() -> list[Path]:
     return sorted(Path(llm.__file__).resolve().parent.rglob("*.py"))
 
 
+def _attribute_root(node: ast.expr) -> str | None:
+    """The name an attribute chain starts from: `anthropic._client.Anthropic`
+    roots at `anthropic`, so a submodule path does not slip the check."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _sdk_construction_sites(tree: ast.Module, filename: str) -> list[str]:
-    """Every `anthropic.Anthropic(...)`/`anthropic.Client(...)` call, labelled
-    with the function that encloses it (`<module>` when there is none)."""
+    """Every client constructed by calling through the `anthropic` module
+    name, labelled with the function that encloses it (`<module>` when there
+    is none)."""
     sites = []
 
     def visit(node, scope):
@@ -189,8 +199,7 @@ def _sdk_construction_sites(tree: ast.Module, filename: str) -> list[str]:
                 isinstance(child, ast.Call)
                 and isinstance(child.func, ast.Attribute)
                 and child.func.attr in _SDK_CLIENT_NAMES
-                and isinstance(child.func.value, ast.Name)
-                and child.func.value.id == "anthropic"
+                and _attribute_root(child.func) == "anthropic"
             ):
                 sites.append(f"{filename}:{scope}")
             visit(child, scope)
@@ -207,6 +216,13 @@ class TestBuildClientIsTheOnlyConstructor:
     pins the "credentials" rule, rather than left to prose. (drivers/ is
     covered separately -- driver_gen rejects a driver that so much as
     imports anthropic.)
+
+    What this is and is not: a regression guard against a *second* module
+    quietly calling the constructor, which is the thing that actually
+    happened twice. It is not airtight and is not trying to be -- a rebound
+    local (`_A = anthropic.Anthropic; _A()`), a `getattr` lookup, or a
+    subclass all evade any AST check, and chasing them would buy nothing
+    against a mistake nobody makes by accident.
     """
 
     def test_no_other_module_constructs_an_sdk_client(self):
@@ -218,12 +234,11 @@ class TestBuildClientIsTheOnlyConstructor:
         assert sites == ["llm.py:build_client"]
 
     def test_every_module_reaches_the_sdk_through_the_bare_module_name(self):
-        # What makes the check above complete rather than merely suggestive:
-        # `import anthropic as a` or `from anthropic import Anthropic` would
-        # both put a construction call beyond an attribute match on
-        # `anthropic.<name>`, and module-level rebinding is the likeliest
-        # shape for a "one client per process" regression. Forbidding the
-        # aliases is cheaper than chasing them.
+        # Closes the import-aliasing shapes specifically, and nothing wider:
+        # `import anthropic as a`, `import anthropic._client as c` and
+        # `from anthropic import Anthropic` each put a construction call
+        # beyond an attribute match rooted at `anthropic`, so banning them is
+        # what makes the check above hold for the calls it does see.
         offenders = []
         for path in _package_modules():
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -231,10 +246,12 @@ class TestBuildClientIsTheOnlyConstructor:
                     offenders += [
                         f"{path.name}:{node.lineno}"
                         for alias in node.names
-                        if alias.name == "anthropic" and alias.asname is not None
+                        if alias.name.split(".")[0] == "anthropic" and alias.asname is not None
                     ]
-                elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                    "anthropic"
+                elif (
+                    isinstance(node, ast.ImportFrom)
+                    and not node.level
+                    and (node.module or "").split(".")[0] == "anthropic"
                 ):
                     offenders.append(f"{path.name}:{node.lineno}")
 
