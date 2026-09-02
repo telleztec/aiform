@@ -136,6 +136,19 @@ class ResourceDriver(ABC):
             drivers/digitalocean/compute.py's update() for a worked
             example (caught by /code-review after an earlier version
             of that driver got this wrong).
+
+            ORDERING REQUIREMENT. Never raise DriverUpdateNotSupported
+            after having mutated anything other than a power state this
+            call itself restores. The orchestrator answers this
+            exception by asking the review-orchestration-model and then
+            the user for permission to replace, and the user may say
+            no — in which case apply_plan() returns aborted, having
+            written nothing to state. Anything already changed on the
+            CSP side is then live and untracked. A driver that applies
+            several fields in one update() must therefore attempt the
+            field that can still be refused FIRST, before touching any
+            other. drivers/digitalocean/compute.py orders its resize
+            ahead of its tag and backup steps for exactly this reason.
         """
 
     @abstractmethod
