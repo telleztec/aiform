@@ -1275,8 +1275,11 @@ class TestPlanCreate:
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
         # The close must not undo _CountingClient's laziness: a run that
-        # makes no model call must still never construct one, or a
-        # zero-call plan newly requires ANTHROPIC_API_KEY to be set.
+        # makes no model call must still construct nothing -- no pool, no
+        # SSL context, and so nothing for this module to close. (Not
+        # "or it would newly require ANTHROPIC_API_KEY": the SDK reads that
+        # variable at construction but does not require it, see
+        # specs/cli.md's correction.)
         #
         # Recorded rather than left to fail_if_anthropic_constructed, which
         # test_second_run_on_unchanged_project_makes_zero_llm_calls already

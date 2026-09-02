@@ -498,23 +498,28 @@ model calls did this invocation make" — and nothing broader):
   every `.create()` call and only constructs the real client **lazily,
   on the first such call** — never at `_CountingClient()` construction
   time.
-- This laziness is load-bearing, not an optimization: an eager
-  construction opens an httpx connection pool and SSL context that a
-  zero-call run would then have to close for nothing, and — since
-  `llm.build_client()` passes `http_client=` — closing it is now the
-  caller's job rather than the SDK's. The property this counter exists
-  to verify is that an unchanged second run costs nothing; building and
-  tearing down a client is not *nothing*.
+- This laziness is pinned by a test, not merely intended:
+  `fail_if_anthropic_constructed` (`tests/test_cli.py`) makes the
+  zero-call second run fail if anything constructs a client at all. That
+  is the property, stated as narrowly as the counter's own scope above —
+  *no client is constructed*, not the broader "the run costs nothing".
+  What an eager construction would additionally cost is an httpx
+  connection pool and SSL context that a zero-call run has to close for
+  nothing, and — since `llm.build_client()` passes `http_client=` —
+  closing it is now the caller's job rather than the SDK's.
 
   **Corrected:** earlier revisions of this bullet said eager
-  construction "reads `ANTHROPIC_API_KEY` at construction", so a
-  zero-call run would newly require the variable to be set. That is
-  false and was never true of any `anthropic` version in range —
-  `anthropic.Anthropic()` constructs fine with `api_key=None` and raises
-  `TypeError: Could not resolve authentication method` only at the first
-  request. The conclusion survives; the reason given for it did not.
-  `llm._anthropic_call` builds only inside the function actually making
-  a call, for the same reason; `_CountingClient` preserves it end to end.
+  construction reads `ANTHROPIC_API_KEY`, "which would make a truly
+  zero-call `plan create` run newly *require* that variable to be set".
+  The read is real — `Anthropic.__init__` does call
+  `os.environ.get("ANTHROPIC_API_KEY")`, in every `anthropic` version in
+  range — but the requirement is not: the client constructs fine with
+  `api_key=None` and raises `TypeError: Could not resolve authentication
+  method` only at the first request. So the conclusion survives on the
+  grounds above, and the environment-footprint reason given for it never
+  held. `llm._anthropic_call` builds only inside the function actually
+  making a call, for the same reason; `_CountingClient` preserves it end
+  to end.
 - **It builds through `llm.build_client()`, not `anthropic.Anthropic()`
   directly** (`specs/llm.md`), so the client refuses redirects. This is
   not a stylistic preference: `_dispatch` injects a `_CountingClient`

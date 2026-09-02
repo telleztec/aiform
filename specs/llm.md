@@ -387,14 +387,14 @@ clear failure.
 
 **The client it builds when none is injected comes from `build_client()`,
 and is closed in a `finally`** — the redirect refusal and the close
-obligation both apply here, and both this path's stakes are higher than the
+obligation both apply here, and this path's stakes are higher than the
 probe's. What travels: the key on any 3xx, as everywhere; the system prompt
 and the user content (a plan summary, a driver's source) on a 307 or 308,
-per `build_client`'s own note above; and either way the redirect target's
-`200` would be parsed back as a **model response** that `plan`/`apply` then
-acts on. That last half holds on every status, and it is the one #101 turns
-on — the probe's target could forge a green check in `init`, this one can
-forge model output an `apply` executes.
+per `build_client`'s own note above; and, on every status, the redirect
+target's `200` parsed back as a **model response** that `plan`/`apply` then
+acts on. That last one is what #101 turns on — the probe's target could
+forge a green check in `init`, this one can forge model output an `apply`
+executes.
 
 The limits of the refusal are `build_client`'s, recorded there rather than
 restated here.

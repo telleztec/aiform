@@ -166,32 +166,79 @@ class TestNoCredentialsInThisFile:
         assert "credentials" not in source.lower()
 
 
-class TestBuildClientIsTheOnlyConstructor:
-    def test_no_other_module_constructs_an_sdk_client(self):
-        # The redirect refusal is only worth anything if it holds at every
-        # construction site: #97 hardened the probe and left the model-call
-        # path following redirects until #101, and the CLI's own wrapper was
-        # a third site neither of them touched. Pinned structurally, the way
-        # CLAUDE.md pins the "credentials" rule, rather than left to prose.
-        # (drivers/ is covered separately -- driver_gen rejects a driver that
-        # so much as imports anthropic.)
-        sites = set()
-        for path in sorted(Path(llm.__file__).resolve().parent.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.FunctionDef):
-                    continue
-                for inner in ast.walk(node):
-                    if (
-                        isinstance(inner, ast.Call)
-                        and isinstance(inner.func, ast.Attribute)
-                        and inner.func.attr == "Anthropic"
-                        and isinstance(inner.func.value, ast.Name)
-                        and inner.func.value.id == "anthropic"
-                    ):
-                        sites.add(f"{path.name}:{node.name}")
+# anthropic.Client is the same object as anthropic.Anthropic, so a call
+# through either name constructs a client and has to be caught.
+_SDK_CLIENT_NAMES = frozenset({"Anthropic", "Client"})
 
-        assert sites == {"llm.py:build_client"}
+
+def _package_modules() -> list[Path]:
+    return sorted(Path(llm.__file__).resolve().parent.rglob("*.py"))
+
+
+def _sdk_construction_sites(tree: ast.Module, filename: str) -> list[str]:
+    """Every `anthropic.Anthropic(...)`/`anthropic.Client(...)` call, labelled
+    with the function that encloses it (`<module>` when there is none)."""
+    sites = []
+
+    def visit(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                visit(child, child.name)
+                continue
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr in _SDK_CLIENT_NAMES
+                and isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "anthropic"
+            ):
+                sites.append(f"{filename}:{scope}")
+            visit(child, scope)
+
+    visit(tree, "<module>")
+    return sites
+
+
+class TestBuildClientIsTheOnlyConstructor:
+    """The redirect refusal is only worth anything if it holds at every
+    construction site: #97 hardened the probe and left the model-call path
+    following redirects until #101, and the CLI's own wrapper was a third
+    site neither of them touched. Pinned structurally, the way CLAUDE.md
+    pins the "credentials" rule, rather than left to prose. (drivers/ is
+    covered separately -- driver_gen rejects a driver that so much as
+    imports anthropic.)
+    """
+
+    def test_no_other_module_constructs_an_sdk_client(self):
+        sites = []
+        for path in _package_modules():
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            sites += _sdk_construction_sites(tree, path.name)
+
+        assert sites == ["llm.py:build_client"]
+
+    def test_every_module_reaches_the_sdk_through_the_bare_module_name(self):
+        # What makes the check above complete rather than merely suggestive:
+        # `import anthropic as a` or `from anthropic import Anthropic` would
+        # both put a construction call beyond an attribute match on
+        # `anthropic.<name>`, and module-level rebinding is the likeliest
+        # shape for a "one client per process" regression. Forbidding the
+        # aliases is cheaper than chasing them.
+        offenders = []
+        for path in _package_modules():
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.Import):
+                    offenders += [
+                        f"{path.name}:{node.lineno}"
+                        for alias in node.names
+                        if alias.name == "anthropic" and alias.asname is not None
+                    ]
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                    "anthropic"
+                ):
+                    offenders.append(f"{path.name}:{node.lineno}")
+
+        assert offenders == []
 
 
 class TestModelSources:
@@ -321,9 +368,14 @@ class TestAnthropicCallRefusesRedirects:
             outcome = exc
 
         assert [request.url.host for request, _ in hops] == ["api.anthropic.com"]
-        # What is on the wire in the hop that is allowed, and so what a
-        # followed redirect would have had to carry onward: the key on
-        # either status, the body on the 307.
+        # Both assertions are about the one hop that IS allowed -- the
+        # outbound POST to the real API -- and so hold identically on both
+        # statuses; what differs between them is only what a *followed*
+        # redirect would have carried onward, which no assertion here can
+        # reach because there is no second hop to inspect. The 307 is
+        # parametrized in anyway: it is the status where the counterfactual
+        # forwards this body, so the refusal has to cover it, and
+        # outcome.status_code below is what proves it did.
         assert "x-api-key" in hops[0][0].headers
         assert b"SENTINEL-PROMPT-BODY" in hops[0][1]
         # The redirect target's 200 must never come back as a model answer.
