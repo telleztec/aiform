@@ -1,6 +1,6 @@
 ---
-allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*)
-description: Start the background loop that watches a PR for /claude-merge-approved or /claude-merge-rejected
+allowed-tools: Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh repo view:*), Bash(gh api:*), Bash(gh pr merge:*), Bash(git rev-parse:*), Bash(chmod:*), Bash(ls:*), Bash(cd:*), Bash(.venv/bin/python scripts/merge_gate.py:*)
+description: Start the background loop that watches a PR for /claude-merge-approved, /claude-merge-approved-multi or /claude-merge-rejected
 argument-hint: [<PR#>]
 disable-model-invocation: false
 ---
@@ -41,9 +41,45 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
 7. **On the eventual notification**, follow SKILL.md's post-loop steps — this
    is the part that matters, not the polling.
 
-   - `MERGE_APPROVED`: re-read the current head SHA first — commits may have
-     landed while the loop ran — then satisfy **all three gates on one and
-     the same SHA**:
+   - `MERGE_APPROVED` / `MERGE_APPROVED_MULTI`: re-read the current head SHA
+     first — commits may have landed while the loop ran — then, **before
+     posting anything**, check how many issues this PR closes.
+
+     As **three separate commands**, not one chain:
+
+     1. `git rev-parse --show-toplevel` — if it fails, stop; that is a 2.
+     2. `cd <the path it printed>` — literally, not `cd "$(...)"`. An empty
+        substitution makes `cd ""` a silent no-op in sh, zsh and bash 3.2,
+        leaving you in whatever repo you were standing in; `gh` resolves the
+        repository from the working directory, so the gate would then answer
+        about that one.
+     3. `.venv/bin/python scripts/merge_gate.py <PR>`
+
+     Separate on purpose. Chained, the shell's own status becomes the answer —
+     a failed `cd` in an `&&` chain exits 1, which the next paragraph reads as
+     "closes several issues", the false waiver request the 1-vs-2 split exists
+     to prevent. Run alone, step 3's exit code is the gate's and nothing
+     else's. It also keeps each command matchable against `allowed-tools`,
+     which matches every subcommand of a chain independently and has no rule
+     for `exit`.
+
+     In a linked worktree `--show-toplevel` prints that worktree, and most
+     here have no `.venv` — `.venv/` is gitignored, so `git worktree add`
+     never creates one. `cd` to the main checkout and run there instead;
+     reaching back with an absolute interpreter path would leave step 3
+     matching no rule in `allowed-tools`, which is the trap this whole
+     three-command shape exists to avoid. Add `--multi` when that is
+     the literal the human posted. Post nothing unless it exits 0.
+     Exit 1 means the PR closes several issues: ask the human to re-read
+     the description and post `/claude-merge-approved-multi`. Exit 2 means
+     the check itself failed — fix that, and do not ask for a waiver on its
+     strength. After a genuine exit 1, restart this loop with `SINCE_OVERRIDE`
+     set to that approval comment's timestamp — **watermarked on
+     that approval comment's timestamp**, not on the head commit — no commit
+     is pushed on this path, so the default watermark would leave the plain
+     approval still latest and the loop would re-fire on it immediately, in
+     a spin. Then satisfy **all three gates on one and the
+     same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
         trigger approves that commit and nothing after it. If head has moved,
@@ -89,7 +125,10 @@ OWNER_REPO="<the resolved owner/repo>"
 # instead drops an approval left moments earlier, and leaves a rejected PR
 # permanently unwatchable because the stale rejection stays "latest" forever.
 SHA=$(gh pr view "$PR" --json headRefOid --jq .headRefOid)
-SINCE=$(gh api repos/$OWNER_REPO/commits/"$SHA" --jq .commit.committer.date)
+# Normally the head commit's date. Override when restarting after a plain
+# approval on a multi-issue PR: no commit is pushed there, so the default
+# leaves that approval still latest and the loop re-fires on it in a spin.
+SINCE=${SINCE_OVERRIDE:-$(gh api repos/$OWNER_REPO/commits/"$SHA" --jq .commit.committer.date)}
 while true; do
   raw=$(gh pr view "$PR" --json comments,reviews 2>/dev/null || echo '{}')
   body=$(printf '%s' "$raw" | jq -r --arg since "$SINCE" '
@@ -102,8 +141,14 @@ while true; do
     | gsub("^\\s+|\\s+$";"")
     | ascii_downcase
   ')
+  # Three exact literals, no parsing. -multi is the human's conscious
+  # acknowledgement that this PR closes more than one issue.
   if [ "$body" = "/claude-merge-approved" ]; then
     echo "MERGE_APPROVED"
+    exit 0
+  fi
+  if [ "$body" = "/claude-merge-approved-multi" ]; then
+    echo "MERGE_APPROVED_MULTI"
     exit 0
   fi
   if [ "$body" = "/claude-merge-rejected" ]; then
@@ -131,7 +176,8 @@ that skill's author detection changes, change it here in the same commit.
   to sign off. Checking only `comments` misses it.
 - This command starts the loop and defines how to react to its result; it never
   merges outside step 7, and never treats a chat-only "go ahead" as satisfying
-  any gate. **Never post `/claude-merge-approved` or `/claude-merge-rejected`
+  any gate. **Never post `/claude-merge-approved`, `/claude-merge-approved-multi` or
+  `/claude-merge-rejected`
   yourself** — they are human triggers, and posting one manufactures your own
   approval.
 - One loop per PR. Poll interval 30s.

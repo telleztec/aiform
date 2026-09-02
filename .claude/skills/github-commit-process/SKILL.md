@@ -31,7 +31,7 @@ commit statuses or checks **on the exact head SHA being merged**:
 |---|---|---|
 | `test` | GitHub Actions | CI is green |
 | `llm-review` | you, the author LLM | head's content was reviewed and its findings resolved |
-| `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` |
+| `human-approval` | the watch loop | juanman2 posted `/claude-merge-approved` (or `-multi`, for a PR closing several issues) |
 
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs, or after; either order is valid and both end in a merge. Do
@@ -44,9 +44,12 @@ lose a chat-only approval, either wrongly blocking an authorized merge or,
 worse, proceeding on a misremembered one. If it isn't on the SHA, it didn't
 happen.
 
-**The `/claude-merge-approved` signal**: a PR comment or review body from
+**The approval signals**: a PR comment or review body from
 `github.com/juanman2`, trimmed and lowercased, exactly
-`/claude-merge-approved` — not a formal GitHub "Approve" review (GitHub
+`/claude-merge-approved` — or exactly `/claude-merge-approved-multi`, which
+additionally acknowledges that the PR closes more than one issue (see
+"Closing more than one issue"). Both are exact matches; neither takes a
+suffix. Not a formal GitHub "Approve" review (GitHub
 hard-blocks PR authors from approving their own pull requests, a platform
 rule; every PR here is authored by juanman2, so a real "Approve" review is
 never obtainable). A plain comment isn't restricted that way and still
@@ -114,7 +117,8 @@ forgot"*, not *"the agent misbehaves"* — an agent willing to skip a check
 would equally post the status. Only `test` is enforced against an actively
 wrong agent. Do not describe this setup as stronger than it is.
 
-**Never post `/claude-merge-approved` or `/claude-merge-rejected` yourself.**
+**Never post `/claude-merge-approved`, `/claude-merge-approved-multi` or
+`/claude-merge-rejected` yourself.**
 They are human triggers, and the watch loop converts the first into the
 `human-approval` status — posting one would manufacture your own approval end
 to end.
@@ -125,9 +129,144 @@ to end.
 - Branch names: short, descriptive, kebab-case, imperative-ish —
   `add-plan-and-docs`, `implement-state-module`, `fix-drift-detection-race`.
   Not `fix`, not `juan-patch-1`, not a ticket number with no context.
-- Don't stack unrelated changes on one branch. If you notice something else
-  worth fixing while working, either note it for a follow-up or ask — don't
-  fold it into the current PR silently.
+- Don't stack unrelated changes on one branch, and never fold one in
+  silently. See "One issue, one PR" below for what to do with something you
+  find mid-branch.
+
+### One issue, one PR
+
+**A PR closes at most one GitHub issue.** Not two related ones, not four
+that happen to touch the same file, not "they're all onboarding papercuts."
+If you are about to write `Closes #A, closes #B`, stop and split the
+branch. (`Closes #A, #B` closes only #A — a different bug, covered below.)
+
+The reasons are about review, not tidiness:
+
+- **A reviewer can hold one change in their head.** Four issues in one diff
+  means the human either reviews the largest one properly and skims the
+  rest, or bounces the whole thing. Both are worse than four small reads.
+- **Approval is all-or-nothing.** `/claude-merge-approved` is a single
+  signal on a single SHA. Bundling means the human cannot accept three
+  fixes and reject the fourth without rejecting all four — so a
+  disagreement about one line blocks unrelated finished work.
+- **A revert takes the bundle with it.** If one of four fixes turns out to
+  be wrong, reverting it reverts the other three too.
+- **Each issue gets its own review record.** `llm-review` on a bundled PR
+  attests to a diff, not to an issue; nothing afterward says which issue
+  was actually reviewed.
+
+**A PR may close zero issues.** Process changes, refactors, doc fixes and
+chores don't need an issue invented for them. The rule is a ceiling, not a
+quota.
+
+**If an issue is too big for one PR, split the issue, not the PR.** Two PRs
+both claiming to fix #N leave #N in an ambiguous state — half-fixed, still
+open, with no record of which half landed. File the second issue, say in
+each what the other covers, and close each with its own PR. #76 and #87 are
+such a split: the scaffold change and the driver-schema change need
+different gates, since editing a driver changes its `sha256` and forces a
+gate #1 re-review.
+
+**Found something else mid-branch?** File it if it warrants an issue, or
+ask — don't fold it in silently. A typo or a chore you fix in passing needs
+no issue (see the zero-issue rule above); a defect somebody has to decide
+about does.
+
+**"Closes" means every closing keyword on the PR — body and commit messages
+both.** A keyword in the body plus another in a commit message closes two
+issues and breaks this rule as surely as naming both in one line. Note also
+that GitHub needs the keyword before **each** number: `Closes #A, #B`
+closes only `#A`, and the rest stay open as fixed-but-unclosed.
+
+### Closing more than one issue: the waiver
+
+Sometimes one change genuinely resolves several issues — duplicates, or a
+fix that incidentally closes another report. The escape hatch is a **human
+waiver**, and it is not yours to grant.
+
+**Try to split it first.** One issue per PR is the default, not the
+preference. Before asking for a waiver, attempt the split and satisfy
+yourself that it cannot be done — two commits, two branches, one issue
+each. Most "this fixes both" changes are two changes that happen to be
+adjacent. Ask only when splitting would mean shipping something incoherent
+or duplicating the same edit in two PRs.
+
+Then:
+
+1. **Put it at the top of the PR description**, as its own section:
+
+   ```
+   ## Waiver requested
+   Closes #A, closes #B. One change resolves both because <reason>.
+   Splitting was considered and rejected because <reason>.
+   ```
+
+   Note the repeated keyword. Without it, only the first number closes and
+   the rest are left fixed-but-open — the exact outcome this rule exists to
+   prevent.
+
+   **Never write a closing keyword next to a real issue number in a commit
+   message unless you mean it.** GitHub parses them out of prose, including
+   prose that is explaining the syntax, and a commit that merely documents
+   the trap will spring it. Use letter placeholders in examples — `#A`,
+   `#B` — since only `#<digits>` is parsed. Two commits on this branch
+   closed unrelated issues exactly this way.
+
+2. **Tell the human, in the conversation, that the PR needs a waiver** —
+   when you open it, not when you want to merge. They are being asked for
+   something; do not leave it in the description to be noticed.
+3. **They grant it with `/claude-merge-approved-multi`.** A distinct
+   literal, not a suffix — so there is still nothing to parse, and the
+   waiver is an explicit act rather than something inferred from what they
+   were assumed to have read. A plain `/claude-merge-approved` on a
+   multi-issue PR grants **no** waiver and is not authorization to merge.
+4. **Check it before merging.** Run `git rev-parse --show-toplevel`, `cd` to
+   the path it prints, then `.venv/bin/python scripts/merge_gate.py <PR>` —
+   three separate commands. `gh` resolves the repository from the working
+   directory, so the gate answers about whatever repo you are standing in;
+   and `cd "$(git rev-parse --show-toplevel)"` in one breath is not the
+   shortcut it looks like, because an empty substitution leaves `cd ""` a
+   silent no-op in sh, zsh and bash 3.2. The watch loop's copy of this call
+   says the same at greater length.
+   Add `--multi` when that is the literal the human posted. Exit 1
+   means the PR closes several issues: ask the human to re-read the
+   description and post `/claude-merge-approved-multi`. Exit 2 means the
+   check could not run — fix that instead, and never ask for a waiver on
+   its strength. Post no status until it exits 0.
+
+**If a plain approval arrives on a multi-issue PR**, the loop has already
+exited, so nothing is watching when the human posts the `-multi` form.
+Explain what is needed and restart the loop — but **watermark it on that
+comment's timestamp, not on the head commit's**. No new commit is pushed
+on this path, so the default watermark leaves the plain approval still
+"latest and newer than head", and the restarted loop re-fires on it within
+seconds, forever. The rejection path avoids this only because a fix commit
+moves the watermark.
+
+**Why a second literal rather than a waiver clause on the first.** Two
+earlier designs failed on the same point. Putting the issues in the
+comment (`/claude-merge-approved issues 73, 74`) made the merge gate parse
+free text, and every version of that parser accepted something it should
+have refused. Putting the waiver only in the description made it a thing
+the human is *assumed* to have read — but `/claude-merge-approved` is
+normally left through "Files changed" → "Review changes", which does not
+display the PR body, and a description can be edited after approval with
+no new SHA. A separate constant fixes both: nothing to parse, and typing
+it is a deliberate act that cannot be manufactured after the fact.
+
+The human has two answers, and both are normal:
+`/claude-merge-approved-multi` accepts the reasoning, and
+`/claude-merge-rejected` sends you to split it after all. A rejection here is not a finding about the code — it is a
+judgment that the change was two changes. Split it and open two PRs; do
+not re-argue the waiver.
+
+Without a waiver, close one issue and link the others plainly (`see #81`)
+for a follow-up PR.
+
+This is also the answer to `PROCESS.md` step 6's "one tightly-coupled pair"
+(a module and the exceptions it raises, say). If that pair is two issues,
+it needs a waiver like anything else, rather than a second exception with
+its own boundary to argue about.
 
 ## Commits
 
@@ -165,6 +304,8 @@ EOF
 )"
 ```
 
+- Reference at most one issue with a closing keyword — see "One issue, one
+  PR". To mention others without closing them, link them plainly (`see #81`).
 - Title under ~70 characters. Details go in the body, not a long title.
 - The Test plan section should be honest — if something wasn't actually
   tested (e.g. this is a docs-only PR, or a piece that can't be verified
@@ -296,7 +437,9 @@ while true; do
       | sort_by(.at) | last | .body // "")
     | gsub("^\\s+|\\s+$";"") | ascii_downcase
   ')
+  # Three exact literals, no parsing.
   if [ "$body" = "/claude-merge-approved" ]; then echo "MERGE_APPROVED"; exit 0; fi
+  if [ "$body" = "/claude-merge-approved-multi" ]; then echo "MERGE_APPROVED_MULTI"; exit 0; fi
   if [ "$body" = "/claude-merge-rejected" ]; then echo "REJECTED"; exit 1; fi
   sleep 30
 done
@@ -308,7 +451,7 @@ is why the JSON is fetched and piped to real `jq`. Poll every 30s.
 A long wait is fine — this is a background job, not something to resolve
 before the turn ends.
 
-### On `MERGE_APPROVED`
+### On `MERGE_APPROVED` / `MERGE_APPROVED_MULTI`
 
 **Post `human-approval` on the SHA the loop was watching — never on a newer
 head.** The loop's watermark is that SHA's commit date, so the trigger it
@@ -318,16 +461,48 @@ ask for a fresh `/claude-merge-approved` and restart the loop. Re-reading head
 and stamping the approval onto it would launder an unapproved commit through
 a human artifact — the exact thing all three gates exist to prevent.
 
+**Run `scripts/merge_gate.py` before posting anything.** It answers the
+only question that matters here — how many issues this PR will actually
+close — and refuses the merge if that is more than one without the `-multi`
+acknowledgement. It is a tested script rather than a snippet in this file
+because a merge gate is code; three rounds of review found real defects in
+the shell that used to live here.
+
 ```sh
 WATCHED_SHA=<the SHA the loop was started against>
+
+# Before the first gh call, not just before the gate: gh resolves the repo
+# from the working directory, and every gh command in this block depends on
+# it. Both guards are needed: the first catches rev-parse failing, and the
+# second an empty ROOT, which would make `cd ""` a silent no-op in sh, zsh
+# and bash 3.2 (the macOS system bash) while bash 5 errors -- depending on
+# which you get is the bug. Everything below is relative because of the cd,
+# which is also what keeps it matching `allowed-tools`.
+ROOT=$(git rev-parse --show-toplevel) || { echo "not in a repo"; exit 2; }
+[ -n "$ROOT" ] || { echo "empty repo root"; exit 2; }
+cd "$ROOT" || exit 2
+
 SHA=$(gh pr view <number> --json headRefOid --jq .headRefOid)
 
-# If these differ, STOP and resolve per the paragraph above before posting.
-[ "$SHA" = "$WATCHED_SHA" ] || echo "head moved: approval does not cover $SHA"
+# One issue: fine. More than one: needs the -multi acknowledgement. Pass
+# --multi when that is the literal the human posted. Non-zero means stop --
+# do not post the status, because once human-approval is on the SHA all
+# three contexts are green and nothing downstream gets another signal.
+# MULTI is --multi when the human posted /claude-merge-approved-multi,
+# empty otherwise. Exit 1 means "needs the -multi acknowledgement"; exit 2
+# means the check could not run at all -- do not confuse the two.
+.venv/bin/python scripts/merge_gate.py <number> ${MULTI:-}
+case $? in
+  0) ;;
+  1) echo "needs /claude-merge-approved-multi -- ask, post nothing"; exit 1;;
+  *) echo "gate could not run -- fix that first, do not ask for -multi"; exit 2;;
+esac
+
+[ "$SHA" = "$WATCHED_SHA" ] || { echo "head moved: approval does not cover $SHA"; exit 1; }
 
 gh api repos/{owner}/{repo}/statuses/"$SHA" \
   -f state=success -f context=human-approval \
-  -f description="/claude-merge-approved by juanman2"
+  -f description="<the literal the human posted> by juanman2"
 
 # llm-review — legacy status API
 gh api repos/{owner}/{repo}/commits/"$SHA"/status \
@@ -386,11 +561,15 @@ watch loop.
 
 ### If the human says "just merge it" in chat
 
-Skip the *polling* only. Go to the three **verification queries** above — not
+Skip the *polling* only. Run the waiver count first — this path skips the
+loop, so nothing else will surface a missing waiver — then go to the three
+**verification queries** above — not
 to the `human-approval` post that precedes them; a chat remark is not the
 trigger and never authorizes stamping that status.
 
-`human-approval` still requires a real `/claude-merge-approved` on the PR. If
+`human-approval` still requires a real `/claude-merge-approved` on the PR —
+or `/claude-merge-approved-multi` if it closes more than one issue, which
+this path must check for itself since it never sees the loop's output. If
 one already exists and is newer than the head commit, verify it yourself with
 the same jq the loop uses, then post the status on the SHA it covers. If none
 exists, ask for one — this override waives the waiting, never the gates, and
