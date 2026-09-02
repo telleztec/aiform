@@ -244,6 +244,13 @@ class Driver(ResourceDriver):
         if not diff_fields:
             return dict(current)
 
+        # Before the partition, not after: a diff that also touches a
+        # replace-forcing field would otherwise raise
+        # DriverUpdateNotSupported first, and the destroy+recreate the user
+        # then approves hands the same malformed value to create() -- which
+        # DO rejects, leaving the droplet deleted and nothing rebuilt.
+        self._reject_malformed_values(id, diff_fields, desired)
+
         replace_forcing = [f for f in diff_fields if f not in _IN_PLACE_UPDATABLE_FIELDS]
         if replace_forcing:
             # Only the genuinely replace-forcing fields, not the whole diff:
@@ -260,8 +267,6 @@ class Driver(ResourceDriver):
         # decline -- so it runs before anything else is mutated. The
         # invariant: update() never raises DriverUpdateNotSupported after
         # changing anything but a power state it restores.
-        self._reject_malformed_values(id, diff_fields, desired)
-
         if "size" in diff_fields:
             self._resize_in_place(id, current, desired, credentials)
         if "tags" in diff_fields:
@@ -299,9 +304,13 @@ class Driver(ResourceDriver):
         # ordering invariant above still holds.
         if "tags" in diff_fields:
             tags = desired["tags"]
-            if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+            if not isinstance(tags, list) or not all(isinstance(t, str) and t for t in tags):
+                # Non-empty specifically: an empty name makes the existence
+                # check GET /v2/tags/, which is DO's *list* endpoint and
+                # answers 200, so the tag would be reported as already
+                # existing and the assignment would then fail at DO.
                 raise ValueError(
-                    f"droplet {id}: params 'tags' must be a list of strings, got {tags!r}"
+                    f"droplet {id}: params 'tags' must be a list of non-empty strings, got {tags!r}"
                 )
         if "backups" in diff_fields and not isinstance(desired["backups"], bool):
             raise ValueError(

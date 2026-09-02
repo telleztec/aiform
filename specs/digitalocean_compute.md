@@ -554,14 +554,29 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   - `backups: "false"` is a non-empty string, so a `bool()` coercion
     reads it as `True` and switches **billed** backups on for a user
     who asked for them off.
-  So `update()` checks, before dispatching any step, that `tags` is a
-  list of strings and `backups` is a real `bool`, and raises
-  `ValueError` naming the field and the value it got. **`ValueError`,
-  not `DriverUpdateNotSupported`**: a malformed value is not a diff the
-  CSP declined, and the destroy+recreate that exception triggers would
-  only hand the same value to `create()`. It propagates through
-  `orchestrator.py`'s `apply_plan()` as a `DriverExecutionError` like
-  any other driver failure. This is a driver-local guard on the two
+  So `update()` checks that `tags` is a list of **non-empty** strings
+  and `backups` a real `bool`, raising `ValueError` that names the field
+  and the value it got. Non-empty matters on its own: an empty name
+  makes the existence check `GET /v2/tags/`, which is DO's *list*
+  endpoint and answers `200`, so the tag would be reported as already
+  present and the assignment would then fail at DO.
+
+  **`ValueError`, not `DriverUpdateNotSupported`**: a malformed value is
+  not a diff the CSP declined, and the destroy+recreate that exception
+  triggers would only hand the same value to `create()`. It propagates
+  through `orchestrator.py`'s `apply_plan()` as a
+  `DriverExecutionError` like any other driver failure, reaching the
+  user as one `Error:` line and exit code 2.
+
+  **The check runs before the replace-forcing partition, not after it**
+  — the one placement detail that carries weight. An edit that changes
+  `region` *and* mistypes `tags` would otherwise raise
+  `DriverUpdateNotSupported(["region"])` first; the user approves the
+  replace, `delete()` succeeds, the state entry is dropped, and then
+  `create()` puts the malformed value in the POST body, where DO
+  rejects it. Droplet destroyed, nothing rebuilt. Validating first
+  turns that whole sequence into a `ValueError` the user fixes in
+  YAML. This is a driver-local guard on the two
   values it acts on directly, not a general fix — the general gap is
   tracked separately.
   An integer `0`/`1` is *not* rejected, and needs no special case:

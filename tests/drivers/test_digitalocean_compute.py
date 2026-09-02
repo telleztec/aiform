@@ -1402,7 +1402,7 @@ class TestUpdateRejectsMalformedValues:
     mutation path; now they do, so they are rejected before any API call.
     """
 
-    @pytest.mark.parametrize("bad", ["web", None, ["ok", 7], 42])
+    @pytest.mark.parametrize("bad", ["web", None, ["ok", 7], 42, ["ok", ""], {"web"}])
     def test_tags_that_are_not_a_list_of_strings_raise_before_any_call(
         self, driver, fake_urlopen, bad
     ):
@@ -1440,6 +1440,34 @@ class TestUpdateRejectsMalformedValues:
             driver.update("123", current, desired, CREDENTIALS)
 
         assert "backups" in str(excinfo.value)
+        assert fake_urlopen.calls == []
+
+    def test_an_empty_tag_name_is_rejected_rather_than_probing_the_list_endpoint(
+        self, driver, fake_urlopen
+    ):
+        # An empty name makes the existence check GET /v2/tags/ -- DO's list
+        # endpoint, which answers 200 -- so the tag would be reported as
+        # already existing and the assignment would then fail at DO.
+        with pytest.raises(ValueError) as excinfo:
+            driver.update("123", make_attrs(tags=[]), make_attrs(tags=[""]), CREDENTIALS)
+
+        assert "non-empty" in str(excinfo.value)
+        assert fake_urlopen.calls == []
+
+    def test_a_malformed_value_is_rejected_even_when_the_diff_forces_a_replace(
+        self, driver, fake_urlopen
+    ):
+        # The guard must run before the replace-forcing partition. Otherwise
+        # this raises DriverUpdateNotSupported(["region"]) first, the user
+        # approves the replace, delete() succeeds -- and create() hands
+        # "web" to DO, which rejects it. Droplet destroyed, nothing rebuilt.
+        current = make_attrs(tags=["aiform"], region="sfo3")
+        desired = make_attrs(tags="web", region="nyc3")
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.update("123", current, desired, CREDENTIALS)
+
+        assert "tags" in str(excinfo.value)
         assert fake_urlopen.calls == []
 
     def test_an_int_equal_to_the_live_bool_is_simply_no_diff(self, driver, fake_urlopen):

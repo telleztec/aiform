@@ -48,8 +48,8 @@ Check specifically for:
    the user reasonably expects to be trivial. Judge this against what
    the provider's API actually supports, not against what the driver's
    own comments assert about it. **This is a blocking issue**, and note
-   what that implies about the "more conservative than necessary"
-   `concerns` example below: in this contract the only way `update()`
+   what that implies about the `concerns` guidance at the end of this
+   file: in this contract the only way `update()`
    can decline a diff is `DriverUpdateNotSupported`, which the
    orchestrator answers by destroying and recreating the resource. So
    being needlessly conservative about *whether* a diff can be applied
