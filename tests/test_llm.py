@@ -816,6 +816,15 @@ class TestVerifyApiKeyRefusesRedirects:
         # would have carried it across the redirect.
         assert "x-api-key" in hops[0].headers
         assert result.state is KeyState.UNVERIFIED
+        # UNVERIFIED alone is too weak to carry this test. An httpx.MockTransport
+        # injected into a client from a different stack -- anthropic 1.x builds
+        # DefaultHttpxClient on httpx2 -- is foreign to it, so the request dies as
+        # an APIConnectionError, which also maps to UNVERIFIED. Every assertion
+        # above then holds with follow_redirects=True and the test goes quietly
+        # inert. Pinning the canned 3xx detail proves the probe actually refused
+        # a redirect rather than failing to connect, so a stack mismatch fails
+        # loudly instead.
+        assert result.detail == "unexpected redirect (HTTP 302)"
 
     def test_probe_client_is_built_with_redirects_off(self, api_key_set, monkeypatch):
         # The guard above only holds because the constructed client refuses
