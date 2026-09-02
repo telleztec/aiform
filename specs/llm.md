@@ -361,14 +361,15 @@ the probe and left the model-call path following redirects for another
 release (#101), and the CLI's own wrapper was a third site neither touched;
 a single constructor is what stops them drifting again. Pinned structurally,
 not by prose: `TestBuildClientIsTheOnlyConstructor` asserts that the only
-call through the `anthropic` module name to any of its client classes
-(`Anthropic`, `AsyncAnthropic`, and their `Client` aliases) anywhere in
-`aiform/` is the one in this function, and that no module in `aiform/`
-imports the SDK under an alias or with `from anthropic import ...`, which is
-what leaves that call reachable only through the module name. It is a
-regression guard for a second module quietly constructing one, not an
-airtight sandbox — a rebound local or a `getattr` evades any static check,
-and the test says so.
+call through the `anthropic` module name to the direct-API client under any
+of its four names (`Anthropic`, `AsyncAnthropic`, `Client`, `AsyncClient`)
+anywhere in `aiform/` is the one in this function, and that no module in
+`aiform/` imports the SDK under an alias or with `from anthropic import ...`,
+which is what leaves that call reachable only through the module name. It is
+a regression guard for a second module quietly constructing one, not an
+airtight sandbox: a rebound local, a `getattr`, and the SDK's twelve other
+top-level client classes (the Bedrock/Vertex family, which no
+`MODEL_SOURCES` entry constructs) all pass it. The test names its own gaps.
 
 ### `_anthropic_call(...)` (private)
 

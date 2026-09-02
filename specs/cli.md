@@ -500,13 +500,17 @@ model calls did this invocation make" — and nothing broader):
   time.
 - This laziness is pinned by tests, not merely intended:
   `fail_if_anthropic_constructed` (`tests/test_cli.py`) makes the
-  zero-call second run fail if `anthropic.Anthropic` is called, and
-  `TestBuildClientIsTheOnlyConstructor` (`tests/test_llm.py`) is what
-  makes that the whole story rather than one name of several — it holds
-  `build_client` to be the only place any client class is constructed,
-  so the one patched name is the one that would be used. The property is
-  stated as narrowly as the counter's own scope above — *no client is
-  constructed*, not the broader "the run costs nothing".
+  zero-call second run fail if `anthropic.Anthropic` is called. That it
+  patches only that one name is enough because `build_client` is what
+  constructs, and `build_client` is held to that name by the tests that
+  monkeypatch it (`TestBuildClient`, `TestVerifyApiKeyRefusesRedirects`,
+  and the model-call equivalents — 25 of them fail if it switches to the
+  `anthropic.Client` alias). `TestBuildClientIsTheOnlyConstructor`
+  contributes a different guarantee, that no *other* module constructs
+  one; it asserts a call site rather than a name and would not notice
+  the alias swap. The property is stated as narrowly as the counter's own
+  scope above — *no client is constructed*, not the broader "the run
+  costs nothing".
   What an eager construction would additionally cost is an httpx
   connection pool and SSL context that a zero-call run has to close for
   nothing, and — since `llm.build_client()` passes `http_client=` —

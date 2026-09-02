@@ -166,9 +166,14 @@ class TestNoCredentialsInThisFile:
         assert "credentials" not in source.lower()
 
 
-# Every client class the package exports at top level. Client is the same
-# object as Anthropic, and the Async pair would take the same redirect
-# default, so a call through any of the four has to be caught.
+# The direct-API client under every name it answers to: Client is the same
+# object as Anthropic, and the Async pair takes the same redirect default.
+# NOT every client class the SDK exports -- 0.120.2 has 16 at top level, the
+# other 12 being the AnthropicBedrock/Vertex/Foundry/AWS family and their
+# async twins. Those are deliberately absent: no MODEL_SOURCES entry
+# constructs one, and CLAUDE.md says not to build for a source that does not
+# exist yet. A guard entry can arrive with the source that needs it -- until
+# then this check would not catch `anthropic.AnthropicBedrock(...)`.
 _SDK_CLIENT_NAMES = frozenset({"Anthropic", "AsyncAnthropic", "Client", "AsyncClient"})
 
 
@@ -185,9 +190,9 @@ def _attribute_root(node: ast.expr) -> str | None:
 
 
 def _sdk_construction_sites(tree: ast.Module, filename: str) -> list[str]:
-    """Every client constructed by calling through the `anthropic` module
-    name, labelled with the function that encloses it (`<module>` when there
-    is none)."""
+    """Every `_SDK_CLIENT_NAMES` client constructed by calling through the
+    `anthropic` module name, labelled with the function that encloses it
+    (`<module>` when there is none)."""
     sites = []
 
     def visit(node, scope):
@@ -220,9 +225,11 @@ class TestBuildClientIsTheOnlyConstructor:
     What this is and is not: a regression guard against a *second* module
     quietly calling the constructor, which is the thing that actually
     happened twice. It is not airtight and is not trying to be -- a rebound
-    local (`_A = anthropic.Anthropic; _A()`), a `getattr` lookup, or a
-    subclass all evade any AST check, and chasing them would buy nothing
-    against a mistake nobody makes by accident.
+    local (`_A = anthropic.Anthropic; _A()`), a `getattr` lookup, a subclass,
+    and any client outside `_SDK_CLIENT_NAMES` all pass it. Some of those a
+    stricter check could reach; chasing them would buy nothing against a
+    mistake nobody makes by accident, which is why the line is drawn here
+    and stated rather than implied.
     """
 
     def test_no_other_module_constructs_an_sdk_client(self):
