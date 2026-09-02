@@ -254,6 +254,9 @@ public function's own signature and return type is unchanged** —
 ## Interface
 
 ```python
+def build_client(**kwargs: Any) -> anthropic.Anthropic: ...
+
+
 def _anthropic_call(
     model: str,
     system_prompt: str,
@@ -313,6 +316,36 @@ def review_plan(
 ) -> PlanReview: ...
 ```
 
+### `build_client(**kwargs) -> anthropic.Anthropic`
+
+The one place in this project an Anthropic SDK client is constructed.
+Everything the caller passes is forwarded; what it adds is
+`http_client=anthropic.DefaultHttpxClient(follow_redirects=False)`.
+
+**A redirect is refused, not followed.** The SDK's httpx client defaults
+`follow_redirects` to `True`, and every request built here carries
+`x-api-key`. httpx strips `Authorization` on a cross-origin redirect but
+never a custom header, so left at the default a 3xx from a captive portal —
+or from a hostile `ANTHROPIC_BASE_URL` — hands the key to the `Location`
+target. This is the same rule the provider probe applies in `specs/cli.md`,
+and it needs stating separately because the reasoning recorded there does not
+carry over: that one is about `Authorization`.
+
+`DefaultHttpxClient` rather than a bare `httpx.Client` keeps the SDK's own
+connection limits and keepalive socket options, and is public API back to
+`pyproject.toml`'s declared floor.
+
+**The caller owns the close.** Passing `http_client` swaps the SDK's
+`SyncHttpxClientWrapper` — whose `__del__` closed the pool — for a plain
+client that has none, so a client built here and dropped leaks its socket.
+Both callers in this file close what they build; `cli._CountingClient` closes
+its own (`specs/cli.md`).
+
+It exists as one function rather than repeated kwargs because the property is
+only worth anything if it holds at **every** construction site. #97 hardened
+the probe and left the model-call path following redirects for another
+release (#101); a single constructor is what stops the two drifting again.
+
 ### `_anthropic_call(...)` (private)
 
 Exactly what the old `sonnet_call()`/the shared `_call()` helper did —
@@ -334,6 +367,33 @@ call always does), so `response.content[0]` is a `ThinkingBlock` — no
 `type == "text"`, raises a plain `RuntimeError`; not expected to happen
 in practice, but silently returning `None`/empty would be worse than a
 clear failure.
+
+**The client it builds when none is injected comes from `build_client()`,
+and is closed in a `finally`** — the redirect refusal and the close
+obligation both apply here, and this path carries more than the probe does:
+the system prompt and the user content (a plan summary, a driver's source)
+travel with the key, and the redirect target's `200` would be parsed back as
+a **model response** that `plan`/`apply` then acts on. That is #101, and it
+is why the rule cannot live on the probe alone.
+
+Be precise about what this does *not* buy, since an unqualified sentence is
+what hid #97. A hostile `ANTHROPIC_BASE_URL` receives the key and the prompt
+on the **first** hop, with no redirect involved; refusing 3xx stops it
+recruiting a *second* recipient and nothing more. Against a captive portal,
+which intercepts a request aimed at the real API, the refusal is the whole
+defence.
+
+A refused 3xx surfaces as a raw `anthropic.APIStatusError` — there is no
+canned `detail` here as there is on the probe, and `cli._HANDLED_EXCEPTIONS`
+does not catch it, so it tracebacks exactly as any other API error does
+today. Recorded, not fixed here.
+
+An **injected** client is untouched: it carries its own transport
+configuration, exactly as it carries its own timeout, and is left open
+because it belongs to the caller. That is not a loophole but the reason
+`cli._CountingClient` — the client every real `plan`/`apply` injects, which
+means this function's own building branch is never reached from the CLI —
+has to build through `build_client()` itself.
 
 `max_tokens` is a required keyword-only parameter here, no fallback
 default — deliberately, after the per-role `max_tokens` change above.
@@ -446,24 +506,12 @@ be reported as `REJECTED`; telling a user to rotate a working credential is
 the same class of error as passing a broken one. Constructed
 with `max_retries=0` and the given `timeout` so `init` cannot hang.
 
-**A redirect is refused, not followed** — the client is constructed with
-`follow_redirects=False` (via `anthropic.DefaultHttpxClient`, which keeps the
-SDK's own connection limits and keepalive socket options). This is the same
-rule the provider probe applies in `specs/cli.md`, and it needs stating
-separately because the reasoning recorded there does not carry over: httpx
-strips `Authorization` on a cross-origin redirect, but this SDK authenticates
-with **`x-api-key`**, a custom header httpx does not strip. Left at the SDK's
-default the probe would follow a 3xx from a captive portal or a hostile
-`ANTHROPIC_BASE_URL`, hand the key to the `Location` target, and then report
-that target's 2xx as `OK` — a leaked credential and a green check for it.
-
-Be precise about what this does *not* buy, since an unqualified sentence
-here is what hid #97. A hostile `ANTHROPIC_BASE_URL` receives `x-api-key`
-on the **first** hop, with no redirect involved; refusing 3xx stops it
-recruiting a *second* recipient and nothing more. The base URL is trusted
-input by construction — the `401` note below is the other half of that
-same trust. Against a captive portal, which intercepts a request aimed at
-the real API, the refusal is the whole defence.
+**A redirect is refused, not followed** — the probe is built by
+`build_client()` (above), which is where that rule and its limits are
+recorded. The consequence specific to this function is that, followed, a 3xx
+would leak the key *and* then report the `Location` target's 2xx as `OK` — a
+leaked credential and a green check for it. The base URL is trusted input by
+construction; the `401` note below is the other half of that same trust.
 
 The `detail` for a 3xx is **canned**, not the API's error message: the body
 of a redirect belongs to whoever sent it, and `init` prints this string.
@@ -477,9 +525,10 @@ implicit — an unqualified sentence in `specs/cli.md` is precisely what
 hid #97 — and the redaction half is in tension with CLAUDE.md's rule that
 `llm.py` never handles the key value.
 
-Both halves apply only to the client this function builds. An injected
-`client` carries its own transport configuration — its own redirect policy
-exactly as it carries its own `timeout` — and cannot be hardened from here.
+The redirect refusal, the `timeout` and `max_retries=0` all apply only to the
+client this function builds. An injected `client` carries its own transport
+configuration — its own redirect policy exactly as it carries its own
+`timeout` — and cannot be hardened from here.
 
 **This function takes no `credentials` parameter and introduces no
 `credentials` identifier** — the SDK resolves `ANTHROPIC_API_KEY` from
@@ -526,7 +575,12 @@ filesystem for anything that isn't the specific thing being tested.
 - `review_driver()`'s returned `DriverReview.model` equals whatever
   `llm_config.code_review.model` was resolved to, not a fixed string.
 - Every function still accepts an injected `client`, and when one is
-  given, no real network call is made.
+  given, no real network call is made — and the injected client is left
+  open, since it belongs to the caller.
+- **Every Anthropic client this project constructs refuses redirects**,
+  whether the request is the free probe or a billed model call, and
+  whichever of the four roles it is for. `build_client()` is the only
+  constructor; whoever calls it closes what it returns.
 - `output_schema`/no-`output_schema`, raw-text-return, and the two
   review-gate schemas (`DRIVER_REVIEW_SCHEMA`, `PLAN_REVIEW_SCHEMA`) are
   all unchanged from the original draft — this revision only touches

@@ -77,6 +77,26 @@ PLAN_REVIEW_SCHEMA: dict[str, Any] = {
 }
 
 
+def build_client(**kwargs: Any) -> anthropic.Anthropic:
+    """Construct the SDK client every Anthropic request in this project uses.
+
+    `follow_redirects` defaults to True in the SDK's httpx client, and these
+    requests carry `x-api-key` -- and, on the model-call path, the whole
+    prompt. httpx strips `Authorization` on a cross-origin redirect but never
+    a custom header, so a 3xx from a captive portal, or from a hostile
+    `ANTHROPIC_BASE_URL`, would hand both to the `Location` target (#97,
+    #101). `DefaultHttpxClient` rather than a bare `httpx.Client` keeps the
+    SDK's own connection limits and keepalive socket options.
+
+    The caller owns the returned client and must close it: passing
+    `http_client` swaps the SDK's `SyncHttpxClientWrapper` -- whose `__del__`
+    closed the pool -- for a plain client that has none.
+    """
+    return anthropic.Anthropic(
+        http_client=anthropic.DefaultHttpxClient(follow_redirects=False), **kwargs
+    )
+
+
 def _anthropic_call(
     model: str,
     system_prompt: str,
@@ -86,8 +106,9 @@ def _anthropic_call(
     output_schema: dict[str, Any] | None = None,
     client: anthropic.Anthropic | None = None,
 ) -> ModelCallResult:
-    if client is None:
-        client = anthropic.Anthropic()
+    owned = client is None
+    if owned:
+        client = build_client()
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -98,30 +119,37 @@ def _anthropic_call(
     if output_schema is not None:
         kwargs["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
 
-    start = time.monotonic()
-    response = client.messages.create(**kwargs)
-    duration_ms = log.elapsed_ms(start)
+    try:
+        start = time.monotonic()
+        response = client.messages.create(**kwargs)
+        duration_ms = log.elapsed_ms(start)
 
-    text = None
-    for block in response.content:
-        if getattr(block, "type", None) == "text":
-            text = block.text
-            break
-    if text is None:
-        raise RuntimeError("model response contained no text content block")
+        text = None
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                text = block.text
+                break
+        if text is None:
+            raise RuntimeError("model response contained no text content block")
 
-    usage = response.usage
-    details = getattr(usage, "output_tokens_details", None)
-    thinking_tokens = getattr(details, "thinking_tokens", None) if details is not None else None
+        usage = response.usage
+        details = getattr(usage, "output_tokens_details", None)
+        thinking_tokens = getattr(details, "thinking_tokens", None) if details is not None else None
 
-    return ModelCallResult(
-        text=text,
-        stop_reason=response.stop_reason,
-        input_tokens=usage.input_tokens,
-        output_tokens=usage.output_tokens,
-        thinking_tokens=thinking_tokens,
-        duration_ms=duration_ms,
-    )
+        return ModelCallResult(
+            text=text,
+            stop_reason=response.stop_reason,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            thinking_tokens=thinking_tokens,
+            duration_ms=duration_ms,
+        )
+    finally:
+        # Only the client this function built is its to close; an injected
+        # one is the caller's, and cli._CountingClient reuses one across a
+        # whole invocation.
+        if owned:
+            client.close()
 
 
 MODEL_SOURCES: dict[ModelSource, Callable[..., ModelCallResult]] = {
@@ -309,19 +337,10 @@ def verify_api_key(
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return KeyCheck(state=KeyState.MISSING)
 
-    # follow_redirects defaults to True in the SDK's httpx client, and this
-    # request carries x-api-key. httpx strips Authorization on a cross-origin
-    # redirect but never a custom header, so a 3xx from a captive portal --
-    # or from a hostile ANTHROPIC_BASE_URL -- would hand the key to the
-    # Location target (#97). This bounds the recipients to one: a hostile
-    # base URL already holds the key from the first hop, which no redirect
-    # policy undoes. DefaultHttpxClient rather than a bare httpx.Client
-    # keeps the SDK's own connection limits and keepalive socket options.
-    probe = client or anthropic.Anthropic(
-        timeout=timeout,
-        max_retries=0,
-        http_client=anthropic.DefaultHttpxClient(follow_redirects=False),
-    )
+    # build_client refuses redirects (#97). That bounds the recipients of the
+    # key to one: a hostile base URL already holds it from the first hop,
+    # which no redirect policy undoes.
+    probe = client or build_client(timeout=timeout, max_retries=0)
     try:
         probe.models.list(limit=1)
     except anthropic.APIStatusError as exc:
@@ -348,10 +367,8 @@ def verify_api_key(
     else:
         return KeyCheck(state=KeyState.OK)
     finally:
-        # Passing http_client swaps the SDK's SyncHttpxClientWrapper -- whose
-        # __del__ closes the pool -- for a plain client that has none, so the
-        # probe's socket would otherwise outlive it. Only the client this
-        # function built is its to close; an injected one is the caller's.
+        # build_client's caller owns the close. Only the client this function
+        # built is its to close; an injected one is the caller's.
         if client is None:
             probe.close()
 

@@ -111,6 +111,10 @@ class FakeClient:
             stop_reason=stop_reason,
             usage=usage,
         )
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
 
 @pytest.fixture
@@ -203,6 +207,176 @@ class TestModelSources:
         )
 
         assert result.thinking_tokens == 777
+
+
+class TestAnthropicCallRefusesRedirects:
+    """The model-call half of the rule TestVerifyApiKeyRefusesRedirects
+    enforces on the probe, and the more damaging half. The probe carries
+    only x-api-key; this path carries the system prompt and the user content
+    with it -- a plan summary, or a driver's source -- and then parses the
+    target's 200 back as a model response that plan/apply acts on. #101.
+    """
+
+    def test_the_key_and_prompt_never_reach_a_redirect_target(self, api_key_set, monkeypatch):
+        # The test the fix exists for. Only the transport is injected -- the
+        # client is built by _anthropic_call itself, through the real SDK and
+        # the real httpx redirect machinery, so follow_redirects is the
+        # production value and not the test's.
+        #
+        # The counterfactual: drop follow_redirects=False and keep
+        # http_client=, and this records a second hop to evil.example.com
+        # carrying x-api-key and the prompt, and returns "forged" as the
+        # model's answer. Drop http_client= entirely and the patched
+        # constructor below is never called, so guard_client raises rather
+        # than letting a live request off the unit suite.
+        hops = []
+
+        def handler(request):
+            hops.append((request, request.read()))
+            if request.url.host == "api.anthropic.com":
+                return httpx.Response(
+                    302, headers={"Location": "https://evil.example.com/v1/messages"}
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "msg_forged",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-sonnet-5",
+                    "content": [{"type": "text", "text": "forged"}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                },
+            )
+
+        real_http_client = llm.anthropic.DefaultHttpxClient
+        monkeypatch.setattr(
+            llm.anthropic,
+            "DefaultHttpxClient",
+            lambda **kwargs: real_http_client(**kwargs, transport=httpx.MockTransport(handler)),
+        )
+
+        real_anthropic = llm.anthropic.Anthropic
+
+        def guard_client(**kwargs):
+            assert "http_client" in kwargs, "the call must be built with an explicit http_client"
+            return real_anthropic(**kwargs)
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", guard_client)
+
+        # Caught rather than pytest.raises'd so the hop assertions below run
+        # first: under the counterfactual the failure then names the leak
+        # ("evil.example.com" in the recorded hosts) instead of the less
+        # legible "DID NOT RAISE".
+        outcome = None
+        try:
+            outcome = llm._anthropic_call(
+                "claude-sonnet-5",
+                "system prompt",
+                "SENTINEL-PROMPT-BODY",
+                max_tokens=64,
+            )
+        except anthropic.APIStatusError as exc:
+            outcome = exc
+
+        assert [request.url.host for request, _ in hops] == ["api.anthropic.com"]
+        # The two things that make this worth testing: both are on the wire,
+        # and httpx would have carried both across the redirect.
+        assert "x-api-key" in hops[0][0].headers
+        assert b"SENTINEL-PROMPT-BODY" in hops[0][1]
+        # The redirect target's 200 must never come back as a model answer.
+        assert not isinstance(outcome, llm.ModelCallResult)
+        # status_code, not just "it raised". An httpx.MockTransport injected
+        # into a client from a different stack -- anthropic 1.x builds
+        # DefaultHttpxClient on httpx2 -- is foreign to it, so the request
+        # dies as an APIConnectionError, and every assertion above still
+        # holds with follow_redirects=True. APIConnectionError is not an
+        # APIStatusError, so a stack mismatch fails loudly instead of going
+        # quietly inert. This is the model path's equivalent of the probe
+        # test's canned-detail pin; there is no detail string here.
+        assert isinstance(outcome, anthropic.APIStatusError)
+        assert outcome.status_code == 302
+
+    def test_the_client_it_builds_refuses_redirects(self, api_key_set, monkeypatch):
+        # The guard above only holds because the constructed client refuses
+        # redirects. Pin it directly, so the SDK restoring its
+        # follow_redirects default is a test failure and not a silent leak.
+        built = {}
+
+        def fake_anthropic(**kwargs):
+            built.update(kwargs)
+            return FakeClient("ok")
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", fake_anthropic)
+
+        llm._anthropic_call("claude-sonnet-5", "system", "user", max_tokens=64)
+
+        assert built["http_client"].follow_redirects is False
+
+    def test_the_client_it_builds_is_closed(self, api_key_set, monkeypatch):
+        # http_client= costs the SDK wrapper's __del__, which is what closed
+        # the pool before; without an explicit close the socket outlives the
+        # call, once per model call on the plan/apply path.
+        client = FakeClient("ok")
+        monkeypatch.setattr(llm.anthropic, "Anthropic", lambda **kwargs: client)
+
+        llm._anthropic_call("claude-sonnet-5", "system", "user", max_tokens=64)
+
+        assert client.closed
+
+    def test_the_client_it_builds_is_closed_even_when_the_call_raises(
+        self, api_key_set, monkeypatch
+    ):
+        client = FakeClient(None)
+        monkeypatch.setattr(llm.anthropic, "Anthropic", lambda **kwargs: client)
+
+        with pytest.raises(RuntimeError):
+            llm._anthropic_call("claude-sonnet-5", "system", "user", max_tokens=64)
+
+        assert client.closed
+
+    def test_an_injected_client_is_left_open(self):
+        # It belongs to the caller, who reuses it across every call of a run
+        # (cli._CountingClient does exactly that).
+        client = FakeClient("ok")
+
+        llm._anthropic_call("claude-sonnet-5", "system", "user", max_tokens=64, client=client)
+
+        assert not client.closed
+
+
+class TestBuildClient:
+    def test_refuses_redirects(self, monkeypatch):
+        built = {}
+
+        def fake_anthropic(**kwargs):
+            built.update(kwargs)
+            return FakeClient("ok")
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", fake_anthropic)
+
+        llm.build_client()
+
+        assert built["http_client"].follow_redirects is False
+
+    def test_passes_the_callers_kwargs_through(self, monkeypatch):
+        # verify_api_key builds through this with its own timeout and
+        # max_retries; the hardening must not cost it those.
+        built = {}
+
+        def fake_anthropic(**kwargs):
+            built.update(kwargs)
+            return FakeClient("ok")
+
+        monkeypatch.setattr(llm.anthropic, "Anthropic", fake_anthropic)
+
+        llm.build_client(timeout=3.0, max_retries=0)
+
+        assert built["timeout"] == 3.0
+        assert built["max_retries"] == 0
+        assert built["http_client"].follow_redirects is False
 
 
 class TestCallLogging:
