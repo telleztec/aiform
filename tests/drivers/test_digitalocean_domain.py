@@ -501,6 +501,12 @@ class TestRead:
         assert result["records"] == []
 
     def test_delegated_subdomain_ns_record_is_kept(self, driver, fake_urlopen):
+        # This fixture deliberately uses the DOTTED form, which the live
+        # probe showed DigitalOcean does not actually return. It is kept
+        # non-realistic on purpose: the filter is dot-insensitive, so this
+        # pins that dot-insensitivity does not make it over-match and
+        # swallow a delegated record the user genuinely manages. The
+        # realistic dotless shape is covered by the apex tests above.
         fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
         fake_urlopen.script(
             "GET",
@@ -1855,6 +1861,25 @@ class TestUserWrittenApexNsRejected:
         params = {
             "records": [{"type": "NS", "name": "@", "data": "ns1.digitalocean.com", "ttl": 1800}]
         }
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert "digitalocean" in str(excinfo.value).lower()
+        assert fake_urlopen.calls == []
+
+    @pytest.mark.parametrize(
+        "data",
+        ["NS1.DIGITALOCEAN.COM", "Ns1.DigitalOcean.Com", "ns1.digitalocean.com."],
+    )
+    def test_apex_ns_match_is_case_and_dot_insensitive(self, driver, fake_urlopen, data):
+        # Hostnames are case-insensitive, so these all name the same
+        # nameserver. Matching only the exact lowercase dotless spelling
+        # would let one through validation, whereupon read() drops it as
+        # DO-managed and it becomes a permanently "missing" record,
+        # re-POSTed on every apply -- the same near-miss shape as the
+        # trailing-dot bug this filter already had once.
+        params = {"records": [{"type": "NS", "name": "@", "data": data, "ttl": 1800}]}
 
         with pytest.raises(ValueError) as excinfo:
             driver.create(DOMAIN, params, CREDENTIALS)

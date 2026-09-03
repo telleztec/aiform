@@ -313,7 +313,16 @@ class Driver(ResourceDriver):
         # never matched and this filter let the zone's own nameservers
         # leak into read() as regular, deletable records. rstrip is
         # correct under either API behavior, present or not.
-        return str(data or "").rstrip(".").endswith(".digitalocean.com")
+        #
+        # casefold() for the same reason one level up: hostnames are
+        # case-insensitive, so a user writing NS1.DIGITALOCEAN.COM means
+        # the same nameserver. Without this the validation guard would
+        # accept it, DO would (presumably) fold it on store, and read()
+        # would then drop it as DO-managed -- leaving a record that is
+        # permanently "missing", re-POSTed every apply. Cheap, and it
+        # removes a near-miss of exactly the kind that produced the
+        # trailing-dot bug.
+        return str(data or "").rstrip(".").casefold().endswith(".digitalocean.com")
 
     def _is_do_managed_ns(self, raw_record: dict[str, Any]) -> bool:
         # Both conditions are required: a user's own delegated-subdomain

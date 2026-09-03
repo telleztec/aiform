@@ -346,9 +346,18 @@ they appear in `read()` but not in the user's file, so the diff reads as
 "delete the zone's nameservers" — and `apply` would execute it, breaking
 resolution for the entire domain. `read()` therefore drops:
 
-- every record of type `SOA`; and
-- every `NS` record whose `name` is `@` **and** whose `data` ends in
-  `.digitalocean.com.`
+- every record of type `SOA` — verified live to be present in the listing as
+  `{type: "SOA", name: "@", data: "1800"}`, its `data` being the zone TTL
+  rather than a hostname; and
+- every `NS` record whose `name` is `@` **and** whose `data`, with any trailing
+  dot removed and lowercased, ends in `.digitalocean.com`.
+
+The dot-insensitive and case-insensitive comparison is deliberate. DigitalOcean
+returns these **without** a trailing dot (`ns1.digitalocean.com`, verified
+live), and an earlier version of this filter anchored on `.digitalocean.com.`
+**with** the dot — so it never matched, and `apply` would have deleted the
+zone's own nameservers. Normalizing before comparing costs nothing and removes
+the whole class of near-miss.
 
 Both conditions are required for the NS case. A user's own delegated-subdomain
 `NS` record (`name != "@"`) stays managed, and so would an apex `NS` pointing
@@ -514,14 +523,20 @@ per-record cleanup is needed.
     droplet-scoped token earns a green check and then fails at the first
     domain `apply`.
 
-- **A relative `data` target** for `CNAME`/`MX`/`NS`/`SRV` — a bare label with
-  no dot at all, such as `data: "www"` — is a `ValueError` before any API call,
-  naming the record and the qualified form to write instead. A **trailing** dot
-  is optional in either direction: `mail.example.com` and `mail.example.com.`
-  are both accepted and compare equal. Rejecting the relative form is what lets
-  the driver avoid depending on whether DigitalOcean expands it, which remains
-  unverified. `"@"` is accepted as the apex. See "`data` is compared with the
-  trailing dot stripped from both sides".
+- **A non-canonical `data` spelling** for `CNAME`/`MX`/`NS`/`SRV`/`CAA` is a
+  `ValueError` before any API call, naming the form to write instead. Two
+  spellings are rejected, for different reasons:
+  - **A written trailing dot** (`data: "mail.example.com."`). DigitalOcean
+    requires that dot on the wire but returns the value without it, so `read()`
+    yields the dotless form and a user writing the dotted one would diff
+    forever. The driver adds the dot itself at the wire boundary.
+  - **A bare relative label** (`data: "www"`, no dot at all). DigitalOcean
+    rejects this too, with a 422; catching it locally is a clearer error,
+    earlier, not a rule of aiform's own invention.
+
+  `"@"` is accepted as the apex and is exempt from both checks — it is sent and
+  stored unchanged. See "`data` is written dotless; the driver adds the dot the
+  API demands".
 - **`ip_address` is not a supported param.** DigitalOcean accepts it on
   `POST /v2/domains` as a convenience that auto-creates an apex `A` record, but
   it is **write-only** — `read()` could never recover it, so supporting it would
