@@ -177,26 +177,83 @@ Three mechanisms hold the invariant:
    **not** try to reverse DO's normalizations.
 3. **Non-canonical input is rejected**, loudly, before any API call.
 
-### Why `read()` does not un-normalize
+### `data` is written dotless; the driver adds the dot the API demands
 
-DigitalOcean rewrites what it stores: `data` on `CNAME`/`MX`/`NS`/`SRV` is
-expanded to a fully-qualified name with a trailing dot, so a POST of
-`data: "www"` on zone `example.com` comes back as `www.example.com.`.
+**Verified against the live API**, after two earlier versions of this section
+were wrong in opposite directions. DigitalOcean is asymmetric here, and that
+asymmetry is the whole difficulty:
 
-The tempting fix — strip the trailing dot in `read()`, and expand relative
-names to match — requires reimplementing DO's expansion rules locally and
-keeping them correct forever. It cannot work in general anyway: `"@"`,
-`"www"`, and `"www.example.com."` all round-trip to the same stored value, so
-no reverse mapping can know which of the three the user typed.
+| | Form |
+|---|---|
+| What DO **requires** on `POST`/`PUT` | **with** a trailing dot — a dotless or relative value returns `422 "Data needs to end with a dot (.)"` |
+| What DO **stores and returns** on `GET` | **without** it — `POST`ing `target.example.com.` reads back as `target.example.com` |
 
-So the canonical form is **whatever DigitalOcean stores**, and the user writes
-that: `data` for `CNAME`/`MX`/`NS`/`SRV` must be fully qualified **with the
-trailing dot**. Anything else is rejected at validation time with a message
-naming the exact expected value (see Edge cases), rather than silently
-producing a diff that never converges.
+Applies to `CNAME`, `MX`, `NS`, `SRV`, **and `CAA`** — the same five types
+DigitalOcean's own Terraform provider special-cases. `"@"` is exempt in both
+directions: it is sent as `@` and stored as `@`.
 
-`name` needs no such rule — DO returns it relative (`www`, `@`), which is what
-a user writes.
+**The canonical form is therefore the dotless FQDN** — `mail.example.com` —
+because that is what `read()` returns, and:
+
+- **Validation rejects a written trailing dot**, naming the dotless form to
+  write. Not pedantry: `read()` returns dotless, so a user writing the dotted
+  form would get a permanent phantom diff on that record forever.
+- **Validation rejects a relative target** (a bare label with no dot at all),
+  which DO also rejects — so this is a clearer error, earlier, not a new rule.
+- **The driver appends the trailing dot at the wire boundary only**, in the
+  one helper that builds a `POST`/`PUT` body. Everything else — validation,
+  duplicate detection, reconciliation identity, `read()`'s projection — works
+  in the dotless canonical form.
+- **`read()` returns `data` verbatim.** DO already returns dotless, so there is
+  nothing to strip, and keeping `read()` free of normalization is what makes
+  the zero-diff invariant checkable by inspection.
+- The DO-managed-NS filter still matches
+  `data.rstrip(".").endswith(".digitalocean.com")` — belt and braces, cheap,
+  and correct if DO ever changes.
+
+**Why "accept either spelling" cannot work, and why that generalizes.** The
+version of this section immediately before this one tried to accept both forms
+and normalize internally. That is structurally impossible here, for a reason
+worth stating in general terms because it constrains **every** future driver:
+
+> `planner.diff_attributes()` compares `read()`'s output against the user's
+> **raw** `params`. There is no hook for a driver to normalize either side of
+> that comparison. So a driver can only ever have **one** writable spelling of
+> a value that converges to zero-diff, and it must be exactly the spelling
+> `read()` returns.
+
+A driver that wants to accept a second spelling has only one honest option:
+reject it, with a message naming the canonical one. See
+`specs/driver.md`'s addendum, where this is recorded as a general rule rather
+than left to be rediscovered per driver.
+
+`name` needs no rule of either kind — DO returns it relative (`www`, `@`),
+which is what a user writes.
+
+### How this was gotten wrong twice, and what caught it
+
+Kept because the pattern generalizes past this driver (see #114):
+
+The first version asserted DO stores `data` **with** a trailing dot, marked in
+Knowledge-confidence as "recalled, not verified". That label was accurate and
+completely inert. From that one fact: the DO-managed-NS filter tested for
+`.digitalocean.com.` and therefore never matched, so `apply` would have
+**deleted the zone's own nameservers** — the precise failure the filter exists
+to prevent — and validation demanded a form DO does not store, so every
+hostname-typed record would have diffed forever while the user was forbidden
+from writing the value that converges. Two guards meant to catch each other,
+both defeated by the same wrong belief.
+
+**The 74 tests did not catch it**, and structurally could not: the fake
+`urlopen` fixtures returned dotted `data` because that is what the author
+believed, so the tests confirmed the driver handled the wrong universe
+correctly. A hand-written fake cannot falsify the model it was built from.
+
+The second version — "accept either form" — was written after two vendor
+sources (DO's OpenAPI examples, DO's Terraform provider) contradicted the
+first. It was still wrong, because no document revealed the input/output
+asymmetry above. Only a live request did: two throwaway zones, ~15 API calls,
+zero cost, deleted in a `finally`.
 
 ### Record order is free, and `read()` sorts anyway
 
@@ -350,9 +407,27 @@ check itself — the schema records the intent, the validation enforces it.
   changed `data` is an edit: `PUT` avoids the brief resolution gap a
   delete-then-create pair would open on the name a user is most likely to be
   resolving.
-- **Set path** — identity is `(type, name, data)`. Matched pairs differing only
-  in `ttl`/`priority`/etc. are `PUT`; unmatched `desired` records are `POST`;
-  unmatched `current` records are `DELETE`.
+- **Set path** — identity is the **whole projected record**, paired by
+  `aiform.compare.canonical_key`. Records equal on every projected field are
+  already correct and produce no call; unmatched `desired` records are `POST`;
+  unmatched `current` records are `DELETE`. A `PUT` is used only where a
+  desired and a current record match on every field *except* `ttl`, which is
+  the one edit worth doing in place rather than as a delete/create pair.
+
+  **Identity is not `(type, name, data)`.** An earlier implementation used
+  that, and it silently lost records whenever two legitimately share a `data`
+  value while differing elsewhere — which is ordinary, not exotic:
+
+  - **CAA**, the standard Let's Encrypt setup: `issue` and `issuewild` for the
+    same CA differ only in `tag`. Adding the second one produced *no* call at
+    all (a diff that could never converge); removing it rewrote the **wrong**
+    record, leaving two `issue` entries and the `issuewild` still live.
+  - **SRV**, the same target on two ports: differs only in `port`. Same
+    outcome.
+
+  Matching on the full record makes both fall out correctly with no per-type
+  special-casing, and needs no new comparison rule — `canonical_key` already
+  exists for exactly this, from `specs/unordered_fields.md`.
 - **Order: `PUT`, then `POST`, then `DELETE`.** Updates and additions land
   before removals so the zone is never missing a record it will have again.
   Adding before deleting cannot conflict, because the one case where a
@@ -404,22 +479,49 @@ per-record cleanup is needed.
     (`domains_*.yml`); `per_page` defaulting to **20**, max 200
     (`shared/parameters.yml`); and `links.pages.next` as an absolute URI absent
     on the final page (`shared/pages.yml`).
-  - **Recalled and reasoned, NOT verified** — treat as the likeliest failure
-    points and confirm in the live system test (see Out of scope): the
-    per-type required-field table; the exact trailing-dot behavior for each of
-    `CNAME`/`MX`/`NS`/`SRV`; whether DO quotes or escapes `TXT` `data` on read;
-    and the precise shape of the auto-created apex `NS` records.
-  - **Known-wrong upstream, do not copy.** `models/domain_record_types.yml`'s
-    `required` lists mark `NS`, `TXT`, and `SRV` as requiring `flags` and
-    `tag`. That contradicts the field descriptions in `domain_record.yml`,
-    which document both as CAA-only. The table in this spec follows the field
-    descriptions. This is a concrete reminder that a vendor OpenAPI document is
-    evidence, not ground truth.
-- **`data` not fully qualified** for `CNAME`/`MX`/`NS`/`SRV` (no trailing dot):
-  `ValueError` before any API call, naming the record and the expected form.
-  This is the single most likely user error and, left unchecked, produces a
-  permanently non-converging plan rather than a visible failure. See "Why
-  `read()` does not un-normalize".
+  - **Verified against the live API** by a disposable-zone probe (two zones,
+    ~15 calls, no cost, deleted in a `finally`), after two of these shipped
+    wrong:
+    - `POST`/`PUT` **require** a trailing dot on `data` for `CNAME`/`MX`/`NS`/
+      `SRV`/`CAA` (`422 "Data needs to end with a dot (.)"`); `GET` returns it
+      **without**. `CAA` belongs in that set — an earlier version of this spec
+      omitted it.
+    - The auto-created apex `NS` records are `ns1..ns3.digitalocean.com`, no
+      trailing dot.
+    - `SOA` **is** returned in the records listing, as
+      `{type: "SOA", name: "@", data: "1800"}` — so the filter is required, and
+      its `data` is the zone TTL rather than a nameserver string.
+    - `TXT` `data` is stored **verbatim**, quoted or unquoted — no `TXT`
+      normalization anywhere.
+    - `"@"` is stored as `"@"`, exempt from the dot rule in both directions.
+    - `CAA` `issue` and `issuewild` for the same CA coexist at one name with
+      **identical `data`**, differing only in `tag` — which is why
+      reconciliation identity must be the whole record.
+    - DigitalOcean **silently rectifies** mismatched TTLs within an RRset:
+      adding a second `A` at the same name with `ttl: 3600` changed the
+      existing record from `1800` to `3600`. Hence the local rejection.
+    - Zone names using RFC 2606 reserved TLDs (`.invalid`, `.test`) are
+      rejected with a 422, so a probe or system-test zone needs a real TLD.
+  - **Still recalled and reasoned, NOT verified**: the per-type required-field
+    table. The probe exercised the types this driver supports but did not
+    enumerate every field's necessity, so a "required" here may be optional in
+    fact. This is the one remaining item for the live system test.
+  - **On how these got verified at all.** The DigitalOcean token this project
+    used had **no `domain` scope** — the probe returned 403 until a broader
+    token was issued. That is a prerequisite for the live system test and for
+    any real user of this driver, and worth stating in user-facing docs:
+    `aiform init`'s credential preflight checks droplet access only, so a
+    droplet-scoped token earns a green check and then fails at the first
+    domain `apply`.
+
+- **A relative `data` target** for `CNAME`/`MX`/`NS`/`SRV` — a bare label with
+  no dot at all, such as `data: "www"` — is a `ValueError` before any API call,
+  naming the record and the qualified form to write instead. A **trailing** dot
+  is optional in either direction: `mail.example.com` and `mail.example.com.`
+  are both accepted and compare equal. Rejecting the relative form is what lets
+  the driver avoid depending on whether DigitalOcean expands it, which remains
+  unverified. `"@"` is accepted as the apex. See "`data` is compared with the
+  trailing dot stripped from both sides".
 - **`ip_address` is not a supported param.** DigitalOcean accepts it on
   `POST /v2/domains` as a convenience that auto-creates an apex `A` record, but
   it is **write-only** — `read()` could never recover it, so supporting it would
@@ -430,6 +532,31 @@ per-record cleanup is needed.
   leave them believing an unmanaged record was managed.
 - **A record type outside the enum** (including `SOA`): `ValueError` naming the
   type and the supported set.
+- **A field of the wrong scalar type**: `ValueError`. `ttl`/`priority`/`port`/
+  `weight`/`flags` must be `int` (and **not** `bool`, which is an `int`
+  subclass in Python); `type`/`name`/`data`/`tag` must be `str`. Nothing
+  upstream enforces `PARAM_SCHEMA`, so `ttl: "1800"` — a perfectly ordinary
+  quoted YAML scalar — otherwise reaches the API as a string, and comes back
+  from `read()` as the integer `1800`, diffing forever and re-`PUT`ting on
+  every apply. Mirrors `compute.py`'s `_reject_malformed_values()`, which
+  exists for the same reason. This check also removes an unhashable-value
+  crash in the duplicate detection below, which would otherwise raise a bare
+  `TypeError` on `data: [...]`.
+- **Records sharing `(type, name)` with different `ttl` values**: `ValueError`.
+  DNS requires every record in an RRset to share a TTL (RFC 2181 §5.2), and
+  DigitalOcean **silently rectifies** a mismatch rather than rejecting it — so
+  two `A` records at `@` with different TTLs come back with a value the user
+  never wrote, and diff forever. Rejecting locally turns a silent
+  non-convergence into an immediate, explainable error. (DigitalOcean's own
+  Terraform provider raises a warning diagnostic for the same case.)
+- **A user-written apex `NS` record pointing at DigitalOcean's own
+  nameservers**: `ValueError`. `read()` filters these out as DO-managed, so a
+  user who copies them out of the control panel into their `.aiform.md` gets a
+  record that is permanently "missing" — re-`POST`ed on every apply, and on
+  the very first `create()` the resulting 422 triggers the zone rollback and
+  deletes the zone. Rejecting with a message explaining that DO manages these
+  automatically closes a trap that would otherwise look like aiform losing the
+  user's records.
 - **A field not valid for its record type** (e.g. `priority` on an `A` record):
   `ValueError`. Accepting it would guarantee a permanent diff, since `read()`
   returns only the type's own fields.

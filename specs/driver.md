@@ -220,3 +220,42 @@ order, so `planner.diff_attributes()` compares them as multisets rather than
 ordered sequences. Defaults to empty (no driver is affected unless it opts in),
 and follows the same reassign-don't-mutate rule as the other two. Full design,
 rationale, and edge cases: `specs/unordered_fields.md`.
+
+## Addendum: one writable spelling per value
+
+A constraint on every driver, discovered while building
+`drivers/digitalocean/domain.py` (#116) and recorded here rather than left to
+be rediscovered per driver:
+
+> `planner.diff_attributes()` compares `read()`'s output against the user's
+> **raw** `params`. Neither side passes through the driver first — there is no
+> normalization hook on either. So a driver can only ever have **one** writable
+> spelling of a value that converges to zero-diff, and it must be exactly the
+> spelling `read()` returns.
+
+A driver cannot "accept either form" of anything — a trailing dot, a case
+variant, a unit suffix, an alias — by normalizing internally. The user's
+literal text is what the planner compares, so a second accepted spelling is a
+permanent phantom diff on that field: every `plan` bills an
+`intent-orchestration-model` call and every `apply` rewrites a resource that
+was already correct.
+
+The honest options are therefore only two:
+
+1. **Reject the non-canonical spelling** at validation time, with a message
+   naming the canonical one. This is what `domain.py` does for a written
+   trailing dot on `data`, even though DigitalOcean's own API *requires* that
+   dot on input — the driver adds it at the wire boundary instead.
+2. **Make the canonical spelling the one the CSP returns**, and require it.
+
+What a driver must **not** do is normalize the desired side and hope: that
+changes what is sent without changing what is compared.
+
+This is separate from `UNORDERED_FIELDS` (`specs/unordered_fields.md`), which
+relaxes *element order* within a declared list. Order is the one dimension the
+planner can be told to ignore; value spelling is not, and adding a second such
+mechanism per field would be a poor trade against simply rejecting the input.
+
+**`PLAN.md` §4's contract should carry this too** — noted as a prerequisite,
+not done here, mirroring how `specs/resource_tagging.md` handled its own §4
+addendum.

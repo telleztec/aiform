@@ -475,6 +475,11 @@ class TestRead:
     def test_apex_ns_records_pointing_at_digitalocean_nameservers_are_dropped(
         self, driver, fake_urlopen
     ):
+        # Verified live: DigitalOcean stores and returns these WITHOUT a
+        # trailing dot ("ns1.digitalocean.com"). This exact dotless shape
+        # is the B1 regression case -- a dot-anchored filter never
+        # matched it and let the zone's own nameservers leak into read()
+        # as ordinary, deletable records.
         fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
         fake_urlopen.script(
             "GET",
@@ -483,9 +488,9 @@ class TestRead:
                 200,
                 {
                     "domain_records": [
-                        do_record(id=1, type="NS", name="@", data="ns1.digitalocean.com."),
-                        do_record(id=2, type="NS", name="@", data="ns2.digitalocean.com."),
-                        do_record(id=3, type="NS", name="@", data="ns3.digitalocean.com."),
+                        do_record(id=1, type="NS", name="@", data="ns1.digitalocean.com"),
+                        do_record(id=2, type="NS", name="@", data="ns2.digitalocean.com"),
+                        do_record(id=3, type="NS", name="@", data="ns3.digitalocean.com"),
                     ]
                 },
             ),
@@ -626,7 +631,7 @@ class TestRead:
                             id=1,
                             type="CAA",
                             name="@",
-                            data='0 issue "letsencrypt.org"',
+                            data="letsencrypt.org",
                             flags=0,
                             tag="issue",
                         )
@@ -641,7 +646,7 @@ class TestRead:
             {
                 "type": "CAA",
                 "name": "@",
-                "data": '0 issue "letsencrypt.org"',
+                "data": "letsencrypt.org",
                 "ttl": 1800,
                 "flags": 0,
                 "tag": "issue",
@@ -691,22 +696,31 @@ class TestRead:
 
 class TestZeroDiffInvariant:
     def test_read_result_matches_the_users_records_as_a_multiset(self, driver, fake_urlopen):
+        # MX/NS/CNAME data is written and returned WITHOUT a trailing dot
+        # -- verified live, DigitalOcean stores and returns these
+        # dotless, and this driver's validation now requires the same
+        # dotless form from the user (a trailing dot is rejected, and
+        # aiform appends the one DO's API demands only on the wire). Both
+        # sides here use that one canonical form, which is what makes
+        # the zero-diff invariant actually checkable.
         user_records = [
             {"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800},
             {"type": "A", "name": "www", "data": "203.0.113.10", "ttl": 1800},
-            {"type": "MX", "name": "@", "data": "mail.example.com.", "ttl": 1800, "priority": 10},
+            {"type": "CNAME", "name": "blog", "data": "example.com", "ttl": 1800},
+            {"type": "MX", "name": "@", "data": "mail.example.com", "ttl": 1800, "priority": 10},
             {"type": "TXT", "name": "@", "data": '"v=spf1 -all"', "ttl": 1800},
         ]
         # Different order, DO-assigned ids, explicit nulls, and the
         # auto-created SOA/NS records all present -- exactly the live
         # shape read() must reduce back to `user_records` as a multiset.
         do_records = [
-            do_record(id=100, type="SOA", name="@", data=""),
-            do_record(id=101, type="NS", name="@", data="ns1.digitalocean.com."),
-            do_record(id=102, type="NS", name="@", data="ns2.digitalocean.com."),
-            do_record(id=103, type="NS", name="@", data="ns3.digitalocean.com."),
+            do_record(id=100, type="SOA", name="@", data="1800"),
+            do_record(id=101, type="NS", name="@", data="ns1.digitalocean.com"),
+            do_record(id=102, type="NS", name="@", data="ns2.digitalocean.com"),
+            do_record(id=103, type="NS", name="@", data="ns3.digitalocean.com"),
             do_record(id=4, type="TXT", name="@", data='"v=spf1 -all"'),
-            do_record(id=3, type="MX", name="@", data="mail.example.com.", priority=10),
+            do_record(id=3, type="MX", name="@", data="mail.example.com", priority=10),
+            do_record(id=5, type="CNAME", name="blog", data="example.com"),
             do_record(id=2, type="A", name="www", data="203.0.113.10"),
             do_record(id=1, type="A", name="@", data="203.0.113.10"),
         ]
@@ -902,6 +916,15 @@ class TestUpdateReconciliation:
     def test_multi_record_group_puts_matched_pairs_differing_only_in_ttl(
         self, driver, fake_urlopen
     ):
+        # Both records in the group move from ttl 1800 to 3600 together
+        # -- not just one of them -- because RFC 2181 §5.2 requires every
+        # record in an RRset to share one ttl (see
+        # TestRRsetTtlConsistency), so 'desired' could never legitimately
+        # carry mail1 at 3600 and mail2 still at 1800. What this test
+        # still pins down: the "matches except ttl" pairing must match
+        # each desired record against the RIGHT current record by data,
+        # not just grab whichever one is left -- id=1 gets mail1's new
+        # ttl, id=2 gets mail2's, never crossed.
         current = {
             "id": DOMAIN,
             "ttl": 1800,
@@ -909,14 +932,14 @@ class TestUpdateReconciliation:
                 {
                     "type": "MX",
                     "name": "@",
-                    "data": "mail1.example.com.",
+                    "data": "mail1.example.com",
                     "ttl": 1800,
                     "priority": 10,
                 },
                 {
                     "type": "MX",
                     "name": "@",
-                    "data": "mail2.example.com.",
+                    "data": "mail2.example.com",
                     "ttl": 1800,
                     "priority": 20,
                 },
@@ -927,15 +950,15 @@ class TestUpdateReconciliation:
                 {
                     "type": "MX",
                     "name": "@",
-                    "data": "mail1.example.com.",
+                    "data": "mail1.example.com",
                     "ttl": 3600,
                     "priority": 10,
                 },
                 {
                     "type": "MX",
                     "name": "@",
-                    "data": "mail2.example.com.",
-                    "ttl": 1800,
+                    "data": "mail2.example.com",
+                    "ttl": 3600,
                     "priority": 20,
                 },
             ]
@@ -947,12 +970,8 @@ class TestUpdateReconciliation:
                 200,
                 {
                     "domain_records": [
-                        do_record(
-                            id=1, type="MX", name="@", data="mail1.example.com.", priority=10
-                        ),
-                        do_record(
-                            id=2, type="MX", name="@", data="mail2.example.com.", priority=20
-                        ),
+                        do_record(id=1, type="MX", name="@", data="mail1.example.com", priority=10),
+                        do_record(id=2, type="MX", name="@", data="mail2.example.com", priority=20),
                     ]
                 },
             ),
@@ -964,12 +983,17 @@ class TestUpdateReconciliation:
                             id=1,
                             type="MX",
                             name="@",
-                            data="mail1.example.com.",
+                            data="mail1.example.com",
                             ttl=3600,
                             priority=10,
                         ),
                         do_record(
-                            id=2, type="MX", name="@", data="mail2.example.com.", priority=20
+                            id=2,
+                            type="MX",
+                            name="@",
+                            data="mail2.example.com",
+                            ttl=3600,
+                            priority=20,
                         ),
                     ]
                 },
@@ -982,7 +1006,19 @@ class TestUpdateReconciliation:
                 200,
                 {
                     "domain_record": do_record(
-                        id=1, type="MX", name="@", data="mail1.example.com.", ttl=3600, priority=10
+                        id=1, type="MX", name="@", data="mail1.example.com", ttl=3600, priority=10
+                    )
+                },
+            ),
+        )
+        fake_urlopen.script(
+            "PUT",
+            record_url(DOMAIN, 2),
+            FakeHTTPResponse(
+                200,
+                {
+                    "domain_record": do_record(
+                        id=2, type="MX", name="@", data="mail2.example.com", ttl=3600, priority=20
                     )
                 },
             ),
@@ -991,10 +1027,11 @@ class TestUpdateReconciliation:
 
         driver.update(DOMAIN, current, desired, CREDENTIALS)
 
-        put_calls = [c for c in fake_urlopen.calls if c["method"] == "PUT"]
-        assert len(put_calls) == 1
-        assert put_calls[0]["url"] == record_url(DOMAIN, 1)
-        assert put_calls[0]["body"]["ttl"] == 3600
+        put_calls = {c["url"]: c["body"] for c in fake_urlopen.calls if c["method"] == "PUT"}
+        assert put_calls[record_url(DOMAIN, 1)]["data"] == "mail1.example.com."
+        assert put_calls[record_url(DOMAIN, 1)]["ttl"] == 3600
+        assert put_calls[record_url(DOMAIN, 2)]["data"] == "mail2.example.com."
+        assert put_calls[record_url(DOMAIN, 2)]["ttl"] == 3600
         assert not [c for c in fake_urlopen.calls if c["method"] in ("POST", "DELETE")]
 
     def test_order_of_operations_is_put_then_post_then_delete(self, driver, fake_urlopen):
@@ -1168,18 +1205,33 @@ class TestValidationEdgeCases:
     same checks as create()" (step 2) before any mutation.
     """
 
-    def test_cname_data_not_fully_qualified_raises(self, driver, fake_urlopen):
-        params = {"records": [{"type": "CNAME", "name": "www", "data": "example.com", "ttl": 1800}]}
+    def test_cname_data_with_a_trailing_dot_raises(self, driver, fake_urlopen):
+        # Canonical form is dotless -- DigitalOcean stores and returns it
+        # that way, and aiform appends the dot the API requires only on
+        # the wire. A user-written trailing dot is rejected rather than
+        # silently stripped: read() can only ever return the dotless
+        # form, so a stripped-not-rejected dotted value would produce a
+        # permanent phantom diff against the raw file.
+        params = {
+            "records": [{"type": "CNAME", "name": "www", "data": "example.com.", "ttl": 1800}]
+        }
 
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as excinfo:
             driver.create(DOMAIN, params, CREDENTIALS)
 
+        assert "example.com" in str(excinfo.value)
         assert fake_urlopen.calls == []
 
-    def test_mx_data_not_fully_qualified_raises(self, driver, fake_urlopen):
+    def test_mx_data_with_a_trailing_dot_raises(self, driver, fake_urlopen):
         params = {
             "records": [
-                {"type": "MX", "name": "@", "data": "mail.example.com", "ttl": 1800, "priority": 10}
+                {
+                    "type": "MX",
+                    "name": "@",
+                    "data": "mail.example.com.",
+                    "ttl": 1800,
+                    "priority": 10,
+                }
             ]
         }
 
@@ -1188,9 +1240,9 @@ class TestValidationEdgeCases:
 
         assert fake_urlopen.calls == []
 
-    def test_ns_data_not_fully_qualified_raises(self, driver, fake_urlopen):
+    def test_ns_data_with_a_trailing_dot_raises(self, driver, fake_urlopen):
         params = {
-            "records": [{"type": "NS", "name": "dev", "data": "ns1.digitalocean.com", "ttl": 1800}]
+            "records": [{"type": "NS", "name": "dev", "data": "ns1.otherhost.net.", "ttl": 1800}]
         }
 
         with pytest.raises(ValueError):
@@ -1198,13 +1250,13 @@ class TestValidationEdgeCases:
 
         assert fake_urlopen.calls == []
 
-    def test_srv_data_not_fully_qualified_raises(self, driver, fake_urlopen):
+    def test_srv_data_with_a_trailing_dot_raises(self, driver, fake_urlopen):
         params = {
             "records": [
                 {
                     "type": "SRV",
                     "name": "_sip._tcp",
-                    "data": "sipserver.example.com",
+                    "data": "sipserver.example.com.",
                     "ttl": 1800,
                     "priority": 10,
                     "port": 5060,
@@ -1217,6 +1269,128 @@ class TestValidationEdgeCases:
             driver.create(DOMAIN, params, CREDENTIALS)
 
         assert fake_urlopen.calls == []
+
+    def test_caa_data_with_a_trailing_dot_raises(self, driver, fake_urlopen):
+        # CAA's data is a CA domain (e.g. "letsencrypt.org"), and
+        # DigitalOcean's trailing-dot requirement applies to it exactly
+        # like CNAME/MX/NS/SRV -- verified live, not documented anywhere
+        # aiform's original spec draft looked.
+        params = {
+            "records": [
+                {
+                    "type": "CAA",
+                    "name": "@",
+                    "data": "letsencrypt.org.",
+                    "ttl": 1800,
+                    "flags": 0,
+                    "tag": "issue",
+                }
+            ]
+        }
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_cname_data_that_is_a_relative_bare_label_raises_naming_the_qualified_form(
+        self, driver, fake_urlopen
+    ):
+        params = {"records": [{"type": "CNAME", "name": "www", "data": "www", "ttl": 1800}]}
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert "www" in str(excinfo.value)
+        assert fake_urlopen.calls == []
+
+    def test_data_of_at_sign_is_accepted_as_the_apex_and_sent_unmodified(
+        self, driver, fake_urlopen
+    ):
+        # "@" has no dot at all but must not be rejected as relative --
+        # it's the one documented shorthand DigitalOcean accepts for the
+        # apex, and it is sent to the API exactly as written, with no
+        # dot appended.
+        params = {"records": [{"type": "NS", "name": "dev", "data": "@", "ttl": 1800}]}
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            FakeHTTPResponse(
+                201, {"domain_record": do_record(id=1, type="NS", name="dev", data="@")}
+            ),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200, {"domain_records": [do_record(id=1, type="NS", name="dev", data="@")]}
+            ),
+        )
+
+        driver.create(DOMAIN, params, CREDENTIALS)
+
+        post_call = next(
+            c
+            for c in fake_urlopen.calls
+            if c["method"] == "POST" and c["url"] == records_url(DOMAIN)
+        )
+        assert post_call["body"]["data"] == "@"
+
+    def test_dotless_cname_mx_ns_srv_caa_data_is_sent_with_a_trailing_dot_appended(
+        self, driver, fake_urlopen
+    ):
+        # The dot DigitalOcean's API requires is appended by the driver,
+        # at the wire boundary only -- the user writes (and read()
+        # returns) the dotless canonical form.
+        records = [
+            {"type": "CNAME", "name": "www", "data": "example.com", "ttl": 1800},
+            {"type": "MX", "name": "@", "data": "mail.example.com", "ttl": 1800, "priority": 10},
+            {"type": "NS", "name": "dev", "data": "ns1.otherhost.net", "ttl": 1800},
+            {
+                "type": "SRV",
+                "name": "_sip._tcp",
+                "data": "sip.example.com",
+                "ttl": 1800,
+                "priority": 10,
+                "port": 5060,
+                "weight": 5,
+            },
+            {
+                "type": "CAA",
+                "name": "@",
+                "data": "letsencrypt.org",
+                "ttl": 1800,
+                "flags": 0,
+                "tag": "issue",
+            },
+        ]
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            *(FakeHTTPResponse(201, {"domain_record": do_record(id=i)}) for i in range(1, 6)),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET", records_first_page_url(DOMAIN), FakeHTTPResponse(200, {"domain_records": []})
+        )
+
+        driver.create(DOMAIN, {"records": records}, CREDENTIALS)
+
+        record_posts = [
+            c
+            for c in fake_urlopen.calls
+            if c["method"] == "POST" and c["url"] == records_url(DOMAIN)
+        ]
+        assert [c["body"]["data"] for c in record_posts] == [
+            "example.com.",
+            "mail.example.com.",
+            "ns1.otherhost.net.",
+            "sip.example.com.",
+            "letsencrypt.org.",
+        ]
 
     def test_a_record_data_does_not_require_a_trailing_dot(self, driver, fake_urlopen):
         # The trailing-dot rule applies only to CNAME/MX/NS/SRV; A/AAAA/TXT
@@ -1278,9 +1452,7 @@ class TestValidationEdgeCases:
         assert fake_urlopen.calls == []
 
     def test_missing_required_priority_on_mx_raises(self, driver, fake_urlopen):
-        params = {
-            "records": [{"type": "MX", "name": "@", "data": "mail.example.com.", "ttl": 1800}]
-        }
+        params = {"records": [{"type": "MX", "name": "@", "data": "mail.example.com", "ttl": 1800}]}
 
         with pytest.raises(ValueError) as excinfo:
             driver.create(DOMAIN, params, CREDENTIALS)
@@ -1294,7 +1466,7 @@ class TestValidationEdgeCases:
                 {
                     "type": "SRV",
                     "name": "_sip._tcp",
-                    "data": "sipserver.example.com.",
+                    "data": "sipserver.example.com",
                     "ttl": 1800,
                     "priority": 10,
                 }
@@ -1369,3 +1541,436 @@ class TestDelete:
 
         assert result is None
         assert len(fake_urlopen.calls) == 1
+
+
+class TestUpdatePreservesDoManagedRecords:
+    """B1 regression: DigitalOcean returns its auto-created SOA and apex
+    NS records in the same listing as user-managed records. A filter
+    that fails to match them lets update()'s reconciliation see them as
+    "the user removed these", issuing DELETE against the zone's own
+    nameservers.
+    """
+
+    def test_no_mutating_call_is_issued_against_the_auto_created_soa_or_apex_ns_records(
+        self, driver, fake_urlopen
+    ):
+        current = {
+            "id": DOMAIN,
+            "ttl": 1800,
+            "records": [{"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800}],
+        }
+        desired = {"records": [{"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800}]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {
+                    "domain_records": [
+                        do_record(id=1, type="A", name="@", data="203.0.113.10"),
+                        do_record(id=100, type="SOA", name="@", data="1800"),
+                        do_record(id=101, type="NS", name="@", data="ns1.digitalocean.com"),
+                        do_record(id=102, type="NS", name="@", data="ns2.digitalocean.com"),
+                        do_record(id=103, type="NS", name="@", data="ns3.digitalocean.com"),
+                    ]
+                },
+            ),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] in ("PUT", "POST", "DELETE")]
+
+
+class TestCaaMultipleTagsAtSameName:
+    """B3 regression: identity keyed on (type, name, data) alone silently
+    drops records that share a data value while differing elsewhere.
+    CAA `issue` and `issuewild` for the same CA is the standard
+    Let's Encrypt setup and differs only in `tag` -- verified live to
+    coexist at one name.
+    """
+
+    def _caa(self, tag, ttl=1800):
+        return {
+            "type": "CAA",
+            "name": "@",
+            "data": "letsencrypt.org",
+            "ttl": ttl,
+            "flags": 0,
+            "tag": tag,
+        }
+
+    def _do_caa(self, id, tag):
+        return do_record(id=id, type="CAA", name="@", data="letsencrypt.org", flags=0, tag=tag)
+
+    def test_adding_issuewild_alongside_issue_posts_exactly_one_record(self, driver, fake_urlopen):
+        current = {"id": DOMAIN, "ttl": 1800, "records": [self._caa("issue")]}
+        desired = {"records": [self._caa("issue"), self._caa("issuewild")]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(200, {"domain_records": [self._do_caa(1, "issue")]}),
+            FakeHTTPResponse(
+                200,
+                {"domain_records": [self._do_caa(1, "issue"), self._do_caa(2, "issuewild")]},
+            ),
+        )
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            FakeHTTPResponse(201, {"domain_record": self._do_caa(2, "issuewild")}),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        mutating = [c for c in fake_urlopen.calls if c["method"] in ("PUT", "POST", "DELETE")]
+        assert len(mutating) == 1
+        assert mutating[0]["method"] == "POST"
+        assert mutating[0]["body"]["tag"] == "issuewild"
+
+    def test_removing_issuewild_deletes_only_that_record_and_leaves_issue_untouched(
+        self, driver, fake_urlopen
+    ):
+        current = {
+            "id": DOMAIN,
+            "ttl": 1800,
+            "records": [self._caa("issue"), self._caa("issuewild")],
+        }
+        desired = {"records": [self._caa("issue")]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {"domain_records": [self._do_caa(1, "issue"), self._do_caa(2, "issuewild")]},
+            ),
+            FakeHTTPResponse(200, {"domain_records": [self._do_caa(1, "issue")]}),
+        )
+        fake_urlopen.script("DELETE", record_url(DOMAIN, 2), FakeHTTPResponse(204, None))
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        mutating = [
+            (c["method"], c["url"])
+            for c in fake_urlopen.calls
+            if c["method"] in ("PUT", "POST", "DELETE")
+        ]
+        assert mutating == [("DELETE", record_url(DOMAIN, 2))]
+
+
+class TestSrvSameTargetDifferentPorts:
+    """B3's SRV counterpart to the CAA case above -- two SRV records
+    sharing a target and differing only by port.
+    """
+
+    def _srv(self, port, ttl=1800):
+        return {
+            "type": "SRV",
+            "name": "_sip._tcp",
+            "data": "sipserver.example.com",
+            "ttl": ttl,
+            "priority": 10,
+            "port": port,
+            "weight": 5,
+        }
+
+    def _do_srv(self, id, port):
+        return do_record(
+            id=id,
+            type="SRV",
+            name="_sip._tcp",
+            data="sipserver.example.com",
+            priority=10,
+            port=port,
+            weight=5,
+        )
+
+    def test_adding_a_second_port_posts_exactly_one_record(self, driver, fake_urlopen):
+        current = {"id": DOMAIN, "ttl": 1800, "records": [self._srv(5060)]}
+        desired = {"records": [self._srv(5060), self._srv(5061)]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(200, {"domain_records": [self._do_srv(1, 5060)]}),
+            FakeHTTPResponse(
+                200, {"domain_records": [self._do_srv(1, 5060), self._do_srv(2, 5061)]}
+            ),
+        )
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            FakeHTTPResponse(201, {"domain_record": self._do_srv(2, 5061)}),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        mutating = [c for c in fake_urlopen.calls if c["method"] in ("PUT", "POST", "DELETE")]
+        assert len(mutating) == 1
+        assert mutating[0]["method"] == "POST"
+        assert mutating[0]["body"]["port"] == 5061
+
+    def test_removing_a_port_deletes_only_that_record(self, driver, fake_urlopen):
+        current = {"id": DOMAIN, "ttl": 1800, "records": [self._srv(5060), self._srv(5061)]}
+        desired = {"records": [self._srv(5060)]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200, {"domain_records": [self._do_srv(1, 5060), self._do_srv(2, 5061)]}
+            ),
+            FakeHTTPResponse(200, {"domain_records": [self._do_srv(1, 5060)]}),
+        )
+        fake_urlopen.script("DELETE", record_url(DOMAIN, 2), FakeHTTPResponse(204, None))
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        mutating = [
+            (c["method"], c["url"])
+            for c in fake_urlopen.calls
+            if c["method"] in ("PUT", "POST", "DELETE")
+        ]
+        assert mutating == [("DELETE", record_url(DOMAIN, 2))]
+
+
+class TestScalarTypeValidation:
+    """C1: ttl/priority/port/weight/flags must be int (and not bool);
+    type/name/data/tag must be str. Mirrors compute.py's
+    _reject_malformed_values(). Must run before duplicate detection,
+    which would otherwise crash on an unhashable value with a bare
+    TypeError.
+    """
+
+    def test_ttl_as_a_string_raises(self, driver, fake_urlopen):
+        params = {"records": [{"type": "A", "name": "@", "data": "203.0.113.10", "ttl": "1800"}]}
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_ttl_as_a_bool_raises(self, driver, fake_urlopen):
+        params = {"records": [{"type": "A", "name": "@", "data": "203.0.113.10", "ttl": True}]}
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_priority_as_a_string_raises(self, driver, fake_urlopen):
+        params = {
+            "records": [
+                {
+                    "type": "MX",
+                    "name": "@",
+                    "data": "mail.example.com",
+                    "ttl": 1800,
+                    "priority": "10",
+                }
+            ]
+        }
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_name_as_a_non_string_raises(self, driver, fake_urlopen):
+        params = {"records": [{"type": "A", "name": 1, "data": "203.0.113.10", "ttl": 1800}]}
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_unhashable_data_raises_value_error_not_a_bare_type_error(self, driver, fake_urlopen):
+        # A malformed 'data' (e.g. a YAML list) must be rejected by the
+        # scalar-type check before the duplicate-detection step, which
+        # would otherwise crash trying to hash it.
+        params = {
+            "records": [{"type": "A", "name": "@", "data": ["not", "a", "string"], "ttl": 1800}]
+        }
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+
+class TestRRsetTtlConsistency:
+    """C2: DigitalOcean silently rectifies a mismatched TTL within an
+    RRset (verified live: posting a second A record at the same name
+    with a different ttl changed the existing one), so a local mismatch
+    would diff forever against a value the user never wrote.
+    """
+
+    def test_two_a_records_at_the_same_name_with_different_ttl_raises(self, driver, fake_urlopen):
+        params = {
+            "records": [
+                {"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800},
+                {"type": "A", "name": "@", "data": "203.0.113.11", "ttl": 3600},
+            ]
+        }
+
+        with pytest.raises(ValueError):
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_records_at_different_names_may_have_different_ttl(self, driver, fake_urlopen):
+        params = {
+            "records": [
+                {"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800},
+                {"type": "A", "name": "www", "data": "203.0.113.11", "ttl": 3600},
+            ]
+        }
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            FakeHTTPResponse(201, {"domain_record": do_record(id=1, name="@")}),
+            FakeHTTPResponse(201, {"domain_record": do_record(id=2, name="www")}),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET", records_first_page_url(DOMAIN), FakeHTTPResponse(200, {"domain_records": []})
+        )
+
+        driver.create(DOMAIN, params, CREDENTIALS)
+
+
+class TestUserWrittenApexNsRejected:
+    """C6: read() filters out apex NS records pointing at DigitalOcean's
+    own nameservers, so a user who copies them into 'records' gets a
+    record that is permanently "missing" -- re-POSTed on every apply,
+    and rejected with a 422 on the very first create() that triggers the
+    zone rollback.
+    """
+
+    def test_apex_ns_pointing_at_a_digitalocean_nameserver_raises(self, driver, fake_urlopen):
+        params = {
+            "records": [{"type": "NS", "name": "@", "data": "ns1.digitalocean.com", "ttl": 1800}]
+        }
+
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(DOMAIN, params, CREDENTIALS)
+
+        assert "digitalocean" in str(excinfo.value).lower()
+        assert fake_urlopen.calls == []
+
+    def test_delegated_subdomain_ns_pointing_at_a_digitalocean_nameserver_is_allowed(
+        self, driver, fake_urlopen
+    ):
+        # Only the apex (name == "@") is DO-managed; a delegated
+        # subdomain NS record pointing at a DO nameserver is a genuine
+        # user-managed record (e.g. delegating a subzone to a second DO
+        # account) and must not be rejected.
+        params = {
+            "records": [{"type": "NS", "name": "dev", "data": "ns1.digitalocean.com", "ttl": 1800}]
+        }
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            FakeHTTPResponse(
+                201,
+                {
+                    "domain_record": do_record(
+                        id=1, type="NS", name="dev", data="ns1.digitalocean.com"
+                    )
+                },
+            ),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {
+                    "domain_records": [
+                        do_record(id=1, type="NS", name="dev", data="ns1.digitalocean.com")
+                    ]
+                },
+            ),
+        )
+
+        driver.create(DOMAIN, params, CREDENTIALS)
+
+
+class TestUpdateFoldsDoErrorMessages:
+    """C4: update()'s PUT/POST/DELETE HTTPErrors should fold DigitalOcean's
+    error message in, mirroring create()'s existing _post_record path.
+    """
+
+    def test_put_failure_folds_the_do_message_into_the_exception(self, driver, fake_urlopen):
+        current = {
+            "id": DOMAIN,
+            "ttl": 1800,
+            "records": [{"type": "A", "name": "www", "data": "203.0.113.10", "ttl": 1800}],
+        }
+        desired = {"records": [{"type": "A", "name": "www", "data": "203.0.113.20", "ttl": 1800}]}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {"domain_records": [do_record(id=7, type="A", name="www", data="203.0.113.10")]},
+            ),
+        )
+        fake_urlopen.script(
+            "PUT",
+            record_url(DOMAIN, 7),
+            http_error(record_url(DOMAIN, 7), 422, {"message": "bad edit"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        assert "bad edit" in str(excinfo.value)
+
+    def test_post_failure_folds_the_do_message_into_the_exception(self, driver, fake_urlopen):
+        current = {"id": DOMAIN, "ttl": 1800, "records": []}
+        desired = {"records": [{"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800}]}
+        fake_urlopen.script(
+            "GET", records_first_page_url(DOMAIN), FakeHTTPResponse(200, {"domain_records": []})
+        )
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            http_error(records_url(DOMAIN), 422, {"message": "bad create"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        assert "bad create" in str(excinfo.value)
+
+    def test_delete_failure_folds_the_do_message_into_the_exception(self, driver, fake_urlopen):
+        current = {
+            "id": DOMAIN,
+            "ttl": 1800,
+            "records": [{"type": "TXT", "name": "@", "data": '"a"', "ttl": 1800}],
+        }
+        desired = {"records": []}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200, {"domain_records": [do_record(id=9, type="TXT", name="@", data='"a"')]}
+            ),
+        )
+        fake_urlopen.script(
+            "DELETE",
+            record_url(DOMAIN, 9),
+            http_error(record_url(DOMAIN, 9), 500, {"message": "internal trouble"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        assert "internal trouble" in str(excinfo.value)

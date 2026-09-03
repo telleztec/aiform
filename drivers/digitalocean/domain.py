@@ -8,6 +8,7 @@ import urllib.request
 from collections import defaultdict
 from typing import Any
 
+from aiform.compare import canonical_key
 from aiform.driver import ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 from drivers.digitalocean._common import fetch_all_pages
@@ -25,6 +26,12 @@ logger = logging.getLogger("aiform.driver.digitalocean.domain")
 
 _RECORD_TYPES = ["A", "AAAA", "CAA", "CNAME", "MX", "NS", "SRV", "TXT"]
 _BASE_FIELDS = frozenset({"type", "name", "data", "ttl"})
+# Scalar type enforcement -- mirrors compute.py's
+# _reject_malformed_values(). bool is an int subclass in Python, so it
+# must be excluded explicitly or `ttl: true` would sail through an
+# isinstance(value, int) check.
+_INT_FIELDS = frozenset({"ttl", "priority", "port", "weight", "flags"})
+_STR_FIELDS = frozenset({"type", "name", "data", "tag"})
 # The fields each type additionally requires, beyond the base four --
 # specs/digitalocean_domain.md's per-type field table. A field not
 # listed here for a type is rejected: accepting it would guarantee a
@@ -39,13 +46,24 @@ _TYPE_EXTRA_FIELDS: dict[str, frozenset[str]] = {
     "SRV": frozenset({"priority", "port", "weight"}),
     "CAA": frozenset({"flags", "tag"}),
 }
-# DigitalOcean expands `data` on these types to a fully-qualified name
-# with a trailing dot -- see the spec's "Why read() does not
-# un-normalize". "@"/"www"/"www.example.com." all round-trip to the
-# same stored value, so no reverse mapping could recover which one the
-# user typed; the canonical form is instead whatever DO stores, and the
-# user must write that.
-_FQDN_TYPES = frozenset({"CNAME", "MX", "NS", "SRV"})
+# Types whose `data` is a hostname DigitalOcean requires fully qualified
+# WITH a trailing dot on the wire (verified live: posting a bare or
+# dotless target 422s with "Data needs to end with a dot (.)"), but
+# STORES AND RETURNS without one -- posting "target.example.com." reads
+# back as "target.example.com". CAA belongs here too: its `data` is a CA
+# domain (e.g. "letsencrypt.org"), and DO's dot requirement applies to it
+# exactly the same as CNAME/MX/NS/SRV.
+#
+# The canonical form a user writes is therefore the DOTLESS FQDN -- the
+# one form read() can ever return, since aiform/planner.py's
+# diff_attributes() compares read()'s output against the user's raw
+# params verbatim, with no hook for this driver to normalize either
+# side. A written trailing dot is rejected rather than silently
+# stripped, so a user is never left holding a value that produces a
+# permanent phantom diff. "@" is exempt from both the dot check and the
+# relative-name check -- it is the one documented shorthand DO accepts
+# unqualified.
+_FQDN_TYPES = frozenset({"CAA", "CNAME", "MX", "NS", "SRV"})
 # Types where a (type, name) group is expected to hold at most one
 # record, so a changed value is an in-place PUT rather than a
 # delete/create pair -- specs/digitalocean_domain.md's "Identity" names
@@ -172,6 +190,12 @@ class Driver(ResourceDriver):
                 raise ValueError(f"records[{index}] must be a dict, got {type(record).__name__}")
             self._validate_record(index, record)
 
+        self._validate_ttl_consistency(records)
+
+        # Runs after per-record validation, which guarantees every field
+        # is int/str -- otherwise an unhashable 'data' (e.g. a YAML list)
+        # would crash tuple(sorted(record.items())) with a bare,
+        # unhelpful TypeError instead of the ValueError above.
         seen = set()
         for record in records:
             key = tuple(sorted(record.items()))
@@ -203,19 +227,93 @@ class Driver(ResourceDriver):
                 f"for this type: {sorted(unexpected)}"
             )
 
+        self._reject_malformed_scalar_types(index, record_type, record, allowed)
+
         if record_type in _FQDN_TYPES:
             data = record["data"]
-            if not isinstance(data, str) or not data.endswith("."):
+            if data != "@":
+                if data.endswith("."):
+                    raise ValueError(
+                        f"records[{index}] (type {record_type}): 'data' must be "
+                        "written without a trailing dot -- DigitalOcean stores "
+                        "it that way, and aiform appends the dot the API "
+                        f"requires when it sends the record; write {data[:-1]!r} "
+                        f"instead of {data!r}"
+                    )
+                if "." not in data:
+                    raise ValueError(
+                        f"records[{index}] (type {record_type}): 'data' {data!r} "
+                        "is a relative name; write the fully qualified form "
+                        "(e.g. 'www.example.com') instead"
+                    )
+
+        if (
+            record_type == "NS"
+            and record["name"] == "@"
+            and self._is_do_managed_ns_data(record["data"])
+        ):
+            raise ValueError(
+                f"records[{index}]: apex NS record {record['data']!r} points at "
+                "a DigitalOcean-managed nameserver; DigitalOcean creates and "
+                "manages the zone's apex NS records automatically, do not list "
+                "them in 'records'"
+            )
+
+    def _reject_malformed_scalar_types(
+        self, index: int, record_type: str, record: dict[str, Any], allowed: frozenset[str]
+    ) -> None:
+        # Nothing upstream checks params against PARAM_SCHEMA -- driver.py's
+        # own docstring claims the orchestrator does, but it does not -- so
+        # `ttl: "1800"`, a perfectly ordinary quoted YAML scalar, otherwise
+        # reaches the API as a string and comes back from read() as the
+        # integer 1800, diffing forever. Mirrors compute.py's
+        # _reject_malformed_values().
+        for field in allowed:
+            value = record[field]
+            if field in _INT_FIELDS:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise ValueError(
+                        f"records[{index}] (type {record_type}): {field!r} must "
+                        f"be an int, got {value!r}"
+                    )
+            elif field in _STR_FIELDS:
+                if not isinstance(value, str):
+                    raise ValueError(
+                        f"records[{index}] (type {record_type}): {field!r} must "
+                        f"be a str, got {value!r}"
+                    )
+
+    def _validate_ttl_consistency(self, records: list[dict[str, Any]]) -> None:
+        # RFC 2181 §5.2: every record in an RRset shares one TTL.
+        # DigitalOcean does not reject a mismatch -- verified live, it
+        # silently rectifies the existing record to the new value -- so
+        # a locally-inconsistent ttl would diff forever against a value
+        # the user never wrote.
+        ttl_by_type_name: dict[tuple[str, str], int] = {}
+        for record in records:
+            key = (record["type"], record["name"])
+            ttl = record["ttl"]
+            if key in ttl_by_type_name and ttl_by_type_name[key] != ttl:
                 raise ValueError(
-                    f"records[{index}] (type {record_type}): 'data' must be "
-                    f"fully qualified with a trailing dot (DigitalOcean stores "
-                    f"it that way), got {data!r}"
+                    f"records sharing type {key[0]!r} and name {key[1]!r} must "
+                    "share a single ttl (RFC 2181 §5.2); got "
+                    f"{ttl_by_type_name[key]} and {ttl}"
                 )
+            ttl_by_type_name.setdefault(key, ttl)
 
     def _project_record(self, raw_record: dict[str, Any]) -> dict[str, Any]:
         record_type = raw_record["type"]
         fields = _BASE_FIELDS | _TYPE_EXTRA_FIELDS[record_type]
         return {key: raw_record[key] for key in fields}
+
+    def _is_do_managed_ns_data(self, data: Any) -> bool:
+        # rstrip(".") rather than a fixed ".digitalocean.com." suffix --
+        # verified live, DigitalOcean stores and returns these WITHOUT a
+        # trailing dot ("ns1.digitalocean.com"), so a dot-anchored match
+        # never matched and this filter let the zone's own nameservers
+        # leak into read() as regular, deletable records. rstrip is
+        # correct under either API behavior, present or not.
+        return str(data or "").rstrip(".").endswith(".digitalocean.com")
 
     def _is_do_managed_ns(self, raw_record: dict[str, Any]) -> bool:
         # Both conditions are required: a user's own delegated-subdomain
@@ -224,7 +322,7 @@ class Driver(ResourceDriver):
         return (
             raw_record["type"] == "NS"
             and raw_record["name"] == "@"
-            and str(raw_record.get("data") or "").endswith(".digitalocean.com.")
+            and self._is_do_managed_ns_data(raw_record.get("data"))
         )
 
     def _filter_managed(self, raw_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -279,15 +377,33 @@ class Driver(ResourceDriver):
 
         return self.read(name, credentials)
 
+    def _to_wire_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        # The only place a trailing dot is added. Internally (validation,
+        # duplicate detection, reconciliation identity, read()'s
+        # projection) every record stays in the dotless canonical form
+        # the user writes and read() returns; DigitalOcean's API itself
+        # is the one thing that requires the dot, verified live: it 422s
+        # with "Data needs to end with a dot (.)" on a dotless or bare
+        # target for CNAME/MX/NS/SRV/CAA. "@" is sent unmodified -- it is
+        # not a hostname to qualify.
+        if record["type"] in _FQDN_TYPES and record["data"] != "@":
+            return {**record, "data": f"{record['data']}."}
+        return dict(record)
+
     def _post_record(self, name: str, record: dict[str, Any], credentials) -> None:
-        self._request("POST", f"{BASE_URL}/domains/{name}/records", credentials, body=dict(record))
+        self._request(
+            "POST",
+            f"{BASE_URL}/domains/{name}/records",
+            credentials,
+            body=self._to_wire_record(record),
+        )
 
     def _put_record(self, name: str, record_id, record: dict[str, Any], credentials) -> None:
         self._request(
             "PUT",
             f"{BASE_URL}/domains/{name}/records/{record_id}",
             credentials,
-            body=dict(record),
+            body=self._to_wire_record(record),
         )
 
     def _delete_record(self, name: str, record_id, credentials) -> None:
@@ -334,7 +450,7 @@ class Driver(ResourceDriver):
             ):
                 actions.extend(self._reconcile_single_valued(current_list, desired_list))
             else:
-                actions.extend(self._reconcile_multi_valued(current_list, desired_list))
+                actions.extend(self._reconcile_set_path(current_list, desired_list))
 
         return actions
 
@@ -349,27 +465,65 @@ class Driver(ResourceDriver):
             return [("POST", None, des_record)]
         return [("DELETE", curr_raw["id"], None)]
 
-    def _reconcile_multi_valued(self, current_list, desired_list):
-        current_by_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for raw in current_list:
-            current_by_data[raw["data"]].append(raw)
-        desired_by_data: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for record in desired_list:
-            desired_by_data[record["data"]].append(record)
+    def _key_without_ttl(self, record: dict[str, Any]) -> str:
+        return canonical_key({key: value for key, value in record.items() if key != "ttl"})
+
+    def _reconcile_set_path(self, current_list, desired_list):
+        # Identity is the WHOLE projected record, paired by
+        # aiform.compare.canonical_key -- not (type, name, data). An
+        # earlier version grouped by data alone and used only the first
+        # match in each group, which silently loses records that
+        # legitimately share a data value while differing elsewhere:
+        # CAA `issue`/`issuewild` for the same CA (differ only in tag),
+        # or two SRV records sharing a target on different ports. Adding
+        # the second produced no call at all; removing it rewrote the
+        # wrong record.
+        current_entries = [(raw, self._project_record(raw)) for raw in current_list]
+
+        current_by_key: dict[str, list[int]] = defaultdict(list)
+        for i, (_raw, projected) in enumerate(current_entries):
+            current_by_key[canonical_key(projected)].append(i)
+
+        matched_current: set[int] = set()
+        matched_desired: set[int] = set()
+        for j, record in enumerate(desired_list):
+            bucket = current_by_key.get(canonical_key(record))
+            if bucket:
+                matched_current.add(bucket.pop(0))
+                matched_desired.add(j)
+
+        left_current = [i for i in range(len(current_entries)) if i not in matched_current]
+        left_desired = [j for j in range(len(desired_list)) if j not in matched_desired]
+
+        # Among what's left, pair a desired/current record that match on
+        # every projected field EXCEPT ttl -- the one edit worth doing
+        # in place rather than as a delete/create pair.
+        current_by_key_no_ttl: dict[str, list[int]] = defaultdict(list)
+        for i in left_current:
+            _raw, projected = current_entries[i]
+            current_by_key_no_ttl[self._key_without_ttl(projected)].append(i)
 
         actions: list[tuple[str, Any, dict[str, Any] | None]] = []
-        for data_key in set(current_by_data) | set(desired_by_data):
-            curr_matches = current_by_data.get(data_key, [])
-            des_matches = desired_by_data.get(data_key, [])
-            if curr_matches and des_matches:
-                curr_raw = curr_matches[0]
-                des_record = des_matches[0]
-                if self._project_record(curr_raw) != des_record:
-                    actions.append(("PUT", curr_raw["id"], des_record))
-            elif des_matches:
-                actions.extend(("POST", None, des_record) for des_record in des_matches)
-            elif curr_matches:
-                actions.extend(("DELETE", curr_raw["id"], None) for curr_raw in curr_matches)
+        put_current: set[int] = set()
+        put_desired: set[int] = set()
+        for j in left_desired:
+            record = desired_list[j]
+            bucket = current_by_key_no_ttl.get(self._key_without_ttl(record))
+            if bucket:
+                i = bucket.pop(0)
+                raw, _projected = current_entries[i]
+                actions.append(("PUT", raw["id"], record))
+                put_current.add(i)
+                put_desired.add(j)
+
+        for i in left_current:
+            if i not in put_current:
+                raw, _projected = current_entries[i]
+                actions.append(("DELETE", raw["id"], None))
+        for j in left_desired:
+            if j not in put_desired:
+                actions.append(("POST", None, desired_list[j]))
+
         return actions
 
     def update(
@@ -402,11 +556,23 @@ class Driver(ResourceDriver):
         # Order matters: updates and additions land before removals so
         # the zone is never missing a record it will have again.
         for _, record_id, record in puts:
-            self._put_record(id, record_id, record, credentials)
+            try:
+                self._put_record(id, record_id, record, credentials)
+            except urllib.error.HTTPError as exc:
+                self._fold_do_error_into_exc(exc)
+                raise
         for _, _, record in posts:
-            self._post_record(id, record, credentials)
+            try:
+                self._post_record(id, record, credentials)
+            except urllib.error.HTTPError as exc:
+                self._fold_do_error_into_exc(exc)
+                raise
         for _, record_id, _ in deletes:
-            self._delete_record(id, record_id, credentials)
+            try:
+                self._delete_record(id, record_id, credentials)
+            except urllib.error.HTTPError as exc:
+                self._fold_do_error_into_exc(exc)
+                raise
 
         return self.read(id, credentials)
 
