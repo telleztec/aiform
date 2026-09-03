@@ -50,6 +50,15 @@ class FakeMessages:
 class FakeClient:
     def __init__(self, responses: list[str]):
         self.messages = FakeMessages(responses)
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class FakeHttpxClient:
+    def __init__(self, **kwargs):
+        self.follow_redirects = kwargs.get("follow_redirects", True)
 
 
 FAKE_DRIVER_SOURCE = """\
@@ -242,12 +251,34 @@ class FakeStdinNotTTY:
         return False
 
 
-def patch_client(monkeypatch, responses: list[str]) -> None:
-    monkeypatch.setattr(cli.anthropic, "Anthropic", lambda: FakeClient(responses))
+def patch_client(monkeypatch, responses: list[str]) -> list[FakeClient]:
+    """Stand in for the SDK client `_CountingClient` builds on its first call.
+
+    Takes `**kwargs` rather than being a bare `lambda:` -- `llm.build_client()`
+    constructs with `http_client=`, and `cli.anthropic` is the same module
+    object `llm.anthropic` is, so this intercepts that construction. Returns
+    the list it appends each built client to, so a caller can assert on how
+    many were built and whether they were closed.
+    """
+    built: list[FakeClient] = []
+
+    def _build(**kwargs):
+        client = FakeClient(responses)
+        client.build_kwargs = kwargs
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(cli.anthropic, "Anthropic", _build)
+    # And the httpx client build_client hands it: nothing here needs a real
+    # transport or SSL context, and nothing closes the ones the real class
+    # would open. tests/test_llm.py keeps the real one, where whether
+    # DefaultHttpxClient honours follow_redirects=False is the actual claim.
+    monkeypatch.setattr(cli.anthropic, "DefaultHttpxClient", FakeHttpxClient)
+    return built
 
 
 def fail_if_anthropic_constructed(monkeypatch) -> None:
-    def _boom():
+    def _boom(**kwargs):
         raise AssertionError("should not construct a real anthropic.Anthropic() client")
 
     monkeypatch.setattr(cli.anthropic, "Anthropic", _boom)
@@ -1173,6 +1204,114 @@ class TestPlanCreate:
         assert code == 0
         assert "no-op" in out or "no changes" in out.lower() or "0 to create" in out
         assert "[verbose] 0 Anthropic API call(s) made" in err
+
+    def test_the_counting_client_refuses_redirects(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # _CountingClient is what every plan/apply/destroy actually calls
+        # through -- llm._anthropic_call's own client-building branch is
+        # never reached from the CLI -- so the #101 hardening has to hold
+        # here or it holds nowhere that ships.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        built = patch_client(
+            monkeypatch, [approve_response(), categorization_response(action="create")]
+        )
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        capsys.readouterr()
+
+        assert code == 0
+        assert len(built) == 1
+        assert built[0].build_kwargs["http_client"].follow_redirects is False
+
+    def test_the_counting_client_is_closed_when_the_command_ends(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # http_client= costs the SDK wrapper's __del__, which is what closed
+        # the pool; without an explicit close the socket outlives the run.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        built = patch_client(
+            monkeypatch, [approve_response(), categorization_response(action="create")]
+        )
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        capsys.readouterr()
+
+        assert code == 0
+        assert built[0].closed
+
+    def test_the_counting_client_is_closed_even_when_the_command_fails(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Same reason _report_verbose_calls sits in a finally: the error
+        # exit path is not allowed to leak the socket either.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        built = patch_client(
+            monkeypatch,
+            [
+                json.dumps(
+                    {
+                        "approved": False,
+                        "concerns": [],
+                        "blocking_issues": ["reads ANTHROPIC_API_KEY"],
+                    }
+                )
+            ],
+        )
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        capsys.readouterr()
+
+        assert code == 2
+        assert built[0].closed
+
+    def test_a_zero_call_run_is_closed_without_building_a_client(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # The close must not undo _CountingClient's laziness: a run that
+        # makes no model call must still construct nothing -- no pool, no
+        # SSL context, and so nothing for this module to close. Not, as an
+        # earlier version of this comment had it, because construction would
+        # otherwise require ANTHROPIC_API_KEY: the SDK reads that variable at
+        # construction but does not require it -- see the "Corrected:"
+        # paragraph in specs/cli.md.
+        #
+        # Recorded rather than left to fail_if_anthropic_constructed, which
+        # test_second_run_on_unchanged_project_makes_zero_llm_calls already
+        # applies to this same scenario: `closed == [None]` says close() was
+        # reached exactly once *and* found nothing to close, which is the
+        # half of the property that is this change's to keep.
+        closed = []
+
+        class _RecordingCountingClient(cli._CountingClient):
+            def close(self):
+                closed.append(self._real)
+                super().close()
+
+        monkeypatch.setattr(cli, "_CountingClient", _RecordingCountingClient)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+
+        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        assert cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)]) == 0
+        capsys.readouterr()
+        closed.clear()
+
+        fail_if_anthropic_constructed(monkeypatch)
+        code = cli.main(["plan", "create", "--state-file", str(state_file), "--verbose"])
+        err = capsys.readouterr().err
+
+        assert code == 0
+        assert "[verbose] 0 Anthropic API call(s) made" in err
+        assert closed == [None]
 
 
 class TestPlanApply:

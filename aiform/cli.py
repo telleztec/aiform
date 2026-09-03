@@ -81,8 +81,8 @@ _HANDLED_EXCEPTIONS = (
 class _CountingMessages:
     """Duck-typed like anthropic.Anthropic().messages -- the only shape
     llm._anthropic_call() actually calls. Defers constructing the real
-    client until the first call actually happens, so a run that makes
-    zero Anthropic API calls never requires ANTHROPIC_API_KEY to be set,
+    client until the first call actually happens, so a run that makes zero
+    Anthropic API calls builds no connection pool and has none to close,
     matching llm._anthropic_call()'s own laziness."""
 
     def __init__(self, parent: "_CountingClient"):
@@ -91,7 +91,10 @@ class _CountingMessages:
     def create(self, **kwargs):
         self._parent.call_count += 1
         if self._parent._real is None:
-            self._parent._real = anthropic.Anthropic()
+            # Through llm.build_client, not anthropic.Anthropic() -- this is
+            # the client every plan/apply actually calls through, so it is
+            # where the redirect refusal has to hold (#101).
+            self._parent._real = llm.build_client()
         return self._parent._real.messages.create(**kwargs)
 
 
@@ -100,6 +103,12 @@ class _CountingClient:
         self._real: anthropic.Anthropic | None = None
         self.call_count = 0
         self.messages = _CountingMessages(self)
+
+    def close(self) -> None:
+        # Never builds one just to close it: a zero-call run must stay a
+        # run that constructed no client at all.
+        if self._real is not None:
+            self._real.close()
 
 
 def _confirm(prompt: str) -> bool:
@@ -682,8 +691,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 # reported even when the command goes on to raise (e.g. a
                 # gate #2 PlanBlockedError after the driver-review/
                 # categorization calls already happened) -- the case where
-                # a user most wants to know what was actually spent.
+                # a user most wants to know what was actually spent. The
+                # close belongs here for its own reason: the pool
+                # llm.build_client hands out is this function's to release.
                 _report_verbose_calls(args, client)
+                client.close()
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
     except _HANDLED_EXCEPTIONS as exc:
         message = _format_error(exc)

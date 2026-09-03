@@ -244,7 +244,8 @@ which never reads or writes state.
   auth header is dropped on **no** redirect, ever. The Anthropic probe in
   `specs/llm.md` sends `x-api-key`, so "httpx drops it" was never true of
   that probe, and it followed redirects with the key attached until #97.
-  Both probes now refuse a 3xx; read this bullet as the shared policy
+  Both probes now refuse a 3xx, and so does every billed model call
+  (`llm.build_client()`, #101); read this bullet as the shared policy
   rather than a fact about one HTTP client.
 
   **The `Location` is never parsed.** `HTTPRedirectHandler` calls
@@ -314,8 +315,8 @@ which never reads or writes state.
   ("env var only, never a CLI flag"). A key supplied any other way is
   reported not-configured by design rather than probed.
 
-  **Known divergence:** `llm._anthropic_call` builds a bare
-  `anthropic.Anthropic()`, whose own resolution order also accepts
+  **Known divergence:** `llm._anthropic_call` builds its client without
+  passing an `api_key`, so the SDK's own resolution order also accepts
   `ANTHROPIC_AUTH_TOKEN` and an `ant auth login` profile. So a user
   authenticated that way sees `[✗] ANTHROPIC_API_KEY -- not set` from
   `init` and then a working `plan create` — the mirror image of the false
@@ -490,21 +491,62 @@ item (line format, log levels, output routing are all still open
 questions there; this feature answers one specific question — "how many
 model calls did this invocation make" — and nothing broader):
 
-- A private `_CountingClient` wraps the real `anthropic.Anthropic()`
-  SDK client, exposing the same `.messages.create(**kwargs)` shape
-  `llm._anthropic_call` actually calls (duck-typed — `llm.py` never
-  imports or checks against a stricter interface than that). It
-  increments an internal counter on every `.create()` call and only
-  constructs the real `anthropic.Anthropic()` **lazily, on the first
-  such call** — never at `_CountingClient()` construction time.
-- This laziness is load-bearing, not an optimization: constructing
-  `anthropic.Anthropic()` eagerly reads `ANTHROPIC_API_KEY` at
-  construction, which would make a truly zero-call `plan create` run
-  newly *require* that variable to be set — silently regressing the
-  exact cost/environment-footprint property this counter exists to
-  verify. `llm._anthropic_call` already gets this right for the same
-  reason (`client = anthropic.Anthropic()` only inside the function
-  actually making a call); `_CountingClient` preserves it end to end.
+- A private `_CountingClient` wraps a real SDK client, exposing the same
+  `.messages.create(**kwargs)` shape `llm._anthropic_call` actually
+  calls (duck-typed — `llm.py` never imports or checks against a
+  stricter interface than that). It increments an internal counter on
+  every `.create()` call and only constructs the real client **lazily,
+  on the first such call** — never at `_CountingClient()` construction
+  time.
+- This laziness is pinned by tests, not merely intended:
+  `fail_if_anthropic_constructed` (`tests/test_cli.py`) makes the
+  zero-call second run fail if `anthropic.Anthropic` is called. That it
+  patches only that one name is enough because `build_client` is what
+  constructs, and `build_client` is held to that name by every test that
+  monkeypatches `llm.anthropic.Anthropic` — in both `tests/test_llm.py`
+  and `tests/test_cli.py` — each of which fails if it switches to the
+  `anthropic.Client` alias, since patching one name does not rebind the
+  other. `TestBuildClientIsTheOnlyConstructor` contributes a different
+  guarantee, that no other module in `aiform/` constructs one; it asserts
+  a call site rather than a name, so it alone would not notice that swap.
+  The property is stated as narrowly as the counter's own scope above —
+  *no client is constructed* on the zero-call run, which is what
+  `fail_if_anthropic_constructed` checks, and not the broader "the run
+  costs nothing".
+  What an eager construction would additionally cost is an httpx
+  connection pool and SSL context that a zero-call run has to close for
+  nothing, and — since `llm.build_client()` passes `http_client=` —
+  closing it is now the caller's job rather than the SDK's.
+
+  **Corrected:** earlier revisions of this bullet said eager
+  construction reads `ANTHROPIC_API_KEY`, "which would make a truly
+  zero-call `plan create` run newly *require* that variable to be set".
+  The read is real — `Anthropic.__init__` does call
+  `os.environ.get("ANTHROPIC_API_KEY")`, in every `anthropic` version in
+  range — but the requirement is not: the client constructs fine with
+  `api_key=None` and raises `TypeError: Could not resolve authentication
+  method` only at the first request. So the conclusion survives on the
+  grounds above, and the environment-footprint reason given for it never
+  held. `llm._anthropic_call` builds only inside the function actually
+  making a call, for the same reason; `_CountingClient` preserves it end
+  to end.
+- **It builds through `llm.build_client()`, not `anthropic.Anthropic()`
+  directly** (`specs/llm.md`), so the client refuses redirects. This is
+  not a stylistic preference: `_dispatch` injects a `_CountingClient`
+  into *every* `plan create`/`apply`/`destroy`, which means
+  `llm._anthropic_call`'s own client-building branch is never reached
+  from this CLI. Hardening only that branch would have closed the #101
+  leak on no shipping code path — the key would still have followed a
+  3xx from here, and the prompt with it on a 307 or 308 (`specs/llm.md`
+  is exact about which statuses carry a body).
+- `_CountingClient.close()` closes the real client if one was built and
+  does nothing if none was, and `_dispatch` calls it in the same
+  `finally` that reports the count. `llm.build_client()` passes
+  `http_client=`, which costs the SDK's `SyncHttpxClientWrapper.__del__`
+  — the thing that used to close the pool — so the socket is now this
+  module's to release. Doing nothing when no client was built is what
+  keeps the laziness above intact: a zero-call run must not construct
+  one merely to close it.
 - One `_CountingClient` instance is created per CLI invocation that
   might need it (`create`/`apply`/`destroy` — never `init`/`refresh`/`show`,
   none of which ever call an LLM) and passed as every relevant
