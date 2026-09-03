@@ -158,7 +158,8 @@ duplicate that check.
 
 The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
 
-1. `diff = diff_attributes(current_attributes, desired_params)`.
+1. `diff = diff_attributes(current_attributes, desired_params,
+   unordered_fields=unordered_fields)`.
 2. If `diff` is empty, **and** `state_aiform_md_sha256 ==
    current_aiform_md_sha256`, **and** `drifted_missing` is `False` →
    return `PlanEntry(action=PlanAction.NO_OP, ...)` directly. **Zero
@@ -180,7 +181,13 @@ without a separate "is this new" branch.
 - `diff_attributes()` performs a plain `!=` comparison per key — correct
   for JSON-shaped values (str/int/bool/None/list/dict) since Python
   already does deep equality for `list`/`dict`. No special-casing for
-  nested structures.
+  nested structures, with one exception: a key named in
+  `unordered_fields` is compared with `aiform.compare.unordered_equal()`
+  instead, as a multiset. That covers a field whose real semantics are a
+  set (a CSP's tags, a DNS zone's records), where `!=` on two lists would
+  report a permanent diff purely from element order. Only the equality
+  test changes — the recorded `current`/`desired` stay verbatim and
+  unsorted. See `specs/unordered_fields.md`.
 - `categorize_diff()` never inspects or branches on the model's returned
   `action` string beyond constructing `PlanAction(data["action"])` — an
   unrecognized value naturally raises `ValueError` from the `Enum`

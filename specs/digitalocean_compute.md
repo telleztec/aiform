@@ -262,10 +262,15 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   All seven fields are diffable (see Behavior's `read()` note, plus the
   carry-forward above for `ssh_keys` specifically), so the four that
   remain replace-forcing are a real CSP constraint rather than a masked
-  reliability gap. **One caveat, and it is not yet closed**: `tags` is
-  compared with `!=` on a list, here and in `planner.py`'s
-  `diff_attributes()`, so it registers as "changed" whenever the two
-  lists differ as sequences rather than as sets. Two ways in: DO
+  reliability gap. **One caveat, now closed in the planner and still
+  open in this driver**: `tags` was compared with `!=` on a list, both
+  here and in `planner.py`'s `diff_attributes()`, so it registered as
+  "changed" whenever the two lists differed as sequences rather than as
+  sets. `planner.py`'s half is fixed — this driver declares
+  `UNORDERED_FIELDS = ["tags"]` and the planner now compares it as a
+  multiset (`specs/unordered_fields.md`, closing #110). `update()`'s own
+  local `diff_fields` comparison is deliberately unchanged; see the
+  addendum at the end of this spec for why its cost is zero API calls. Two ways in: DO
   returning the same tags in a different order (whether it ever does is
   unverified), and a duplicate entry in the user's own `tags:` (which
   needs no DO misbehavior at all — DO stores the set, so

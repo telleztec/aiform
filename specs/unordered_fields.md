@@ -215,6 +215,20 @@ doesn't "simplify" the explicit declaration away.
   dicts with differing key order, duplicates (`["x","x"]` vs `["x"]` must be
   **unequal**), `True`/`1` and `1`/`1.0` staying distinct, scalar fallback,
   nested-list positional comparison.
+- **Unit**: `canonical_key`'s two hard-won properties, each of which shipped
+  broken once and must stay pinned — a review found the fixes had no coverage
+  at all, so the suite could not distinguish them from their own revert:
+  - **Totality over YAML-reachable input.** A mixed-type mapping
+    (`{1: "a", "b": 2}`) and a `None`-keyed one must not raise. Both are
+    ordinary YAML (`1:`, `~:`), and both raised under `json.dumps`'
+    `sort_keys=True`.
+  - **No hidden differences.** `datetime.date(2026, 1, 1)` must **not** equal
+    `"2026-01-01"` (broken by `default=str`), and a `None`/`True` dict key must
+    **not** equal the literal key `"None"`/`"True"` (broken by `str(key)`).
+    Paired with the deliberate counterpart: a `None` key **must** equal the key
+    `"null"`, because that is JSON's own coercion and a CSP receiving either
+    sees an identical request. The pair is what pins the line between a
+    collision inherited from the wire format and one invented here.
 - **Unit**: `tests/test_planner.py` — a reordered declared field yields an empty
   diff; the same field undeclared still yields a diff; a genuinely changed
   declared field reports verbatim unsorted `current`/`desired`.

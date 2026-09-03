@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from aiform import llm
 from aiform import log as aiform_log
 
 _SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
@@ -56,6 +57,34 @@ def _scan_for_leaked_credentials(capsys):
     haystacks = [captured.out, captured.err, *_log_file_haystacks()]
     leaked = find_leaked_credential(_SECRETS, haystacks)
     assert leaked is None, f"{leaked} value leaked into test output or .aiform/logs/*.log"
+
+
+@pytest.fixture
+def forbid_llm_client(monkeypatch):
+    """Make any attempt to construct an LLM client fail loudly.
+
+    Several tests assert a code path makes zero LLM calls by simply not
+    passing a client, on the stated rationale that a real
+    anthropic.Anthropic() would "blow up on a missing API key". That
+    rationale is false, and every test resting on it was silently
+    unsound: anthropic constructs a keyless client without complaint
+    (verified on 0.120.2), the autouse credential scan below only
+    *reads* ANTHROPIC_API_KEY to check for leaks rather than unsetting
+    it, and .envrc exports a real key into every pytest process here.
+    So on a regression those tests issued a real, billed API call --
+    and then usually still passed, because the model's answer to an
+    empty or no-op diff is "no-op". A green test that costs money and
+    proves nothing.
+
+    Patching llm.build_client covers every path: _anthropic_call()
+    resolves it as a module global at call time, and it is the only
+    construction site outside llm.py itself.
+    """
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("an LLM client was constructed on a path asserted to make zero calls")
+
+    monkeypatch.setattr(llm, "build_client", _forbidden)
 
 
 @pytest.fixture(autouse=True)

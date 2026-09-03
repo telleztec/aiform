@@ -17,19 +17,38 @@ _JSON_NATIVE = (str, int, float, bool, type(None))
 _NON_JSON_TAG = "__aiform_nonjson__"
 
 
+def _dict_key(key: Any) -> str:
+    """Coerce a dict key exactly the way json.dumps would.
+
+    Not `str(key)`. That looks equivalent and isn't: `str(None)` is
+    "None" but JSON's is "null", and `str(True)` is "True" against
+    JSON's "true". Using Python's spelling made `{None: 1}` compare
+    EQUAL to `{"None": 1}` -- two objects a CSP would never conflate,
+    since neither is what goes on the wire. Found in review, one round
+    after `default=str` caused the same class of bug for values.
+
+    The residual collision -- `{None: 1}` and `{"null": 1}` now share a
+    key -- is JSON's own, not one invented here: both serialize to
+    `{"null":1}`, so a CSP receiving either sees the same request. That
+    makes treating them as equal correct rather than diff-hiding, which
+    is the whole reason to canonicalize toward the wire format instead
+    of toward Python's repr.
+    """
+    if isinstance(key, str):
+        return key
+    return canonical_key(key)
+
+
 def _canonical(value: Any) -> Any:
     """Rewrite `value` into a form json.dumps handles totally and unambiguously.
 
-    Two hazards this exists to close, both found in review:
-
-    Dict keys are sorted here by `str(k)` rather than by json.dumps'
+    Dict keys are coerced and sorted here rather than by json.dumps'
     own `sort_keys=True`. That flag sorts the raw keys, so it raises
     TypeError on a dict with mixed-type keys -- and YAML produces those
     readily: `1: x` gives an int key, `~: x` a None key. A planner that
-    dies with a TypeError mid-diff is precisely what specs/unordered_fields.md
-    forbids; the driver is supposed to raise the clear error instead.
-    Keys are also stringified, so {1: "x"} and {"1": "x"} collapse --
-    matching JSON's own object-key semantics rather than inventing new ones.
+    dies with a TypeError mid-diff is precisely what
+    specs/unordered_fields.md forbids; the driver is supposed to raise
+    the clear error instead.
 
     Non-JSON-native values are tagged with their type name rather than
     passed through json.dumps' `default=str`. Bare stringification made
@@ -40,8 +59,11 @@ def _canonical(value: Any) -> Any:
     """
     if isinstance(value, dict):
         return {
-            str(key): _canonical(item)
-            for key, item in sorted(value.items(), key=lambda kv: str(kv[0]))
+            coerced: _canonical(item)
+            for coerced, item in sorted(
+                ((_dict_key(key), item) for key, item in value.items()),
+                key=lambda kv: kv[0],
+            )
         }
     if isinstance(value, list):
         return [_canonical(item) for item in value]
@@ -53,10 +75,18 @@ def _canonical(value: Any) -> Any:
 def canonical_key(value: Any) -> str:
     """Total, deterministic ordering key for any YAML/JSON-derived value.
 
-    Total in the strict sense: it never raises, for any input, including
-    the mixed-key dicts and non-serializable leaves _canonical describes.
-    Callers depend on that -- this runs inside the planner's diff, where
-    an exception would surface as an opaque failure on a plain `plan`.
+    Total over the acyclic values YAML and JSON produce -- including the
+    mixed-type keys and non-serializable leaves _canonical describes.
+    Callers depend on that: this runs inside the planner's diff, where
+    an exception surfaces as an opaque failure on a plain `plan`.
+
+    Deliberately NOT claimed to be total in the absolute sense, which an
+    earlier version of this docstring did assert. A self-referential
+    structure still raises RecursionError, and `yaml.safe_load` -- the
+    same loader aiform/parser.py uses -- will build one from an anchor
+    that references itself (`tags: &t [*t]`). That input is beyond
+    repair here rather than merely awkward: it has no finite
+    serialization, so no canonical key exists to return.
 
     Deliberately does NOT merge values a CSP could treat as distinct:
     True vs 1 produce "true" vs "1", and 1 vs 1.0 produce "1" vs "1.0".
