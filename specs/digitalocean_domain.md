@@ -96,11 +96,26 @@ PARAM_SCHEMA = {
 }
 LIKELY_REPLACE_FIELDS = []
 NON_DIFFABLE_FIELDS = []
+UNORDERED_FIELDS = ["records"]
 ```
 
 `LIKELY_REPLACE_FIELDS` is empty because **nothing** about a zone forces a
 replace: every record change is applicable in place. `NON_DIFFABLE_FIELDS` is
 empty because `read()` recovers every managed field from the API.
+
+`UNORDERED_FIELDS = ["records"]` is the load-bearing one, and this driver is
+the second consumer of the mechanism `specs/unordered_fields.md` added (the
+first being `compute.py`'s `tags`). A DNS zone's records are a set: the order
+DigitalOcean happens to list them in carries no meaning, and neither does the
+order a user writes them. Without this declaration, `planner.diff_attributes()`
+would compare the two lists as ordered sequences and report a permanent diff
+the moment they disagreed — see "Record order is free" below for why that is
+not something a user can be asked to work around.
+
+Note this is the first `UNORDERED_FIELDS` entry whose elements are **dicts**
+rather than strings, which is why `aiform/compare.py` sorts by a canonical
+serialization rather than by the elements themselves: `sorted()` on a list of
+dicts raises `TypeError`.
 
 `credentials` is `{"DIGITALOCEAN_TOKEN": "<token>"}` (`config.PROVIDER_TOKEN_ENV_VARS`),
 sent as `Authorization: Bearer`. Base URL `https://api.digitalocean.com/v2`.
@@ -139,25 +154,28 @@ record resource."*
 **This is the property the whole design serves, and the one most likely to be
 broken by a plausible-looking change.**
 
-`planner.diff_attributes()` is a plain `!=` per key over `desired.items()`.
-`params["records"]` is a list of dicts, so it is compared **whole** — one
-mismatched key in one record marks the entire `records` value changed.
-`CLAUDE.md` requires a repeat `plan` on unchanged input to make **zero**
-Anthropic API calls. Therefore:
+`planner.diff_attributes()` compares `records` as a multiset, element by
+element, because this driver declares it in `UNORDERED_FIELDS`. Each element is
+still compared **whole** — one mismatched key in one record makes that record a
+different element, which marks the entire `records` value changed. `CLAUDE.md`
+requires a repeat `plan` on unchanged input to make **zero** Anthropic API
+calls. Therefore:
 
-> `read()`'s returned `records` list must be **exactly equal** — same order,
-> same keys, same types — to the `records` list the user wrote in `.aiform.md`.
+> Every record `read()` returns must match a record the user wrote in
+> `.aiform.md` — **same keys, same values, same types** — one for one, with no
+> record left over on either side. Their *order* is free; nothing else is.
 
 Anything less doesn't merely look untidy: every `plan` bills an
 `intent-orchestration-model` call and shows a phantom diff, and every `apply`
 rewrites records that were already correct.
 
-Three mechanisms hold the invariant, and all three are load-bearing:
+Three mechanisms hold the invariant:
 
-1. **`read()` returns DO's values verbatim** for `name` and `data`. It does
+1. **`records` is declared `UNORDERED_FIELDS`**, so the planner compares it as
+   a multiset. Record order in the user's file is therefore free — see below.
+2. **`read()` returns DO's values verbatim** for `name` and `data`. It does
    **not** try to reverse DO's normalizations.
-2. **Non-canonical input is rejected**, loudly, before any API call.
-3. **Both sides are sorted** by one documented total order.
+3. **Non-canonical input is rejected**, loudly, before any API call.
 
 ### Why `read()` does not un-normalize
 
@@ -180,23 +198,43 @@ producing a diff that never converges.
 `name` needs no such rule — DO returns it relative (`www`, `@`), which is what
 a user writes.
 
-### Canonical ordering
+### Record order is free, and `read()` sorts anyway
 
-Both `read()`'s output and any comparison sort by the tuple
+**A user may list records in any order.** `UNORDERED_FIELDS = ["records"]`
+makes `planner.diff_attributes()` compare the list as a multiset
+(`specs/unordered_fields.md`), so element order never produces a diff.
+
+An earlier draft of this spec instead required the user's file to be written in
+one canonical sort order, and documented the resulting permanent phantom diff
+as an accepted ergonomic cost. That was the wrong trade and it is worth
+recording why, because the reasoning generalizes to every future driver: it
+assumed a CSP's list ordering is a stable property one can design around. It
+isn't. A hash-set-backed store returns elements in an order determined by each
+element's hash and the table's capacity, so adding one record can rehash and
+reorder the ones already there — stable at three records, unstable at
+twenty-one, with no API change and no warning. Requiring the *user* to
+compensate for that pushes an unfixable CSP-side non-guarantee onto the person
+least able to observe it. Closing #110 in the generic diff layer first was the
+correct order of work, and this driver is its second consumer.
+
+`read()` still returns records sorted, by the tuple
 
 ```python
 (type, name, data, str(priority), str(port), str(weight), str(flags), str(tag))
 ```
 
-with absent fields as `""`. All components are strings so the sort is total and
-never raises comparing `None` to `int`. `type`/`name`/`data` lead so plan output
-groups readably; the rest exist only to break ties deterministically among
-records that differ solely in, say, `port`.
+with absent fields as `""` — all components strings, so the sort is total and
+never raises comparing `None` to `int`. But this is now **cosmetic, not
+load-bearing**: it keeps `state.json` from churning on every refresh if DO's
+own ordering wobbles, and makes `aiform show` output readable. Correctness no
+longer depends on it, and a future change that drops the sort would produce
+noisy state diffs rather than a broken plan.
 
-**The user's own file must be written in this order.** This is the one genuinely
-awkward consequence of the design and it is documented, not hidden: a user who
-lists records in a different order sees a permanent diff. `docs/driver-authoring.md`
-and the `## Intent` example call it out.
+**Duplicate records remain rejected** (see Edge cases), which matters
+here: multiset comparison would otherwise report a duplicated record as a
+genuine diff forever, since DO stores each record once. Rejecting at validation
+time is the fix, exactly as `specs/unordered_fields.md` prescribes for the
+equivalent duplicate-tag case in `compute.py`.
 
 ## Behavior
 
