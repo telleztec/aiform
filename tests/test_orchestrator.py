@@ -136,6 +136,41 @@ FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS = FAKE_DRIVER_SOURCE.replace(
     'LIKELY_REPLACE_FIELDS = ["image"]\n    NON_DIFFABLE_FIELDS = ["ssh_keys"]',
 )
 
+# read() returns tags in the opposite order from what write_aiform_md()
+# below declares in params -- the exact "CSP returns the same elements
+# in a different order" scenario specs/unordered_fields.md fixes.
+FAKE_DRIVER_SOURCE_WITH_REORDERED_TAGS = """\
+from aiform.driver import DriverUpdateNotSupported, ResourceDriver
+from aiform.exceptions import ResourceNotFoundError
+
+
+class Driver(ResourceDriver):
+    PARAM_SCHEMA = {"type": "object", "properties": {}}
+    LIKELY_REPLACE_FIELDS = ["image"]
+    UNORDERED_FIELDS = ["tags"]
+
+    def create(self, name, params, credentials):
+        return {"id": "new-id-1", "name": name, **params}
+
+    def read(self, id, credentials):
+        return {
+            "id": id,
+            "region": "sfo3",
+            "size": "s-1vcpu-2gb",
+            "tags": ["production", "aiform"],
+        }
+
+    def update(self, id, current, desired, credentials):
+        return {"id": id, **{**current, **desired}}
+
+    def delete(self, id, credentials):
+        return None
+"""
+
+FAKE_DRIVER_SOURCE_WITH_REORDERED_TAGS_NOT_DECLARED_UNORDERED = (
+    FAKE_DRIVER_SOURCE_WITH_REORDERED_TAGS.replace('    UNORDERED_FIELDS = ["tags"]\n', "")
+)
+
 
 @pytest.fixture
 def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
@@ -805,6 +840,79 @@ class TestBuildCreatePlan:
         assert len(client.messages.calls) == 1
         user_content = json.loads(client.messages.calls[0]["messages"][0]["content"])
         assert user_content["diff"]["ssh_keys"] == {"current": ["key-A"], "desired": ["key-B"]}
+
+    def test_unordered_fields_reaches_plan_resource_reordered_tags_stay_no_op(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # driver.UNORDERED_FIELDS must actually reach planner.plan_resource()
+        # -- the CSP's read() returns tags in the opposite order from
+        # what .aiform.md declares, and the driver declares UNORDERED_FIELDS
+        # = ["tags"], so this must stay a no-op with zero LLM calls
+        # (mirrors how TestNonDiffableFields threading is proven above).
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir,
+            "digitalocean",
+            "compute",
+            source=FAKE_DRIVER_SOURCE_WITH_REORDERED_TAGS,
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(
+            aiform_md,
+            params={"region": "sfo3", "size": "s-1vcpu-2gb", "tags": ["aiform", "production"]},
+        )
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "tags": ["aiform", "production"]},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
+
+    def test_driver_not_declaring_unordered_fields_is_unaffected_reordered_tags_still_diff(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # Same reordered-tags scenario as above, but the driver does NOT
+        # declare UNORDERED_FIELDS -- it must inherit the base class's
+        # empty default and behave exactly as before this feature existed:
+        # the reordered field is a real diff and triggers categorization.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir,
+            "digitalocean",
+            "compute",
+            source=FAKE_DRIVER_SOURCE_WITH_REORDERED_TAGS_NOT_DECLARED_UNORDERED,
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(
+            aiform_md,
+            params={"region": "sfo3", "size": "s-1vcpu-2gb", "tags": ["aiform", "production"]},
+        )
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "tags": ["aiform", "production"]},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([categorization_response(action="update")])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.UPDATE
+        assert len(client.messages.calls) == 1
 
     def test_existing_resource_diff_triggers_categorization(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch

@@ -251,13 +251,17 @@ class TestExtractIntentProse:
 
 
 class TestExtractIntentNotes:
-    def test_empty_prose_returns_empty_list_with_zero_llm_calls(self, prompts_dir: Path):
-        # No client passed -- if this ever fell through to an LLM call,
-        # constructing a real anthropic.Anthropic() would blow up instead
-        # of silently succeeding, same guard planner.py's tests use.
+    def test_empty_prose_returns_empty_list_with_zero_llm_calls(
+        self, prompts_dir: Path, forbid_llm_client
+    ):
+        # Guarded by the forbid_llm_client fixture. The previous comment
+        # here claimed a keyless anthropic.Anthropic() would blow up; it
+        # does not, so this asserted nothing. See tests/conftest.py.
         assert parser.extract_intent_notes("") == []
 
-    def test_whitespace_only_prose_returns_empty_list_with_zero_llm_calls(self, prompts_dir: Path):
+    def test_whitespace_only_prose_returns_empty_list_with_zero_llm_calls(
+        self, prompts_dir: Path, forbid_llm_client
+    ):
         assert parser.extract_intent_notes("   \n\n  \t\n") == []
 
     def test_calls_llm_for_nonempty_prose(self, prompts_dir: Path):

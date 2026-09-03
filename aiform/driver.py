@@ -66,6 +66,24 @@ class ResourceDriver(ABC):
     # LIKELY_REPLACE_FIELDS.
     NON_DIFFABLE_FIELDS: list[str] = []
 
+    # PARAM_SCHEMA keys whose real-world semantics are a collection with
+    # no meaningful order -- a set or multiset, not a sequence -- so the
+    # planner should compare them via aiform.compare.unordered_equal()
+    # instead of ordered equality. Exists because a CSP is free to
+    # return the same elements in a different order than the user
+    # declared them (e.g. DigitalOcean's tags), and plain != treats that
+    # as a permanent, non-empty diff, which in turn permanently defeats
+    # the zero-LLM-call short-circuit for that resource. NOT inferred
+    # from PARAM_SCHEMA's `type: array`: plenty of legitimately ordered
+    # fields are arrays too (a boot-script sequence, a priority list), so
+    # a driver must opt in explicitly per field rather than have order-
+    # sensitivity guessed at. Same shared-class-attribute rule as
+    # LIKELY_REPLACE_FIELDS and NON_DIFFABLE_FIELDS above: a subclass
+    # reassigns it (`UNORDERED_FIELDS = [...]`), never mutates it in
+    # place, or it corrupts every other driver still inheriting the
+    # base's empty list.
+    UNORDERED_FIELDS: list[str] = []
+
     @abstractmethod
     def create(
         self, name: str, params: dict[str, Any], credentials: dict[str, str]

@@ -57,6 +57,10 @@ class NonDiffableFieldsDriver(FullDriver):
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
 
+class UnorderedFieldsDriver(FullDriver):
+    UNORDERED_FIELDS = ["tags"]
+
+
 class TestResourceDriverIsAbstract:
     def test_cannot_instantiate_base_class_directly(self):
         with pytest.raises(TypeError):
@@ -89,6 +93,24 @@ class TestNonDiffableFields:
     def test_subclass_can_override(self):
         driver = NonDiffableFieldsDriver()
         assert driver.NON_DIFFABLE_FIELDS == ["ssh_keys"]
+
+
+class TestUnorderedFields:
+    def test_defaults_to_empty_list_when_not_overridden(self):
+        driver = FullDriver()
+        assert driver.UNORDERED_FIELDS == []
+
+    def test_subclass_can_override(self):
+        driver = UnorderedFieldsDriver()
+        assert driver.UNORDERED_FIELDS == ["tags"]
+
+    def test_overriding_one_driver_does_not_affect_another_sharing_the_base_default(self):
+        # Same reassign-don't-mutate rule as LIKELY_REPLACE_FIELDS and
+        # NON_DIFFABLE_FIELDS: a subclass appending in place to the
+        # inherited list would corrupt every other driver still relying
+        # on the base class's empty default.
+        UnorderedFieldsDriver()
+        assert FullDriver().UNORDERED_FIELDS == []
 
 
 class TestParamSchema:

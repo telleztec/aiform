@@ -205,3 +205,18 @@ calling them from its own methods, or doesn't).
 - Any actual CSP API calls, or a concrete `Driver` subclass —
   `drivers/digitalocean/compute.py` is a separate, later step that
   *implements* this contract; this module only *defines* it.
+
+## Addendum: `UNORDERED_FIELDS` (`specs/unordered_fields.md`)
+
+`ResourceDriver` carries a third per-field declaration alongside
+`LIKELY_REPLACE_FIELDS` and `NON_DIFFABLE_FIELDS`:
+
+```python
+UNORDERED_FIELDS: list[str] = []
+```
+
+It names `PARAM_SCHEMA` keys whose value is a collection with no meaningful
+order, so `planner.diff_attributes()` compares them as multisets rather than
+ordered sequences. Defaults to empty (no driver is affected unless it opts in),
+and follows the same reassign-don't-mutate rule as the other two. Full design,
+rationale, and edge cases: `specs/unordered_fields.md`.

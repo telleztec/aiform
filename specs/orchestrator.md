@@ -953,3 +953,12 @@ Returns the destination path.
   unchanged; this module processes `planned` in the literal order it was
   built, one resource at a time, with no notion of one resource
   depending on another.
+
+## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
+
+`build_create_plan()` passes `unordered_fields=driver.UNORDERED_FIELDS` into
+`planner.plan_resource()`, beside the existing
+`likely_replace_fields=driver.LIKELY_REPLACE_FIELDS`. That is the whole of this
+module's involvement -- it reads the declaration off the driver and forwards
+it, exactly as it already does for the other per-field lists, and makes no
+decision of its own about it. See `specs/unordered_fields.md`.
