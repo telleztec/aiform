@@ -110,14 +110,25 @@ UNORDERED_FIELDS = ["tags"]
 
 ## Behavior
 
-- **`canonical_key(value)`** returns
-  `json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))`.
-  - `sort_keys=True` makes key order *within* a dict irrelevant — necessary
-    because one side's dicts come from YAML and the other's from the CSP's
-    JSON, and neither guarantees key order.
-  - `default=str` keeps it total for anything `json` can't serialize natively
-    rather than raising mid-diff. Params come from YAML/JSON, so in practice
-    only `str`/`int`/`float`/`bool`/`None`/`list`/`dict` appear.
+- **`canonical_key(value)`** JSON-serializes a canonicalized form of `value`.
+  It is **total**: it never raises, for any input. Callers depend on that —
+  this runs inside the planner's diff, where an exception surfaces as an opaque
+  failure on a plain `plan`.
+  - **Dict keys are stringified and sorted by `str(key)`.** This makes key
+    order *within* a dict irrelevant, which is necessary because one side's
+    dicts come from the user's YAML and the other's from the CSP's JSON, and
+    neither guarantees key order. Sorting by `str(key)` rather than using
+    `json.dumps`' own `sort_keys=True` is what makes it total: that flag sorts
+    the raw keys and so raises `TypeError` on a dict with mixed-type keys,
+    which YAML produces readily (`1:` gives an int key, `~:` a `None` key).
+    Stringifying means `{1: "x"}` and `{"1": "x"}` collapse — matching JSON's
+    own object-key semantics rather than inventing new ones.
+  - **A value `json` cannot represent natively is tagged with its type name**,
+    not stringified. Bare stringification (`default=str`) made
+    `datetime.date(2026, 1, 1)` compare **equal** to the string
+    `"2026-01-01"` — and YAML parses an unquoted `2026-01-01` as a `date`, so
+    that collision was reachable. Hiding a real difference is the one direction
+    this module must never fail in.
   - Distinct values stay distinct: `True` vs `1` serialize as `true` vs `1`,
     and `1` vs `1.0` as `1` vs `1.0`. The key must never merge values the CSP
     would treat differently.
@@ -177,6 +188,25 @@ doesn't "simplify" the explicit declaration away.
   spec's.
 - **Empty lists** compare equal to each other and unequal to any non-empty
   list, falling straight out of the definition. No special case.
+- **A tuple rather than a list.** `unordered_equal` dispatches on `isinstance(x,
+  list)`, so a driver whose `read()` returns `("a", "b")` silently gets ordered
+  comparison, with no signal that its `UNORDERED_FIELDS` declaration had no
+  effect. `orchestrator.refresh_resource()` hands `read()`'s value to the
+  planner with no JSON round-trip, so nothing coerces it first. Left as-is
+  rather than widened to accept tuples, because accepting them would make
+  `["a"]` compare equal to `("a",)` -- the diff-hiding direction, which this
+  module must never fail in. Drivers return lists; a future mechanical check on
+  driver return shapes (#114) is the right place to catch a driver that
+  doesn't.
+- **Dict keys of mixed type, or values `json` cannot serialize natively.**
+  Both are reachable from YAML: `1:` yields an int key, and an unquoted
+  `2026-01-01` yields a `datetime.date`. `canonical_key` handles both without
+  raising, and without conflating a `date` with the string that looks like it.
+  See its implementation notes -- an earlier version used `json.dumps`'
+  `sort_keys=True` and `default=str`, which respectively **raised `TypeError`**
+  on a mixed-key dict (the exact "pre-empted by a TypeError from the diff"
+  outcome this spec forbids) and reported `datetime.date(2026, 1, 1)` **equal**
+  to `"2026-01-01"` (a diff-hiding collision). Both found in review.
 
 ## Verification
 
@@ -226,10 +256,15 @@ behavior. Whether DO reorders tags today is not a fact this design needs.
 ## Out of scope
 
 - **`drivers/digitalocean/compute.py`'s own `update()` local diff**, which has
-  the identical bug. Explicitly out of scope in #110, and left so: `update()`
-  only runs once a diff already exists, so its exposure is a wasted no-op API
-  call rather than a non-converging plan. Its own follow-up, now that
-  `unordered_equal()` exists for it to call.
+  the identical bug. Explicitly out of scope in #110, and left so. Its exposure
+  is smaller than an earlier draft of this spec claimed: `update()` runs only
+  once the planner has already produced a non-empty diff, and a
+  reordered-but-equal `tags` value then reaches `_apply_tag_changes()`, which
+  computes empty add/remove sets and issues **zero** API calls -- not the
+  "wasted no-op API call" stated here previously (corrected in review). `tags`
+  is also in `_IN_PLACE_UPDATABLE_FIELDS`, so it can never force a replace.
+  Still worth fixing for consistency, now that `unordered_equal()` exists for
+  it to call.
 - **Validating the three field lists against `PARAM_SCHEMA`** — #114.
 - **Deep/recursive unordered comparison** — see Edge cases.
 - **Normalizing stored state or rewriting the user's `.aiform.md`.** This

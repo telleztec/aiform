@@ -830,3 +830,18 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   isn't being built (see `PLAN.md`'s "Driver curation" section). This
   spec accordingly serves as the hand-implementation guide, not only
   generated-output acceptance criteria.
+
+## Addendum: `UNORDERED_FIELDS = ["tags"]` (`specs/unordered_fields.md`)
+
+This driver declares `tags` as order-insensitive, so a DigitalOcean response
+listing the same tags in a different order than the user's `.aiform.md` no
+longer produces a permanent diff. See `specs/unordered_fields.md` for the
+mechanism and for why no live probe of DO's actual ordering behavior was
+written.
+
+`update()`'s own local diff (`diff_fields`) still uses ordered comparison and
+is deliberately unchanged -- out of scope per #110. The practical cost is
+small: `update()` only runs once the planner has already produced a non-empty
+diff, and a reordered-but-equal `tags` value reaching `_apply_tag_changes()`
+computes empty add/remove sets, so it issues **zero** API calls. `tags` is in
+`_IN_PLACE_UPDATABLE_FIELDS`, so it can never force a replace either.

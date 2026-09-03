@@ -468,16 +468,30 @@ class TestPlanResource:
         assert entry.likely_replace is False
 
     def test_reordered_declared_unordered_field_with_unchanged_hash_is_no_op_zero_llm_calls(
-        self, prompts_dir: Path
+        self, prompts_dir: Path, monkeypatch: pytest.MonkeyPatch
     ):
         # The single most important test in this file: a CSP returning
         # the same tags in a different order must not permanently defeat
         # CLAUDE.md's "zero Anthropic API calls on an unchanged second
-        # run" guarantee. No client is passed at all, mirroring
-        # test_no_op_path_makes_zero_llm_calls_even_with_no_client above
-        # -- if the zero-diff short-circuit ever failed to fire here, a
-        # real anthropic.Anthropic() client would be constructed and this
-        # would blow up rather than silently passing.
+        # run" guarantee. This variant passes no client, asserting the
+        # short-circuit fires before one is even needed.
+        #
+        # build_client is monkeypatched to raise rather than relying on
+        # a keyless anthropic.Anthropic() blowing up, because it does
+        # not: it constructs fine (verified against anthropic 0.120.2),
+        # and tests/conftest.py only SCANS for ANTHROPIC_API_KEY leaks,
+        # it never unsets the variable -- which .envrc exports into
+        # every pytest process here. So an earlier version of this test
+        # would, on a regression, have issued a real billed Sonnet call
+        # and then very likely still passed, since "no-op" is the
+        # natural answer to a reordered-tags diff. Caught in review; it
+        # was exactly the kind of green check that licenses the wrong
+        # conclusion.
+        def _no_client_allowed(*args, **kwargs):
+            raise AssertionError("plan_resource built an LLM client on the zero-diff path")
+
+        monkeypatch.setattr(llm, "build_client", _no_client_allowed)
+
         entry = planner.plan_resource(
             RESOURCE_KEY,
             {"tags": ["aiform", "production"]},

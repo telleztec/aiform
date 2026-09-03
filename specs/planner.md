@@ -68,7 +68,10 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry: ...
 
 
 def diff_attributes(
-    current: dict[str, Any], desired: dict[str, Any]
+    current: dict[str, Any],
+    desired: dict[str, Any],
+    *,
+    unordered_fields: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]: ...
 
 
@@ -88,6 +91,8 @@ def categorize_diff(
 ) -> PlanEntry: ...
 
 
+# See specs/unordered_fields.md for `unordered_fields`, threaded from the
+# driver's UNORDERED_FIELDS declaration through to diff_attributes().
 def plan_resource(
     resource_key: str,
     current_attributes: dict[str, Any],
@@ -98,6 +103,7 @@ def plan_resource(
     likely_replace_fields: list[str],
     state_aiform_md_sha256: str | None,
     current_aiform_md_sha256: str,
+    unordered_fields: Sequence[str] = (),
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
@@ -123,7 +129,7 @@ this resource, or the specific `AIFORM-DELETE-` file that named it) and
 is expected to say so, the same way `categorize_diff()`'s rationale
 always names the field(s) that changed.
 
-### `diff_attributes(current, desired) -> dict[str, dict[str, Any]]`
+### `diff_attributes(current, desired, *, unordered_fields=()) -> dict[str, dict[str, Any]]`
 
 Deterministic, zero-LLM. For every key in `desired`, compare against
 `current.get(key)`; if unequal, the result includes `key: {"current":
