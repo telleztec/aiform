@@ -44,27 +44,31 @@ top of the final comment.
 
 ## Steps
 
-1. Haiku agent: confirm the PR is open, not a draft, not too trivial to
-   review, and does not already have a review covering the current head
-   SHA. If any of those hold, stop.
-2. One Opus agent, given the PR number, resolved SHA, and head SHA:
+1. Haiku agent: check whether the PR is closed, is a draft, is too
+   trivial to need review, or already has a review covering the current
+   head SHA. If any of those is true, stop.
+2. One Opus agent, given the PR number, resolved SHA, and head SHA. Have
+   it do all of the following itself, in one pass — it must not delegate
+   any of this to further sub-agents:
    a. List relevant CLAUDE.md files: root CLAUDE.md, plus any in
       directories touched by `git diff --name-only
       <resolved-sha>..<head-sha>`.
    b. Read `git log <resolved-sha>..<head-sha>` and `git diff
       <resolved-sha>..<head-sha>` — not `gh pr diff`, which returns the
       full base..head diff regardless of the resolved SHA.
-   c. Review that diff for CLAUDE.md compliance and bugs. Skip nitpicks
-      and false positives (list below).
+   c. Review that diff for CLAUDE.md compliance and bugs. CLAUDE.md is
+      guidance, not every line applies to every diff. Skip nitpicks and
+      false positives (list below).
    d. Where warranted, check git blame/history, prior PRs on the same
       files, or in-code comments.
    Return candidate findings (issue plus the reason flagged), excluding
    anything in the false-positive list. Do not assign a confidence score.
 3. If step 2 found nothing, skip to step 5 and post "no issues found."
-4. Otherwise, one Sonnet agent, given the full candidate list, the
-   CLAUDE.md paths and PR number from step 2, and the resolved and head
-   SHAs: re-check every candidate against its own `git diff
-   <resolved-sha>..<head-sha>` — not `gh pr diff` — and score each 0-100:
+4. Otherwise, one Sonnet agent, in a single call carrying the full
+   candidate list (not one call per finding), the CLAUDE.md paths and PR
+   number from step 2, and the resolved and head SHAs: re-check every
+   candidate against its own `git diff <resolved-sha>..<head-sha>` — not
+   `gh pr diff` — and score each 0-100, using this rubric verbatim:
    a. 0 — false positive, or pre-existing (including a line unchanged
       since the resolved SHA).
    b. 25 — possibly real but unverified; or a stylistic nitpick CLAUDE.md
@@ -73,8 +77,9 @@ top of the final comment.
    d. 75 — verified real, will be hit in practice, impacts functionality,
       or is explicitly required by CLAUDE.md.
    e. 100 — certain, frequent, directly evidenced.
-   Filter to score ≥ 75. If none remain, skip to step 5 and post "no
-   issues found."
+   For a CLAUDE.md-based finding, confirm CLAUDE.md actually calls out
+   that specific issue before scoring it 75 or above. Filter to score
+   ≥ 75. If none remain, skip to step 5 and post "no issues found."
 5. Haiku agent: repeat step 1's check against the current head SHA.
 6. Post the result with `gh pr comment`: brief, no emojis, link and cite
    the relevant code/files/URLs, and state the checkpoint (preset name if
