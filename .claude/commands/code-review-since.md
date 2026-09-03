@@ -136,10 +136,15 @@ To do this, follow these steps precisely:
    format in the Notes section below covers exactly this case.
 4. Otherwise, launch **one** Sonnet agent with the *entire* candidate list
    from step 2 in a single call (not one call per finding), plus the list
-   of CLAUDE.md files from step 2a. It independently re-checks every
-   candidate against the actual diff and scores each on a scale from
-   0-100, indicating its level of confidence that the issue is real rather
-   than a false positive. For issues flagged due to CLAUDE.md instructions,
+   of CLAUDE.md files from step 2a, the PR number, and the resolved
+   checkpoint SHA and head SHA from step 2 — it needs all three to run its
+   own `git diff <resolved-sha>..<head-sha>` (not `gh pr diff`, same
+   caveat as step 2b: a fresh agent with no SHAs to scope by will fall back
+   to the full base..head diff and may score pre-existing or out-of-scope
+   issues as real). It independently re-checks every candidate against
+   that scoped diff and scores each on a scale from 0-100, indicating its
+   level of confidence that the issue is real rather than a false
+   positive. For issues flagged due to CLAUDE.md instructions,
    it should double check that the CLAUDE.md actually calls out that issue
    specifically. The scale is (give this rubric to the agent verbatim):
    a. 0: Not confident at all. This is a false positive that doesn't stand
