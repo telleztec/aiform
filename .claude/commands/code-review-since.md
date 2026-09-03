@@ -13,6 +13,21 @@ unscoped command) always diffs against the PR's base branch, so a second
 or third pass re-examines every line from every earlier round too; this
 command instead reviews only what changed since the checkpoint you name.
 
+**Design intent: this command only ever runs against a small, already-
+scoped delta** — normally one or two fix commits addressing a prior
+round's findings, per `PROCESS.md`'s "review your own fixes" loop. Its own
+agent count must stay proportionally small. A fixed fan-out of several
+parallel review agents (each redoing the full CLAUDE.md audit, bug scan,
+blame/history, prior-PR-comment search, and code-comment check
+independently), followed by one more agent per finding to score it, is the
+right shape for a full first-time review of a whole PR — it is exactly
+what the unscoped `/code-review` does, and it's the wrong shape here: it
+does not get cheaper as the delta shrinks, so a one-commit fix-up round
+costs as much as (or, at a richer model tier, more than) the original full
+review it's following up on. Keep the steps below to one review pass and
+one batched verification pass — do not reintroduce a multi-agent fan-out
+"for thoroughness."
+
 **Parse `$ARGUMENTS` yourself — do not rely on `$1`/`$2` substitution.**
 (Confirmed unreliable in this environment: a real invocation with
 arguments `24 last-review` expanded every literal `$1` in this file to
@@ -87,47 +102,45 @@ To do this, follow these steps precisely:
    code review from you covering the *current* head SHA (not an earlier
    one — a review posted against an older SHA does not make this PR
    ineligible, since new commits landed since). If so, do not proceed.
-2. Use another Haiku agent to give you a list of file paths to (but not the
-   contents of) any relevant CLAUDE.md files from the codebase: the root
-   CLAUDE.md file (if one exists), as well as any CLAUDE.md files in the
-   directories whose files changed **between the resolved SHA and the PR's
-   current head** (`git diff --name-only <resolved-sha>..<head-sha>`, not
-   the full PR diff).
-3. Use a Haiku agent to view the pull request, and ask the agent to return
-   a summary of the change **based on `git log <resolved-sha>..<head-sha>`
-   and `git diff <resolved-sha>..<head-sha>`** (not `gh pr diff`, which
-   always returns the full base..head diff regardless of the resolved
-   SHA).
-4. Then, launch 5 parallel Opus agents to independently code review the
-   change, each explicitly told their diff is `git diff <resolved-sha>..
-   <head-sha>`, not the PR's full diff. The agents should do the
-   following, then return a list of issues and the reason each issue was
-   flagged (eg. CLAUDE.md adherence, bug, historical git context, etc.):
-   a. Agent #1: Audit the changes introduced since the resolved SHA to
-      make sure they comply with the CLAUDE.md. Note that CLAUDE.md is
-      guidance for Claude as it writes code, so not all instructions will
-      be applicable during code review.
-   b. Agent #2: Read the file changes between the resolved SHA and the
-      PR's current head, then do a shallow scan for obvious bugs. Avoid
-      reading extra context beyond those changes, focusing just on the
-      changes themselves. Focus on large bugs, and avoid small issues and
-      nitpicks. Ignore likely false positives.
-   c. Agent #3: Read the git blame and history of the code modified since
-      the resolved SHA, to identify any bugs in light of that historical
-      context.
-   d. Agent #4: Read previous pull requests that touched these files, and
-      check for any comments on those pull requests that may also apply to
-      the changes since the resolved SHA.
-   e. Agent #5: Read code comments in the files modified since the
-      resolved SHA, and make sure the changes comply with any guidance in
-      the comments.
-5. For each issue found in #4, launch a parallel Sonnet agent that takes the
-   PR, issue description, and list of CLAUDE.md files (from step 2), and
-   returns a score to indicate the agent's level of confidence for whether
-   the issue is real or false positive. To do that, the agent should score
-   each issue on a scale from 0-100, indicating its level of confidence.
-   For issues that were flagged due to CLAUDE.md instructions, the agent
-   should double check that the CLAUDE.md actually calls out that issue
+2. Launch **one** Opus agent to review the change. Give it the PR number,
+   the resolved checkpoint SHA, and the head SHA, and have it do all of
+   the following itself, in one pass, rather than farming pieces out to
+   separate agents:
+   a. Find the relevant CLAUDE.md files: the root CLAUDE.md (if one
+      exists), plus any in directories whose files changed **between the
+      resolved SHA and the PR's current head**
+      (`git diff --name-only <resolved-sha>..<head-sha>`, not the full PR
+      diff).
+   b. Understand the change from `git log <resolved-sha>..<head-sha>` and
+      `git diff <resolved-sha>..<head-sha>` (not `gh pr diff`, which
+      always returns the full base..head diff regardless of the resolved
+      SHA).
+   c. Review that diff for CLAUDE.md compliance and for obvious bugs —
+      the same bar as the false-positive list below: focus on large bugs,
+      skip nitpicks, ignore likely false positives. CLAUDE.md is guidance
+      for Claude as it writes code, so not all instructions will be
+      applicable during review.
+   d. At its own judgment — not as a mandatory separate pass — pull git
+      blame/history on a changed line, search prior PRs that touched the
+      same files, or check in-code comment guidance, whenever something in
+      the diff looks suspicious enough to warrant it. This is discretion
+      the agent applies while reviewing, not four additional required
+      passes over the whole diff.
+   Have it return a list of *candidate* findings (issue plus the reason it
+   was flagged — CLAUDE.md adherence, bug, historical git context, etc.),
+   already excluding anything that obviously falls into one of the
+   false-positive categories below. It does not need to assign a
+   confidence score itself; that happens next.
+3. If step 2 returned zero candidates, skip directly to step 5 and post
+   the "no issues found" comment — do not skip posting entirely; the
+   format in the Notes section below covers exactly this case.
+4. Otherwise, launch **one** Sonnet agent with the *entire* candidate list
+   from step 2 in a single call (not one call per finding), plus the list
+   of CLAUDE.md files from step 2a. It independently re-checks every
+   candidate against the actual diff and scores each on a scale from
+   0-100, indicating its level of confidence that the issue is real rather
+   than a false positive. For issues flagged due to CLAUDE.md instructions,
+   it should double check that the CLAUDE.md actually calls out that issue
    specifically. The scale is (give this rubric to the agent verbatim):
    a. 0: Not confident at all. This is a false positive that doesn't stand
       up to light scrutiny, or is a pre-existing issue (including one on a
@@ -149,18 +162,16 @@ To do this, follow these steps precisely:
    e. 100: Absolutely certain. The agent double checked the issue, and
       confirmed that it is definitely a real issue, that will happen
       frequently in practice. The evidence directly confirms this.
-6. Filter out any issues with a score less than 75. (Not 80 — the rubric
+   Filter out any issues with a score less than 75. (Not 80 — the rubric
    above only ever produces one of the five discrete values 0/25/50/75/100,
    so an 80 cutoff would silently discard every "75: Highly confident"
    issue and only ever report a "100: Absolutely certain" one, defeating
-   the rubric's own stated purpose for that tier.) If there are no issues
-   that meet this criteria, **skip directly to step 8 and post the "no
-   issues found" comment** — do not skip posting entirely; the format in
-   the Notes section below covers exactly this case.
-7. Use a Haiku agent to repeat the eligibility check from #1, to make sure
+   the rubric's own stated purpose for that tier.) If nothing survives this
+   filter, post the "no issues found" comment, same as step 3.
+5. Use a Haiku agent to repeat the eligibility check from #1, to make sure
    that the pull request is still eligible for code review (no new commits
    landed while this ran that would make the reviewed range stale).
-8. Finally, use the gh bash command to comment back on the pull request
+6. Finally, use the gh bash command to comment back on the pull request
    with the result. When writing your comment, keep in mind to:
    a. Keep your output brief
    b. Avoid emojis
@@ -170,7 +181,7 @@ To do this, follow these steps precisely:
       resolved short-SHA) — so a reader isn't misled into thinking earlier,
       already-reviewed commits were re-checked.
 
-Examples of false positives, for steps 4 and 5:
+Examples of false positives, for steps 2 and 4:
 
 - Pre-existing issues, including on a line that was already present
   (unchanged) as of the resolved SHA -- not just "pre-existing relative to
