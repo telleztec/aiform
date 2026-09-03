@@ -270,19 +270,35 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `UNORDERED_FIELDS = ["tags"]` and the planner now compares it as a
   multiset (`specs/unordered_fields.md`, closing #110). `update()`'s own
   local `diff_fields` comparison is deliberately unchanged; see the
-  addendum at the end of this spec for why its cost is zero API calls. Two ways in: DO
-  returning the same tags in a different order (whether it ever does is
-  unverified), and a duplicate entry in the user's own `tags:` (which
-  needs no DO misbehavior at all — DO stores the set, so
-  `["web", "web"]` can never match what comes back). Before this change such a mismatch destroyed and
-  recreated the droplet on every `apply`; now it costs a perpetual
-  no-progress `update` — an `intent-orchestration-model` call per
-  `plan` and one `GET` per `apply`, converging never. The live
-  lifecycle test asserts convergence to `no-op` immediately after its
-  tags edit (`specs/system_test.md` case 6b) specifically so this
-  surfaces as a test failure against the real API instead of staying a
-  guess. If it does surface, the fix is an order-insensitive comparison
-  for this field, not a diff exclusion.
+  addendum at the end of this spec for why its cost is zero API calls.
+
+  There were two ways in, and they now have **different** answers:
+
+  - **DO returning the same tags in a different order.** Closed. The
+    planner compares `tags` as a multiset, so element order can no
+    longer produce a diff. Whether DO ever actually reorders is still
+    unverified and now does not matter — `specs/unordered_fields.md`
+    explains why no live probe was written to find out (briefly: a
+    hash-set-backed store can be order-stable at two tags and unstable
+    at nine, so a passing probe would prove nothing while reading as
+    evidence that ordered comparison is safe).
+  - **A duplicate entry in the user's own `tags:`.** Still open, and
+    deliberately so. This needs no DO misbehavior at all — DO stores a
+    set, so `["web", "web"]` can never match what comes back. The
+    multiset semantics chosen in #110 keep reporting that as a diff
+    **on purpose**: collapsing it would mean `set()` comparison, which
+    would also hide a genuinely duplicated record elsewhere. The cost is
+    a perpetual no-progress `update` — an `intent-orchestration-model`
+    call per `plan` and one `GET` per `apply`, converging never. (Before
+    issue #77 it was worse: such a mismatch destroyed and recreated the
+    droplet on every `apply`.) The real fix is rejecting a duplicated
+    tag as a malformed value in `_reject_malformed_values()`, alongside
+    the checks already there — not weakening the comparison. Not done
+    here; it is this driver's own follow-up.
+
+  The live lifecycle test asserts convergence to `no-op` immediately
+  after its tags edit (`specs/system_test.md` case 6b), which now guards
+  the second path specifically.
 - **If `size` is in the diff** (this step runs first, per the
   ordering above): DigitalOcean resize
   (`POST /v2/droplets/{id}/actions`) —

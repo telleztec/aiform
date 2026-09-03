@@ -18,7 +18,15 @@ _NON_JSON_TAG = "__aiform_nonjson__"
 
 
 def _dict_key(key: Any) -> str:
-    """Coerce a dict key exactly the way json.dumps would.
+    """Coerce a dict key the way json.dumps does, for every key type it accepts.
+
+    Beyond those it does not follow json.dumps, which *raises* TypeError
+    on a key it cannot coerce (a date, bytes, a tuple). Such a key is
+    tagged instead, for the same reason non-JSON-native values are --
+    raising here would crash the planner's diff, and YAML yields a
+    `datetime.date` key from an unquoted `2026-01-01:`. The tagged form
+    is distinct from the string that looks like it, so this errs toward
+    surfacing a diff.
 
     Not `str(key)`. That looks equivalent and isn't: `str(None)` is
     "None" but JSON's is "null", and `str(True)` is "True" against

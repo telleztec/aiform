@@ -111,18 +111,38 @@ UNORDERED_FIELDS = ["tags"]
 ## Behavior
 
 - **`canonical_key(value)`** JSON-serializes a canonicalized form of `value`.
-  It is **total**: it never raises, for any input. Callers depend on that —
-  this runs inside the planner's diff, where an exception surfaces as an opaque
-  failure on a plain `plan`.
-  - **Dict keys are stringified and sorted by `str(key)`.** This makes key
-    order *within* a dict irrelevant, which is necessary because one side's
-    dicts come from the user's YAML and the other's from the CSP's JSON, and
-    neither guarantees key order. Sorting by `str(key)` rather than using
-    `json.dumps`' own `sort_keys=True` is what makes it total: that flag sorts
-    the raw keys and so raises `TypeError` on a dict with mixed-type keys,
+  It is **total over the acyclic values YAML and JSON produce**. Callers depend
+  on that — this runs inside the planner's diff, where an exception surfaces as
+  an opaque failure on a plain `plan`. It is deliberately *not* claimed total in
+  the absolute sense: a self-referential structure raises `RecursionError`, and
+  `yaml.safe_load` builds one from `tags: &t [*t]`. Such a value has no finite
+  serialization, so there is no canonical key to return.
+  - **Dict keys are coerced through `canonical_key` itself, then sorted.** This
+    makes key order *within* a dict irrelevant, which is necessary because one
+    side's dicts come from the user's YAML and the other's from the CSP's JSON,
+    and neither guarantees key order. Coercing here rather than using
+    `json.dumps`' own `sort_keys=True` is what makes it total over mixed-type
+    mappings: that flag sorts the raw keys and so raises `TypeError` on one,
     which YAML produces readily (`1:` gives an int key, `~:` a `None` key).
-    Stringifying means `{1: "x"}` and `{"1": "x"}` collapse — matching JSON's
-    own object-key semantics rather than inventing new ones.
+    Using `canonical_key` rather than `str()` is what makes the coercion
+    **JSON's**: `str(None)` is `"None"` but JSON's is `"null"`, and the
+    difference is not cosmetic — `str()` made `{None: 1}` compare equal to
+    `{"None": 1}`, two values no CSP would conflate. That was a real
+    diff-hiding regression, shipped and then caught in review.
+  - **The residual key collisions are JSON's own, not invented here.**
+    `{None: 1}` and `{"null": 1}` do compare equal, as do `{1: "x"}` and
+    `{"1": "x"}`. This is correct rather than diff-hiding, and it is grounded
+    in what the code actually does: a driver copies `params` into its request
+    body verbatim and sends `json.dumps(body)`
+    (`drivers/digitalocean/compute.py`), while `current` comes back through
+    `json.loads` with string keys. Both spellings therefore produce
+    byte-identical requests and describe the same resource. Canonicalizing
+    toward the wire format, not toward Python's `repr`, is the rule.
+  - A dict with two keys that coerce alike (`{1: "a", "1": "b"}`) resolves
+    last-wins in insertion order, matching a last-wins JSON parser. A
+    consequence: two Python-equal dicts differing only in that insertion order
+    produce different keys, so they surface a diff. Safe direction, and
+    reachable only by writing both `1:` and `"1":` in one mapping.
   - **A value `json` cannot represent natively is tagged with its type name**,
     not stringified. Bare stringification (`default=str`) made
     `datetime.date(2026, 1, 1)` compare **equal** to the string
