@@ -190,20 +190,38 @@ doesn't "simplify" the explicit declaration away.
   declared field reports verbatim unsorted `current`/`desired`.
 - **Unit**: `tests/test_orchestrator.py` — `UNORDERED_FIELDS` reaches
   `plan_resource()`; a driver not declaring it is unaffected.
-- **Live probe (the evidence #110 asks for).** It is currently **unknown**
-  whether DigitalOcean actually reorders tags; #110 records that the existing
-  system-test evidence can't distinguish "DO preserves submission order" from
-  "DO returns alphabetical order" from coincidence, because the two tags
-  involved have identical alphabetical and assignment order. The probe that
-  settles it: assign `zebra` to a droplet already tagged `apple` and observe
-  whether `GET` returns `[apple, zebra]` or `[zebra, apple]`. Runs in
-  `tests/system/`, so it costs one short-lived droplet.
+- **No regression** in the existing suite. That is the whole live-behavior bar
+  for this change, deliberately.
 
-  **The fix is justified either way** and does not wait on the probe's result:
-  the guarantee has to hold for the lowest common denominator across every
-  future driver (#110's own framing), and #113's `records` needs it regardless.
-  A probe showing DO preserves order would demote this from "fixes a live bug"
-  to "closes a latent one", not make it unnecessary.
+### Why there is no live ordering probe
+
+#110 asks for one — assign `zebra` to a droplet already tagged `apple`, observe
+whether `GET` returns them reordered — and this spec originally carried it.
+**Declined, on the grounds that it cannot answer the question it is asked.**
+
+If the CSP stores tags in a hash set, iteration order is a function of each
+element's hash and the table's current capacity. Adding one more element can
+trigger a rehash that reorders elements already present. So order can be stable
+at two tags and unstable at nine, with no API change, no version bump, and no
+warning — the same account, the same endpoint, a different answer.
+
+That makes the probe's evidence **asymmetric**. A *failing* probe would prove
+instability. A *passing* probe proves only "stable at this cardinality, on this
+account, this once" — and would be recorded as a green check that licenses
+precisely the wrong inference, that ordered comparison is safe here. A test
+whose pass is uninformative and whose failure we already assume is not worth a
+live droplet, and is actively misleading in the suite.
+
+This supersedes #110's reasoning, which treated the question as empirically
+settleable and the existing evidence as merely too weak to settle it. The
+sharper point is that **no** amount of observation settles it: order stability
+is not a property a CSP has ever promised, so it cannot be established by
+sampling, only assumed and then violated.
+
+The fix therefore rests where it always actually rested — on #110's own framing
+that the generic layer "has to work correctly for the lowest common denominator
+across every future driver" — and not on DigitalOcean's current observed
+behavior. Whether DO reorders tags today is not a fact this design needs.
 
 ## Out of scope
 
