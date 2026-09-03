@@ -92,7 +92,7 @@ PARAM_SCHEMA = {
         },
     },
     "required": ["records"],
-    "additionalProperties": True,
+    "additionalProperties": False,
 }
 LIKELY_REPLACE_FIELDS = []
 NON_DIFFABLE_FIELDS = []
@@ -305,44 +305,85 @@ which a user writes, and every one of which would otherwise diff forever.
 
 ### `update(id, current, desired, credentials)`
 
-1. **Refuse a non-`records` diff first, before mutating anything.** Any key
-   other than `records` differing raises `DriverUpdateNotSupported` with those
-   keys in `unsupported_fields`. This satisfies `PLAN.md` §4's ordering
-   requirement trivially — the only raise happens before the first API call.
-2. Validate the desired records (same checks as `create()`), still before any
-   mutation, so a malformed value can't leave the zone half-edited. Raises
-   `ValueError`, never `DriverUpdateNotSupported` — a bad value is not a
-   replace-worthy diff, and converting it into one would destroy a live zone
-   over a typo. Same reasoning as `compute.py`'s `_reject_malformed_values()`.
+1. Validate `desired` (the same checks `create()` runs — including the
+   unknown-top-level-key rejection below), before any mutation, so a malformed
+   value can't leave the zone half-edited. Raises `ValueError`.
+2. Diff **only `records`**, the single key `PARAM_SCHEMA` declares. Mirrors
+   `compute.py`'s `diff_fields`, which likewise iterates
+   `PARAM_SCHEMA["properties"]` rather than everything in `desired`.
 3. Reconcile the record set (below).
 4. Return a fresh `read()`.
 
-**`update()` must essentially never raise `DriverUpdateNotSupported`.** Every
-records change is applicable in place via the record endpoints, and the
-orchestrator answers that exception by **destroying and recreating the
-resource** — here, deleting an entire live DNS zone. `prompts/review_driver.md`
-item 4 names over-broad refusal as a *blocking* issue for exactly this reason.
-A zone's `name` cannot change: it is the state key, so a rename is a different
-resource, never an update.
+**`update()` never raises `DriverUpdateNotSupported`, and that is correct** —
+stated plainly rather than left as a branch nobody can reach. The orchestrator
+answers that exception by **destroying and recreating the resource**, which
+here means deleting an entire live DNS zone and every record in it.
+`prompts/review_driver.md` item 4 makes over-broad refusal a *blocking* issue
+precisely because of that consequence. Every records change is applicable in
+place through the record endpoints, so no records diff is ever replace-worthy.
+A zone's `name` cannot change either: it is the state key, so a rename is a
+different resource, not an update.
 
-**Reconciliation.** Pair `current` against `desired`:
+**An unknown top-level param is a `ValueError`, not a
+`DriverUpdateNotSupported`** — and an earlier draft of this spec got this
+wrong, in a way worth recording because it is the exact trap the review
+checklist describes. That draft said "any key other than `records` differing
+raises `DriverUpdateNotSupported`". Since `orchestrator.apply_plan()` calls
+`update(id, state_entry.attributes, pr.desired_params, ...)` with
+`desired_params` being the raw `params:` block, the only way such a diff can
+arise is a user typing a key this driver doesn't support. Under that draft, a
+stray `ttl:` in a `.aiform.md` file would have **destroyed and recreated the
+user's DNS zone**. Rejecting the input is the proportionate answer; destroying
+a zone over a typo is not. Caught while writing this module's tests, when the
+contract had to be stated concretely enough to assert on.
 
-- **Identity.** Group both sides by `(type, name)`. Where a group holds exactly
-  one record on each side, those two are the same record — apply differences
-  with `PUT /v2/domains/{id}/records/{record_id}`, including a changed `data`.
-  This keeps the common single-valued cases (`A`, `CNAME`) as in-place edits
-  rather than a delete/create pair, which would open a brief resolution gap.
-- Otherwise (multi-record groups such as `MX`, `TXT`, `NS`) identity is
-  `(type, name, data)`: matched pairs differing only in `ttl`/`priority`/etc.
-  are `PUT`; unmatched `desired` records are `POST`; unmatched `current`
-  records are `DELETE`.
+Accordingly `PARAM_SCHEMA` sets `additionalProperties: False` at the top level.
+Nothing upstream enforces `PARAM_SCHEMA` (`driver.py`'s docstring claims the
+orchestrator validates against it; it does not), so the driver performs this
+check itself — the schema records the intent, the validation enforces it.
+
+**Reconciliation.** Group both sides by `(type, name)`, then pick per group:
+
+- **Single-valued path** — `PUT /v2/domains/{id}/records/{record_id}`. Taken
+  when the record's type is in `{A, AAAA, CNAME}` **and** the group holds at
+  most one record on each side. The two records are then the same record, and a
+  changed `data` is an edit: `PUT` avoids the brief resolution gap a
+  delete-then-create pair would open on the name a user is most likely to be
+  resolving.
+- **Set path** — identity is `(type, name, data)`. Matched pairs differing only
+  in `ttl`/`priority`/etc. are `PUT`; unmatched `desired` records are `POST`;
+  unmatched `current` records are `DELETE`.
 - **Order: `PUT`, then `POST`, then `DELETE`.** Updates and additions land
   before removals so the zone is never missing a record it will have again.
-  No conflict arises from adding before deleting, because the single-valued
-  case — where a duplicate would be rejected — is handled by `PUT` above.
+  Adding before deleting cannot conflict, because the one case where a
+  duplicate would be rejected — a single-valued name — is handled by `PUT`.
+
+**Both conditions on the single-valued path are load-bearing**, and an earlier
+draft of this spec had only the second, describing the rule as purely
+count-based ("where a group holds exactly one record on each side"). Corrected
+after implementation, where the two rules diverged on a real test case:
+
+- **The type condition.** Under a purely count-based rule, a lone `TXT` record
+  whose `data` changed would be `PUT`. But for `TXT`/`MX`/`NS`/`SRV`/`CAA` the
+  `data` *is* the identity — several values at one name is the ordinary case —
+  so changing it means one value removed and another added, not one value
+  edited. Worse, the count-based rule makes the same edit behave differently
+  depending on unrelated state: adding a second `TXT` record would silently
+  change how the first one is updated.
+- **The count condition.** Multiple `A` (or `AAAA`) records at one name is
+  ordinary round-robin DNS, so the type alone cannot imply single-valued. When
+  such a group holds more than one record on either side, it falls to the set
+  path. `CNAME` is the only genuinely single-valued type here — a `CNAME` must
+  be the only record at its name — but it needs no special case, since a
+  correct zone never has two.
 
 `record_id` comes from the live listing, so reconciliation needs the unprojected
-records internally even though `read()` returns them projected.
+records internally even though `read()` returns them projected. That listing
+goes through the **same** `fetch_all_pages()` call `read()` uses, with the same
+`per_page`: a reconciliation that paged differently from the read that produced
+the diff could match against a truncated set and delete records it simply never
+saw — the identical failure `specs/digitalocean_pagination.md` exists to
+prevent, one layer down.
 
 ### `delete(id, credentials)`
 
