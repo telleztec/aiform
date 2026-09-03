@@ -129,6 +129,52 @@ class TestDiffAttributes:
         }
 
 
+class TestDiffAttributesUnorderedFields:
+    def test_declared_unordered_field_reordered_yields_empty_diff(self):
+        current = {"tags": ["aiform", "production"]}
+        desired = {"tags": ["production", "aiform"]}
+        assert planner.diff_attributes(current, desired, unordered_fields=["tags"]) == {}
+
+    def test_same_field_not_declared_still_yields_a_diff(self):
+        current = {"tags": ["aiform", "production"]}
+        desired = {"tags": ["production", "aiform"]}
+        assert planner.diff_attributes(current, desired) == {
+            "tags": {"current": ["aiform", "production"], "desired": ["production", "aiform"]}
+        }
+
+    def test_genuinely_changed_declared_field_is_reported_verbatim_and_unsorted(self):
+        current = {"tags": ["zebra", "aiform"]}
+        desired = {"tags": ["mail", "aiform", "web"]}
+        diff = planner.diff_attributes(current, desired, unordered_fields=["tags"])
+        assert diff == {
+            "tags": {"current": ["zebra", "aiform"], "desired": ["mail", "aiform", "web"]}
+        }
+        # Never canonicalized or sorted -- the original order survives
+        # exactly as passed in, on both sides.
+        assert diff["tags"]["current"] == ["zebra", "aiform"]
+        assert diff["tags"]["desired"] == ["mail", "aiform", "web"]
+
+    def test_declared_field_absent_from_desired_is_not_compared_at_all(self):
+        current = {"tags": ["aiform"], "region": "sfo3"}
+        desired = {"region": "sfo3"}
+        assert planner.diff_attributes(current, desired, unordered_fields=["tags"]) == {}
+
+    def test_declared_field_absent_from_current_reports_a_diff(self):
+        current = {"region": "sfo3"}
+        desired = {"region": "sfo3", "tags": ["aiform"]}
+        assert planner.diff_attributes(current, desired, unordered_fields=["tags"]) == {
+            "tags": {"current": None, "desired": ["aiform"]}
+        }
+
+    def test_default_unordered_fields_is_empty_and_behaves_as_before(self):
+        current = {"tags": ["aiform", "production"]}
+        desired = {"tags": ["production", "aiform"]}
+        assert planner.diff_attributes(current, desired) == planner.diff_attributes(
+            current, desired, unordered_fields=()
+        )
+        assert planner.diff_attributes(current, desired) != {}
+
+
 class TestCategorizeDiff:
     def test_returns_plan_entry_with_resource_key_filled_in(self, prompts_dir: Path):
         client = FakeClient([categorization_response(action="update")])
@@ -420,6 +466,88 @@ class TestPlanResource:
         )
         assert entry.rationale
         assert entry.likely_replace is False
+
+    def test_reordered_declared_unordered_field_with_unchanged_hash_is_no_op_zero_llm_calls(
+        self, prompts_dir: Path
+    ):
+        # The single most important test in this file: a CSP returning
+        # the same tags in a different order must not permanently defeat
+        # CLAUDE.md's "zero Anthropic API calls on an unchanged second
+        # run" guarantee. No client is passed at all, mirroring
+        # test_no_op_path_makes_zero_llm_calls_even_with_no_client above
+        # -- if the zero-diff short-circuit ever failed to fire here, a
+        # real anthropic.Anthropic() client would be constructed and this
+        # would blow up rather than silently passing.
+        entry = planner.plan_resource(
+            RESOURCE_KEY,
+            {"tags": ["aiform", "production"]},
+            {"tags": ["production", "aiform"]},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            unordered_fields=["tags"],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+        )
+
+        assert entry.action == PlanAction.NO_OP
+
+    def test_reordered_declared_unordered_field_makes_zero_llm_calls_with_client_present(
+        self, prompts_dir: Path
+    ):
+        client = FakeClient([])
+
+        entry = planner.plan_resource(
+            RESOURCE_KEY,
+            {"tags": ["aiform", "production"]},
+            {"tags": ["production", "aiform"]},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            unordered_fields=["tags"],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+            client=client,
+        )
+
+        assert entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
+
+    def test_reordered_field_not_declared_unordered_still_categorizes(self, prompts_dir: Path):
+        client = FakeClient([categorization_response(action="update")])
+
+        entry = planner.plan_resource(
+            RESOURCE_KEY,
+            {"tags": ["aiform", "production"]},
+            {"tags": ["production", "aiform"]},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+            client=client,
+        )
+
+        assert entry.action == PlanAction.UPDATE
+        assert len(client.messages.calls) == 1
+
+    def test_default_unordered_fields_leaves_existing_callers_unaffected(self, prompts_dir: Path):
+        client = FakeClient([])
+
+        entry = planner.plan_resource(
+            RESOURCE_KEY,
+            {"region": "sfo3"},
+            {"region": "sfo3"},
+            intent_notes=[],
+            param_schema={},
+            likely_replace_fields=[],
+            state_aiform_md_sha256="abc123",
+            current_aiform_md_sha256="abc123",
+            client=client,
+        )
+
+        assert entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
 
 
 class TestRealPromptFile:

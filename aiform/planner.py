@@ -3,11 +3,13 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 import anthropic
 
 from aiform import llm
+from aiform.compare import unordered_equal
 from aiform.models import LLMConfig, PlanAction, PlanEntry
 
 logger = logging.getLogger(__name__)
@@ -43,11 +45,20 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry:
     )
 
 
-def diff_attributes(current: dict[str, Any], desired: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def diff_attributes(
+    current: dict[str, Any],
+    desired: dict[str, Any],
+    *,
+    unordered_fields: Sequence[str] = (),
+) -> dict[str, dict[str, Any]]:
     diff: dict[str, dict[str, Any]] = {}
     for key, desired_value in desired.items():
         current_value = current.get(key)
-        if current_value != desired_value:
+        if key in unordered_fields:
+            changed = not unordered_equal(current_value, desired_value)
+        else:
+            changed = current_value != desired_value
+        if changed:
             diff[key] = {"current": current_value, "desired": desired_value}
     return diff
 
@@ -108,11 +119,12 @@ def plan_resource(
     likely_replace_fields: list[str],
     state_aiform_md_sha256: str | None,
     current_aiform_md_sha256: str,
+    unordered_fields: Sequence[str] = (),
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> PlanEntry:
-    diff = diff_attributes(current_attributes, desired_params)
+    diff = diff_attributes(current_attributes, desired_params, unordered_fields=unordered_fields)
 
     if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
         logger.info(

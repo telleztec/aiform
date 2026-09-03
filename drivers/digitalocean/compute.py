@@ -68,6 +68,7 @@ class Driver(ResourceDriver):
     # the user meeting the mid-apply "Replace ...?" prompt.
     LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys", "monitoring"]
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
+    UNORDERED_FIELDS = ["tags"]
 
     def _request(self, method, url, credentials, body=None):
         data = None
