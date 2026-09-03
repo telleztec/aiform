@@ -232,6 +232,7 @@ def write_aiform_md(
     size: str = SIZE,
     image: str = IMAGE,
     ssh_keys: list[str] | None = None,
+    extra_tags: list[str] | None = None,
     filename: str = "compute.aiform.md",
 ) -> Path:
     # A plain string default would be evaluated once, at def time, and
@@ -248,6 +249,11 @@ def write_aiform_md(
         "  tags:",
         f'    - "{SYSTEM_TEST_TAG}"',
     ]
+    # SYSTEM_TEST_TAG always stays first and is never optional -- the
+    # orphan sweep in specs/system_test.md keys off it, so a droplet
+    # this helper writes must remain findable however the caller
+    # customizes the rest of the tag list.
+    params_lines.extend(f'    - "{tag}"' for tag in extra_tags or [])
     if ssh_keys:
         params_lines.append("  ssh_keys:")
         params_lines.extend(f'    - "{key}"' for key in ssh_keys)

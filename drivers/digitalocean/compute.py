@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from aiform import log
@@ -27,6 +28,13 @@ REQUEST_TIMEOUT_SECONDS = 30
 # permanent rejection either. Left as-is unless a concrete, observed DO
 # status code demonstrates otherwise.
 _RESIZE_REJECTED_STATUSES = (400, 422)
+
+# The PARAM_SCHEMA fields DigitalOcean can change on a live droplet.
+# Everything else forces a replace: region needs a snapshot+recreate,
+# image a destructive rebuild, monitoring has no API action at all, and
+# ssh_keys is guest-OS state cloud-init writes once at first boot --
+# see specs/digitalocean_compute.md's capability table.
+_IN_PLACE_UPDATABLE_FIELDS = ("size", "tags", "backups")
 
 # Named explicitly rather than via logging.getLogger(__name__).
 # orchestrator.py's load_driver() execs this file as a module with a
@@ -55,7 +63,10 @@ class Driver(ResourceDriver):
         "required": ["region", "size", "image"],
         "additionalProperties": True,
     }
-    LIKELY_REPLACE_FIELDS = ["image", "region"]
+    # Advisory only -- update() is the arbiter. Mirrors the fields that
+    # genuinely force a replace, so `plan` can warn up front instead of
+    # the user meeting the mid-apply "Replace ...?" prompt.
+    LIKELY_REPLACE_FIELDS = ["image", "region", "ssh_keys", "monitoring"]
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
     def _request(self, method, url, credentials, body=None):
@@ -233,13 +244,133 @@ class Driver(ResourceDriver):
         if not diff_fields:
             return dict(current)
 
-        if diff_fields != ["size"]:
+        # Before the partition, not after: a diff that also touches a
+        # replace-forcing field would otherwise raise
+        # DriverUpdateNotSupported first, and the destroy+recreate the user
+        # then approves hands the same malformed value to create() -- which
+        # DO rejects, leaving the droplet deleted and nothing rebuilt.
+        self._reject_malformed_values(id, diff_fields, desired)
+
+        replace_forcing = [f for f in diff_fields if f not in _IN_PLACE_UPDATABLE_FIELDS]
+        if replace_forcing:
+            # Only the genuinely replace-forcing fields, not the whole diff:
+            # a size+region change is a replace because of region alone.
             raise DriverUpdateNotSupported(
-                f"DigitalOcean droplets cannot update {diff_fields} in place; "
+                f"DigitalOcean droplets cannot update {replace_forcing} in place; "
                 "a replace is required for this diff.",
-                unsupported_fields=diff_fields,
+                unsupported_fields=replace_forcing,
             )
 
+        # Order matters. The resize is the only step that can raise
+        # DriverUpdateNotSupported once running, and the orchestrator answers
+        # that with a gate #2 review and a "Replace ...?" prompt the user may
+        # decline -- so it runs before anything else is mutated. The
+        # invariant: update() never raises DriverUpdateNotSupported after
+        # changing anything but a power state it restores.
+        if "size" in diff_fields:
+            self._resize_in_place(id, current, desired, credentials)
+        if "tags" in diff_fields:
+            self._apply_tag_changes(id, current.get("tags") or [], desired["tags"], credentials)
+        if "backups" in diff_fields:
+            self._set_backups(id, desired["backups"], credentials)
+
+        # One GET after every mutation, rather than reusing the resize path's
+        # last poll -- otherwise a size+tags update returns the pre-tag tags.
+        attrs = self._flatten(self._get_droplet(id, credentials))
+        # desired.get(key, current.get(key, ...)) -- prefer desired's value
+        # when the field is actually managed, else preserve current's rather
+        # than resetting to a bare default: desired omitting an optional
+        # field means it isn't part of this diff at all (see diff_fields
+        # above), not that it should revert to [].
+        attrs["ssh_keys"] = desired.get("ssh_keys", current.get("ssh_keys", []))
+        attrs["backups"] = desired.get("backups", current.get("backups", False))
+        attrs["monitoring"] = desired.get("monitoring", current.get("monitoring", False))
+        return attrs
+
+    def _reject_malformed_values(self, id, diff_fields, desired):
+        # Nothing upstream checks params against PARAM_SCHEMA -- driver.py's
+        # own docstring claims the orchestrator does, but it does not -- so
+        # these values arrive exactly as YAML parsed them. Both checks guard
+        # a step that acts on the value locally before any API call could
+        # reject it: `tags: web` (a scalar, not a one-item list) would
+        # otherwise be iterated character by character, creating tags "w",
+        # "e" and "b" and unassigning every real one; `backups: "false"` is
+        # a non-empty string, so a bool() coercion would enable billed
+        # backups for a user who asked to switch them off.
+        #
+        # ValueError, not DriverUpdateNotSupported: a malformed value is not
+        # a diff the CSP declined, and a destroy+recreate would only feed
+        # the same value to create(). Raised before any mutation, so the
+        # ordering invariant above still holds.
+        if "tags" in diff_fields:
+            tags = desired["tags"]
+            if not isinstance(tags, list) or not all(isinstance(t, str) and t for t in tags):
+                # Non-empty specifically: an empty name makes the existence
+                # check GET /v2/tags/, which is DO's *list* endpoint and
+                # answers 200, so the tag would be reported as already
+                # existing and the assignment would then fail at DO.
+                raise ValueError(
+                    f"droplet {id}: params 'tags' must be a list of non-empty strings, got {tags!r}"
+                )
+        if "backups" in diff_fields and not isinstance(desired["backups"], bool):
+            raise ValueError(
+                f"droplet {id}: params 'backups' must be true or false, got {desired['backups']!r}"
+            )
+
+    def _tag_url(self, tag: str, suffix: str = "") -> str:
+        # The tag goes into the request path, so a malformed name must not
+        # be able to inject an extra path segment. ':' stays unescaped
+        # because DO's own pattern (^[a-zA-Z0-9_\-\:]+$) allows it and DOKS
+        # really uses it (k8s:<cluster-id>) -- percent-encoding it would
+        # risk a 404 on a name create() accepts. Both callers route through
+        # here so the escaping cannot drift between them.
+        return f"{BASE_URL}/tags/{urllib.parse.quote(tag, safe=':')}{suffix}"
+
+    def _ensure_tag_exists(self, tag, credentials):
+        # Creating a droplet with tags auto-creates them, but assigning to an
+        # existing droplet does not -- POST /v2/tags/{name}/resources 404s on
+        # an unknown tag. Checking first rather than creating on that 404
+        # keeps the two "not found" cases (tag vs droplet) from having to be
+        # told apart from one status code.
+        try:
+            self._request("GET", self._tag_url(tag), credentials)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            self._request("POST", f"{BASE_URL}/tags", credentials, body={"name": tag})
+
+    def _apply_tag_changes(self, id, current_tags, desired_tags, credentials):
+        added = [t for t in desired_tags if t not in current_tags]
+        removed = [t for t in current_tags if t not in desired_tags]
+        logger.info("", extra={"id": id, "tags_added": added, "tags_removed": removed})
+
+        # An HTTPError here propagates as a real driver error and is never
+        # converted to DriverUpdateNotSupported: a tag DigitalOcean rejects
+        # would be rejected at create() too, so a destroy+recreate is no
+        # remedy for it.
+        body = {"resources": [{"resource_id": str(id), "resource_type": "droplet"}]}
+        for tag in added:
+            self._ensure_tag_exists(tag, credentials)
+            self._request("POST", self._tag_url(tag, "/resources"), credentials, body=body)
+        for tag in removed:
+            self._request("DELETE", self._tag_url(tag, "/resources"), credentials, body=body)
+
+    def _set_backups(self, id, enabled, credentials):
+        # No backup_policy is sent: PARAM_SCHEMA models backups as a bare
+        # boolean, and DO defaults to daily when the key is omitted.
+        # `enabled` is a real bool -- _reject_malformed_values guarantees it
+        # rather than coercing, so a truthy string cannot turn backups on.
+        action = "enable_backups" if enabled else "disable_backups"
+        logger.info("", extra={"id": id, "step": action})
+        self._do_action_and_wait(
+            id,
+            credentials,
+            {"type": action},
+            lambda d: ("backups" in d.get("features", [])) == enabled,
+            action.replace("_", "-"),
+        )
+
+    def _resize_in_place(self, id, current, desired, credentials):
         status = current.get("status")
         if status not in ("active", "off"):
             raise DriverUpdateNotSupported(
@@ -391,20 +522,9 @@ class Driver(ResourceDriver):
         # the droplet back on, even if it started "off" -- this driver has now
         # changed its size, so it's expected to come back up, not stay down.
         self._poll_until(id, credentials, lambda d: d["size_slug"] == target_size, "resize")
-        final_droplet = self._do_action_and_wait(
+        self._do_action_and_wait(
             id, credentials, {"type": "power_on"}, lambda d: d["status"] == "active", "power-on"
         )
-
-        attrs = self._flatten(final_droplet)
-        # desired.get(key, current.get(key, ...)) -- prefer desired's value
-        # when the field is actually managed, else preserve current's rather
-        # than resetting to a bare default: desired omitting an optional
-        # field means it isn't part of this diff at all (see diff_fields
-        # above), not that it should revert to [].
-        attrs["ssh_keys"] = desired.get("ssh_keys", current.get("ssh_keys", []))
-        attrs["backups"] = desired.get("backups", current.get("backups", False))
-        attrs["monitoring"] = desired.get("monitoring", current.get("monitoring", False))
-        return attrs
 
     def delete(self, id, credentials):
         try:
