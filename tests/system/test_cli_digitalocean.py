@@ -63,31 +63,31 @@ class TestFullLifecycleSequence:
 
         write_aiform_md(project_dir, name=name)
 
-        # Case 2: first `plan create` -- gate #1 fires (trust-on-first-use,
-        # nothing in state yet to short-circuit it).
+        # Case 2: first `plan create` on an untracked resource -- zero
+        # Anthropic calls. #118 already skips categorization for an
+        # untracked resource, and #119 removed gate #1 (the driver review)
+        # from this path entirely, so nothing is left to call.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose]" in captured.err
-        call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert call_count >= 1
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
-        # Case 3: `plan apply --yes` -- a separate invocation, so gate #1
-        # fires again (plan create never persists a driver-trust record).
+        # Case 3: `plan apply --yes` -- a CREATE action never triggers gate
+        # #2 either (apply_plan()'s needs_review only covers DESTROY and a
+        # likely-replace UPDATE), so this is zero calls too. This is the
+        # strongest statement of the project's cost claim: a first `plan
+        # create` and `apply` on a brand-new project cost nothing.
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert "[verbose]" in captured.err
-        apply_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert apply_call_count >= 1
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
         st = state.load(state_path)
         assert key in st.resources
         entry = st.resources[key]
         assert entry.id
         assert entry.driver.sha256
-        assert entry.driver.code_review is not None
         assert (project_dir / ".aiform" / "state.json.backup").exists()
         droplet_id = entry.id
 

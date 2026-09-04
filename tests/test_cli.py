@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from aiform import cli, config, llm, orchestrator, parser, state
-from aiform.models import DriverInfo, DriverReview, KeyCheck, KeyState, StateEntry
+from aiform.models import DriverInfo, KeyCheck, KeyState, StateEntry
 
 
 class FakeTextBlock:
@@ -86,10 +86,6 @@ class Driver(ResourceDriver):
 """
 
 
-def approve_response() -> str:
-    return json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
-
-
 def categorization_response(action="create", rationale="new resource", likely_replace=False) -> str:
     return json.dumps({"action": action, "rationale": rationale, "likely_replace": likely_replace})
 
@@ -127,13 +123,6 @@ def make_driver_info(sha256: str, *, path: str = "drivers/digitalocean/compute.p
         path=path,
         sha256=sha256,
         generated_at=datetime(2026, 7, 30, 18, 22, 11, tzinfo=UTC),
-        code_review=DriverReview(
-            approved=True,
-            concerns=[],
-            blocking_issues=[],
-            reviewed_at=datetime(2026, 7, 30, 18, 22, 40, tzinfo=UTC),
-            model="claude-opus-5",
-        ),
     )
 
 
@@ -1101,7 +1090,7 @@ class TestPlanCreate:
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
 
         code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
 
@@ -1116,7 +1105,7 @@ class TestPlanCreate:
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
         state_file = project_dir / ".aiform" / "state.json"
 
         code = cli.main(["plan", "create", "--state-file", str(state_file), "--json"])
@@ -1192,7 +1181,7 @@ class TestPlanCreate:
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
 
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
         capsys.readouterr()
         assert code == 0
@@ -1211,15 +1200,35 @@ class TestPlanCreate:
         # _CountingClient is what every plan/apply/destroy actually calls
         # through -- llm._anthropic_call's own client-building branch is
         # never reached from the CLI -- so the #101 hardening has to hold
-        # here or it holds nowhere that ships.
+        # here or it holds nowhere that ships. A brand-new untracked
+        # resource makes zero Anthropic calls after #119's removal of gate
+        # #1, so a client would never even get built on that path any
+        # more -- use a tracked resource with a changed `.aiform.md`
+        # instead, which still reaches `categorize_diff()`.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
-        built = patch_client(
-            monkeypatch, [approve_response(), categorization_response(action="create")]
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
         )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        built = patch_client(monkeypatch, [categorization_response(action="update")])
 
-        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        code = cli.main(["plan", "create", "--state-file", str(state_file)])
         capsys.readouterr()
 
         assert code == 0
@@ -1231,14 +1240,32 @@ class TestPlanCreate:
     ):
         # http_client= costs the SDK wrapper's __del__, which is what closed
         # the pool; without an explicit close the socket outlives the run.
+        # Same tracked-resource-with-a-diff setup as
+        # test_the_counting_client_refuses_redirects, for the same reason.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
-        built = patch_client(
-            monkeypatch, [approve_response(), categorization_response(action="create")]
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
         )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        built = patch_client(monkeypatch, [categorization_response(action="update")])
 
-        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        code = cli.main(["plan", "create", "--state-file", str(state_file)])
         capsys.readouterr()
 
         assert code == 0
@@ -1248,24 +1275,51 @@ class TestPlanCreate:
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
         # Same reason _report_verbose_calls sits in a finally: the error
-        # exit path is not allowed to leak the socket either.
+        # exit path is not allowed to leak the socket either. A gate #1
+        # rejection used to be the failure mode here; #119 removed gate #1
+        # from this path entirely, so a gate #2 (review-orchestration-model)
+        # block on a tracked resource's replace is the closest remaining
+        # analog -- a real Anthropic call that still ends the run in
+        # PlanBlockedError.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
         built = patch_client(
             monkeypatch,
             [
-                json.dumps(
-                    {
-                        "approved": False,
-                        "concerns": [],
-                        "blocking_issues": ["reads ANTHROPIC_API_KEY"],
-                    }
-                )
+                categorization_response(action="update", likely_replace=True),
+                plan_review_response(
+                    safe_to_proceed=False,
+                    flags=[
+                        {
+                            "resource_key": "digitalocean.compute.telleztec-app-01",
+                            "concern": "do not resize production",
+                            "severity": "block",
+                        }
+                    ],
+                ),
             ],
         )
 
-        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
         capsys.readouterr()
 
         assert code == 2
@@ -1300,7 +1354,7 @@ class TestPlanCreate:
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
 
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
         assert cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)]) == 0
         capsys.readouterr()
         closed.clear()
@@ -1322,7 +1376,7 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
 
@@ -1339,7 +1393,7 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
         monkeypatch.setattr(cli.sys, "stdin", FakeStdinNotTTY())
 
         code = cli.main(["plan", "apply", "--state-file", str(state_file)])
@@ -1356,7 +1410,7 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
         monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
         monkeypatch.setattr("builtins.input", lambda prompt="": "n")
 
@@ -1375,42 +1429,84 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response()])
+        patch_client(monkeypatch, [])
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
 
         err = capsys.readouterr().err
         assert code == 0
-        # 1, not 2: this resource is untracked, so gate #1's driver review
-        # is the only model call. The categorization call this used to
-        # count was asking whether an untracked resource is a create --
-        # see issue #117. test_apply_verbose_reports_call_count_even_when_blocked
-        # still covers a multi-call count, on a tracked resource.
-        assert "[verbose] 1 Anthropic API call(s) made" in err
+        # Zero: this resource is untracked, so it's planned as create
+        # without asking the model (issue #118), and #119 removed the
+        # gate #1 driver review that used to be the one call here.
+        # test_apply_verbose_reports_call_count_even_when_blocked still
+        # covers a multi-call count, on a tracked resource.
+        assert "[verbose] 0 Anthropic API call(s) made" in err
 
     def test_verbose_promotes_structured_log_level_to_info(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
+        # An untracked resource makes zero Anthropic calls after #119
+        # removed gate #1, so it can no longer stand in for "some
+        # structured log line got emitted" -- use a tracked resource with
+        # a changed `.aiform.md` instead, which still calls
+        # intent-orchestration-model via categorize_diff().
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
 
         err = capsys.readouterr().err
         assert "aiform.llm" in err
-        assert "role=code_review" in err
+        assert "role=intent_orchestration" in err
 
     def test_without_verbose_structured_info_lines_are_suppressed(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
+        # Same tracked-resource-with-a-diff setup as
+        # test_verbose_promotes_structured_log_level_to_info, for the same
+        # reason: an untracked resource makes zero calls now.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
 
@@ -1425,10 +1521,27 @@ class TestPlanApply:
         # (stderr stays quiet), but the .aiform/logs/ file must have
         # captured everything anyway.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_aiform_md(project_dir / "app.aiform.md")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="stale-hash-forces-categorization",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
         capsys.readouterr()
@@ -1437,7 +1550,7 @@ class TestPlanApply:
         assert len(log_files) == 1
         content = log_files[0].read_text()
         assert "aiform.llm" in content
-        assert "role=code_review" in content
+        assert "role=intent_orchestration" in content
 
     def test_log_file_has_entry_and_exit_lines_for_every_invocation(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
@@ -1450,7 +1563,7 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [])
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
         capsys.readouterr()
@@ -1502,10 +1615,9 @@ class TestPlanApply:
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
-        # The driver review + categorization calls already happened (real,
-        # billable calls) before gate #2 blocks the apply -- --verbose must
-        # still report that count on the error exit path, not just on
-        # success.
+        # The categorization call already happened (a real, billable call)
+        # before gate #2 blocks the apply -- --verbose must still report
+        # that count on the error exit path, not just on success.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         aiform_md = project_dir / "app.aiform.md"

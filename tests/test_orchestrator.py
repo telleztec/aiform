@@ -13,7 +13,7 @@ import pytest
 from aiform import llm, orchestrator, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
-from aiform.models import DriverInfo, DriverReview, PlanAction, PlanEntry
+from aiform.models import DriverInfo, PlanAction, PlanEntry
 
 
 class FakeTextBlock:
@@ -223,20 +223,11 @@ def write_aiform_md(
     return content
 
 
-def make_driver_info(
-    sha256: str, *, approved: bool = True, path: str = "drivers/digitalocean/compute.py"
-) -> DriverInfo:
+def make_driver_info(sha256: str, *, path: str = "drivers/digitalocean/compute.py") -> DriverInfo:
     return DriverInfo(
         path=path,
         sha256=sha256,
         generated_at=datetime(2026, 7, 30, 18, 22, 11, tzinfo=UTC),
-        code_review=DriverReview(
-            approved=approved,
-            concerns=[],
-            blocking_issues=[] if approved else ["needs fixing"],
-            reviewed_at=datetime(2026, 7, 30, 18, 22, 40, tzinfo=UTC),
-            model="claude-opus-5",
-        ),
     )
 
 
@@ -257,16 +248,6 @@ def make_state_entry(**overrides) -> state.StateEntry:
     )
     defaults.update(overrides)
     return StateEntry(**defaults)
-
-
-def approve_response() -> str:
-    return json.dumps({"approved": True, "concerns": [], "blocking_issues": []})
-
-
-def reject_response(blocking_issues: list[str] | None = None) -> str:
-    return json.dumps(
-        {"approved": False, "concerns": [], "blocking_issues": blocking_issues or ["bad driver"]}
-    )
 
 
 def categorization_response(action="create", rationale="new resource", likely_replace=False) -> str:
@@ -395,96 +376,66 @@ class TestLoadDriver:
             orchestrator.load_driver("digitalocean", "compute")
 
 
-class TestEnsureDriverTrusted:
-    def test_reuses_trusted_hash_from_state_zero_llm_calls(
-        self, drivers_dir: Path, prompts_dir: Path
-    ):
+class TestDriverInfoFor:
+    """No LLM calls on this path -- see issue #119 / specs/orchestrator.md."""
+
+    def test_reuses_matching_hash_from_state(self, drivers_dir: Path):
         path = write_driver(drivers_dir, "digitalocean", "compute")
         trusted_info = make_driver_info(driver_sha256(path))
         entry = make_state_entry(driver=trusted_info)
         st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
-        client = FakeClient([])
 
-        result = orchestrator.ensure_driver_trusted("digitalocean", "compute", st, client=client)
+        result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
         assert result == trusted_info
-        assert len(client.messages.calls) == 0
 
-    def test_only_matches_same_provider_and_resource_type(
-        self, drivers_dir: Path, prompts_dir: Path
-    ):
+    def test_only_matches_same_provider_and_resource_type(self, drivers_dir: Path):
         path = write_driver(drivers_dir, "digitalocean", "compute")
         sha256 = driver_sha256(path)
         entry = make_state_entry(resource_type="network", driver=make_driver_info(sha256))
         st = state.State(resources={"digitalocean.network.telleztec-app-01": entry})
-        client = FakeClient([approve_response()])
 
-        result = orchestrator.ensure_driver_trusted("digitalocean", "compute", st, client=client)
+        result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
-        assert len(client.messages.calls) == 1
         assert result.sha256 == sha256
+        assert result.path == "drivers/digitalocean/compute.py"
 
-    def test_no_matching_entry_reviews_and_returns_new_driver_info(
-        self, drivers_dir: Path, prompts_dir: Path
-    ):
+    def test_no_matching_entry_builds_new_driver_info(self, drivers_dir: Path):
         path = write_driver(drivers_dir, "digitalocean", "compute")
-        client = FakeClient([approve_response()])
 
-        result = orchestrator.ensure_driver_trusted(
-            "digitalocean", "compute", state.State(), client=client
-        )
+        result = orchestrator.driver_info_for("digitalocean", "compute", state.State())
 
         assert result.sha256 == driver_sha256(path)
         assert result.path == "drivers/digitalocean/compute.py"
-        assert result.code_review.approved is True
 
-    def test_hash_mismatch_triggers_re_review(self, drivers_dir: Path, prompts_dir: Path):
+    def test_hash_mismatch_builds_fresh_driver_info(self, drivers_dir: Path):
         write_driver(drivers_dir, "digitalocean", "compute")
         entry = make_state_entry(driver=make_driver_info("stale-hash-does-not-match"))
         st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
-        client = FakeClient([approve_response()])
 
-        result = orchestrator.ensure_driver_trusted("digitalocean", "compute", st, client=client)
+        result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
-        assert len(client.messages.calls) == 1
         assert result.sha256 != "stale-hash-does-not-match"
 
-    def test_not_approved_raises_plan_blocked_error_naming_the_concerns(
-        self, drivers_dir: Path, prompts_dir: Path
-    ):
-        write_driver(drivers_dir, "digitalocean", "compute")
-        client = FakeClient([reject_response(["reads ANTHROPIC_API_KEY"])])
-
-        with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.ensure_driver_trusted(
-                "digitalocean", "compute", state.State(), client=client
-            )
-        assert "reads ANTHROPIC_API_KEY" in str(exc_info.value)
-
-    def test_cache_hit_logs_reused_true(self, drivers_dir: Path, prompts_dir: Path, caplog):
+    def test_cache_hit_logs_reused_true(self, drivers_dir: Path, caplog):
         caplog.set_level("INFO", logger="aiform.orchestrator")
         path = write_driver(drivers_dir, "digitalocean", "compute")
         entry = make_state_entry(driver=make_driver_info(driver_sha256(path)))
         st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
 
-        orchestrator.ensure_driver_trusted("digitalocean", "compute", st, client=FakeClient([]))
+        orchestrator.driver_info_for("digitalocean", "compute", st)
 
         record = caplog.records[0]
         assert record.reused is True
 
-    def test_real_review_logs_reused_false_and_approved(
-        self, drivers_dir: Path, prompts_dir: Path, caplog
-    ):
+    def test_no_matching_entry_logs_reused_false(self, drivers_dir: Path, caplog):
         caplog.set_level("INFO", logger="aiform.orchestrator")
         write_driver(drivers_dir, "digitalocean", "compute")
 
-        orchestrator.ensure_driver_trusted(
-            "digitalocean", "compute", state.State(), client=FakeClient([approve_response()])
-        )
+        orchestrator.driver_info_for("digitalocean", "compute", state.State())
 
         record = caplog.records[0]
         assert record.reused is False
-        assert record.approved is True
 
 
 class TestRefreshResource:
@@ -730,11 +681,11 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        # Only gate #1 is scripted. This test is named as the brand-new-
-        # resource guard, so it should fail if a categorization call is
-        # ever reintroduced here rather than passing on an unconsumed
-        # scripted response the way it used to.
-        client = FakeClient([approve_response()])
+        # Nothing is scripted. This test is named as the brand-new-resource
+        # guard, so it should fail if any Anthropic call is ever
+        # reintroduced here rather than passing on an unconsumed scripted
+        # response the way it used to.
+        client = FakeClient([])
         planned, warnings = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
@@ -747,7 +698,7 @@ class TestBuildCreatePlan:
         assert pr.driver_info is not None
         assert pr.credentials == {"DIGITALOCEAN_TOKEN": "dop_v1_test"}
         assert warnings == []
-        assert len(client.messages.calls) == 1
+        assert len(client.messages.calls) == 0
 
     def test_existing_resource_no_op_when_unchanged_zero_llm_calls(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1001,26 +952,24 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient([approve_response(), categorization_response(action="update")])
+        client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
 
         assert [p.entry.action for p in planned] == [PlanAction.CREATE]
         assert planned[0].entry.likely_replace is False
-        # Gate #1's driver review is the only call that may run. A second
-        # call means the categorization request went out anyway, which is
-        # the regression this guards -- the zero-diff no-op short-circuit
-        # has the same "cheap path makes no LLM call" property.
-        assert len(client.messages.calls) == 1
+        # No LLM call should run at all on this path any more (#119's
+        # resolution removed the driver review too). If the categorization
+        # request went out anyway, that is the regression this guards.
+        assert len(client.messages.calls) == 0
 
     def test_untracked_resource_plans_create_even_with_no_scripted_categorization(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
-        """The stronger form: script gate #1 and nothing else. If the
-        categorization call is ever reattempted, FakeMessages.create()
-        raises IndexError off the empty response list rather than
-        silently reusing a stale answer."""
+        """The stronger form: script nothing at all. If any call is ever
+        attempted, FakeMessages.create() raises IndexError off the empty
+        response list rather than silently reusing a stale answer."""
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         aiform_md = tmp_path / "app.aiform.md"
@@ -1028,7 +977,7 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient([approve_response()])
+        client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
@@ -1087,8 +1036,8 @@ class TestBuildCreatePlan:
 
         assert planned[0].entry.action == PlanAction.CREATE
         assert planned[0].entry.likely_replace is False
-        # The driver hash is already trusted by the state entry, so gate
-        # #1 is reused and no call should go out at all.
+        # The driver's sha256 already matches the state entry, so
+        # driver_info_for() reuses it and no LLM call goes out at all.
         assert client.messages.calls == []
 
     def test_missing_credentials_raises_plan_blocked_error(
@@ -1101,7 +1050,7 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient([approve_response()])
+        client = FakeClient([])
         with pytest.raises(PlanBlockedError):
             orchestrator.build_create_plan([aiform_md], state_path=state_path, client=client)
 
@@ -1119,7 +1068,7 @@ class TestBuildCreatePlan:
                 [aiform_md], state_path=state_path, client=FakeClient([])
             )
 
-    def test_driver_hash_mismatch_triggers_re_review(
+    def test_driver_hash_mismatch_updates_provenance_without_a_call(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
@@ -1130,12 +1079,12 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        client = FakeClient([approve_response(), categorization_response(action="update")])
+        client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
 
-        assert len(client.messages.calls) == 2
+        assert len(client.messages.calls) == 1
         assert planned[0].driver_info.sha256 != "stale-hash"
 
     def test_driver_and_credentials_cached_across_files_sharing_driver(
@@ -1150,19 +1099,19 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient([approve_response()])
+        client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md_1, aiform_md_2], state_path=state_path, client=client
         )
 
         assert len(planned) == 2
-        # One call total: gate #1 reviews the shared driver once, and both
-        # resources are untracked so neither is categorized. This asserted
-        # 3 before -- gate #1 plus a categorization per file -- which was
-        # the behavior issue #117 removed. What the test is actually for
-        # is that the driver and credentials are cached across files, and
-        # a single gate #1 call for two files still shows exactly that.
-        assert len(client.messages.calls) == 1
+        # driver_info_for() makes no LLM call at all, so this test's proof
+        # that the driver (and credentials) are cached across files sharing
+        # one is now structural: import_calls, not messages.calls.
+        assert planned[0].driver is planned[1].driver
+        assert planned[0].driver_info == planned[1].driver_info
+        assert planned[0].credentials is planned[1].credentials
+        assert len(client.messages.calls) == 0
 
     def test_state_saved_with_refreshed_attributes(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1215,7 +1164,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md, name="telleztec-app-01")
 
-        client = FakeClient([approve_response(), categorization_response(action="create")])
+        client = FakeClient([])
         _, warnings = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
