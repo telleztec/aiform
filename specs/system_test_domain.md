@@ -241,15 +241,18 @@ each its own teardown instance and destroy the zone after the first.
    401 into a confusing hard failure, and case 10 already covers the
    invalid-token path deliberately. The lifecycle test asserts `init`'s
    `[✓]` immediately after, so a wholly dead token still surfaces there.
-2. **First `plan create`** — gate #1 (`code-review-model`) fires for
-   `domain.py`'s own sha256, since no state entry trusts it yet. Assert
-   `+ digitalocean.domain.<zone>: create` and a `--verbose` Anthropic call
-   count `>= 1`. As in the compute suite, do not assert a combined count
-   across this case and the next: `plan create` persists no driver-trust
-   record, so gate #1 fires again in case 3.
-3. **`plan apply --yes`** — creates the real zone and its records. Assert
-   the state entry carries `id` / `driver.sha256` / `driver.code_review`,
-   and that `.aiform/state.json.backup` exists (CLAUDE.md's
+2. **First `plan create`** on an untracked resource — zero Anthropic
+   calls. #118 already skips categorization for an untracked resource,
+   and issue #119 removed gate #1 (the driver review) from the
+   `plan`/`apply` path entirely, so nothing is left to call. Assert
+   `+ digitalocean.domain.<zone>: create` and
+   `[verbose] 0 Anthropic API call(s) made`.
+3. **`plan apply --yes`** — creates the real zone and its records. A
+   `CREATE` action never triggers gate #2 either (`apply_plan()`'s
+   `needs_review` only covers `DESTROY` and a likely-replace `UPDATE`),
+   so assert `[verbose] 0 Anthropic API call(s) made` here too. Assert
+   the state entry carries `id` / `driver.sha256` — provenance, not a
+   trust record — and that `.aiform/state.json.backup` exists (CLAUDE.md's
    state-handling rule). Then the two live checks this case exists for:
    - **The dot asymmetry.** The `_FQDN_TYPES` records in this case's
      fixture (`CNAME` and `MX`; `NS`, `SRV` and `CAA` arrive in case 6)

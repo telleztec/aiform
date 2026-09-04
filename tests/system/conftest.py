@@ -305,8 +305,8 @@ def teardown_tracked_resources(project_dir: Path):
 
 def assert_cli_ok(code: int, captured, step: str) -> None:
     """Assert a CLI invocation exited 0, surfacing its stderr when it
-    didn't. Every failure mode these suites exist to catch (gate #1
-    declining a driver, a DriverExecutionError from the live DO API, a
+    didn't. Every failure mode these suites exist to catch (a gate #2
+    plan-review block, a DriverExecutionError from the live DO API, a
     credential resolution failure) reports itself only through the
     `Error: ...` line cli.main() prints to stderr before returning 2 --
     and capsys.readouterr() has already consumed that by the time a bare
