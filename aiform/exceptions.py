@@ -25,8 +25,8 @@ class DriverExecutionError(Exception):
 
 class PlanBlockedError(Exception):
     """Raised by orchestrator.py whenever a plan cannot proceed for a
-    policy reason -- a missing/untrusted driver, a missing credential, or
-    a gate #1/#2 review that didn't approve (PLAN.md §5)."""
+    policy reason -- a missing driver, a missing credential, or a gate #2
+    review that didn't approve (PLAN.md §5)."""
 
     def __init__(self, reason: str):
         self.reason = reason

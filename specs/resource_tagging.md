@@ -222,16 +222,20 @@ prerequisite before implementation, not an afterthought.
 - **Review checklist follow-up required, not optional.** A driver whose
   `create()` calls `_tags_for_create` but whose `read()`/`update()`
   don't correspondingly call `_tags_for_attributes` everywhere they
-  return `tags` (or vice versa) is exactly the kind of inconsistency
-  gate #1 (`code-review-model`) needs to catch, not something any
-  existing static check covers — `prompts/review_driver.md` needs a new
-  numbered checklist item alongside its existing "urllib.request only"
-  item (item 9) and idempotent-delete item (item 3): a driver that
-  attaches the marker on create but leaks it back out anywhere (or
-  strips a tag it never attached) is a `blocking_issues` entry, not a
-  `concerns` one. Not written in this spec — a small, separate edit to
-  that prompt file, done alongside whichever PR first wires these
-  helpers into a real driver.
+  return `tags` (or vice versa) is exactly the kind of inconsistency a
+  review needs to catch, not something any existing static check covers
+  — `prompts/review_driver.md` needs a new numbered checklist item
+  alongside its existing "urllib.request only" item (item 9) and
+  idempotent-delete item (item 3): a driver that attaches the marker on
+  create but leaks it back out anywhere (or strips a tag it never
+  attached) is a `blocking_issues` entry, not a `concerns` one. Since
+  issue #119 removed gate #1 (`code-review-model`) from the `plan`/`apply`
+  path, that new item catches this only for a driver freshly drafted
+  through `driver_gen.py`; for a hand-authored curated driver,
+  `PROCESS.md`'s PR-time `/code-review` is the enforcement point instead.
+  Not written in this spec — a small, separate edit to that prompt file,
+  done alongside whichever PR first wires these helpers into a real
+  driver.
 
 ## Edge cases / errors
 
