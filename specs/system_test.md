@@ -461,9 +461,15 @@ reliably being present.
   part of that driver's own generated test suite) — not designed here;
   blocked on mechanism 2 (`aiform driver create`) being built at all
   (`PLAN.md` §10, "Self-service driver creation is not implemented").
-- **A second provider or resource kind.** MVP is `digitalocean`/`compute`
-  only (`PLAN.md` §10, "Only one resource kind is implemented") — this
-  suite tests exactly that one `(provider, resource)` pair.
+- **A second provider or resource kind.** This suite tests exactly one
+  `(provider, resource)` pair, `digitalocean`/`compute`. The
+  `digitalocean`/`domain` driver has its own live suite with its own
+  spec, `specs/system_test_domain.md` — deliberately a sibling rather
+  than more cases bolted onto this file, since the two share a `tests/system/`
+  conftest and a marker but nothing about their subject matter. Note the
+  orphan-cleanup design below does **not** carry over to it: DigitalOcean
+  has no tagging API for domains, so that suite keys its sweep on the
+  zone name instead of a tag.
 - **Concurrency/locking behavior.** `PLAN.md` §10 already names "single
   local state file, no locking, no multi-user story" as a known,
   deferred gap — this suite runs one sequential scenario, never two
