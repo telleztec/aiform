@@ -540,9 +540,9 @@ next time `plan create` runs against that resource, not here.
   7. **If `state_entry is None`, or the refresh reports
      `drifted_missing`**: `entry = planner.create_entry(key,
      rationale=...)`, and **no categorization call is made**. Both are
-     `create` as a matter of this module's own records — an untracked
-     resource has no diff to categorize (`current_attributes` is `{}`),
-     and a drifted-missing one must be recreated whatever its diff says,
+     `create` as a matter of this module's own records — for an
+     untracked resource no diff is built at all (step 6), and a
+     drifted-missing one must be recreated whatever its diff says,
      which `prompts/diff_plan.md` already stated as a forced answer. See
      `specs/planner.md`'s `create_entry()` and issue &#35;117.
 
