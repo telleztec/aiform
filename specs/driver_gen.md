@@ -37,12 +37,13 @@ Two things follow, and they are easy to get backwards:
 `PLAN.md`, resolved before writing this spec):
 
 1. **Static-validation failures retry, same as gate #1's blocking_issues.**
-   `PLAN.md` §5 step 3d only describes retrying once when gate #1's
-   review returns `blocking_issues`. It says nothing about a static-validation
-   failure (bad syntax, wrong base class, missing method). This spec
-   treats that case symmetrically: one retry, feeding the failure reasons
-   back into the draft prompt, with a combined budget of **2 draft
-   attempts total** across both failure modes — not 2 retries *each*.
+   `PLAN.md` §6's "Approval rule" only describes retrying once when gate
+   #1's review returns `blocking_issues`. It says nothing about a
+   static-validation failure (bad syntax, wrong base class, missing
+   method). This spec treats that case symmetrically: one retry, feeding
+   the failure reasons back into the draft prompt, with a combined
+   budget of **2 draft attempts total** across both failure modes — not
+   2 retries *each*.
 2. **This module returns, it does not write.** `draft_driver()` and
    `generate_driver()` never touch the filesystem beyond reading
    `prompts/generate_driver.md`. Writing the approved source to
@@ -52,14 +53,13 @@ Two things follow, and they are easy to get backwards:
    driver at all. Computing a driver's `sha256` and recording it in
    `.aiform/state.json`, by contrast, are `orchestrator.py`'s job and
    are shipped today — that half is not waiting on anything. Note the
-   split: `ensure_driver_trusted()` hashes the on-disk driver and checks
-   it against state on every `plan`, but calls gate #1 only when no
-   state entry carries that hash — on a match it returns the recorded
-   `DriverInfo` with no LLM call. Only the *apply* path persists that
-   `DriverInfo` onto a `StateEntry`, so a driver's hash becomes trusted
-   at `apply` time, not at `plan` time, and gate #1 keeps firing until
-   an `apply` has actually executed an action and written the entry
-   (`specs/orchestrator.md`).
+   split, and that it changed shape under issue #119:
+   `orchestrator.driver_info_for()` hashes the on-disk driver and checks
+   it against state on every `plan`, but makes **no LLM call of any
+   kind** — a hash mismatch simply records a fresh `DriverInfo`, not a
+   re-review. Gate #1 (this module's own review, via
+   `llm.review_driver()`) fires only here, inside `generate_driver()`,
+   for a driver mechanism 2 drafts — never for one already on disk.
 3. **`draft_driver()` grounds the draft with two more pieces of
    deterministic, non-LLM context beyond `spec.params`, discovered
    necessary empirically** — the first real `generate_driver()` run
@@ -304,10 +304,11 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
   `.reasons` on the exception is never empty even then, since it falls
   back to `.concerns` and then a generic message.
 - Once `exceptions.py` exists (`PLAN.md` §1), `DriverGenerationFailed`
-  should presumably become `aiform.exceptions.PlanBlockedError` per
-  `PLAN.md` §5 step 3d — kept as a plain module-local exception for now,
-  same "don't invent exceptions.py's types ahead of it existing" stance
-  already established in `config.py`/`state.py`.
+  should presumably become `aiform.exceptions.PlanBlockedError`, the same
+  type `orchestrator.py` raises for a missing driver (`specs/orchestrator.md`)
+  — kept as a plain module-local exception for now, same "don't invent
+  exceptions.py's types ahead of it existing" stance already established
+  in `config.py`/`state.py`.
 
 ## Out of scope
 

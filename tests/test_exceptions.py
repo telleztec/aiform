@@ -48,8 +48,8 @@ class TestDriverExecutionError:
 
 class TestPlanBlockedError:
     def test_stores_reason(self):
-        exc = PlanBlockedError("driver drivers/digitalocean/compute.py failed gate #1 review")
-        assert exc.reason == "driver drivers/digitalocean/compute.py failed gate #1 review"
+        exc = PlanBlockedError("plan review blocked: do not resize production")
+        assert exc.reason == "plan review blocked: do not resize production"
 
     def test_str_is_exactly_the_reason(self):
         exc = PlanBlockedError("no driver found for (aws, compute)")

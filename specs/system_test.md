@@ -130,31 +130,26 @@ independent, in its own test function with its own `tmp_path`.
    the account — so an assertion on this line must not expect it to end
    after the variable name.
 2. **First `plan create`** (fresh project, no `state.json` yet) — per
-   `PLAN.md` §9 step 2: gate #1 (`code-review-model`) fires to
-   trust-on-first-use the curated driver's on-disk hash, since no state
-   entry yet exists to short-circuit it; plan output shows one `create`
-   action; exit code `0`.
+   `PLAN.md` §9 step 2: `driver_info_for()` records a fresh `DriverInfo`
+   from the curated driver's on-disk hash, with **no Anthropic call at
+   all** — issue #119 removed gate #1 from this path entirely, and #118
+   already skips categorization for an untracked resource. Assert
+   `[verbose] 0 Anthropic API call(s) made`, the strongest statement of
+   the project's cost claim: a brand-new project's first `plan create`
+   costs nothing. Plan output shows one `create` action; exit code `0`.
 3. **`plan apply --yes`** — a separate CLI invocation, which per
    `aiform/cli.py`'s `_cmd_plan_apply` re-runs `orchestrator.build_create_plan()`
-   from scratch before applying — so gate #1 fires **again** here, a
-   second time, since step 2 never wrote a resource entry to state (only
-   an applied resource's `StateEntry` records a trusted driver hash) and
-   there is still nothing to short-circuit it. Don't assert a combined
-   call count of `1` across steps 2–3; assert `>= 1` in each step
-   individually instead, and note in the test that the `code_review`
-   record actually persisted into state.json is from this step's
-   review, not step 2's (step 2's result is discarded — `plan create`
-   never persists a driver trust record on its own, only a
-   resource-creating `apply` does). Beyond that: executes a real
-   `driver.create()` (see the note below on its actual DO-call
-   footprint); assert the printed result includes an `id`; assert
-   `.aiform/state.json` now has one resource entry carrying
-   `driver.sha256` and a `code_review` record; assert
+   from scratch before applying — still zero Anthropic calls, since a
+   `CREATE` action never triggers gate #2 either
+   (`apply_plan()`'s `needs_review` only covers `DESTROY` and a
+   likely-replace `UPDATE`). Assert `[verbose] 0 Anthropic API call(s)
+   made` here too. Beyond that: executes a real `driver.create()` (see
+   the note below on its actual DO-call footprint); assert the printed
+   result includes an `id`; assert `.aiform/state.json` now has one
+   resource entry carrying `driver.sha256` — provenance, not a trust
+   record — recorded by step 2's `driver_info_for()` call; assert
    `.aiform/state.json.backup` exists (written before
-   the overwrite, per CLAUDE.md's state-handling rule). From this point
-   on — every case after this one — the driver's hash is trust-cached
-   against this resource's state entry, so gate #1 does not fire again
-   for the rest of this sequence (see case 7's note).
+   the overwrite, per CLAUDE.md's state-handling rule).
 
    Note: `driver.create()` itself is no longer a single HTTP request —
    per `specs/digitalocean_compute.md`'s `create()` Behavior section, it
@@ -225,12 +220,10 @@ independent, in its own test function with its own `tmp_path`.
    executing; assert the old droplet is actually gone (direct `GET` →
    `404`) and a new `id` is recorded in state; assert `--verbose`'s
    Anthropic call count is `>= 1` for this run — the `intent-orchestration-model`'s
-   diff categorization (correcting an earlier draft of this spec, which
-   wrongly attributed that to "gate #1") plus gate #2's
-   `review-orchestration-model` both fire here. Gate #1 does **not**
-   fire in this case: the driver's hash is already trust-cached against
-   this resource's state entry from case 3's apply (see case 3's note),
-   so `ensure_driver_trusted()` short-circuits before any review call.
+   diff categorization plus gate #2's `review-orchestration-model` both
+   fire here. No other call is possible: issue #119 removed gate #1
+   from the `plan`/`apply` path entirely, so `driver_info_for()` never
+   makes an LLM call regardless of whether the driver's hash matches.
    Capture this case's new `id` — needed by case 9, after case 8 removes
    it from state.
 8. **`plan destroy --yes`** — plans and applies destroy of the tracked

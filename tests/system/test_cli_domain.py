@@ -224,28 +224,29 @@ class TestDomainLifecycleSequence:
 
         write_domain_aiform_md(project_dir, name=zone, records=BASE_RECORDS)
 
-        # Case 2: first `plan create` -- gate #1 fires (trust-on-first-use;
-        # nothing in state yet trusts domain.py's hash).
+        # Case 2: first `plan create` on an untracked resource -- zero
+        # Anthropic calls. #118 already skips categorization for an
+        # untracked resource, and #119 removed gate #1 (the driver review)
+        # from this path entirely, so nothing is left to call.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert _verbose_call_count(captured) >= 1
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
-        # Case 3: `plan apply --yes`. A separate invocation, so gate #1
-        # fires again -- plan create persists no driver-trust record, only
-        # a resource-creating apply does.
+        # Case 3: `plan apply --yes` -- a CREATE action never triggers gate
+        # #2 either (apply_plan()'s needs_review only covers DESTROY and a
+        # likely-replace UPDATE), so this is zero calls too.
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert _verbose_call_count(captured) >= 1
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
         st = state.load(state_path)
         assert key in st.resources
         entry = st.resources[key]
         assert entry.id == zone
         assert entry.driver.sha256
-        assert entry.driver.code_review is not None
         assert (project_dir / ".aiform" / "state.json.backup").exists()
 
         live_records = list_domain_records(token, zone)

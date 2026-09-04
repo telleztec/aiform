@@ -3,8 +3,8 @@
 ## Purpose
 
 `PLAN.md` §5's `plan`/`apply` algorithm end to end, plus §7's `refresh`:
-file discovery, dynamic driver import, credential wiring, gate #1
-(`code-review-model`, driver trust) and gate #2 (`review-orchestration-model`,
+file discovery, dynamic driver import, credential wiring, driver-provenance
+recording, and gate #2 (`review-orchestration-model`,
 plan safety) invocation, state refresh/diff orchestration (delegating the
 actual diff/categorize work to `planner.py`), and execution
 (`driver.create`/`read`/`update`/`delete`) with per-resource state
@@ -74,32 +74,30 @@ left to drift into whatever the first implementation happens to do):
    time. This narrows `PLAN.md`'s literal claim to "fails fast on a
    *missing* credential" — a real, flagged divergence.
 
-4. **Gate #1 (`ensure_driver_trusted()`) is skipped entirely for a
-   `destroy` action, for both deletion mechanisms.** `PLAN.md`'s
-   "Resource deletion" section states a destroy "gets a `destroy`
-   `PlanEntry` directly, skipping steps 3-6 (driver-usability checks,
-   refresh, diff, categorization) entirely" — step 3 is exactly the
-   gate-#1 re-review/trust check. `orchestrator.py` still has to
-   dynamically import and instantiate the driver to call `delete()` on
-   it (mechanical, zero LLM cost), and still resolves credentials (per
-   judgment call 3, zero LLM cost), but never calls
-   `llm.review_driver()` on the destroy path — matching "skipping...
-   entirely" literally, not just skipping the parts that happen to be
-   expensive.
+4. **`driver_info_for()` is skipped entirely for a `destroy` action, for
+   both deletion mechanisms.** `PLAN.md`'s "Resource deletion" section
+   states a destroy "gets a `destroy` `PlanEntry` directly, skipping steps
+   3-6 (driver-usability checks, refresh, diff, categorization) entirely"
+   — step 3 is exactly this provenance lookup. `orchestrator.py` still has
+   to dynamically import and instantiate the driver to call `delete()` on
+   it, and still resolves credentials (per judgment call 3), but never
+   computes or persists a `DriverInfo` for the destroy path: a resource
+   being removed from state has no `driver` field left to fill in, so
+   there is nothing for the hash to record. This is no longer about
+   avoiding an LLM call (there isn't one, on any path) — it's that the
+   provenance record has no destination on a destroy.
 
 5. **In-memory caching of driver instances / `DriverInfo` / credentials,
    keyed by `(provider, resource_type)` or `provider` alone, scoped to
-   one `build_create_plan()` call.** Not stated anywhere in `PLAN.md`,
-   but required for correctness of the cost claim it does make: two
-   `.aiform.md` files in the same `plan create` run sharing a driver
-   (e.g. two `digitalocean.compute` resources) must not pay gate #1's
-   `code-review-model` cost twice just because neither file's result has
-   been written to `.aiform/state.json` yet when the second file is
-   processed (the state-based "does any entry already trust this hash"
-   check in `ensure_driver_trusted()` only sees what's on disk at the
-   start of the run). Driver instances are stateless per `PLAN.md`'s own
-   framing, so reusing one across files sharing a `(provider,
-   resource_type)` pair is safe.
+   one `build_create_plan()` call.** Not stated anywhere in `PLAN.md`, but
+   required so that two `.aiform.md` files in the same `plan create` run
+   sharing a driver (e.g. two `digitalocean.compute` resources) hash and
+   `importlib`-load that driver's file exactly once, not once per file —
+   `driver_info_for()`'s own hashing is deterministic and cheap, but
+   re-reading and re-hashing the same on-disk file redundantly for every
+   resource that happens to share it is still wasted work worth avoiding.
+   Driver instances are stateless per `PLAN.md`'s own framing, so reusing
+   one across files sharing a `(provider, resource_type)` pair is safe.
 
 6. **`build_create_plan()` structurally cross-checks every `PlanEntry`'s
    `action` against whether a `state_entry` actually exists, immediately
@@ -212,7 +210,7 @@ def discover_files(paths: list[Path] | None, *, cwd: Path = Path(".")) -> list[P
 def is_delete_marked(path: Path) -> bool: ...
 
 
-# --- driver resolution & gate #1 (PLAN.md §5 step 3, §4's invocation contract) ---
+# --- driver resolution & provenance (PLAN.md §5 step 3, §4's invocation contract) ---
 
 
 def driver_path(provider: str, resource_type: str) -> Path: ...
@@ -221,13 +219,10 @@ def driver_path(provider: str, resource_type: str) -> Path: ...
 def load_driver(provider: str, resource_type: str) -> ResourceDriver: ...
 
 
-def ensure_driver_trusted(
+def driver_info_for(
     provider: str,
     resource_type: str,
     state: State,
-    *,
-    client: anthropic.Anthropic | None = None,
-    llm_config: LLMConfig | None = None,
 ) -> DriverInfo: ...
 
 
@@ -391,33 +386,44 @@ raising `TypeError` per `specs/driver.md`) propagates uncaught — a
 curated, already-tested driver failing to import is a real bug, not a
 recoverable planning-time condition.
 
-### `ensure_driver_trusted(provider, resource_type, state, *, client=None, llm_config=None) -> DriverInfo`
+### `driver_info_for(provider, resource_type, state) -> DriverInfo`
 
-Gate #1. Reads `driver_path(provider, resource_type)` as bytes and
-hashes it (`hashlib.sha256(...).hexdigest()` over the raw bytes, not
-decoded text — unlike `parser.compute_sha256()`, this hash's job is
-literally "is this the exact file that was reviewed," so byte-exact is
-the right comparison, with no BOM-stripping concern since this file was
-never hand-edited by a non-technical user the way an `.aiform.md` or
-`credentials.env` might be).
+**No LLM call on this path, ever — nothing here gates driver execution.**
+This function only records which driver version produced or will produce
+a resource; it makes no trust decision and blocks nothing. (History: this
+was `ensure_driver_trusted()`, gate #1's driver-review-then-trust flow. It
+never actually delivered that guarantee even before removal —
+`build_create_plan()` calls `load_driver()`, which `exec_module`s the
+driver file, *before* calling this function, so any review ran after the
+reviewed code had already executed. See issue #119.)
+
+**Warning for whatever eventually replaces this function** (#119's
+deferred validation mechanism): that ordering bug is still latent in
+`build_create_plan()`'s call site (`load_driver()` before
+`driver_info_for()`), merely unobservable now that nothing here does
+anything the ordering could break. Adding a gate back into this function
+without also moving the hash/validation step *before* `load_driver()`
+at the call site reproduces #119's exact defect — a check that runs after
+the code it's meant to gate has already executed.
+
+Reads `driver_path(provider, resource_type)` as bytes and hashes it
+(`hashlib.sha256(...).hexdigest()` over the raw bytes, not decoded text —
+unlike `parser.compute_sha256()`, this hash's job is "which exact file
+produced this resource," so byte-exact is the right comparison, with no
+BOM-stripping concern since this file was never hand-edited by a
+non-technical user the way an `.aiform.md` or `credentials.env` might be).
 
 1. Search `state.resources.values()` for any entry with matching
    `provider`/`resource_type` and `driver.sha256 == on_disk_sha256`. If
-   found, return that entry's `driver` (`DriverInfo`) unchanged — zero
-   LLM calls, the "already trusted" path (`PLAN.md` §9 walkthrough step
-   4).
-2. Otherwise, read the file as UTF-8 text and call
-   `llm.review_driver(source_text, client=client, llm_config=llm_config)`.
-   `not review.approved` → raise `PlanBlockedError` naming the driver and
-   `review.blocking_issues or review.concerns`
-   (`PLAN.md` §5 step 3's "do not overwrite... fail... naming the
-   concerns"). Otherwise, build and return a new `DriverInfo(path=f"drivers/{provider}/{resource_type}.py",
-   sha256=on_disk_sha256, generated_at=<now, UTC>, code_review=review)` —
-   `generated_at` is stamped with the same timestamp as this review, not
-   a real generation event, since a curated MVP driver was never
-   generated at all; the field exists for the deferred generation path
-   (`PLAN.md` §6) and is reused here rather than left `None`, since
-   `DriverInfo.generated_at` isn't optional.
+   found, return that entry's `driver` (`DriverInfo`) unchanged (`PLAN.md`
+   §9 walkthrough step 4).
+2. Otherwise, build and return a new
+   `DriverInfo(path=f"drivers/{provider}/{resource_type}.py",
+   sha256=on_disk_sha256, generated_at=<now, UTC>)` — `generated_at` is
+   stamped with the current time, not a real generation event, since a
+   curated MVP driver was never generated at all; the field exists for
+   the deferred generation path (`PLAN.md` §6) and is reused here rather
+   than left `None`, since `DriverInfo.generated_at` isn't optional.
 
 Never itself writes to `.aiform/state.json` — the caller
 (`build_create_plan()`/`apply_plan()`) is the one recording a new
@@ -501,10 +507,9 @@ next time `plan create` runs against that resource, not here.
   kept uniform rather than threading `spec.params` through here just
   because it happens to be available) and
   `driver=driver_info=credentials=None` — resolved lazily by
-  `apply_plan()` instead, per judgment call 4 (gate #1 is skipped for a
-  destroy either way, so there's nothing to gain by resolving the driver
-  this early, and every file not otherwise needing it should not pay for
-  it).
+  `apply_plan()` instead, per judgment call 4 (`driver_info_for()` is
+  skipped for a destroy either way, since a resource being removed from
+  state has no `driver` field left to record).
 - **Otherwise** (normal file):
   1. `content = path.read_text(encoding="utf-8-sig")`, `spec =
      parser.parse_frontmatter(content)` — a first, frontmatter-only pass
@@ -522,8 +527,7 @@ next time `plan create` runs against that resource, not here.
   4. Driver resolution, **cached per `(provider, resource_type)` for the
      lifetime of this call** (judgment call 5): `driver =
      load_driver(spec.provider, spec.resource)`; `driver_info =
-     ensure_driver_trusted(spec.provider, spec.resource, state,
-     client=client, llm_config=llm_config)`.
+     driver_info_for(spec.provider, spec.resource, state)`.
   5. Credentials, **cached per `provider`**: `credentials =
      config.resolve_credentials(spec.provider)`, `RuntimeError` caught
      and re-raised as `PlanBlockedError(str(exc))` (judgment call 3).
@@ -784,8 +788,8 @@ full, is the caller's job — see Behavior below), shared verbatim by
    - `DESTROY` → if `pr.state_entry is not None`: `driver =
      load_driver(pr.provider, pr.resource_type)`, `credentials =
      config.resolve_credentials(pr.provider)` (`RuntimeError` →
-     `PlanBlockedError`, same as judgment call 3) — **no gate #1 call**
-     (judgment call 4). `driver.delete(pr.state_entry.id, credentials)`
+     `PlanBlockedError`, same as judgment call 3) — **no `driver_info_for()`
+     call** (judgment call 4). `driver.delete(pr.state_entry.id, credentials)`
      (wrapped in `DriverExecutionError`, operation `"delete"`, on raw
      failure — per "Verification," the file is **not** moved to trash if
      this raises). On success: same guarded removal as `UPDATE`'s replace
@@ -909,9 +913,11 @@ Returns the destination path.
   one helper — exactly the kind of drift that let the first gap happen
   in the first place — which is what `_log_driver_outcome()` now
   prevents structurally rather than by vigilance.
-  `ensure_driver_trusted()` logs the gate #1 outcome — `reused=true` on
-  the zero-LLM cache-hit fast path, `approved=<bool>` after a real
-  review. `apply_plan()` logs the gate #2 plan-review outcome
+  `driver_info_for()` logs whether the sha256 matched an existing state
+  entry — `reused=true` on a hash-match, `reused=false` when a new
+  `DriverInfo` had to be built (a first resolution, or a hand-edited
+  driver). Neither branch makes an LLM call, so there is no `approved`
+  field any more. `apply_plan()` logs the gate #2 plan-review outcome
   (`safe_to_proceed=<bool> flags_count=<n>`, WARNING when blocked)
   before `_raise_if_review_blocked()` runs. No call site in this module
   logs a raw `params`/`credentials`/`*args` dict — every field above is
@@ -927,12 +933,13 @@ Returns the destination path.
   whole `plan create` run fails loudly, consistent with every other
   "let it fail loudly" stance already established (`specs/parser.md`,
   `specs/planner.md`).
-- `ensure_driver_trusted()`'s in-memory cache (judgment call 5) is scoped
-  to a single `build_create_plan()` call only — it is not module-level,
+- `driver_info_for()`'s in-memory cache (judgment call 5) is scoped to a
+  single `build_create_plan()` call only — it is not module-level,
   global, or shared with `apply_plan()`'s own lazy driver resolution for
   destroy targets. A destroy's driver lookup always goes through
-  `load_driver()`/`config.resolve_credentials()` freshly, since gate #1
-  never runs on that path in the first place (nothing to cache).
+  `load_driver()`/`config.resolve_credentials()` freshly, since
+  `driver_info_for()` never runs on that path in the first place (nothing
+  to cache, per judgment call 4).
 - `DriverUpdateNotSupported`'s single-resource gate #2 re-review
   (`apply_plan()`'s `UPDATE` branch) can itself raise `PlanBlockedError`
   on a `block` flag, or trigger a decline via `confirm(...)` (never
@@ -975,19 +982,14 @@ Returns the destination path.
   site would be exactly the premature abstraction `CLAUDE.md` warns
   against for a case this narrow. Accepted as a known, low-probability
   edge case rather than designed around.
-- `ensure_driver_trusted()` reads the driver file more than once on a
-  cache-miss — `path.read_bytes()` for hashing, then `path.read_text()`
-  for the review call, on top of `load_driver()`'s own independent read
-  via `importlib` moments earlier — up to three reads of the same small
-  file per driver resolution instead of one. Deliberately not
-  consolidated: hashing must stay byte-exact (per its own Interface
-  entry above, "is this the exact file that was reviewed"), and
-  `Path.read_text()` performs universal-newline translation by default,
-  so computing the hash from decoded text instead of raw bytes would
-  silently change the recorded hash for any driver file using CRLF line
-  endings — trading a minor, plan-time-only efficiency gain for a real
-  correctness risk to the one guarantee this function exists to provide.
-  Already bounded by judgment call 5's caching to at most once per
+- `driver_info_for()` reads the driver file (`path.read_bytes()` for
+  hashing) independently of `load_driver()`'s own read via `importlib`
+  moments earlier — two reads of the same small file per driver
+  resolution instead of one. Deliberately not consolidated: hashing must
+  stay byte-exact (per its own Interface entry above, "which exact file
+  produced this resource"), and `importlib`'s module loading doesn't
+  expose the raw bytes it read in a form worth threading back out for
+  this. Already bounded by judgment call 5's caching to at most once per
   `(provider, resource_type)` pair per `build_create_plan()`/
   `refresh_state()` call, not once per resource.
 
@@ -1006,10 +1008,16 @@ Returns the destination path.
   permanently. `PLAN.md`'s "Driver curation" abandoned the mid-`plan`
   generation trigger rather than deferring it, so this is a design
   boundary, not a wiring task somebody should finish.
-  `ensure_driver_trusted()` only ever re-reviews an existing on-disk
-  file; when a driver is missing it never calls
-  `driver_gen.generate_driver()`, it raises `PlanBlockedError` via
-  `load_driver()` instead — and that is the permanent behavior.
+  `driver_info_for()` only ever hashes an existing on-disk file; when a
+  driver is missing it never calls `driver_gen.generate_driver()`, it
+  raises `PlanBlockedError` via `load_driver()` instead — and that is the
+  permanent behavior.
+- **Any review or trust decision over a driver's source at plan/apply
+  time** (#119) — a hash mismatch simply produces a new `DriverInfo` with
+  no gate of any kind. Deciding how (or whether) a driver's local
+  imports should be validated before it runs belongs to the future driver
+  repository/download design, not this module. See `driver_gen.md` for
+  the one place `llm.review_driver()` still runs, at development time.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.

@@ -32,11 +32,20 @@ re-implemented (and re-broken) per driver.
 
 **Why not a Python SDK.** `pydo`/`requests`/`httpx` are all excluded:
 `prompts/review_driver.md` item 9 makes any non-`urllib.request` HTTP library a
-**blocking** gate #1 failure. That rule exists so tests can mock one known
-stdlib seam (`urllib.request.urlopen`) instead of guessing which library a
-driver reached for — see `specs/digitalocean_compute.md`'s HTTP client
-convention. This helper is deliberately *not* an HTTP client: it performs no
-I/O itself (see Interface), so it doesn't interact with that rule at all.
+**blocking** gate #1 failure — for a freshly-drafted driver reviewed inside
+`driver_gen.py`. That rule exists so tests can mock one known stdlib seam
+(`urllib.request.urlopen`) instead of guessing which library a driver reached
+for — see `specs/digitalocean_compute.md`'s HTTP client convention. It is
+enforced for a hand-authored module like this one only via `PROCESS.md`'s
+PR-time `/code-review`: issue #119 removed gate #1's `plan`/`apply`-time
+re-review of a hand-edited driver entirely, so there is no automated review
+of hand-authored driver code left at all any more. Before #119 that
+re-review reached only a driver's single top-level file (`domain.py`, on a
+hash mismatch) and never this helper — the bug #119 fixed. An earlier
+version of this note reasoned that the exemption was because this helper
+"performs no I/O itself"; the real reason was always mechanical (this
+module was never the file gate #1 hashed), and after #119 the whole
+question is moot for every hand-authored file, I/O or not.
 
 **Why not a method on `ResourceDriver`.** `links.pages.next` is DigitalOcean's
 convention, not a universal one — AWS uses `NextToken`, others use `Link`

@@ -296,20 +296,34 @@ class TestDriverInfo:
             path="drivers/digitalocean/compute.py",
             sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
             generated_at=datetime(2026, 7, 30, 18, 22, 11),
-            code_review=DriverReview(
-                approved=True,
-                concerns=["update() resizes on any diff, not just size/region"],
-                blocking_issues=[],
-                reviewed_at=datetime(2026, 7, 30, 18, 22, 40),
-                model="claude-opus-5",
-            ),
         )
         dumped = info.model_dump(mode="json")
         assert dumped["path"] == "drivers/digitalocean/compute.py"
-        assert dumped["code_review"]["approved"] is True
+        assert "code_review" not in dumped
 
         reparsed = DriverInfo.model_validate(dumped)
         assert reparsed == info
+
+    def test_a_pre_119_code_review_field_loads_and_is_dropped(self):
+        """Backward compat: an existing state.json written before #119
+        removed gate #1 still has a `code_review` object nested under each
+        `driver`. DriverInfo must load it without error and simply not
+        carry it forward (issue #119, specs/models.md)."""
+        legacy = {
+            "path": "drivers/digitalocean/compute.py",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
+            "generated_at": "2026-07-30T18:22:11Z",
+            "code_review": {
+                "approved": True,
+                "concerns": [],
+                "blocking_issues": [],
+                "reviewed_at": "2026-07-30T18:22:40Z",
+                "model": "claude-opus-5",
+            },
+        }
+        info = DriverInfo.model_validate(legacy)
+        assert not hasattr(info, "code_review")
+        assert "code_review" not in info.model_dump(mode="json")
 
 
 class TestStateEntry:
@@ -334,13 +348,6 @@ class TestStateEntry:
                 path="drivers/digitalocean/compute.py",
                 sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
                 generated_at="2026-07-30T18:22:11Z",
-                code_review=DriverReview(
-                    approved=True,
-                    concerns=["update() resizes on any diff, not just size/region"],
-                    blocking_issues=[],
-                    reviewed_at="2026-07-30T18:22:40Z",
-                    model="claude-opus-5",
-                ),
             ),
             last_applied_at="2026-07-30T18:23:05Z",
             last_refreshed_at="2026-07-31T09:10:00Z",
@@ -370,14 +377,7 @@ class TestStateEntry:
             "aiform_md_path",
             "aiform_md_sha256",
         }
-        assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at", "code_review"}
-        assert set(dumped["driver"]["code_review"].keys()) == {
-            "approved",
-            "concerns",
-            "blocking_issues",
-            "reviewed_at",
-            "model",
-        }
+        assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at"}
 
         reparsed = StateEntry.model_validate(dumped)
         assert reparsed == entry

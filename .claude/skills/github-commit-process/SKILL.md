@@ -164,8 +164,10 @@ both claiming to fix #N leave #N in an ambiguous state — half-fixed, still
 open, with no record of which half landed. File the second issue, say in
 each what the other covers, and close each with its own PR. #76 and #87 are
 such a split: the scaffold change and the driver-schema change need
-different gates, since editing a driver changes its `sha256` and forces a
-gate #1 re-review.
+different gates. (Historical note: at the time of that split, editing a
+driver changed its `sha256` and forced a gate #1 re-review; issue #119
+removed that re-review from the `plan`/`apply` path entirely, so a hash
+change today just records new provenance, not a new review.)
 
 **Found something else mid-branch?** File it if it warrants an issue, or
 ask — don't fold it in silently. A typo or a chore you fix in passing needs

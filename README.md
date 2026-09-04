@@ -93,13 +93,14 @@ resource type (a droplet). Prove the loop end to end before expanding.
    **written ahead of time, never generated mid-run**. A missing driver is
    an error, not a trigger to generate one. Today every driver is
    hand-authored by a developer on the aiform core team, through this
-   repo's own spec-first/test-first development loop — a development-time
-   process, separate from aiform's four runtime model roles. One of those
-   roles does run on this path: at `plan` time the **code-review-model**
-   reviews any driver whose file doesn't match a hash already recorded in
-   state, before that driver is trusted. Putting driver authoring in an
-   end user's hands is the part still to build — see "Not yet implemented"
-   below.
+   repo's own spec-first/test-first development loop and its own
+   `/code-review` gate — a development-time process, separate from
+   aiform's four runtime model roles. None of those roles runs on the
+   `plan`/`apply` path for a driver: at `plan` time aiform records which
+   exact driver file produced a resource (a sha256, for provenance), but
+   makes no further review or trust decision about it. Putting driver
+   authoring in an end user's hands is the part still to build — see
+   "Not yet implemented" below.
 4. `aiform plan apply` re-plans, has the **review-orchestration-model**
    (default **Claude Opus 5**) review anything destructive as a second
    safety gate, then executes — via the deterministic Python module, not

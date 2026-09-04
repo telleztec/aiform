@@ -126,7 +126,6 @@ class DriverInfo(BaseModel):
     path: str
     sha256: str
     generated_at: datetime
-    code_review: DriverReview
 
 
 class ParsedResource(BaseModel):

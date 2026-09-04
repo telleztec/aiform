@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aiform.models import DriverInfo, DriverReview, StateEntry
+from aiform.models import DriverInfo, StateEntry
 from aiform.state import DEFAULT_STATE_PATH, State, load, save
 
 
@@ -26,13 +26,6 @@ def make_state_entry(**overrides) -> StateEntry:
             path="drivers/digitalocean/compute.py",
             sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
             generated_at="2026-07-30T18:22:11Z",
-            code_review=DriverReview(
-                approved=True,
-                concerns=[],
-                blocking_issues=[],
-                reviewed_at="2026-07-30T18:22:40Z",
-                model="claude-opus-5",
-            ),
         ),
         last_applied_at="2026-07-30T18:23:05Z",
         last_refreshed_at="2026-07-31T09:10:00Z",

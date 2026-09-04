@@ -41,7 +41,7 @@ anything expensive to get wrong:
 
 - **`intent-orchestration-model`** — parses the prose Intent section into `intent_notes[]` and categorizes each plan action (create/update/no-op) against the raw diff (`prompts/parse_intent.md`, `prompts/diff_plan.md`, §2 and §5 step 6). This is the model behind every routine `aiform plan create` call — the one that must cost zero tokens on an unchanged second run (§5 step 5, §9 step 4).
 - **`code-generator-model`** — drafts a new resource driver's Python source (`prompts/generate_driver.md`, §6). Exercised only by `aiform/driver_gen.py`, which no `plan`/`apply` or CLI path calls; it is reserved for the deliberate `aiform driver create` flow (mechanism 2), not currently being built — see "Driver curation" below. This role therefore costs nothing on a normal `plan`/`apply`.
-- **`code-review-model`** — reviews driver source before it's trusted for reuse: gate #1 (`prompts/review_driver.md`, §5 step 3). Live today on one `plan`-time path: a driver on disk whose sha256 doesn't match any state entry that trusts it gets reviewed before being trusted. That covers both a driver whose hash *changed* (a hand-edit, an untrusted file, or a package upgrade shipping a revised curated driver) and one never recorded in this project's state at all — including every brand-new project's first `plan create`, which pays exactly one such call (§9 step 2). The trusted hash is persisted by `apply`, not by `plan`, so `plan create` keeps paying that call until an `apply` has actually executed an action and written the entry (a plan that is entirely no-ops executes nothing, so it persists nothing). It is also the gate `driver_gen.py` runs a draft through, and the gate the deliberate `aiform driver create` flow would use if built.
+- **`code-review-model`** — reviews driver source before it's returned: gate #1 (`prompts/review_driver.md`). **Not reachable from `plan`/`apply` any more** (issue #119 removed it from that path: it hashed and reviewed only a driver's single file, never its local imports, and `build_create_plan()` called `load_driver()` — which `exec_module`s the driver — *before* the review ran, so the guarantee it claimed never actually held). Live today only inside `driver_gen.py`, which drafts and reviews a driver but has no caller, and would be the gate the deliberate `aiform driver create` flow uses if built. A first `plan create`/`apply` on a brand-new project now costs zero Anthropic calls (§9 step 2).
 - **`review-orchestration-model`** — reviews the full plan before `apply` executes anything destructive: gate #2 (§5 `apply` step 2, `prompts/review_plan.md`).
 
 Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
@@ -493,14 +493,7 @@ A file's *absence* from the discovered set is never itself meaningful to the par
       "driver": {
         "path": "drivers/digitalocean/compute.py",
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8",
-        "generated_at": "2026-07-30T18:22:11Z",
-        "code_review": {
-          "approved": true,
-          "blocking_issues": [],
-          "concerns": ["update() resizes on any diff, not just size/region — should scope the resize action"],
-          "reviewed_at": "2026-07-30T18:22:40Z",
-          "model": "claude-opus-5"
-        }
+        "generated_at": "2026-07-30T18:22:11Z"
       },
       "last_applied_at": "2026-07-30T18:23:05Z",
       "last_refreshed_at": "2026-07-31T09:10:00Z",
@@ -525,19 +518,14 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 - `attributes` — the last-known **actual** attributes as returned by
   `driver.read()` or `driver.create()`. This is the cache
   Terraform-style state provides.
-- `driver.sha256` — hash of the driver source on disk at the moment
-  its `code-review-model` review was recorded. On every `plan`, the
-  orchestrator recomputes the on-disk hash and compares; a mismatch
-  (a hand-edit, an untrusted file, or a package upgrade shipping a
-  revised curated driver) invalidates the "trusted,
-  reviewed" status and forces re-review before the driver is used
-  again. This is the drift-detection mechanism for the driver itself,
-  not just the resource.
-- `driver.code_review` — audit trail of gate #1 (`DriverReview`,
-  `specs/models.md`). Named after the role that produced it, not the
-  specific model — the persisted `model` field inside it records
-  whichever model was actually configured for `code-review-model` at
-  review time.
+- `driver.sha256` — provenance: which exact driver file produced (or
+  will produce) this resource. On every `plan`, the orchestrator
+  recomputes the on-disk hash and compares; a mismatch (a hand-edit or a
+  package upgrade shipping a revised curated driver) simply records a
+  new `DriverInfo` with the new hash. **Not a trust or drift-detection
+  mechanism any more** — issue #119 removed gate #1's review from this
+  path entirely, so a mismatch gates nothing and blocks nothing; it is
+  bookkeeping, not a control.
 - `aiform_md_sha256` — hash of the source file at last successful
   apply. Used by the planner as a cheap short-circuit: if this matches
   the current file's hash *and* a refresh shows no live drift, the
@@ -614,10 +602,11 @@ class ResourceDriver(ABC):
 
     # Declares the `params` shape this driver accepts. Used by the
     # orchestrator to validate a parsed aiform.md spec before ever
-    # calling create()/update(), and shown to the code-review-model at
-    # review time (dev-time /code-review for curated drivers, and
-    # gate #1's re-review of a hand-edited one) as ground truth for
-    # what the driver claims to handle.
+    # calling create()/update(), and shown to the code-review-model as
+    # ground truth for what the driver claims to handle -- dev-time
+    # /code-review for a curated driver, or driver_gen.py's gate #1 for
+    # a freshly-drafted one (never a hand-edited curated driver on the
+    # plan/apply path -- issue #119 removed that review entirely).
     PARAM_SCHEMA: dict[str, Any]
 
     # Optional, advisory only (never authoritative — update() is the
@@ -770,7 +759,12 @@ class Driver(ResourceDriver):
 - All four methods are required to be synchronous and side-effect-free
   of any LLM calls. Gate #1's review checklist explicitly checks for
   "does this driver import `anthropic`, call any Anthropic endpoint,
-  or read `ANTHROPIC_API_KEY`?" and blocks approval if so.
+  or read `ANTHROPIC_API_KEY`?" and blocks approval if so — for a
+  freshly-drafted driver going through `driver_gen.py`. A hand-authored
+  curated driver relies on `PROCESS.md`'s PR-time `/code-review` for
+  this instead: issue #119 removed gate #1's re-review from the
+  `plan`/`apply` path, so nothing there checks a driver's imports at all
+  any more.
 - Raw CSP API errors raised inside driver methods are caught by the
   orchestrator, logged with full detail, and re-raised as
   `aiform.exceptions.DriverExecutionError` for uniform CLI error
@@ -813,22 +807,19 @@ class Driver(ResourceDriver):
      (`aiform driver create`, §7) — never something `plan` triggers on
      the user's behalf.
    - **Driver file present, but its on-disk sha256 doesn't match the
-     sha256 recorded against any state entry that trusts it**
-     (hand-edit, or an untrusted file dropped in from elsewhere) →
-     **re-review the existing content as-is** — send it straight to
-     the Code-Review-Model step in §6. This is what makes hand-editing a driver ("you can
-     read/edit/vendor the exact code that runs") an actual supported
-     workflow rather than something the next `plan create` quietly discards,
-     and it's the one driver-trust check that *does* run at `plan create`
-     time in the MVP. If approved, the driver is trusted for this run,
-     and the new hash is recorded as trusted when a subsequent `apply`
-     writes the resource's state entry — `plan create` on its own
-     persists no driver record. If `blocking_issues` comes back
-     non-empty, **do not
-     overwrite** — fail `aiform plan create` with an explicit error naming
-     the concerns (raises `aiform.exceptions.PlanBlockedError`); a
-     hand-edit failing review means the human's edit needs fixing, not
-     the AI's.
+     sha256 recorded against any state entry** (hand-edit, or a package
+     upgrade shipping a revised curated driver) → record a fresh
+     `DriverInfo` with the new hash, and use the driver as-is. **No
+     review runs here** — issue #119 removed gate #1's re-review from
+     this path entirely: hashing and reviewing only the single driver
+     file never covered its local imports, and `load_driver()` already
+     `exec_module`s the driver before this check ran, so the review
+     never actually gated anything it claimed to. This is what makes
+     hand-editing a driver ("you can read/edit/vendor the exact code
+     that runs") a supported workflow with no per-edit friction. The new
+     hash is recorded as provenance when a subsequent `apply` writes the
+     resource's state entry — `plan create` on its own persists no
+     driver record.
    - **Driver is usable, but its CSP credentials don't work** (e.g. an
      expired or malformed `DIGITALOCEAN_TOKEN`) → fails with
      `aiform.exceptions.PlanBlockedError`, naming which credential
@@ -997,7 +988,10 @@ today. The **Code-Review-Model** and **Approval rule** steps, by
 contrast, document `driver_gen.py`'s actual, already-built,
 already-tested gate #1 logic (`specs/driver_gen.md`) — reachable today
 only from that module's own API and its tests, since no command calls
-it. See "Driver curation" for how the pieces relate.
+it (nor does anything on the `plan`/`apply` path any more: issue #119
+removed that path's own driver-review call, once
+`orchestrator.ensure_driver_trusted()`, now `driver_info_for()` with no
+review at all). See "Driver curation" for how the pieces relate.
 
 1. **Generation** 
    - `create` The create command needs to point aiform to REST
@@ -1010,11 +1004,13 @@ it. See "Driver curation" for how the pieces relate.
      both error handling, retry, and failover decisions. In the MVP we
      will seek to exclusively use openAPI specifications. 
 1. Code-Review-Model
-   - **Gate #1 — `code-review-model`** (`llm.review_driver()` — used live today only by
-   the re-review branch above; also the gate `driver_gen.py` runs a draft through)
-   - The `code-review-model` (default `claude-opus-5`) reviews the full source — the
-   existing on-disk file in the live re-review case, or a freshly drafted one inside
-   `driver_gen.py` — against `prompts/review_driver.md`'s checklist 
+   - **Gate #1 — `code-review-model`** (`llm.review_driver()` — the gate
+   `driver_gen.py` runs a freshly-drafted candidate through; reachable
+   from nowhere else since issue #119 removed the `plan`/`apply` path's
+   own re-review call)
+   - The `code-review-model` (default `claude-opus-5`) reviews the full
+   source of a freshly drafted driver inside `driver_gen.py` against
+   `prompts/review_driver.md`'s checklist
    (idempotent `delete`, correct credential sourcing, no LLM calls, sane 
    in-place-vs-replace logic in `update`, error handling that raises rather than 
    swallows). Structured verdict, via `llm.review_driver(driver_source_text)`:
@@ -1040,14 +1036,13 @@ it. See "Driver curation" for how the pieces relate.
         `.aiform/config.yaml`'s `llm.code_review` entry (default `claude-opus-5` 
         via Anthropic).
 
-1. **Approval rule**: a review with `approved: true` is trusted in place
-   (live re-review case) or, in `aiform driver create`, written to
-   disk — **not** merely a `blocking_issues`-free one: the structured
-   verdict allows `approved: false` with empty `blocking_issues` (a
-   review that declines to approve without citing a specific blocker),
-   and that must still count as non-approval, never a pass. Non-empty
-   `concerns` on an approved result are printed as advisory warnings
-   but do not block. The re-review path never retries automatically.
+1. **Approval rule**: a review with `approved: true` is, in `aiform
+   driver create`, written to disk — **not** merely a
+   `blocking_issues`-free one: the structured verdict allows
+   `approved: false` with empty `blocking_issues` (a review that
+   declines to approve without citing a specific blocker), and that must
+   still count as non-approval, never a pass. Non-empty `concerns` on an
+   approved result are printed as advisory warnings but do not block.
    (Inside `driver_gen.py`: `not review.approved` → retry generation
    once with `review.blocking_issues or review.concerns` fed back to
    the `code-generator-model` — max 2 attempts total, shared across a
@@ -1089,8 +1084,9 @@ aiform init [--provider digitalocean]
     Verifies that the credentials work. 
 
 aiform plan create [FILE.aiform.md ...] [--state-file PATH] [--json]
-    Parse, refresh, verify the curated driver is present (re-review on a
-    hash mismatch, else fail with a clear error), diff, print plan.
+    Parse, refresh, verify the curated driver is present (fail with a
+    clear error if not; record its hash as provenance either way), diff,
+    print plan.
     Persists refreshed state even with no changes. --json emits the
     Plan as machine-readable output for scripting. Recognizes files
     prefixed `AIFORM-DELETE-` as destroy requests (see "Resource
@@ -1187,40 +1183,33 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    nothing about this walkthrough triggers driver generation.
 2. **`aiform plan create`** — this is the very first `plan` run against a brand-new
    project: `.aiform/state.json` doesn't exist yet, so no state entry
-   anywhere trusts *any* driver's hash yet. Per §5 step 3, that's the
-   same condition a hand-edited driver hits ("doesn't match the sha256
-   recorded against any state entry that trusts it") — here it's
-   because nothing has been recorded at all yet, not because the file
-   changed. One gate #1 (`code-review-model`) re-review call approves
-   the curated driver's on-disk content as-is. Note that `plan create`
-   itself persists no driver-trust record — the approval rides on the
-   plan and is written to state by step 3's `apply`, so re-running
-   `plan create` before step 3 pays the gate #1 call again. Diff shows
-   `create` — set directly by `orchestrator.py`, with **no** step 6
-   categorization call, since nothing is tracked for this resource yet
-   (issue #117). An earlier version of this walkthrough attributed the
-   `create` to that call.
+   anywhere has a matching driver hash yet. Per §5 step 3, `driver_info_for()`
+   simply records a fresh `DriverInfo` from the on-disk sha256 — **no
+   review, no Anthropic call**: issue #119 removed that call from this
+   path entirely. Diff shows `create` — set directly by
+   `orchestrator.py`, with **no** step 6 categorization call either,
+   since nothing is tracked for this resource yet (issue #117). This
+   step therefore makes **zero** Anthropic calls, the strongest
+   statement of the project's cost claim: a first `plan create` on a
+   brand-new project costs nothing.
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
    `driver.create(name, params, credentials)` — a real DO operation, as
-   opposed to the LLM-only steps around it (not a literal one-HTTP-request
+   opposed to the deterministic steps around it (not a literal one-HTTP-request
    budget: `create()` itself makes one mutating `POST` plus bounded
    polling `GET`s until the droplet converges to `status: "active"`,
    the same convergence-polling shape `update()`'s in-place resize
    already uses — see `specs/digitalocean_compute.md`'s `create()`
    Behavior section). `.aiform/state.json` written with the resource
-   entry, including `driver.sha256` and the `code_review` record
-   recorded by step 2's re-review call.
+   entry, including `driver.sha256` recorded by step 2's `driver_info_for()`
+   call — provenance, not a trust record. This step, too, makes zero
+   Anthropic calls.
 4. **Second `aiform plan create`** — `driver.read(id, credentials)` refreshes
    attributes (one DO call), `aiform_md_sha256` matches the unchanged
    file, dict-diff empty → `no-op` reported with **zero Anthropic API
-   calls**. This is the concrete proof of the "no LLM tokens for the
-   mechanical/repeat path" goal: the driver's hash is now trusted from
-   step 2's one-time re-review, so this run — and every one after it
-   against the same `state.json`, including for other resources using
-   the same driver file — spends zero `code-review-model` calls; only a
-   driver's first-ever use in a given project's state pays that
-   one-time cost.
+   calls**. Unsurprising now that steps 2-3 already made none: nothing
+   on this entire path has made an Anthropic call since gate #1 was
+   removed, for this resource or any other sharing the same driver file.
 
 ## 10. Not Yet Implemented
 
@@ -1300,13 +1289,14 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   `compute` (via DigitalOcean) is the only one built. Adding a second
   kind or a second provider is expected to require zero orchestrator
   changes, but that claim is untested until it actually happens.
-- **Review-tier cost at `plan`/`apply` runtime is limited to two narrow
-  cases.** With curated drivers, the only *runtime*
-  `code-review-model`/`review-orchestration-model` calls are the rare
-  hash-mismatch re-review (a hand-edited driver) and gate #2 before a
-  destructive `apply` — driver review itself happens at development time
-  (`/code-review`, not billed per end-user run). At current pricing
-  (`claude-sonnet-5` ≈ $3/$15 per MTok for
+- **Review-tier cost at `plan`/`apply` runtime is limited to one case.**
+  With curated drivers, the only *runtime* `review-orchestration-model`
+  call is gate #2 before a destructive `apply` — driver review itself
+  happens at development time (`/code-review`, not billed per end-user
+  run), and `code-review-model` makes no runtime call at all any more:
+  issue #119 removed the driver re-review that used to run on a hash
+  mismatch, so a hand-edited driver now costs nothing extra either. At
+  current pricing (`claude-sonnet-5` ≈ $3/$15 per MTok for
   `intent-orchestration-model`/`code-generator-model`, `claude-opus-5` ≈
   $5/$25 per MTok for `code-review-model`/`review-orchestration-model`)
   this is a real but modest ongoing operating cost compared to
@@ -1343,9 +1333,9 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   not a bug to eliminate.
 - **Review-tier review is a second opinion, not a proof — for curated
   drivers too.** A subtle bug in a driver could pass `/code-review` (or,
-  for the runtime re-review/gate #2 paths,
-  `code-review-model`/`review-orchestration-model` review) and only
-  manifest on an untested attribute combination during a live apply —
+  for gate #2's plan-review path, `review-orchestration-model` review)
+  and only manifest on an untested attribute combination during a live
+  apply —
   the DigitalOcean compute driver's own build process is direct
   evidence review doesn't catch everything (see "Driver curation"
   above: Opus approved drafts with the wrong credentials key intact,

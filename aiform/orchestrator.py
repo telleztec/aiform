@@ -149,51 +149,35 @@ def load_driver(provider: str, resource_type: str) -> ResourceDriver:
     return module.Driver()
 
 
-def ensure_driver_trusted(
+def driver_info_for(
     provider: str,
     resource_type: str,
     state: State,
-    *,
-    client: anthropic.Anthropic | None = None,
-    llm_config: LLMConfig | None = None,
 ) -> DriverInfo:
     path = driver_path(provider, resource_type)
     on_disk_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
 
-    for entry in state.resources.values():
-        if (
-            entry.provider == provider
+    reused = next(
+        (
+            entry.driver
+            for entry in state.resources.values()
+            if entry.provider == provider
             and entry.resource_type == resource_type
             and entry.driver.sha256 == on_disk_sha256
-        ):
-            logger.info(
-                "",
-                extra={"provider": provider, "resource_type": resource_type, "reused": True},
-            )
-            return entry.driver
-
-    source_text = path.read_text(encoding="utf-8")
-    review = llm.review_driver(source_text, client=client, llm_config=llm_config)
+        ),
+        None,
+    )
     logger.info(
         "",
-        extra={
-            "provider": provider,
-            "resource_type": resource_type,
-            "reused": False,
-            "approved": review.approved,
-        },
+        extra={"provider": provider, "resource_type": resource_type, "reused": reused is not None},
     )
-    if not review.approved:
-        raise PlanBlockedError(
-            f"driver {path} failed code-review-model review: "
-            f"{review.blocking_issues or review.concerns}"
-        )
+    if reused is not None:
+        return reused
 
     return DriverInfo(
         path=f"drivers/{provider}/{resource_type}.py",
         sha256=on_disk_sha256,
         generated_at=datetime.now(UTC),
-        code_review=review,
     )
 
 
@@ -335,13 +319,7 @@ def build_create_plan(
         driver_key = (resource_spec.provider, resource_spec.resource)
         if driver_key not in driver_cache:
             driver = load_driver(resource_spec.provider, resource_spec.resource)
-            driver_info = ensure_driver_trusted(
-                resource_spec.provider,
-                resource_spec.resource,
-                st,
-                client=client,
-                llm_config=llm_config,
-            )
+            driver_info = driver_info_for(resource_spec.provider, resource_spec.resource, st)
             driver_cache[driver_key] = (driver, driver_info)
         driver, driver_info = driver_cache[driver_key]
 
