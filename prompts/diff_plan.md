@@ -24,6 +24,13 @@ You will receive a JSON object with:
   the resource needs to be created again, regardless of what `diff`
   contains.
 
+You are **only** asked about resources that aiform is already tracking.
+A resource with no state entry is planned as a `create` by
+`orchestrator.py` without consulting you, so you never have to infer
+"does this exist yet" from the shape of the diff — a `diff` whose every
+`current` is `null` means a tracked resource whose live attributes all
+differ, not a new one.
+
 Decide exactly one `action` — your choices are `"create"`, `"update"`,
 or `"no-op"` (there is no `"destroy"` option here: a per-resource diff of
 live attributes against desired params has no way to signal "this

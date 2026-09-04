@@ -362,21 +362,41 @@ def build_create_plan(
             current_attributes = {}
             drifted_missing = False
 
-        entry = planner.plan_resource(
-            key,
-            current_attributes,
-            resource_spec.params,
-            intent_notes=parsed.intent_notes,
-            param_schema=driver.PARAM_SCHEMA,
-            likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
-            unordered_fields=driver.UNORDERED_FIELDS,
-            state_aiform_md_sha256=previous_hash,
-            current_aiform_md_sha256=parsed.aiform_md_sha256,
-            drifted_missing=drifted_missing,
-            client=client,
-            llm_config=llm_config,
-        )
+        if state_entry is None:
+            # Nothing tracked for this key, so the action is `create` as a
+            # matter of record -- there is no diff to categorize and
+            # nothing for a model to decide. Asking anyway is what issue
+            # #117 was: the intent-orchestration-model had to infer "does
+            # this exist yet" from the diff's shape, and when it answered
+            # 'update' the structural cross-check below blocked the plan,
+            # failing a user's first `plan apply` on an internal invariant
+            # they could not act on. It also spent a billed call on the
+            # plan hot path to answer a question already answered here.
+            entry = planner.create_entry(
+                key, rationale="no state entry is tracked for this resource yet"
+            )
+        else:
+            entry = planner.plan_resource(
+                key,
+                current_attributes,
+                resource_spec.params,
+                intent_notes=parsed.intent_notes,
+                param_schema=driver.PARAM_SCHEMA,
+                likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
+                unordered_fields=driver.UNORDERED_FIELDS,
+                state_aiform_md_sha256=previous_hash,
+                current_aiform_md_sha256=parsed.aiform_md_sha256,
+                drifted_missing=drifted_missing,
+                client=client,
+                llm_config=llm_config,
+            )
 
+        # Unreachable by construction since the branch above: an untracked
+        # resource never reaches categorization at all. Kept as a backstop
+        # rather than deleted -- it costs nothing, and it is the assertion
+        # that would catch a future edit reconnecting the two paths. The
+        # second check below is still live: the model can and does answer
+        # 'create' for a resource that IS tracked.
         if entry.action == PlanAction.UPDATE and state_entry is None:
             raise PlanBlockedError(
                 f"{key}: categorization returned 'update' but no state entry is tracked for it"

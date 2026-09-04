@@ -112,6 +112,17 @@ left to drift into whatever the first implementation happens to do):
    resource's diff (every key differing from `current.get(key) is None`)
    is structurally similar enough to a heavily-drifted existing
    resource's diff that a miscategorization is not implausible, and
+
+   **That prediction was correct, and the guard was the wrong response to
+   it.** The live domain system test hit exactly this: the model answered
+   `update` for a brand-new zone, the cross-check fired, and a user's
+   first `plan apply` failed on an internal invariant — non-deterministically,
+   succeeding on retry. The fix (issue &#35;117) is step 7's branch: don't
+   ask. A question whose answer this module already holds is not a
+   question, and guarding a needless guess is strictly worse than not
+   guessing. The cross-check stays as a backstop for the categorizations
+   that *are* still genuinely uncertain. Note the original reasoning
+   below remains sound for those, and
    `apply_plan()` would either crash (`update` on a `None` `state_entry.id`)
    or silently create a duplicate, orphaned CSP resource (`create` on an
    already-tracked one) if it trusted the category blindly. `planner.py`
@@ -513,22 +524,38 @@ next time `plan create` runs against that resource, not here.
      back... even during a bare plan with no changes"). `state_entry is
      None` (brand-new resource) → `current_attributes = {}`,
      `drifted_missing = False` — nothing to refresh yet.
-  7. `entry = planner.plan_resource(key, current_attributes, spec.params,
-     intent_notes=parsed.intent_notes, param_schema=driver.PARAM_SCHEMA,
+  7. **If `state_entry is None`**: `entry = planner.create_entry(key,
+     rationale=...)`, and **no model call is made at all**. Whether a
+     resource is already tracked is this module's own record, so the
+     action is `create` as a matter of fact — there is no diff to
+     categorize (`current_attributes` is `{}`) and nothing to decide.
+     See `specs/planner.md`'s `create_entry()` and issue &#35;117.
+
+     **Otherwise**: `entry = planner.plan_resource(key,
+     current_attributes, spec.params, intent_notes=parsed.intent_notes,
+     param_schema=driver.PARAM_SCHEMA,
      likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
      state_aiform_md_sha256=previous_hash,
      current_aiform_md_sha256=parsed.aiform_md_sha256,
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
      `current_attributes` already reflects step 6's `NON_DIFFABLE_FIELDS`
-     carry-forward when `state_entry is not None` — `plan_resource()`
-     itself needs no awareness of that mechanism at all.
+     carry-forward — `plan_resource()` itself needs no awareness of that
+     mechanism at all.
   8. **Structural cross-check** (judgment call 6): `entry.action ==
      PlanAction.UPDATE and state_entry is None`, or `entry.action ==
      PlanAction.CREATE and state_entry is not None and not
      drifted_missing`, raises `PlanBlockedError` naming `key` and the
      mismatch — a categorization response that disagrees with this
      module's own ground truth about whether the resource is already
-     tracked is never executed, no matter how it was produced. A
+     tracked is never executed, no matter how it was produced.
+
+     Since step 7, the **first** of those two conditions is unreachable
+     by construction: an untracked resource is never categorized, so no
+     model answer exists to disagree. It is deliberately retained rather
+     than deleted — it costs nothing and is the assertion that would
+     catch a future edit reconnecting the two paths. The second remains
+     live: the model can still answer `create` for a resource that *is*
+     tracked. A
      `CREATE` with `state_entry is not None` **and** `drifted_missing`
      is the expected recreate path (§3's refresh mechanism) and is
      never blocked. `NO_OP`/`DESTROY` (the latter never actually

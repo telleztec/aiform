@@ -129,6 +129,28 @@ this resource, or the specific `AIFORM-DELETE-` file that named it) and
 is expected to say so, the same way `categorize_diff()`'s rationale
 always names the field(s) that changed.
 
+### `create_entry(resource_key, rationale) -> PlanEntry`
+
+The exact mirror of `destroy_entry()`, and for the same reason:
+deterministic, zero-LLM, no diff involved. Always returns
+`PlanEntry(resource_key=resource_key, action=PlanAction.CREATE,
+rationale=rationale, likely_replace=False)`.
+
+`likely_replace` is unconditionally `False` — a resource that does not
+exist cannot be replaced, only made.
+
+Called by `orchestrator.py` whenever no state entry is tracked for the
+resource. That is the whole point: "does this resource exist yet" is
+answered by `state.resources.get(key)`, not by a model reading a diff.
+Asking the model instead is what issue &#35;117 was, and the structural
+cross-check that then rejected its answer proves the caller knew all
+along. Note this is strictly narrower than "the resource does not exist
+on the CSP" — a resource that exists but was never tracked is still
+planned as a `create`, and the driver's own `create()` is what discovers
+the collision (`specs/digitalocean_domain.md`'s zone-already-exists case).
+That is unchanged behavior; the plan is what it always was, just reached
+without a model call.
+
 ### `diff_attributes(current, desired, *, unordered_fields=()) -> dict[str, dict[str, Any]]`
 
 Deterministic, zero-LLM. For every key in `desired`, compare against
@@ -169,12 +191,22 @@ The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
    `resource_key`/`intent_notes`/`param_schema`/`likely_replace_fields`/
    `drifted_missing`, and return its result.
 
-`state_aiform_md_sha256=None` (no prior state entry — brand new resource)
-never equals a real hash string, so step 2's condition is always false
-for an untracked resource; combined with `desired_params` producing a
-non-empty diff against an empty/absent `current_attributes` in the
-common case, this reliably routes new resources to `categorize_diff()`
-without a separate "is this new" branch.
+**`plan_resource()` is only ever called for a resource that already has a
+state entry.** An untracked one never reaches it: `orchestrator.py` calls
+`create_entry()` instead, deterministically, because whether a state
+entry exists is a fact it holds rather than one to be inferred. See
+`create_entry()` below and `specs/orchestrator.md`.
+
+An earlier version of this spec said the opposite — that
+`state_aiform_md_sha256=None` never equals a real hash, so step 2's
+condition is always false for an untracked resource, and that this
+"reliably routes new resources to `categorize_diff()` without a separate
+'is this new' branch." Routing them there at all was the defect (issue
+&#35;117): the model was asked to infer "does this exist yet" from the
+diff's shape, and when it guessed `update`, `orchestrator.py`'s
+structural cross-check blocked the plan. The inference could only ever be
+wrong, and it was a billed call on the `plan` hot path to answer a
+question the caller had already answered.
 
 ## Behavior
 
