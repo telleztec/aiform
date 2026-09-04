@@ -691,9 +691,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 # reported even when the command goes on to raise (e.g. a
                 # gate #2 PlanBlockedError after the categorization call
                 # already happened) -- the case where a user most wants to
-                # know what was actually spent. The
-                # close belongs here for its own reason: the pool
-                # llm.build_client hands out is this function's to release.
+                # know what was actually spent. The close belongs here for
+                # its own reason: the pool llm.build_client hands out is
+                # this function's to release.
                 _report_verbose_calls(args, client)
                 client.close()
         return _PLAIN_PLAN_DISPATCH[args.plan_command](args)
