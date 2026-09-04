@@ -454,12 +454,14 @@ DO_API_TIMEOUT_SECONDS = 30
 
 SYSTEM_TEST_ZONE_PREFIX = "systest-"
 SYSTEM_TEST_ZONE_PARENT = "telleztec.com"
-# Lowercase 't'/'z' deliberately: DigitalOcean folds the case of a stored
-# zone name (verified live -- a requested ...T000759Z... came back as
-# ...t000759z...), so unique_zone_name() lowercases at generation and the
-# name DO reports back is byte-identical to the one we asked for. Parsing
-# with the uppercase %Y%m%dT%H%M%SZ that unique_name() emits would raise
-# on every zone the sweep listed, silently leaving every leak in place.
+# Lowercase 't'/'z' to match what unique_zone_name() emits and what
+# DigitalOcean stores (it folds a zone name's case -- a requested
+# ...T000759Z... came back as ...t000759z...). Note this is cosmetic
+# rather than load-bearing on its own: strptime matches format literals
+# case-INsensitively, so the uppercase spelling would parse either
+# spelling too. Keeping generation and parsing in one case is what makes
+# "the name we asked for is the name DO reports" hold exactly, which is
+# what any direct name comparison against DO's listing relies on.
 ZONE_TIMESTAMP_FORMAT = "%Y%m%dt%H%M%Sz"
 _ZONE_TIMESTAMP_LENGTH = 16
 # Mirrors specs/system_test.md's droplet sweep default, for the same
@@ -690,13 +692,38 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     """
     yield
 
-    token = os.environ.get("DIGITALOCEAN_TOKEN")
-    if not token:
+    if not os.environ.get("DIGITALOCEAN_TOKEN"):
+        return
+    # live_token(), not os.environ directly: this is the one code path
+    # that runs on every session, and a URLError/timeout inside
+    # _domain_api() would otherwise put the raw token into the teardown
+    # traceback's frame arguments. The scrub hook would still catch it,
+    # but the whole point of the three layers is that none of them is
+    # relied on alone.
+    token = live_token()
+
+    # This fixture is autouse for the whole of tests/system/, so it runs
+    # on a compute-only session too -- where the token may legitimately
+    # carry no `domain` scope. Listing would then 403 and turn a green
+    # droplet run into a session-teardown ERROR, failing a suite that has
+    # nothing to do with domains. Anything that goes wrong here warns
+    # rather than raises for the same reason: this is a best-effort
+    # backstop for a leak that has already happened, and it must never be
+    # the thing that fails an otherwise-passing run.
+    try:
+        domains = list_domains(token)
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        warnings.warn(
+            f"could not list domains to sweep leaked system-test zones ({exc}) -- "
+            "check by hand for zones named "
+            f"{SYSTEM_TEST_ZONE_PREFIX}*.{SYSTEM_TEST_ZONE_PARENT}",
+            stacklevel=2,
+        )
         return
 
     cutoff = datetime.now(UTC) - timedelta(minutes=SWEEP_MIN_AGE_MINUTES)
     swept = []
-    for domain in list_domains(token):
+    for domain in domains:
         name = domain.get("name", "")
         created = zone_created_at(name)
         if created is None or created > cutoff:
