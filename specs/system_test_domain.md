@@ -532,20 +532,26 @@ loudly, because every hit means the primary teardown failed somewhere.
   and `specs/digitalocean_pagination.md` don't already cover. The sweep's
   own `GET /v2/domains` pagination *is* in scope, because this account
   really does hold other zones.
-- **Fixing the categorization flakiness this suite surfaced.** Running
-  case 12 through `plan apply` produced, on one run and not the next,
-  `PlanBlockedError: … categorization returned 'update' but no state entry
-  is tracked for it` — the `intent-orchestration-model` labelling a
+- **The categorization defect this suite surfaced — fixed, not deferred.**
+  Running case 12 through `plan apply` produced, on one run and not the
+  next, `PlanBlockedError: … categorization returned 'update' but no state
+  entry is tracked for it`: the `intent-orchestration-model` labelling a
   brand-new resource an `update`, which `orchestrator.py` then correctly
-  refuses. That is a real robustness gap in aiform: a user's *first*
-  `plan apply` on any resource can fail this way, with an error that
-  describes an internal invariant rather than anything they can act on,
-  and succeed on retry. It belongs to the planner/orchestrator, not to
-  this suite, and needs its own issue and its own pass — plausibly a
-  deterministic override (an untracked resource cannot be an `update`,
-  whatever the model says) rather than better prompting. This suite works
-  around it by driving `create()` directly in the two cases that depend on
-  reaching it; it does not paper over it anywhere else, and the lifecycle
-  sequence still exercises the normal categorization path throughout.
+  refused. It later hit the lifecycle sequence at case 2 as well, failing
+  a first `plan create` outright.
+
+  That was issue &#35;117, fixed in PR &#35;118 — `orchestrator.py` now plans an
+  untracked or drifted-missing resource as `create` deterministically,
+  without consulting the model, so the guess that could only ever be wrong
+  is no longer made. This suite is what found it, which is the whole
+  argument for running against a live API rather than a mock: the mock
+  answered whatever its author believed.
+
+  Cases 11 and 12 still drive `Driver().create()` directly, and that is
+  now a deliberate scoping choice rather than a workaround. Their subject
+  is `create()`'s rollback semantics, and routing them through the CLI
+  would put an LLM call back on the path to an assertion that has nothing
+  to do with one. The lifecycle sequence exercises the normal
+  categorization path throughout.
 - **Concurrency/locking.** `PLAN.md` §10's known deferred gap; this suite
   runs one sequential scenario.

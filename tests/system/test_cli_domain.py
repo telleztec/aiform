@@ -522,12 +522,15 @@ def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
         # local validation, a declined gate #2 or a credential failure
         # produce, and in each of those create() is never entered while
         # the zone survives for the trivial reason that nothing touched
-        # it. Nor is the CLI path deterministic -- an earlier version of
-        # case 12 failed with "categorization returned 'update' but no
+        # it. A test whose subject is a driver method must also not be
+        # able to pass or fail on an LLM's wording -- an earlier version
+        # of case 12 failed with "categorization returned 'update' but no
         # state entry is tracked for it", never reaching create() at all,
-        # having passed the run before. A test whose subject is a driver
-        # method must not be able to pass or fail on an LLM's wording;
-        # case 9 sets the same precedent for delete().
+        # having passed the run before. That defect is fixed (issue #117,
+        # PR #118), so the CLI path is deterministic again; driving the
+        # driver stays the right scoping anyway, because these assertions
+        # are about create()'s rollback and nothing else. Case 9 sets the
+        # same precedent for delete().
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             do_domain.Driver().create(
                 zone, {"records": BASE_RECORDS}, {"DIGITALOCEAN_TOKEN": token}
@@ -561,14 +564,16 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan():
     zone = unique_zone_name("rollback")
     try:
         # Driven against create() directly, not through `plan apply`, for
-        # the reason spelled out in case 11: the CLI path failed here once
+        # the reason spelled out in case 11. This case is where the #117
+        # categorization defect first surfaced: the CLI path failed here
         # with "categorization returned 'update' but no state entry is
-        # tracked for it" -- blocked before create() ran, on a run whose
+        # tracked for it", blocked before create() ran, on a run whose
         # predecessor had passed. Every assertion below would have been
-        # satisfied by that outcome too (the zone is equally "gone" if it
-        # was never created), so routing this through the model would mean
-        # a regression removing the rollback could go unnoticed for runs
-        # at a time.
+        # satisfied by that outcome too -- the zone is equally "gone" if
+        # it was never created -- so a regression removing the rollback
+        # could have gone unnoticed for runs at a time. #117 is fixed; the
+        # assertions stay pinned to create() so they cannot drift back
+        # into depending on anything upstream of it.
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             do_domain.Driver().create(
                 zone,
