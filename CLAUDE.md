@@ -70,15 +70,14 @@ to make something easier to build.
   deliberate `aiform driver create` flow, not reachable from a normal
   `plan`/`apply` — see `PLAN.md`'s "Driver curation".
 - **`code-review-model`**, default **Claude Opus 5** (`claude-opus-5`):
-  gate #1 — approving a driver before it's trusted for reuse. Live today
-  on one `plan`-time path: an on-disk driver whose sha256 matches no
-  state entry that trusts it. That is both the hand-edited/upgraded
-  driver case *and* a driver never recorded in this project's state —
-  so a brand-new project's first `plan create` pays one such call
-  (`PLAN.md` §9 step 2). Note that only `apply` persists the trusted
-  hash — and only when it actually executes an action — so `plan
-  create` keeps paying that call until then. It is also the gate a
-  draft passes through inside `driver_gen.py`.
+  gate #1 — approving a freshly-drafted driver inside `driver_gen.py`
+  before it's returned. **Not reachable from `plan`/`apply` any more**
+  (issue #119 removed it from that path — see `specs/orchestrator.md`'s
+  `driver_info_for()`): a first `plan create` on a brand-new project now
+  costs zero Anthropic calls. Since `driver_gen.py` has no caller
+  (`CLAUDE.md`'s "on-the-fly generation... abandoned" above), this role
+  is currently exercised by nothing in a normal run — retained for the
+  future `aiform driver create` flow.
 - **`review-orchestration-model`**, default **Claude Opus 5**
   (`claude-opus-5`): gate #2 — reviewing a plan before `apply` executes
   anything destructive.
@@ -143,9 +142,12 @@ to make something easier to build.
   shadowed values, so a global `DIGITALOCEAN_TOKEN` or `ANTHROPIC_API_KEY` must not coexist with it --
   see the comment block in `.envrc`.
 - A driver (`drivers/<provider>/<resource>.py`) that imports `anthropic` or
-  reads `ANTHROPIC_API_KEY` is a hard failure at `code-review-model` review
-  time (gate #1) — this is explicitly one of the review checklist items in
-  `prompts/review_driver.md`.
+  reads `ANTHROPIC_API_KEY` is one of `prompts/review_driver.md`'s review
+  checklist items — a hard failure at `code-review-model` review time
+  inside `driver_gen.py`, for a freshly-drafted driver. For a hand-authored
+  one this check no longer runs at all: issue #119 removed gate #1 from
+  the `plan`/`apply` path, so `PROCESS.md`'s PR-time `/code-review` is now
+  the only enforcement point for a curated driver.
 
 ### State handling
 - Write `.aiform/state.json.backup` before every overwrite of
