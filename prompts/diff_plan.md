@@ -19,17 +19,26 @@ You will receive a JSON object with:
   the driver's own `update()` is the real arbiter at apply time; this is
   a hint about which diffs are risky enough to warrant
   `likely_replace: true` in your answer.
-- `drifted_missing`: `true` if the resource was found in state but no
-  longer exists on the CSP side (deleted out-of-band). This always means
-  the resource needs to be created again, regardless of what `diff`
-  contains.
+- `drifted_missing`: always `false`. Retained for compatibility; see
+  below.
 
-You are **only** asked about resources that aiform is already tracking.
-A resource with no state entry is planned as a `create` by
-`orchestrator.py` without consulting you, so you never have to infer
-"does this exist yet" from the shape of the diff — a `diff` whose every
-`current` is `null` means a tracked resource whose live attributes all
-differ, not a new one.
+You are **only** asked about a resource that aiform is already tracking
+**and** that still exists on the CSP side. `orchestrator.py` decides both
+of those from its own records and never consults you about them:
+
+- no state entry → planned as `create` without asking you;
+- tracked but deleted out-of-band (`drifted_missing`) → planned as
+  `create` without asking you.
+
+So you never have to infer "does this exist yet" from the shape of the
+diff. **A `diff` whose every `current` is `null` is a tracked, live
+resource whose attributes all differ — not a new one.** Both of those
+used to be your call, and getting them wrong is what issue #117 was.
+
+Consequently `"create"` is not a correct answer to any question you will
+be asked here. It remains in the schema, and `orchestrator.py` rejects
+it, but there is no diff you should answer it for: choose between
+`"update"` and `"no-op"`.
 
 Decide exactly one `action` — your choices are `"create"`, `"update"`,
 or `"no-op"` (there is no `"destroy"` option here: a per-resource diff of
@@ -39,9 +48,10 @@ means that field isn't user-managed, not that the whole resource should
 go away; a resource being removed entirely is decided elsewhere, from
 comparing which `.aiform.md` files exist, not from this diff):
 
-- `"create"` — the resource doesn't exist yet, or existed and was
-  deleted out-of-band (`drifted_missing: true`) and needs to be created
-  again.
+- `"create"` — **never correct here.** Both cases it used to cover (the
+  resource doesn't exist yet; it was deleted out-of-band) are settled by
+  `orchestrator.py` before you are called, as described above. Listed
+  only because it remains in the response schema.
 - `"update"` — the resource exists and every changed field in `diff` can
   plausibly be reconciled in place. Set `likely_replace: true` only when
   you believe the driver will actually need to destroy and recreate the

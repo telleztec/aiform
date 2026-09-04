@@ -139,17 +139,23 @@ rationale=rationale, likely_replace=False)`.
 `likely_replace` is unconditionally `False` — a resource that does not
 exist cannot be replaced, only made.
 
-Called by `orchestrator.py` whenever no state entry is tracked for the
-resource. That is the whole point: "does this resource exist yet" is
-answered by `state.resources.get(key)`, not by a model reading a diff.
-Asking the model instead is what issue &#35;117 was, and the structural
-cross-check that then rejected its answer proves the caller knew all
-along. Note this is strictly narrower than "the resource does not exist
-on the CSP" — a resource that exists but was never tracked is still
-planned as a `create`, and the driver's own `create()` is what discovers
-the collision (`specs/digitalocean_domain.md`'s zone-already-exists case).
-That is unchanged behavior; the plan is what it always was, just reached
-without a model call.
+Called by `orchestrator.py` in two cases, both of which it decides from
+its own records rather than by asking a model:
+
+1. **No state entry is tracked** for the resource. "Does this exist yet"
+   is answered by `state.resources.get(key)`, not by a model reading a
+   diff — and the structural cross-check that used to reject the model's
+   answer proves the caller knew all along.
+2. **`drifted_missing`** — tracked, but gone from the provider. It must be
+   recreated whatever the diff contains, which `prompts/diff_plan.md`
+   already stated as a forced answer. A forced answer is not a question.
+
+Case 1 is strictly narrower than "the resource does not exist on the
+CSP": a resource that exists but was never tracked is still planned as a
+`create`, and the driver's own `create()` is what discovers the collision
+(`specs/digitalocean_domain.md`'s zone-already-exists case). That is
+unchanged behavior — the plan is what it always was, just reached without
+a model call.
 
 ### `diff_attributes(current, desired, *, unordered_fields=()) -> dict[str, dict[str, Any]]`
 
@@ -191,22 +197,18 @@ The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
    `resource_key`/`intent_notes`/`param_schema`/`likely_replace_fields`/
    `drifted_missing`, and return its result.
 
-**`plan_resource()` is only ever called for a resource that already has a
-state entry.** An untracked one never reaches it: `orchestrator.py` calls
-`create_entry()` instead, deterministically, because whether a state
-entry exists is a fact it holds rather than one to be inferred. See
-`create_entry()` below and `specs/orchestrator.md`.
-
-An earlier version of this spec said the opposite — that
-`state_aiform_md_sha256=None` never equals a real hash, so step 2's
-condition is always false for an untracked resource, and that this
-"reliably routes new resources to `categorize_diff()` without a separate
-'is this new' branch." Routing them there at all was the defect (issue
-&#35;117): the model was asked to infer "does this exist yet" from the
-diff's shape, and when it guessed `update`, `orchestrator.py`'s
-structural cross-check blocked the plan. The inference could only ever be
-wrong, and it was a billed call on the `plan` hot path to answer a
+**`plan_resource()` is only ever called for a resource that is already
+tracked and still live.** `orchestrator.py` calls `create_entry()`
+instead — see above — for the two cases whose action it already knows: no
+state entry, and `drifted_missing`. Asking the model to infer either from
+the diff's shape is what issue &#35;117 was; the inference could only ever
+be wrong, and cost a billed call on the `plan` hot path to answer a
 question the caller had already answered.
+
+`drifted_missing` is therefore always `False` at this call site today.
+The parameter is retained because this module is specified independently
+of its one caller and the no-op short-circuit's condition is still
+correct with it.
 
 ## Behavior
 
@@ -227,12 +229,14 @@ question the caller had already answered.
   response is a bug in the model call, not a case this module recovers
   from).
 - `plan_resource()`'s no-op rationale is a fixed, deterministic string
-  (no LLM call, so no LLM-authored rationale) — one of two `PlanEntry`
-  shapes in the system never carrying a model-generated explanation; the
-  other is `destroy_entry()`'s, which takes its rationale as a caller-
-  supplied argument instead of fixing one string, since the caller (not
-  this module) is the one who knows which of the two deletion mechanisms
-  triggered it.
+  (no LLM call, so no LLM-authored rationale) — one of three `PlanEntry`
+  shapes in the system never carrying a model-generated explanation. The
+  other two are `destroy_entry()`'s and `create_entry()`'s, which both
+  take their rationale as a caller-supplied argument instead of fixing
+  one string, since the caller (not this module) is the one who knows
+  which mechanism triggered it — which of the two deletion paths for
+  `destroy_entry()`, and untracked vs. drifted-missing for
+  `create_entry()`.
 - `destroy_entry()` doesn't validate that `resource_key` actually
   corresponds to a tracked resource, or that `rationale` is non-empty —
   `PlanEntry`'s own field constraints are the only validation applied;

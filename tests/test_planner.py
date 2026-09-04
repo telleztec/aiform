@@ -57,6 +57,37 @@ def categorization_response(
 RESOURCE_KEY = "digitalocean.compute.telleztec-app-01"
 
 
+class TestCreateEntry:
+    def test_returns_create_plan_entry(self):
+        entry = planner.create_entry(
+            RESOURCE_KEY, "no state entry is tracked for this resource yet"
+        )
+
+        assert isinstance(entry, PlanEntry)
+        assert entry.resource_key == RESOURCE_KEY
+        assert entry.action == PlanAction.CREATE
+        assert entry.rationale == "no state entry is tracked for this resource yet"
+        assert entry.likely_replace is False
+
+    def test_preserves_caller_supplied_rationale_verbatim(self):
+        # The caller distinguishes untracked from drifted-missing; this
+        # module only records which it said.
+        rationale = "tracked resource no longer exists on the provider side"
+        assert planner.create_entry(RESOURCE_KEY, rationale).rationale == rationale
+
+    def test_likely_replace_is_always_false(self):
+        # A resource that does not exist cannot be replaced, only made.
+        for rationale in ("untracked", "drifted missing", ""):
+            assert planner.create_entry(RESOURCE_KEY, rationale).likely_replace is False
+
+    def test_makes_no_llm_call(self, prompts_dir: Path):
+        # No client passed at all -- if create_entry() ever fell through
+        # to an LLM call it would blow up constructing a real
+        # anthropic.Anthropic() rather than silently succeeding. Same
+        # guard as destroy_entry()'s and plan_resource()'s no-op test.
+        assert planner.create_entry(RESOURCE_KEY, "untracked").action == PlanAction.CREATE
+
+
 class TestDestroyEntry:
     def test_returns_destroy_plan_entry(self):
         entry = planner.destroy_entry(RESOURCE_KEY, "explicitly requested via aiform destroy")
@@ -438,12 +469,26 @@ class TestPlanResource:
         assert len(client.messages.calls) == 1
         assert entry.action == PlanAction.CREATE
 
-    def test_new_resource_with_no_prior_state_hash_is_categorized(self, prompts_dir: Path):
-        client = FakeClient([categorization_response(action="create")])
+    def test_a_null_prior_hash_still_reaches_categorization(self, prompts_dir: Path):
+        """A `state_aiform_md_sha256=None` argument does not itself
+        short-circuit anything -- it just never matches, so the no-op
+        branch is skipped and the call goes out.
+
+        This is a statement about this function in isolation, NOT about
+        how new resources are planned. `orchestrator.py` never calls
+        plan_resource() for an untracked resource at all: it uses
+        create_entry(), because whether a state entry exists is its own
+        record rather than something to infer from a diff (issue #117).
+        This test previously asserted the opposite as the sanctioned
+        path, under a name that read as though a new resource ought to be
+        categorized here -- which is how #117 would get reinstated by
+        someone reading the planner tests for guidance.
+        """
+        client = FakeClient([categorization_response(action="update")])
 
         entry = planner.plan_resource(
             RESOURCE_KEY,
-            {},
+            {"region": "nyc3"},
             {"region": "sfo3", "size": "s-1vcpu-2gb"},
             intent_notes=[],
             param_schema={},
@@ -453,7 +498,7 @@ class TestPlanResource:
             client=client,
         )
 
-        assert entry.action == PlanAction.CREATE
+        assert entry.action == PlanAction.UPDATE
         assert len(client.messages.calls) == 1
 
     def test_no_op_rationale_is_deterministic_not_llm_authored(self, prompts_dir: Path):

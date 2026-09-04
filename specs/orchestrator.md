@@ -112,17 +112,6 @@ left to drift into whatever the first implementation happens to do):
    resource's diff (every key differing from `current.get(key) is None`)
    is structurally similar enough to a heavily-drifted existing
    resource's diff that a miscategorization is not implausible, and
-
-   **That prediction was correct, and the guard was the wrong response to
-   it.** The live domain system test hit exactly this: the model answered
-   `update` for a brand-new zone, the cross-check fired, and a user's
-   first `plan apply` failed on an internal invariant — non-deterministically,
-   succeeding on retry. The fix (issue &#35;117) is step 7's branch: don't
-   ask. A question whose answer this module already holds is not a
-   question, and guarding a needless guess is strictly worse than not
-   guessing. The cross-check stays as a backstop for the categorizations
-   that *are* still genuinely uncertain. Note the original reasoning
-   below remains sound for those, and
    `apply_plan()` would either crash (`update` on a `None` `state_entry.id`)
    or silently create a duplicate, orphaned CSP resource (`create` on an
    already-tracked one) if it trusted the category blindly. `planner.py`
@@ -145,6 +134,24 @@ left to drift into whatever the first implementation happens to do):
    entry — without this exemption the check would block the one
    recreate flow the refresh mechanism exists to enable. See
    `build_create_plan()`'s step 8 in Interface below.
+
+   **The prediction above came true, and the guard was the wrong answer
+   to it** (issue &#35;117). The live domain system test hit exactly the
+   miscategorization this paragraph anticipated: the model answered
+   `update` for a brand-new zone, the cross-check fired, and a user's
+   first `plan apply` failed on an internal invariant —
+   non-deterministically, succeeding on retry. Guarding a needless guess
+   is strictly worse than not guessing, so step 7 no longer asks: an
+   untracked or drifted-missing resource is `create` by construction.
+   That also closes the sharper hole this paragraph missed — nothing
+   here catches `update` on a *drifted-missing* resource (the first
+   condition needs `state_entry is None`, the second needs `CREATE`), so
+   a wrong answer there reached `apply_plan()` and called
+   `driver.update()` against an id that no longer exists.
+
+   The cross-check itself stays, for the categorizations that remain
+   genuinely open. Its `UPDATE and state_entry is None` half is now
+   unreachable; the `CREATE` half is still live and still reachable.
 
 7. **The single-resource `review-orchestration-model` re-review triggered
    by `DriverUpdateNotSupported` (`PLAN.md` §5 apply step 3) is *not*
@@ -524,12 +531,26 @@ next time `plan create` runs against that resource, not here.
      back... even during a bare plan with no changes"). `state_entry is
      None` (brand-new resource) → `current_attributes = {}`,
      `drifted_missing = False` — nothing to refresh yet.
-  7. **If `state_entry is None`**: `entry = planner.create_entry(key,
-     rationale=...)`, and **no model call is made at all**. Whether a
-     resource is already tracked is this module's own record, so the
-     action is `create` as a matter of fact — there is no diff to
-     categorize (`current_attributes` is `{}`) and nothing to decide.
-     See `specs/planner.md`'s `create_entry()` and issue &#35;117.
+  7. **If `state_entry is None`, or the refresh reports
+     `drifted_missing`**: `entry = planner.create_entry(key,
+     rationale=...)`, and **no categorization call is made**. Both are
+     `create` as a matter of this module's own records — an untracked
+     resource has no diff to categorize (`current_attributes` is `{}`),
+     and a drifted-missing one must be recreated whatever its diff says,
+     which `prompts/diff_plan.md` already stated as a forced answer. See
+     `specs/planner.md`'s `create_entry()` and issue &#35;117.
+
+     Note the precise claim: **no *categorization* call**, not "no model
+     call at all". `parser.parse_file()` still runs
+     `extract_intent_notes()` earlier in this loop whenever the file's
+     hash changed and its Intent section is non-empty — which for an
+     untracked resource is always, since `previous_hash` is `None`. That
+     call is now wasted work: its `intent_notes` are consumed only by
+     `plan_resource()`, which these two branches skip. Not a regression
+     (the call used to feed the rationale), but a real remaining
+     inefficiency, recurring on every `plan create` until an `apply`
+     persists the hash. Left alone here because it belongs to
+     `specs/parser.md`'s judgment call 2 and wants its own decision.
 
      **Otherwise**: `entry = planner.plan_resource(key,
      current_attributes, spec.params, intent_notes=parsed.intent_notes,
