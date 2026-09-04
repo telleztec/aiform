@@ -730,7 +730,11 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient([approve_response(), categorization_response(action="create")])
+        # Only gate #1 is scripted. This test is named as the brand-new-
+        # resource guard, so it should fail if a categorization call is
+        # ever reintroduced here rather than passing on an unconsumed
+        # scripted response the way it used to.
+        client = FakeClient([approve_response()])
         planned, warnings = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
@@ -743,6 +747,7 @@ class TestBuildCreatePlan:
         assert pr.driver_info is not None
         assert pr.credentials == {"DIGITALOCEAN_TOKEN": "dop_v1_test"}
         assert warnings == []
+        assert len(client.messages.calls) == 1
 
     def test_existing_resource_no_op_when_unchanged_zero_llm_calls(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -971,9 +976,24 @@ class TestBuildCreatePlan:
         assert planned[0].state_entry == entry
         assert planned[0].entry.action == PlanAction.DESTROY
 
-    def test_structural_cross_check_blocks_update_with_no_state_entry(
+    def test_untracked_resource_is_planned_create_without_asking_the_model(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
+        """Replaces test_structural_cross_check_blocks_update_with_no_state_entry,
+        which asserted a PlanBlockedError for this exact scenario.
+
+        That test encoded issue #117 as intended behavior: it scripted the
+        model to answer 'update' for an untracked resource and required
+        the plan to be blocked. But the model was only answering because
+        it had been asked, and it was asked a question the caller had
+        already answered -- state.resources.get(key) is None. On a live
+        run the model really did answer 'update' for a brand-new domain
+        resource, and a user's first `plan apply` failed with an error
+        describing an internal invariant.
+
+        The model is still scripted to answer 'update' here. It must not
+        matter, because it must never be consulted.
+        """
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
         aiform_md = tmp_path / "app.aiform.md"
@@ -982,8 +1002,39 @@ class TestBuildCreatePlan:
         state.save(state.State(), state_path)
 
         client = FakeClient([approve_response(), categorization_response(action="update")])
-        with pytest.raises(PlanBlockedError):
-            orchestrator.build_create_plan([aiform_md], state_path=state_path, client=client)
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert [p.entry.action for p in planned] == [PlanAction.CREATE]
+        assert planned[0].entry.likely_replace is False
+        # Gate #1's driver review is the only call that may run. A second
+        # call means the categorization request went out anyway, which is
+        # the regression this guards -- the zero-diff no-op short-circuit
+        # has the same "cheap path makes no LLM call" property.
+        assert len(client.messages.calls) == 1
+
+    def test_untracked_resource_plans_create_even_with_no_scripted_categorization(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        """The stronger form: script gate #1 and nothing else. If the
+        categorization call is ever reattempted, FakeMessages.create()
+        raises IndexError off the empty response list rather than
+        silently reusing a stale answer."""
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([approve_response()])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.CREATE
+        assert planned[0].state_entry is None
 
     def test_structural_cross_check_blocks_create_with_existing_untracked_missing_state(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1005,9 +1056,22 @@ class TestBuildCreatePlan:
         with pytest.raises(PlanBlockedError):
             orchestrator.build_create_plan([aiform_md], state_path=state_path, client=client)
 
-    def test_structural_cross_check_allows_create_when_drifted_missing(
+    def test_drifted_missing_is_planned_create_without_asking_the_model(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
+        """A tracked resource that no longer exists on the provider side
+        must be recreated whatever its diff says -- prompts/diff_plan.md
+        already called that answer forced. Asking anyway was the sharper
+        half of issue #117: neither structural cross-check fires for
+        'update' on a drifted-missing resource (the first needs
+        state_entry is None, the second needs CREATE), so a wrong answer
+        reached apply_plan() and called driver.update() against an id
+        that no longer exists -- failing mid-apply rather than at plan
+        time.
+
+        The model is scripted to answer 'update' here. It must not
+        matter, because it must never be asked.
+        """
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         driver_file = write_driver(drivers_dir, "digitalocean", "compute")
         aiform_md = tmp_path / "app.aiform.md"
@@ -1016,12 +1080,16 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        client = FakeClient([categorization_response(action="create")])
+        client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=client
         )
 
         assert planned[0].entry.action == PlanAction.CREATE
+        assert planned[0].entry.likely_replace is False
+        # The driver hash is already trusted by the state entry, so gate
+        # #1 is reused and no call should go out at all.
+        assert client.messages.calls == []
 
     def test_missing_credentials_raises_plan_blocked_error(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1082,19 +1150,19 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        client = FakeClient(
-            [
-                approve_response(),
-                categorization_response(action="create"),
-                categorization_response(action="create"),
-            ]
-        )
+        client = FakeClient([approve_response()])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md_1, aiform_md_2], state_path=state_path, client=client
         )
 
         assert len(planned) == 2
-        assert len(client.messages.calls) == 3
+        # One call total: gate #1 reviews the shared driver once, and both
+        # resources are untracked so neither is categorized. This asserted
+        # 3 before -- gate #1 plus a categorization per file -- which was
+        # the behavior issue #117 removed. What the test is actually for
+        # is that the driver and credentials are cached across files, and
+        # a single gate #1 call for two files still shows exactly that.
+        assert len(client.messages.calls) == 1
 
     def test_state_saved_with_refreshed_attributes(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch

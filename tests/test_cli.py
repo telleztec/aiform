@@ -1375,13 +1375,18 @@ class TestPlanApply:
         write_driver(drivers_dir, "digitalocean", "compute")
         write_aiform_md(project_dir / "app.aiform.md")
         state_file = project_dir / ".aiform" / "state.json"
-        patch_client(monkeypatch, [approve_response(), categorization_response(action="create")])
+        patch_client(monkeypatch, [approve_response()])
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
 
         err = capsys.readouterr().err
         assert code == 0
-        assert "[verbose] 2 Anthropic API call(s) made" in err
+        # 1, not 2: this resource is untracked, so gate #1's driver review
+        # is the only model call. The categorization call this used to
+        # count was asking whether an untracked resource is a create --
+        # see issue #117. test_apply_verbose_reports_call_count_even_when_blocked
+        # still covers a multi-call count, on a tracked resource.
+        assert "[verbose] 1 Anthropic API call(s) made" in err
 
     def test_verbose_promotes_structured_log_level_to_info(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys

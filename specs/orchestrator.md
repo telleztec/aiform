@@ -129,11 +129,32 @@ left to drift into whatever the first implementation happens to do):
    module's own state-lookup logic. The `not drifted_missing` exemption
    on the `CREATE` side is load-bearing, not incidental: `PLAN.md` §3's
    refresh mechanism sets `drifted_missing: true` specifically so a
-   tracked-but-vanished resource's diff legitimately categorizes as
-   `create` (recreate) while `state_entry` is still the old, stale
-   entry — without this exemption the check would block the one
-   recreate flow the refresh mechanism exists to enable. See
-   `build_create_plan()`'s step 8 in Interface below.
+   tracked-but-vanished resource is planned as a `create` (recreate)
+   while `state_entry` is still the old, stale entry — without this
+   exemption the check would block the one recreate flow the refresh
+   mechanism exists to enable. (Before issue &#35;117 that `create` was the
+   model's categorization of the diff; it is now `create_entry()`'s, per
+   step 7. The exemption is needed either way, and for the same
+   resource-state reason.) See `build_create_plan()`'s step 8 in
+   Interface below.
+
+   **The prediction above came true, and the guard was the wrong answer
+   to it** (issue &#35;117). The live domain system test hit exactly the
+   miscategorization this paragraph anticipated: the model answered
+   `update` for a brand-new zone, the cross-check fired, and a user's
+   first `plan apply` failed on an internal invariant —
+   non-deterministically, succeeding on retry. Guarding a needless guess
+   is strictly worse than not guessing, so step 7 no longer asks: an
+   untracked or drifted-missing resource is `create` by construction.
+   That also closes the sharper hole this paragraph missed — nothing
+   here catches `update` on a *drifted-missing* resource (the first
+   condition needs `state_entry is None`, the second needs `CREATE`), so
+   a wrong answer there reached `apply_plan()` and called
+   `driver.update()` against an id that no longer exists.
+
+   The cross-check itself stays, for the categorizations that remain
+   genuinely open. Its `UPDATE and state_entry is None` half is now
+   unreachable; the `CREATE` half is still live and still reachable.
 
 7. **The single-resource `review-orchestration-model` re-review triggered
    by `DriverUpdateNotSupported` (`PLAN.md` §5 apply step 3) is *not*
@@ -511,27 +532,70 @@ next time `plan create` runs against that resource, not here.
      credentials)`, and `state_entry.attributes`/`last_refreshed_at` are
      updated in place on the in-memory `state` object (§3's "written
      back... even during a bare plan with no changes"). `state_entry is
-     None` (brand-new resource) → `current_attributes = {}`,
-     `drifted_missing = False` — nothing to refresh yet.
-  7. `entry = planner.plan_resource(key, current_attributes, spec.params,
-     intent_notes=parsed.intent_notes, param_schema=driver.PARAM_SCHEMA,
+     None` (brand-new resource) → nothing to refresh, and no
+     `current_attributes` is built at all: step 7 takes the
+     `create_entry()` path, which needs no diff. Only
+     `drifted_missing = False` is bound, so step 8's cross-check has the
+     name available.
+  7. **If `state_entry is None`, or the refresh reports
+     `drifted_missing`**: `entry = planner.create_entry(key,
+     rationale=...)`, and **no categorization call is made**. Both are
+     `create` as a matter of this module's own records — for an
+     untracked resource no diff is built at all (step 6), and a
+     drifted-missing one must be recreated whatever its diff says,
+     which `prompts/diff_plan.md` already stated as a forced answer. See
+     `specs/planner.md`'s `create_entry()` and issue &#35;117.
+
+     Note the precise claim: **no *categorization* call**, not "no model
+     call at all". `parser.parse_file()` still runs
+     `extract_intent_notes()` earlier in this loop whenever the file's
+     hash changed and its Intent section is non-empty — which for an
+     untracked resource is always, since `previous_hash` is `None`. That
+     call is now wasted work: its `intent_notes` are consumed only by
+     `plan_resource()`, which these two branches skip. Not a regression
+     (the call used to feed the rationale), but a real remaining
+     inefficiency, recurring on every `plan create` until an `apply`
+     persists the hash. Left alone here because it belongs to
+     `specs/parser.md`'s judgment call 2 and wants its own decision.
+
+     **Otherwise**: `entry = planner.plan_resource(key,
+     current_attributes, spec.params, intent_notes=parsed.intent_notes,
+     param_schema=driver.PARAM_SCHEMA,
      likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
      state_aiform_md_sha256=previous_hash,
      current_aiform_md_sha256=parsed.aiform_md_sha256,
      drifted_missing=drifted_missing, client=client, llm_config=llm_config)`.
      `current_attributes` already reflects step 6's `NON_DIFFABLE_FIELDS`
-     carry-forward when `state_entry is not None` — `plan_resource()`
-     itself needs no awareness of that mechanism at all.
+     carry-forward — `plan_resource()` itself needs no awareness of that
+     mechanism at all.
   8. **Structural cross-check** (judgment call 6): `entry.action ==
      PlanAction.UPDATE and state_entry is None`, or `entry.action ==
      PlanAction.CREATE and state_entry is not None and not
      drifted_missing`, raises `PlanBlockedError` naming `key` and the
      mismatch — a categorization response that disagrees with this
      module's own ground truth about whether the resource is already
-     tracked is never executed, no matter how it was produced. A
-     `CREATE` with `state_entry is not None` **and** `drifted_missing`
-     is the expected recreate path (§3's refresh mechanism) and is
-     never blocked. `NO_OP`/`DESTROY` (the latter never actually
+     tracked is never executed, no matter how it was produced.
+
+     Since step 7, the **first** of those two conditions is unreachable
+     by construction: an untracked resource is never categorized, so no
+     model answer exists to disagree. It is deliberately retained rather
+     than deleted — it costs nothing and states the invariant plainly.
+     It is **not**, however, what would catch a regression here:
+     unreachable code cannot fail a test. The call-count assertions in
+     `tests/test_orchestrator.py` are what actually guard the branch.
+     The second condition remains live and reachable: the model can
+     still answer `create` for a resource that *is* tracked and present.
+
+     A `CREATE` with `state_entry is not None` **and**
+     `drifted_missing` is never blocked, and since step 7 that
+     combination no longer arrives from the model at all — it is what
+     `planner.create_entry()` itself produces for a drifted-missing
+     resource, on a state entry that is still tracked (and still
+     stale). The `not drifted_missing` exemption is therefore still
+     load-bearing, but for a different reason than it was: it now
+     admits this module's *own* deterministic `CREATE` rather than a
+     model's categorization of the recreate path.
+     `NO_OP`/`DESTROY` (the latter never actually
      returned by `plan_resource()`, per `specs/planner.md`) need no
      check here — `NO_OP` is only ever returned when the no-op
      short-circuit already confirmed `current_attributes`/`desired_params`

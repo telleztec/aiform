@@ -45,6 +45,23 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry:
     )
 
 
+def create_entry(resource_key: str, rationale: str) -> PlanEntry:
+    # The mirror of destroy_entry(), for the case where no state entry is
+    # tracked. "Does this resource exist yet" is answered by
+    # state.resources.get(key), so it is not a question for the
+    # intent-orchestration-model -- it used to be asked anyway, and
+    # orchestrator.py then rejected the answer whenever the model guessed
+    # 'update', blocking a user's first plan on an internal invariant.
+    # likely_replace is always False: a resource that does not exist
+    # cannot be replaced, only made.
+    return PlanEntry(
+        resource_key=resource_key,
+        action=PlanAction.CREATE,
+        rationale=rationale,
+        likely_replace=False,
+    )
+
+
 def diff_attributes(
     current: dict[str, Any],
     desired: dict[str, Any],

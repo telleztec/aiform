@@ -354,29 +354,67 @@ def build_create_plan(
                 raise PlanBlockedError(str(exc)) from exc
         credentials = credentials_cache[resource_spec.provider]
 
-        if state_entry is not None:
+        # The model is asked to categorize only when the answer is
+        # genuinely open. Both `create` cases below are settled by this
+        # module's own records, so asking about them means asking a
+        # question whose answer is already held -- issue #117, where the
+        # model answered 'update' for a brand-new resource and the
+        # cross-check below then blocked a user's first `plan apply` on
+        # an internal invariant they could not act on.
+        if state_entry is None:
+            # Nothing to refresh and no diff to build: create_entry()
+            # takes only the key and a rationale. drifted_missing is
+            # still bound because the cross-check below names it -- the
+            # `and` short-circuits before reading it on this path, but
+            # leaving it unbound would be a trap for the next edit.
+            drifted_missing = False
+            entry = planner.create_entry(
+                key, rationale="no state entry is tracked for this resource yet"
+            )
+        else:
             current_attributes, drifted_missing = refresh_resource(driver, state_entry, credentials)
             state_entry.attributes = current_attributes
             state_entry.last_refreshed_at = datetime.now(UTC)
-        else:
-            current_attributes = {}
-            drifted_missing = False
 
-        entry = planner.plan_resource(
-            key,
-            current_attributes,
-            resource_spec.params,
-            intent_notes=parsed.intent_notes,
-            param_schema=driver.PARAM_SCHEMA,
-            likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
-            unordered_fields=driver.UNORDERED_FIELDS,
-            state_aiform_md_sha256=previous_hash,
-            current_aiform_md_sha256=parsed.aiform_md_sha256,
-            drifted_missing=drifted_missing,
-            client=client,
-            llm_config=llm_config,
-        )
+            if drifted_missing:
+                # Tracked, but gone from the CSP: it must be recreated,
+                # whatever the diff says. prompts/diff_plan.md already
+                # told the model this answer was forced ("always means the
+                # resource needs to be created again, regardless of what
+                # `diff` contains") -- a forced answer is not a question.
+                # Left asked, this was the sharper half of #117: neither
+                # cross-check below fires for `update` on a drifted
+                # resource, so a wrong answer reached apply_plan() and
+                # called driver.update() against an id that no longer
+                # exists, failing mid-apply rather than at plan time.
+                entry = planner.create_entry(
+                    key, rationale="tracked resource no longer exists on the provider side"
+                )
+            else:
+                entry = planner.plan_resource(
+                    key,
+                    current_attributes,
+                    resource_spec.params,
+                    intent_notes=parsed.intent_notes,
+                    param_schema=driver.PARAM_SCHEMA,
+                    likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
+                    unordered_fields=driver.UNORDERED_FIELDS,
+                    state_aiform_md_sha256=previous_hash,
+                    current_aiform_md_sha256=parsed.aiform_md_sha256,
+                    drifted_missing=drifted_missing,
+                    client=client,
+                    llm_config=llm_config,
+                )
 
+        # The first check is unreachable by construction since the branch
+        # above -- an untracked resource is never categorized, so there is
+        # no model answer to disagree with. Kept rather than deleted
+        # because it costs nothing and states the invariant plainly; note
+        # it is NOT what would catch a regression here, since unreachable
+        # code cannot fail a test. The call-count assertions in
+        # tests/test_orchestrator.py are what actually guard the branch.
+        # The second check is still live and still reachable: the model
+        # can answer 'create' for a resource that IS tracked and present.
         if entry.action == PlanAction.UPDATE and state_entry is None:
             raise PlanBlockedError(
                 f"{key}: categorization returned 'update' but no state entry is tracked for it"

@@ -129,6 +129,34 @@ this resource, or the specific `AIFORM-DELETE-` file that named it) and
 is expected to say so, the same way `categorize_diff()`'s rationale
 always names the field(s) that changed.
 
+### `create_entry(resource_key, rationale) -> PlanEntry`
+
+The exact mirror of `destroy_entry()`, and for the same reason:
+deterministic, zero-LLM, no diff involved. Always returns
+`PlanEntry(resource_key=resource_key, action=PlanAction.CREATE,
+rationale=rationale, likely_replace=False)`.
+
+`likely_replace` is unconditionally `False` — a resource that does not
+exist cannot be replaced, only made.
+
+Called by `orchestrator.py` in two cases, both of which it decides from
+its own records rather than by asking a model:
+
+1. **No state entry is tracked** for the resource. "Does this exist yet"
+   is answered by `state.resources.get(key)`, not by a model reading a
+   diff — and the structural cross-check that used to reject the model's
+   answer proves the caller knew all along.
+2. **`drifted_missing`** — tracked, but gone from the provider. It must be
+   recreated whatever the diff contains, which `prompts/diff_plan.md`
+   already stated as a forced answer. A forced answer is not a question.
+
+Case 1 is strictly narrower than "the resource does not exist on the
+CSP": a resource that exists but was never tracked is still planned as a
+`create`, and the driver's own `create()` is what discovers the collision
+(`specs/digitalocean_domain.md`'s zone-already-exists case). That is
+unchanged behavior — the plan is what it always was, just reached without
+a model call.
+
 ### `diff_attributes(current, desired, *, unordered_fields=()) -> dict[str, dict[str, Any]]`
 
 Deterministic, zero-LLM. For every key in `desired`, compare against
@@ -169,12 +197,18 @@ The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
    `resource_key`/`intent_notes`/`param_schema`/`likely_replace_fields`/
    `drifted_missing`, and return its result.
 
-`state_aiform_md_sha256=None` (no prior state entry — brand new resource)
-never equals a real hash string, so step 2's condition is always false
-for an untracked resource; combined with `desired_params` producing a
-non-empty diff against an empty/absent `current_attributes` in the
-common case, this reliably routes new resources to `categorize_diff()`
-without a separate "is this new" branch.
+**`plan_resource()` is only ever called for a resource that is already
+tracked and still live.** `orchestrator.py` calls `create_entry()`
+instead — see above — for the two cases whose action it already knows: no
+state entry, and `drifted_missing`. Asking the model to infer either from
+the diff's shape is what issue &#35;117 was; the inference could only ever
+be wrong, and cost a billed call on the `plan` hot path to answer a
+question the caller had already answered.
+
+`drifted_missing` is therefore always `False` at this call site today.
+The parameter is retained because this module is specified independently
+of its one caller and the no-op short-circuit's condition is still
+correct with it.
 
 ## Behavior
 
@@ -195,12 +229,14 @@ without a separate "is this new" branch.
   response is a bug in the model call, not a case this module recovers
   from).
 - `plan_resource()`'s no-op rationale is a fixed, deterministic string
-  (no LLM call, so no LLM-authored rationale) — one of two `PlanEntry`
-  shapes in the system never carrying a model-generated explanation; the
-  other is `destroy_entry()`'s, which takes its rationale as a caller-
-  supplied argument instead of fixing one string, since the caller (not
-  this module) is the one who knows which of the two deletion mechanisms
-  triggered it.
+  (no LLM call, so no LLM-authored rationale) — one of three `PlanEntry`
+  shapes in the system never carrying a model-generated explanation. The
+  other two are `destroy_entry()`'s and `create_entry()`'s, which both
+  take their rationale as a caller-supplied argument instead of fixing
+  one string, since the caller (not this module) is the one who knows
+  which mechanism triggered it — which of the two deletion paths for
+  `destroy_entry()`, and untracked vs. drifted-missing for
+  `create_entry()`.
 - `destroy_entry()` doesn't validate that `resource_key` actually
   corresponds to a tracked resource, or that `rationale` is non-empty —
   `PlanEntry`'s own field constraints are the only validation applied;

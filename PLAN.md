@@ -854,10 +854,11 @@ class Driver(ResourceDriver):
    **zero LLM calls**. This is what makes the second-and-later `plan`
    runs cheap.
 6. **Categorize with the `intent-orchestration-model`, only when
-   there's something to interpret** (a real diff, a `drifted_missing`
-   resource, or a changed aiform.md file): one call passing the raw
-   diff, `intent_notes`, and the driver's `PARAM_SCHEMA` /
-   `LIKELY_REPLACE_FIELDS`. It returns a `PlanAction` (`create` /
+   there's something to interpret** (a real diff, or a changed
+   aiform.md file, on a resource that is tracked and still live): one
+   call passing the raw diff, `intent_notes`, and the driver's
+   `PARAM_SCHEMA` / `LIKELY_REPLACE_FIELDS`. It returns a `PlanAction`
+   (`create` /
    `update` / `no-op` — **not** `destroy`;
    `PLAN_CATEGORIZATION_SCHEMA`'s `action` enum omits it entirely,
    since a diff has no structural basis to conclude a resource should
@@ -867,6 +868,18 @@ class Driver(ResourceDriver):
    "Resource deletion" above) skips this step entirely: its
    `PlanEntry.action` is `destroy`, set the moment the destroy intent
    is identified, zero LLM calls either way.
+
+   **Two more cases skip it, for the same reason** (issue #117): a
+   resource with no state entry, and a tracked resource that has
+   `drifted_missing`. Both are `create` as a matter of this project's
+   own records, so `orchestrator.py` sets `PlanEntry.action` directly
+   via `planner.create_entry()` rather than asking. Categorization is
+   for questions whose answer is genuinely open; asking one whose
+   answer is already held produced a guess that could only be wrong,
+   and a structural cross-check that then failed the plan. `create` is
+   therefore no longer a correct answer from this model at all — it
+   stays in the enum, and the cross-check rejects it, but nothing
+   should elicit it.
 7. **Print the plan** and persist refreshed state.
 
 **A state-tracked resource with no corresponding file this run is left
@@ -1183,8 +1196,10 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    itself persists no driver-trust record — the approval rides on the
    plan and is written to state by step 3's `apply`, so re-running
    `plan create` before step 3 pays the gate #1 call again. Diff shows
-   `create` (step 6's `intent-orchestration-model` categorization
-   call).
+   `create` — set directly by `orchestrator.py`, with **no** step 6
+   categorization call, since nothing is tracked for this resource yet
+   (issue #117). An earlier version of this walkthrough attributed the
+   `create` to that call.
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
    is skipped entirely, straight to y/N prompt (or `--yes`). Executes
    `driver.create(name, params, credentials)` — a real DO operation, as
