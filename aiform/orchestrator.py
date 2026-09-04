@@ -362,7 +362,11 @@ def build_create_plan(
         # cross-check below then blocked a user's first `plan apply` on
         # an internal invariant they could not act on.
         if state_entry is None:
-            current_attributes = {}
+            # Nothing to refresh and no diff to build: create_entry()
+            # takes only the key and a rationale. drifted_missing is
+            # still bound because the cross-check below names it -- the
+            # `and` short-circuits before reading it on this path, but
+            # leaving it unbound would be a trap for the next edit.
             drifted_missing = False
             entry = planner.create_entry(
                 key, rationale="no state entry is tracked for this resource yet"

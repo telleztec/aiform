@@ -129,11 +129,14 @@ left to drift into whatever the first implementation happens to do):
    module's own state-lookup logic. The `not drifted_missing` exemption
    on the `CREATE` side is load-bearing, not incidental: `PLAN.md` §3's
    refresh mechanism sets `drifted_missing: true` specifically so a
-   tracked-but-vanished resource's diff legitimately categorizes as
-   `create` (recreate) while `state_entry` is still the old, stale
-   entry — without this exemption the check would block the one
-   recreate flow the refresh mechanism exists to enable. See
-   `build_create_plan()`'s step 8 in Interface below.
+   tracked-but-vanished resource is planned as a `create` (recreate)
+   while `state_entry` is still the old, stale entry — without this
+   exemption the check would block the one recreate flow the refresh
+   mechanism exists to enable. (Before issue &#35;117 that `create` was the
+   model's categorization of the diff; it is now `create_entry()`'s, per
+   step 7. The exemption is needed either way, and for the same
+   resource-state reason.) See `build_create_plan()`'s step 8 in
+   Interface below.
 
    **The prediction above came true, and the guard was the wrong answer
    to it** (issue &#35;117). The live domain system test hit exactly the
@@ -529,8 +532,11 @@ next time `plan create` runs against that resource, not here.
      credentials)`, and `state_entry.attributes`/`last_refreshed_at` are
      updated in place on the in-memory `state` object (§3's "written
      back... even during a bare plan with no changes"). `state_entry is
-     None` (brand-new resource) → `current_attributes = {}`,
-     `drifted_missing = False` — nothing to refresh yet.
+     None` (brand-new resource) → nothing to refresh, and no
+     `current_attributes` is built at all: step 7 takes the
+     `create_entry()` path, which needs no diff. Only
+     `drifted_missing = False` is bound, so step 8's cross-check has the
+     name available.
   7. **If `state_entry is None`, or the refresh reports
      `drifted_missing`**: `entry = planner.create_entry(key,
      rationale=...)`, and **no categorization call is made**. Both are
@@ -573,13 +579,23 @@ next time `plan create` runs against that resource, not here.
      Since step 7, the **first** of those two conditions is unreachable
      by construction: an untracked resource is never categorized, so no
      model answer exists to disagree. It is deliberately retained rather
-     than deleted — it costs nothing and is the assertion that would
-     catch a future edit reconnecting the two paths. The second remains
-     live: the model can still answer `create` for a resource that *is*
-     tracked. A
-     `CREATE` with `state_entry is not None` **and** `drifted_missing`
-     is the expected recreate path (§3's refresh mechanism) and is
-     never blocked. `NO_OP`/`DESTROY` (the latter never actually
+     than deleted — it costs nothing and states the invariant plainly.
+     It is **not**, however, what would catch a regression here:
+     unreachable code cannot fail a test. The call-count assertions in
+     `tests/test_orchestrator.py` are what actually guard the branch.
+     The second condition remains live and reachable: the model can
+     still answer `create` for a resource that *is* tracked and present.
+
+     A `CREATE` with `state_entry is not None` **and**
+     `drifted_missing` is never blocked, and since step 7 that
+     combination no longer arrives from the model at all — it is what
+     `planner.create_entry()` itself produces for a drifted-missing
+     resource, on a state entry that is still tracked (and still
+     stale). The `not drifted_missing` exemption is therefore still
+     load-bearing, but for a different reason than it was: it now
+     admits this module's *own* deterministic `CREATE` rather than a
+     model's categorization of the recreate path.
+     `NO_OP`/`DESTROY` (the latter never actually
      returned by `plan_resource()`, per `specs/planner.md`) need no
      check here — `NO_OP` is only ever returned when the no-op
      short-circuit already confirmed `current_attributes`/`desired_params`

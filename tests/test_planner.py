@@ -486,10 +486,17 @@ class TestPlanResource:
         """
         client = FakeClient([categorization_response(action="update")])
 
+        # The diff is EMPTY on purpose. With a non-empty one the no-op
+        # branch fails on `not diff` and the hash is never compared, so
+        # the test would pass identically even if None did match -- it
+        # would not isolate the property its name claims. Empty diff plus
+        # a mismatched hash makes the hash the only reason the call goes
+        # out.
+        params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
         entry = planner.plan_resource(
             RESOURCE_KEY,
-            {"region": "nyc3"},
-            {"region": "sfo3", "size": "s-1vcpu-2gb"},
+            dict(params),
+            params,
             intent_notes=[],
             param_schema={},
             likely_replace_fields=[],
