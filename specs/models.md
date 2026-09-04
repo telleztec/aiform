@@ -216,8 +216,13 @@ class LoggingConfig(BaseModel):
 
 ### `DriverReview`
 
-The persisted record of a gate #1 (`code-review-model`) review (`PLAN.md`
-§3's nested `code_review` object, §5 step 3c's `DRIVER_REVIEW_SCHEMA`).
+The record of a `code-review-model` review (`PLAN.md` §5 step 3c's
+`DRIVER_REVIEW_SCHEMA`). **Not persisted anywhere any more** — `plan`/
+`apply` no longer reviews a driver at all (issue #119's resolution; see
+`specs/orchestrator.md`'s `driver_info_for()`). `driver_gen.py` is the
+sole remaining caller of `llm.review_driver()`, and its `DriverReview` is
+consumed in-process, at development time, never written to
+`.aiform/state.json`.
 
 ```python
 class DriverReview(BaseModel):
@@ -233,11 +238,10 @@ class DriverReview(BaseModel):
   rule from §5 step 3d stated as a structural invariant instead of
   something every caller has to remember to check.
 - `reviewed_at` / `model` are stamped by the code calling `llm.review_driver()`,
-  not part of `DRIVER_REVIEW_SCHEMA`'s raw structured-output shape —
-  `DriverReview` is the *persisted* record, one step downstream of the
-  raw API response. `model` is whatever `.aiform/config.yaml`'s
-  `llm.code_review` entry resolved to at review time (default
-  `claude-opus-5`), not a hardcoded string.
+  not part of `DRIVER_REVIEW_SCHEMA`'s raw structured-output shape.
+  `model` is whatever `.aiform/config.yaml`'s `llm.code_review` entry
+  resolved to at review time (default `claude-opus-5`), not a hardcoded
+  string.
 
 ### `KeyState`, `KeyCheck`
 
@@ -281,22 +285,28 @@ class KeyCheck(BaseModel):
 Not explicitly named in `PLAN.md` §1's repo-layout comment — that
 comment lists `ResourceSpec, PlanAction, PlanEntry, StateEntry,
 DriverReview` as the file's contents, but §3's state schema shows a
-nested `"driver": {"path", "sha256", "generated_at", "code_review"}`
-object that `DriverReview` alone doesn't cover (no `path`/`sha256`/
-`generated_at`). Confirmed as a genuine gap, not a duplicate — this is
-a sixth model, added to hold that nesting:
+nested `"driver": {"path", "sha256", "generated_at"}` object that
+`DriverReview` alone doesn't cover (no `path`/`sha256`/`generated_at`).
+Confirmed as a genuine gap, not a duplicate — this is a sixth model,
+added to hold that nesting:
 
 ```python
 class DriverInfo(BaseModel):
     path: str
     sha256: str
     generated_at: datetime
-    code_review: DriverReview
 ```
 
-`code_review` (not `opus_review`) — named after the role that produces
-it, not a specific model, since which model actually reviewed a given
-driver is configurable and recorded in `DriverReview.model` instead.
+Provenance only, not a trust record: `sha256` says which exact driver
+file produced (or will produce) this resource; it is not compared
+against a review and gates nothing. A `code_review: DriverReview` field
+was here through issue #119 — dropped along with the plan-path review
+that populated it (`specs/orchestrator.md`'s `driver_info_for()`), since
+a field nothing writes any more has no reason to exist. Pydantic's
+default `extra="ignore"` (not set to `"forbid"` on this model) means an
+existing `state.json` written before this change, still carrying a
+`code_review` object per entry, loads without error — the field is
+silently dropped on read, never round-tripped back out.
 
 ### `StateEntry`
 
