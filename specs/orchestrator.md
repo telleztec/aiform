@@ -397,6 +397,15 @@ never actually delivered that guarantee even before removal —
 driver file, *before* calling this function, so any review ran after the
 reviewed code had already executed. See issue #119.)
 
+**Warning for whatever eventually replaces this function** (#119's
+deferred validation mechanism): that ordering bug is still latent in
+`build_create_plan()`'s call site (`load_driver()` before
+`driver_info_for()`), merely unobservable now that nothing here does
+anything the ordering could break. Adding a gate back into this function
+without also moving the hash/validation step *before* `load_driver()`
+at the call site reproduces #119's exact defect — a check that runs after
+the code it's meant to gate has already executed.
+
 Reads `driver_path(provider, resource_type)` as bytes and hashes it
 (`hashlib.sha256(...).hexdigest()` over the raw bytes, not decoded text —
 unlike `parser.compute_sha256()`, this hash's job is "which exact file

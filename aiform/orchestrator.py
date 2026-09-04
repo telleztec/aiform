@@ -157,22 +157,23 @@ def driver_info_for(
     path = driver_path(provider, resource_type)
     on_disk_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
 
-    for entry in state.resources.values():
-        if (
-            entry.provider == provider
+    reused = next(
+        (
+            entry.driver
+            for entry in state.resources.values()
+            if entry.provider == provider
             and entry.resource_type == resource_type
             and entry.driver.sha256 == on_disk_sha256
-        ):
-            logger.info(
-                "",
-                extra={"provider": provider, "resource_type": resource_type, "reused": True},
-            )
-            return entry.driver
-
+        ),
+        None,
+    )
     logger.info(
         "",
-        extra={"provider": provider, "resource_type": resource_type, "reused": False},
+        extra={"provider": provider, "resource_type": resource_type, "reused": reused is not None},
     )
+    if reused is not None:
+        return reused
+
     return DriverInfo(
         path=f"drivers/{provider}/{resource_type}.py",
         sha256=on_disk_sha256,

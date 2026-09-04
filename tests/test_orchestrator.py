@@ -1105,9 +1105,11 @@ class TestBuildCreatePlan:
         )
 
         assert len(planned) == 2
-        # driver_info_for() makes no LLM call at all, so this test's proof
-        # that the driver (and credentials) are cached across files sharing
-        # one is now structural: import_calls, not messages.calls.
+        # driver_info_for() makes no LLM call at all, so a shared driver
+        # paying for review only once (this test's original point) no
+        # longer applies. What's left to prove is the caching itself: both
+        # files get the exact same driver instance and credentials dict,
+        # not two independently loaded/resolved copies.
         assert planned[0].driver is planned[1].driver
         assert planned[0].driver_info == planned[1].driver_info
         assert planned[0].credentials is planned[1].credentials

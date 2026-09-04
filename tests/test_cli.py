@@ -126,6 +126,34 @@ def make_driver_info(sha256: str, *, path: str = "drivers/digitalocean/compute.p
     )
 
 
+def write_tracked_resource_forcing_categorization(project_dir: Path, drivers_dir: Path) -> Path:
+    """Writes a driver plus a tracked state entry for it, then a changed
+    `.aiform.md` on top -- the shared setup several tests reuse to reach
+    `categorize_diff()` on a resource that already exists in state, now that
+    an untracked resource makes zero Anthropic calls (#119) and can no
+    longer stand in for "some call happens". Returns the state file path;
+    the caller still needs to script `categorization_response(...)`."""
+    driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+    aiform_md = project_dir / "app.aiform.md"
+    write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
+    state_file = project_dir / ".aiform" / "state.json"
+    driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
+    entry = StateEntry(
+        provider="digitalocean",
+        resource_type="compute",
+        name="telleztec-app-01",
+        id="123",
+        attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+        driver=make_driver_info(driver_hash),
+        last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+        last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+        aiform_md_path=str(aiform_md),
+        aiform_md_sha256="stale-hash-forces-categorization",
+    )
+    state.save(state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file)
+    return state_file
+
+
 @pytest.fixture
 def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
     directory = tmp_path / "prompts"
@@ -1206,26 +1234,7 @@ class TestPlanCreate:
         # more -- use a tracked resource with a changed `.aiform.md`
         # instead, which still reaches `categorize_diff()`.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         built = patch_client(monkeypatch, [categorization_response(action="update")])
 
         code = cli.main(["plan", "create", "--state-file", str(state_file)])
@@ -1243,26 +1252,7 @@ class TestPlanCreate:
         # Same tracked-resource-with-a-diff setup as
         # test_the_counting_client_refuses_redirects, for the same reason.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         built = patch_client(monkeypatch, [categorization_response(action="update")])
 
         code = cli.main(["plan", "create", "--state-file", str(state_file)])
@@ -1282,26 +1272,7 @@ class TestPlanCreate:
         # analog -- a real Anthropic call that still ends the run in
         # PlanBlockedError.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         built = patch_client(
             monkeypatch,
             [
@@ -1451,26 +1422,7 @@ class TestPlanApply:
         # a changed `.aiform.md` instead, which still calls
         # intent-orchestration-model via categorize_diff().
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file), "--verbose"])
@@ -1486,26 +1438,7 @@ class TestPlanApply:
         # test_verbose_promotes_structured_log_level_to_info, for the same
         # reason: an untracked resource makes zero calls now.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
@@ -1521,26 +1454,7 @@ class TestPlanApply:
         # (stderr stays quiet), but the .aiform/logs/ file must have
         # captured everything anyway.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(driver_file.read_bytes()).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         patch_client(monkeypatch, [categorization_response(action="update")])
 
         cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
@@ -1619,28 +1533,7 @@ class TestPlanApply:
         # before gate #2 blocks the apply -- --verbose must still report
         # that count on the error exit path, not just on success.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
-        write_driver(drivers_dir, "digitalocean", "compute")
-        aiform_md = project_dir / "app.aiform.md"
-        write_aiform_md(aiform_md, params={"region": "sfo3", "size": "s-2vcpu-4gb"})
-        state_file = project_dir / ".aiform" / "state.json"
-        driver_hash = orchestrator.hashlib.sha256(
-            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
-        ).hexdigest()
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="telleztec-app-01",
-            id="123",
-            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
-            driver=make_driver_info(driver_hash),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(aiform_md),
-            aiform_md_sha256="stale-hash-forces-categorization",
-        )
-        state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
-        )
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         patch_client(
             monkeypatch,
             [
