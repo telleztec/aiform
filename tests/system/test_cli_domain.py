@@ -23,6 +23,8 @@ that a mock structurally cannot falsify, because the mock encodes the
 same assumption the driver does.
 """
 
+import urllib.error
+
 import pytest
 
 from aiform import cli, state
@@ -100,6 +102,15 @@ ALL_TYPE_RECORDS = [
         "tag": "issuewild",
     },
 ]
+
+
+# Guards the claim both specs now make -- that this suite verifies the
+# per-type required-field table for EVERY type the driver supports. Add a
+# ninth type to _RECORD_TYPES without adding it here and that claim
+# silently becomes false while the suite stays green.
+assert {r["type"] for r in ALL_TYPE_RECORDS} == set(do_domain._RECORD_TYPES), (
+    "ALL_TYPE_RECORDS must cover every type in domain.py's _RECORD_TYPES"
+)
 
 
 def _resource_key(zone: str) -> str:
@@ -275,7 +286,18 @@ class TestDomainLifecycleSequence:
         assert code == 0
         st = state.load(state_path)
         live_managed = _managed(list_domain_records(token, zone))
-        assert len(st.resources[key].attributes["records"]) == len(live_managed)
+        tracked = st.resources[key].attributes["records"]
+        # Content, not just count: a refresh that wrote the right number
+        # of records with wrong data or ttl would satisfy a length check.
+        # Each tracked record must exist live with every one of its own
+        # field values -- compared against the raw API payload rather than
+        # through the driver's own _project_record(), which would be
+        # circular here.
+        for record in tracked:
+            assert [r for r in live_managed if all(r.get(k) == v for k, v in record.items())], (
+                f"refresh recorded {record} but no live record matches it"
+            )
+        assert len(tracked) == len(live_managed)
 
         # Case 6: one record of every supported type. Settles the per-type
         # required-field table.
@@ -492,18 +514,38 @@ def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
             f"apply against an existing zone should fail, exited {code}\n{captured.out}"
         )
         assert "Error:" in captured.err
+        assert _resource_key(zone) not in state.load(state_path).resources
+
+        # The claim under test is create()'s own behavior, so assert it
+        # against create() directly. The CLI path above cannot carry that
+        # weight on its own: exit 2 with an Error: line is equally what
+        # local validation, a declined gate #2 or a credential failure
+        # produce, and in each of those create() is never entered while
+        # the zone survives for the trivial reason that nothing touched
+        # it. Nor is the CLI path deterministic -- an earlier version of
+        # case 12 failed with "categorization returned 'update' but no
+        # state entry is tracked for it", never reaching create() at all,
+        # having passed the run before. A test whose subject is a driver
+        # method must not be able to pass or fail on an LLM's wording;
+        # case 9 sets the same precedent for delete().
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            do_domain.Driver().create(
+                zone, {"records": BASE_RECORDS}, {"DIGITALOCEAN_TOKEN": token}
+            )
+        assert excinfo.value.code == 422, (
+            f"expected DO to reject a duplicate zone name with 422, got {excinfo.value.code}"
+        )
 
         survivor = get_domain_or_none(token, zone)
         assert survivor is not None, (
             f"aiform deleted the pre-existing zone {zone} it did not create -- "
             "create()'s rollback fired on a name-already-taken 422"
         )
-        assert _resource_key(zone) not in state.load(state_path).resources
     finally:
         delete_domain_directly(token, zone)
 
 
-def test_record_failure_rolls_the_zone_back_leaving_no_orphan(project_dir, capsys):
+def test_record_failure_rolls_the_zone_back_leaving_no_orphan():
     """Case 12: a record-level 422 after the zone exists must roll the
     zone back, leaving nothing live and untracked.
 
@@ -518,18 +560,23 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan(project_dir, capsy
 
     zone = unique_zone_name("rollback")
     try:
-        state_path = project_dir / ".aiform" / "state.json"
-        write_domain_aiform_md(
-            project_dir,
-            name=zone,
-            records=[{"type": "A", "name": "@", "data": "not-an-ip-address", "ttl": TTL}],
-        )
-
-        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
-        captured = capsys.readouterr()
-
-        assert code == 2, (
-            f"apply with a record DO rejects should fail, exited {code}\n{captured.out}"
+        # Driven against create() directly, not through `plan apply`, for
+        # the reason spelled out in case 11: the CLI path failed here once
+        # with "categorization returned 'update' but no state entry is
+        # tracked for it" -- blocked before create() ran, on a run whose
+        # predecessor had passed. Every assertion below would have been
+        # satisfied by that outcome too (the zone is equally "gone" if it
+        # was never created), so routing this through the model would mean
+        # a regression removing the rollback could go unnoticed for runs
+        # at a time.
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            do_domain.Driver().create(
+                zone,
+                {"records": [{"type": "A", "name": "@", "data": "not-an-ip", "ttl": TTL}]},
+                {"DIGITALOCEAN_TOKEN": token},
+            )
+        assert excinfo.value.code == 422, (
+            f"expected DO to reject a non-IP A record with 422, got {excinfo.value.code}"
         )
 
         orphan = wait_until_domain_gone(token, zone)
@@ -537,6 +584,5 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan(project_dir, capsy
             f"zone {zone} survived a failed create -- create()'s rollback did not run, "
             "leaving a live, untracked zone"
         )
-        assert _resource_key(zone) not in state.load(state_path).resources
     finally:
         delete_domain_directly(token, zone)

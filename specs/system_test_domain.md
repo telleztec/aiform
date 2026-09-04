@@ -118,7 +118,17 @@ marker (already registered in `pyproject.toml` and already excluded via
 `_require_live_credentials` skip, the three-layer credential-redaction
 machinery (`RedactedSecret` / `_redact_resolved_credentials` /
 `pytest_runtest_makereport`), `live_token()`, `unique_name()`, and
-`teardown_tracked_resources`. **No new marker, no new runner** —
+`teardown_tracked_resources`.
+
+Two helpers **move** into `tests/system/conftest.py` from
+`test_cli_digitalocean.py` rather than being duplicated, and are renamed
+to drop the now-misleading module-private underscore: `_assert_ok` →
+`assert_cli_ok`, `_count_driver_reads` → `count_driver_reads`. Both carry
+load-bearing rationale — why a bare `assert code == 0` loses the only
+diagnostic, and why wrapping the statically imported `Driver` class does
+not work — and a second copy of either would drift from it.
+
+**No new marker, no new runner** —
 `scripts/run_system_tests.py` already runs `pytest -m system tests/system/`,
 which picks this file up with no change.
 
@@ -137,7 +147,8 @@ What is new:
 
 
   def unique_zone_name(label: str) -> str:
-      return f"{unique_name(SYSTEM_TEST_ZONE_PREFIX.rstrip('-')).lower()}-{label}.{SYSTEM_TEST_ZONE_PARENT}"
+      stem = unique_name(SYSTEM_TEST_ZONE_PREFIX.rstrip("-"))
+      return f"{stem}-{label}.{SYSTEM_TEST_ZONE_PARENT}".lower()
   ```
 
   yielding e.g. `systest-20260904t000759z-718b80-lifecycle.telleztec.com`.
@@ -146,12 +157,17 @@ What is new:
   - **Lowercased at generation.** DO folds the case of a stored zone name
     (verified above), and `unique_name()` embeds `%Y%m%dT%H%M%SZ` with an
     uppercase `T`/`Z`. Lowercasing here makes *requested == stored*, so
-    nothing downstream has to remember to casefold. Without it the sweep's
-    age filter — which parses that timestamp back out of DO's own listing —
-    would raise `ValueError` on **every** zone it found, silently leaving
-    every leak in place. Lowercasing once at the source is strictly safer
-    than a `.casefold()` at each of several comparison sites, any one of
-    which could be forgotten.
+    any direct comparison between a name this suite generated and the one
+    DO reports back is exact, and nothing downstream has to remember to
+    casefold.
+
+    Be precise about what this does **not** rescue, since an earlier draft
+    of this spec claimed more: the sweep's age filter would have been fine
+    either way. `datetime.strptime` matches format literals
+    case-insensitively, so `%Y%m%dT%H%M%SZ` parses `...t000759z` without
+    complaint — verified against the interpreter after review flagged the
+    claim. The lowercasing is hygiene that removes a class of
+    requested-vs-stored mismatch, not a fix for a live `ValueError`.
   - **A fixed, literal `systest-` prefix**, so the timestamp always
     starts at a known offset and the sweep's match is an exact prefix
     test, never a glob.
@@ -208,8 +224,8 @@ previous one created, and splitting them across test functions would give
 each its own teardown instance and destroy the zone after the first.
 
 1. **Domain-scope preflight, then `aiform init`.** Probe
-   `GET /v2/domains?per_page=1` directly; on 403, `pytest.skip` naming the
-   missing `domain` scope — the same clean-skip shape
+   `GET /v2/domains?per_page=1` directly; on **401 or 403**, `pytest.skip`
+   naming the missing `domain` scope — the same clean-skip shape
    `test_ssh_keys_configured_no_op_guarantee_holds` uses for a keyless
    account. Then `init`, asserting `[✓]` for both credentials.
 
@@ -220,6 +236,15 @@ each its own teardown instance and destroy the zone after the first.
    explicitly. The assertion on the DO line must also not expect it to end
    after the variable name: it carries the account email, or
    `authenticated (scoped token)`.
+
+   Treating **401** as a skip alongside 403 is a deliberate widening with
+   a real cost: an outright invalid token skips three of this suite's four
+   tests with a message blaming scope, where the compute suite would fail
+   loudly at `init`. Accepted because the alternative — skipping on 403
+   only — turns a token whose scoping DigitalOcean happens to report as
+   401 into a confusing hard failure, and case 10 already covers the
+   invalid-token path deliberately. The lifecycle test asserts `init`'s
+   `[✓]` immediately after, so a wholly dead token still surfaces there.
 2. **First `plan create`** — gate #1 (`code-review-model`) fires for
    `domain.py`'s own sha256, since no state entry trusts it yet. Assert
    `+ digitalocean.domain.<zone>: create` and a `--verbose` Anthropic call
@@ -243,9 +268,9 @@ each its own teardown instance and destroy the zone after the first.
      neither — `_filter_managed()`.
 4. **Second `plan create`, file unchanged** — `[verbose] 0 Anthropic API
    call(s) made`, `= <key>: no-op`, and exactly one driver `read()`
-   (reuse the compute suite's `_count_driver_reads` helper, which wraps
-   the instance `orchestrator.load_driver()` returns rather than the
-   statically imported class).
+   (`count_driver_reads()`, which wraps the instance
+   `orchestrator.load_driver()` returns rather than the statically
+   imported class).
 
    **This is the single highest-value assertion in the suite.** It is the
    zero-diff invariant measured against reality, and it folds in `TXT`
@@ -349,23 +374,28 @@ each its own teardown instance and destroy the zone after the first.
     credential's value, and this suite's output lands in
     `.aiform/testlog/`.
 11. **A name already taken is neither adopted nor rolled back.** Create a
-    zone *directly* via `urllib`, then point a `.aiform.md` at that same
-    name and `plan apply`. Assert it fails cleanly **and that the
-    pre-existing zone is still live afterwards**. `create()`'s rollback
-    must not fire on a `POST /v2/domains` that failed because the name was
-    taken — otherwise aiform deletes a zone it did not create. The driver
-    spec states this as a hard requirement ("never triggers rollback …
-    rather than having aiform adopt — or delete — a zone it did not
-    create"); it is a destructive-behavior claim, and no mock can settle
-    it. Cleanup deletes the zone directly, not through aiform.
+    zone *directly* via `urllib`, then call `Driver().create()` against
+    that same name. Assert it raises `HTTPError` with status **422**, and
+    that the pre-existing zone is **still live afterwards**. `create()`'s
+    rollback must not fire on a `POST /v2/domains` that failed because the
+    name was taken — otherwise aiform deletes a zone it did not create.
+    The driver spec states this as a hard requirement ("never triggers
+    rollback … rather than having aiform adopt — or delete — a zone it did
+    not create"); it is a destructive-behavior claim, and no mock can
+    settle it. A CLI-level `plan apply` runs alongside for the
+    exits-cleanly and tracks-nothing assertions, making no claim about
+    where it failed. Cleanup deletes the zone directly, not through aiform.
 12. **Rollback leaves no orphan zone.** Provoke a real record-level 422
-    *after* the zone is created, using an `A` record whose `data` is not
-    an IP address — a `str`, so `_validate_record` passes it, and DO
-    rejects it. Assert `apply` fails and the zone then **404s**: the
-    rollback in `create()` actually ran, leaving nothing live and
-    untracked. This is the one case whose failure mode *is* a leaked
-    zone, so it also carries its own direct-API `finally` sweep on top of
-    the assertion.
+    *after* the zone is created, by calling `Driver().create()` with an
+    `A` record whose `data` is not an IP address — a `str`, so
+    `_validate_record` passes it, and DO rejects it. Assert the
+    `HTTPError` is a **422** and that the zone then **404s**: the rollback
+    in `create()` actually ran, leaving nothing live and untracked. This
+    is the one case whose failure mode *is* a leaked zone, so it also
+    carries its own direct-API `finally` sweep on top of the assertion.
+
+    Both cases drive the driver rather than the CLI deliberately — see
+    Edge cases, "A failed apply is not evidence the path under test ran".
 
 ## Orphan cleanup (leaked resources)
 
@@ -389,17 +419,48 @@ Two layers, same division of labour as the droplet suite:
   only when **all three** hold:
   1. its name starts with the literal `systest-` prefix, **and**
   2. its name ends with `.telleztec.com`, **and**
-  3. the `%Y%m%dt%H%M%Sz` timestamp parsed out of the name is older than
-     this run's start.
+  3. the `%Y%m%dt%H%M%Sz` timestamp parsed out of the name is at least
+     `SWEEP_MIN_AGE_MINUTES` (60) old.
+
+  Condition 3 is an **age threshold, not "older than this session
+  started"**. The latter looks equivalent and is not: it would delete the
+  live zones of a *concurrent* run that began a minute earlier, which is
+  precisely the race the threshold exists to prevent. Same value and same
+  reasoning as `specs/system_test.md`'s droplet sweep — a run never
+  legitimately lasts more than a few minutes, so an hour cannot overlap a
+  healthy one.
 
   Conditions 1 and 2 are independent guards, and `telleztec.com` itself
   fails the first — so the production zone is excluded twice over, not
-  once. Condition 3 keeps the sweep from racing a concurrent run, and
-  means a zone with an unparseable name is **skipped, never deleted**:
+  once. A zone whose name doesn't parse is **skipped, never deleted**:
   the failure mode of a name this suite doesn't recognize must be a leak
   someone notices, not a deletion of something it didn't create. Per
   `specs/system_test.md`'s "the backstop must not depend on the code under
   test", this imports no `aiform` module and issues raw `urllib` calls.
+
+  The fixture is `autouse` across all of `tests/system/`, so it also runs
+  on a **compute-only** session, where the token may legitimately carry no
+  `domain` scope. Listing therefore warns rather than raises on any
+  failure — a 403 there must not turn a green droplet run into a
+  teardown error, since this is a best-effort backstop for a leak that
+  has already happened and must never be the thing that fails an
+  otherwise-passing run.
+
+  **`zone_created_at()` is unit-tested in the default `pytest` run**
+  (`tests/test_system_conftest.py`), not only under `-m system`. It is
+  the function that decides what gets deleted from a live account holding
+  a production zone, so leaving its only coverage behind live credentials
+  would mean the one piece of code that can destroy production DNS is
+  exercised solely by the suite it exists to clean up after. Same
+  reasoning as `specs/conftest.md`'s extraction of
+  `find_leaked_credential()` as a separately-testable pure matcher. The
+  cases pin both guards independently — removing either one turns the
+  suite red — and assert that whatever `unique_zone_name()` emits,
+  `zone_created_at()` can claim back, since drift between those two
+  silently strands every leaked zone. `write_domain_aiform_md()` is
+  covered there too, round-tripping through a real `yaml.safe_load` —
+  including the quote-carrying `TXT` value, whose live assertion would be
+  worthless if the fixture mangled it on the way out.
 
 A non-empty sweep is a bug report, not routine maintenance: it warns
 loudly, because every hit means the primary teardown failed somewhere.
@@ -411,15 +472,39 @@ loudly, because every hit means the primary teardown failed somewhere.
   must surface as a visible failure. If it recurs, that is evidence the
   orchestrator needs retry handling — not that this test needs a retry
   loop. (The 5,000/hour budget verified above makes rate-limiting an
-  unlikely cause; roughly 150 calls per run.)
+  unlikely cause; roughly 80 calls per run, measured.)
 - **Ordering dependency.** Cases 2–9 share one zone, so a failure partway
   through leaves later cases unable to run meaningfully. Report it as one
-  ordered scenario failing at a named step — hence the `_assert_ok(code,
-  captured, step)` helper, reused from the compute suite, which surfaces
-  the `Error:` line `cli.main()` writes to stderr before returning 2.
-  Without it a failed 3-minute run logs `assert 2 == 0` and nothing else.
-- **Zone-name case.** Covered under "Zone naming" — the concrete failure
-  it prevents is a sweep whose age filter raises on every zone it lists.
+  ordered scenario failing at a named step — hence the `assert_cli_ok(code,
+  captured, step)` helper, which surfaces the `Error:` line `cli.main()`
+  writes to stderr before returning 2. Without it a failed multi-minute
+  run logs `assert 2 == 0` and nothing else.
+- **A failed apply is not evidence the path under test ran**, and the
+  categorization step is not deterministic. Cases 11 and 12 assert on a
+  zone's fate after a `create()` that must fail — but exit 2 with an
+  `Error:` line is equally what local validation, a declined gate #2 or a
+  credential failure produce, and in each of those `create()` is never
+  entered while the zone's state is trivially satisfied anyway.
+
+  This is not hypothetical. Driven through `plan apply`, case 12 failed
+  one run with `categorization returned 'update' but no state entry is
+  tracked for it` — the `intent-orchestration-model` labelled a brand-new
+  resource an update, so the plan was blocked before `create()` ran. The
+  run before it had passed. Every assertion the case then made would have
+  been satisfied by that outcome too, so a regression removing `create()`'s
+  rollback could have gone unnoticed for runs at a time.
+
+  Both cases therefore drive `Driver().create()` **directly** and assert
+  the `HTTPError`'s status is `422`, the same way case 9 drives `delete()`.
+  A test whose subject is a driver method must not be able to pass or fail
+  on an LLM's wording. Case 11 keeps a CLI-level apply alongside it for the
+  clean-error-and-tracks-nothing assertions, but makes no claim about
+  *where* that apply failed. See "Out of scope" on the categorization
+  flakiness itself, which is aiform's bug rather than this suite's.
+- **Zone-name case.** Covered under "Zone naming" — and note what it is
+  *not*: `strptime` matches format literals case-insensitively, so the
+  sweep's age filter parses either spelling and the lowercasing is
+  hygiene rather than a fix for a live error.
 - **A droplet-scoped token** skips the suite rather than failing it (case
   1), the same way a keyless account skips the compute suite's case 11.
 
@@ -447,5 +532,20 @@ loudly, because every hit means the primary teardown failed somewhere.
   and `specs/digitalocean_pagination.md` don't already cover. The sweep's
   own `GET /v2/domains` pagination *is* in scope, because this account
   really does hold other zones.
+- **Fixing the categorization flakiness this suite surfaced.** Running
+  case 12 through `plan apply` produced, on one run and not the next,
+  `PlanBlockedError: … categorization returned 'update' but no state entry
+  is tracked for it` — the `intent-orchestration-model` labelling a
+  brand-new resource an `update`, which `orchestrator.py` then correctly
+  refuses. That is a real robustness gap in aiform: a user's *first*
+  `plan apply` on any resource can fail this way, with an error that
+  describes an internal invariant rather than anything they can act on,
+  and succeed on retry. It belongs to the planner/orchestrator, not to
+  this suite, and needs its own issue and its own pass — plausibly a
+  deterministic override (an untracked resource cannot be an `update`,
+  whatever the model says) rather than better prompting. This suite works
+  around it by driving `create()` directly in the two cases that depend on
+  reaching it; it does not paper over it anywhere else, and the lifecycle
+  sequence still exercises the normal categorization path throughout.
 - **Concurrency/locking.** `PLAN.md` §10's known deferred gap; this suite
   runs one sequential scenario.
