@@ -511,10 +511,20 @@ per-record cleanup is needed.
       existing record from `1800` to `3600`. Hence the local rejection.
     - Zone names using RFC 2606 reserved TLDs (`.invalid`, `.test`) are
       rejected with a 422, so a probe or system-test zone needs a real TLD.
-  - **Still recalled and reasoned, NOT verified**: the per-type required-field
-    table. The probe exercised the types this driver supports but did not
-    enumerate every field's necessity, so a "required" here may be optional in
-    fact. This is the one remaining item for the live system test.
+  - **Verified by the live system test** (`tests/system/test_cli_domain.py`,
+    case 6), which is what closed the last gap here. The per-type
+    required-field table was previously "recalled and reasoned, NOT verified" —
+    the authoring probe exercised the supported types but never enumerated
+    each field's necessity. That suite writes one record of *every* supported
+    type carrying exactly the fields this table claims it needs and nothing
+    more, applies it, and requires the re-plan to be a stable `no-op`. It
+    passes, so no "required" field here is in fact optional in a way that
+    breaks a write, and none is missing. The same run also confirmed `TXT`
+    verbatim storage (embedded quotes included), the dotless round trip for
+    every `_FQDN_TYPES` type, and that `AAAA` addresses are **not**
+    renormalized from their compact form — the last of which would otherwise
+    have produced a permanent phantom diff, since this driver has no `AAAA`
+    normalization to absorb one.
   - **On how these got verified at all.** The DigitalOcean token this project
     used had **no `domain` scope** — the probe returned 403 until a broader
     token was issued. That is a prerequisite for the live system test and for
@@ -602,14 +612,14 @@ per-record cleanup is needed.
 - **Referencing another resource's attributes** — e.g. an A record pointing at
   a `compute` resource's `ipv4_address`. `PLAN.md` §10's "No dependency graph",
   quoted above; this driver implements the narrowed, literal-value version.
-- **A live system test.** `tests/system/` is its own module with its own spec
-  (`specs/system_test.md`) and `PROCESS.md` is one module per PR. Worth filing
-  as a follow-up, and cheap to run: DigitalOcean bills nothing for DNS zones,
-  unlike the droplet suite. It is also the only way to settle the
-  "recalled, not verified" items above — particularly the trailing-dot and
-  `TXT`-quoting behavior, which unit tests can only assert against a mock that
-  encodes the same assumption. Its `write_aiform_md()` helper hardcodes
-  `resource: compute` and would need a parallel.
+- **A live system test.** No longer deferred — it exists, as
+  `tests/system/test_cli_domain.py`, specced in `specs/system_test_domain.md`
+  and built as its own `PROCESS.md` pass after this driver shipped. It is what
+  settles the "recalled, not verified" items above — the per-type
+  required-field table, the trailing-dot round trip and `TXT` quoting, none of
+  which a mock can answer, since the mock encodes the same assumption the
+  driver does. The `write_aiform_md()` parallel that entry predicted is
+  `write_domain_aiform_md()` in `tests/system/conftest.py`.
 - **`aiform init` scaffolding a `domain.aiform.md` example.** `cli.py` writes
   exactly one example today; a second touches `specs/cli.md` and several
   `tests/test_cli.py` assertions. Separate, small PR.

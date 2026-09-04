@@ -9,12 +9,12 @@ import urllib.error
 import urllib.request
 import uuid
 import warnings
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from aiform import cli, config
+from aiform import cli, config, orchestrator
 from drivers.digitalocean import compute as do_compute
 
 _SECRET_ENV_VARS = ("DIGITALOCEAN_TOKEN", "ANTHROPIC_API_KEY")
@@ -300,6 +300,49 @@ def teardown_tracked_resources(project_dir: Path):
                 )
 
 
+def assert_cli_ok(code: int, captured, step: str) -> None:
+    """Assert a CLI invocation exited 0, surfacing its stderr when it
+    didn't. Every failure mode these suites exist to catch (gate #1
+    declining a driver, a DriverExecutionError from the live DO API, a
+    credential resolution failure) reports itself only through the
+    `Error: ...` line cli.main() prints to stderr before returning 2 --
+    and capsys.readouterr() has already consumed that by the time a bare
+    `assert code == 0` fires, so pytest's own capture sections show
+    nothing. Without this the log says `assert 2 == 0` and nothing else,
+    which is not enough to diagnose a multi-minute live run."""
+    assert code == 0, (
+        f"{step} exited {code}\n--- stderr ---\n{captured.err}\n--- stdout ---\n{captured.out}"
+    )
+
+
+def count_driver_reads(monkeypatch) -> list[str]:
+    """Record every driver.read() the orchestrator performs.
+
+    orchestrator.load_driver() execs the driver module fresh via
+    importlib.util.spec_from_file_location on every call, never caching
+    it in sys.modules (tests/test_orchestrator.py's
+    test_each_call_returns_a_fresh_instance) -- so a statically imported
+    Driver class is never the same object orchestrator.py actually
+    instantiates. Wrap the instance load_driver() itself returns instead.
+    """
+    calls: list[str] = []
+    real_load_driver = orchestrator.load_driver
+
+    def counting_load_driver(provider, resource_type):
+        driver = real_load_driver(provider, resource_type)
+        real_read = driver.read
+
+        def counting_read(id, credentials):
+            calls.append(id)
+            return real_read(id, credentials)
+
+        driver.read = counting_read
+        return driver
+
+    monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
+    return calls
+
+
 def get_droplet_or_none(token: str, droplet_id: str) -> dict | None:
     request = urllib.request.Request(
         f"{do_compute.BASE_URL}/droplets/{droplet_id}",
@@ -392,3 +435,284 @@ def list_account_ssh_key_fingerprints(token: str) -> list[str]:
     with urllib.request.urlopen(request, timeout=do_compute.REQUEST_TIMEOUT_SECONDS) as response:
         payload = json.loads(response.read())
     return [key["fingerprint"] for key in payload.get("ssh_keys", [])]
+
+
+# --------------------------------------------------------------------------
+# digitalocean/domain -- see specs/system_test_domain.md
+# --------------------------------------------------------------------------
+
+# Spelled out rather than reused from drivers.digitalocean.domain. The
+# helpers below are the independent backstop for the domain suite, and
+# specs/system_test.md's "the backstop must not depend on the code under
+# test" applies most sharply to the sweep: if delete() is what's broken,
+# routing the cleanup through the same module disables both layers at
+# once. (get_droplet_or_none above borrows do_compute's constants, which
+# predates that rule being written down and is a constant rather than
+# logic -- not a precedent to extend here.)
+DO_API_BASE = "https://api.digitalocean.com/v2"
+DO_API_TIMEOUT_SECONDS = 30
+
+SYSTEM_TEST_ZONE_PREFIX = "systest-"
+SYSTEM_TEST_ZONE_PARENT = "telleztec.com"
+# Lowercase 't'/'z' deliberately: DigitalOcean folds the case of a stored
+# zone name (verified live -- a requested ...T000759Z... came back as
+# ...t000759z...), so unique_zone_name() lowercases at generation and the
+# name DO reports back is byte-identical to the one we asked for. Parsing
+# with the uppercase %Y%m%dT%H%M%SZ that unique_name() emits would raise
+# on every zone the sweep listed, silently leaving every leak in place.
+ZONE_TIMESTAMP_FORMAT = "%Y%m%dt%H%M%Sz"
+_ZONE_TIMESTAMP_LENGTH = 16
+# Mirrors specs/system_test.md's droplet sweep default, for the same
+# reason: this suite never legitimately runs more than a few minutes, so
+# a threshold well above that can never race a healthy concurrent run
+# while still catching a real leak promptly.
+SWEEP_MIN_AGE_MINUTES = 60
+
+
+def unique_zone_name(label: str) -> str:
+    """A throwaway zone name, unique per run and safe for the sweep.
+
+    Three properties, each load-bearing (see specs/system_test_domain.md's
+    "Zone naming"): lowercased so requested == stored; a fixed literal
+    prefix so the timestamp sits at a known offset; and a subdomain of a
+    zone the account already owns, so every name created lives in a
+    namespace the operator controls. A child zone is an independent
+    object -- creating one does not touch the parent's records.
+    """
+    stem = unique_name(SYSTEM_TEST_ZONE_PREFIX.rstrip("-"))
+    return f"{stem}-{label}.{SYSTEM_TEST_ZONE_PARENT}".lower()
+
+
+def zone_created_at(zone_name: str) -> datetime | None:
+    """The creation time encoded in a zone name, or None if it isn't ours.
+
+    None means "don't touch it": the sweep deletes only zones it can
+    positively identify, so an unrecognized name is a leak someone
+    notices rather than something this code removes.
+    """
+    if not zone_name.startswith(SYSTEM_TEST_ZONE_PREFIX):
+        return None
+    if not zone_name.endswith(f".{SYSTEM_TEST_ZONE_PARENT}"):
+        return None
+    stamp = zone_name[len(SYSTEM_TEST_ZONE_PREFIX) :][:_ZONE_TIMESTAMP_LENGTH]
+    try:
+        return datetime.strptime(stamp, ZONE_TIMESTAMP_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def write_domain_aiform_md(
+    project_dir: Path,
+    *,
+    name: str,
+    records: list[dict],
+    filename: str = "domain.aiform.md",
+) -> Path:
+    """The `resource: domain` parallel to write_aiform_md().
+
+    `records` is serialized verbatim -- caller's order, caller's exact
+    field set, no normalization. Cases 6 and 7d exist precisely to
+    observe what the driver does with a given spelling and ordering, so a
+    helper that tidied either would defeat them.
+
+    Each record is emitted as a JSON object, which is valid YAML flow
+    style and gets the escaping right for free. That matters for the TXT
+    record whose own data contains quotes -- hand-rolled quoting is
+    exactly where a fixture like this silently corrupts the value it
+    claims to be testing.
+    """
+    record_lines = "\n".join(f"    - {json.dumps(record)}" for record in records)
+    params_block = "  records: []\n" if not records else f"  records:\n{record_lines}\n"
+    content = (
+        "---\n"
+        "resource: domain\n"
+        f"name: {name}\n"
+        "provider: digitalocean\n"
+        "params:\n" + params_block + "---\n\n"
+        "## Intent\n\n"
+        "Ephemeral DNS zone created by aiform's live system test suite; "
+        "safe to destroy at any time.\n"
+    )
+    path = project_dir / filename
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _domain_api(token: str, method: str, url: str, body: dict | None = None):
+    data = None
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=DO_API_TIMEOUT_SECONDS) as response:
+        raw = response.read()
+    return json.loads(raw) if raw else None
+
+
+def token_has_domain_scope(token: str) -> bool:
+    """Whether this token can read the domain API at all.
+
+    `aiform init`'s preflight probes GET /v2/droplets only, so a
+    droplet-scoped token earns a green [✓] and then fails at the first
+    domain apply (specs/digitalocean_domain.md). The domain suite skips
+    on a False here rather than failing.
+    """
+    try:
+        _domain_api(token, "GET", f"{DO_API_BASE}/domains?per_page=1")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise
+    return True
+
+
+def get_domain_or_none(token: str, zone: str) -> dict | None:
+    try:
+        payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return payload["domain"]
+
+
+def list_domain_records(token: str, zone: str) -> list[dict]:
+    """Every record in `zone`, unfiltered -- SOA and DO-managed apex NS
+    included. The driver's read() filters those out; this returns the raw
+    listing so a test can assert they really are present on DO's side and
+    really are absent from state."""
+    payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
+    return payload.get("domain_records", [])
+
+
+def list_domains(token: str) -> list[dict]:
+    """Every zone on the account, following pagination.
+
+    GET /v2/domains defaults to per_page=20 and this account hosts real
+    zones alongside the suite's throwaways, so an unpaginated read could
+    miss a leaked zone entirely -- the one failure this listing exists to
+    catch.
+    """
+    domains: list[dict] = []
+    url = f"{DO_API_BASE}/domains?per_page=200"
+    while url:
+        payload = _domain_api(token, "GET", url)
+        if payload is None:
+            break
+        domains.extend(payload.get("domains") or [])
+        url = ((payload.get("links") or {}).get("pages") or {}).get("next")
+    return domains
+
+
+def create_domain_directly(token: str, zone: str) -> dict:
+    payload = _domain_api(token, "POST", f"{DO_API_BASE}/domains", body={"name": zone})
+    return payload["domain"]
+
+
+def delete_domain_directly(token: str, zone: str) -> None:
+    try:
+        _domain_api(token, "DELETE", f"{DO_API_BASE}/domains/{zone}")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+def wait_until_domain_gone(
+    token: str, zone: str, *, timeout_seconds: int = 120, poll_seconds: int = 3
+) -> dict | None:
+    """Poll until `zone` 404s. Returns None once gone, or the still-live
+    zone if it outlasts the timeout.
+
+    Mirrors wait_until_droplet_gone()'s contract, including returning
+    rather than raising so a caller's assertion never puts `token` into
+    pytest's assertion-introspection output. DO's zone delete looks
+    synchronous, unlike its droplet delete -- but a suite that races a
+    provider's convergence fails a destroy that in fact worked, and the
+    loop costs nothing on the happy path since it returns on the first
+    404. Transient errors do not end the poll, for the same reason they
+    don't there.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    last_domain: dict | None = None
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            domain = get_domain_or_none(token, zone)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            http.client.HTTPException,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            last_error = exc
+        else:
+            if domain is None:
+                return None
+            last_domain, last_error = domain, None
+
+        if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise last_error
+            return last_domain
+
+        time.sleep(poll_seconds)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_leaked_system_test_zones(_require_live_credentials):
+    """Independent backstop for zones the per-test teardown never reached.
+
+    specs/system_test.md's orphan sweep keys on the `aiform-system-test`
+    tag; that does not transfer, because DigitalOcean has no tagging API
+    for domains (specs/digitalocean_domain.md records this as impossible,
+    not merely unimplemented). The zone name is the only handle, which is
+    why unique_zone_name()'s shape is part of the safety mechanism.
+
+    A zone is deleted only if all three hold: the literal `systest-`
+    prefix, the `.telleztec.com` suffix, and an encoded creation time at
+    least SWEEP_MIN_AGE_MINUTES old. The account's real zones fail the
+    first two independently -- `telleztec.com` itself is excluded twice
+    over, not once -- and an unparseable name is skipped, never deleted.
+
+    The age threshold is what keeps this from deleting a *concurrent*
+    run's live zones: "older than this session started" would do exactly
+    that to a run that began a minute earlier. Same reasoning, and the
+    same 60-minute default, as specs/system_test.md's droplet sweep --
+    this suite never legitimately runs for more than a few minutes, so a
+    threshold well above that cannot race a healthy run.
+
+    Runs after the session, so a crash mid-run is cleaned up by the
+    *next* run rather than never; the per-test teardown handles the
+    ordinary case.
+    """
+    yield
+
+    token = os.environ.get("DIGITALOCEAN_TOKEN")
+    if not token:
+        return
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=SWEEP_MIN_AGE_MINUTES)
+    swept = []
+    for domain in list_domains(token):
+        name = domain.get("name", "")
+        created = zone_created_at(name)
+        if created is None or created > cutoff:
+            continue
+        try:
+            delete_domain_directly(token, name)
+        except urllib.error.HTTPError as exc:
+            warnings.warn(f"could not sweep leaked zone {name!r}: {exc}", stacklevel=2)
+        else:
+            swept.append(name)
+
+    if swept:
+        # Always a bug report, never routine maintenance: every hit means
+        # the per-test teardown failed to clean up after itself.
+        warnings.warn(
+            f"swept {len(swept)} leaked system-test zone(s) left by an earlier run: "
+            f"{swept} -- the per-test teardown did not run to completion",
+            stacklevel=2,
+        )
