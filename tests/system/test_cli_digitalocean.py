@@ -16,12 +16,14 @@ CI trigger.
 
 import pytest
 
-from aiform import cli, orchestrator, state
+from aiform import cli, state
 from drivers.digitalocean import compute as do_compute
 from tests.system.conftest import (
     ALTERNATE_REGION,
     ALTERNATE_SIZE,
     SYSTEM_TEST_TAG,
+    assert_cli_ok,
+    count_driver_reads,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
     live_token,
@@ -39,47 +41,6 @@ IN_PLACE_TAG = "aiform-system-test-inplace"
 
 def _resource_key(name: str) -> str:
     return f"digitalocean.compute.{name}"
-
-
-def _assert_ok(code: int, captured, step: str) -> None:
-    """Assert a CLI invocation exited 0, surfacing its stderr when it
-    didn't. Every failure mode this suite exists to catch (gate #1
-    declining a driver, a DriverExecutionError from the live DO API, a
-    credential resolution failure) reports itself only through the
-    `Error: ...` line cli.main() prints to stderr before returning 2 --
-    and capsys.readouterr() has already consumed that by the time a bare
-    `assert code == 0` fires, so pytest's own capture sections show
-    nothing. Without this the log says `assert 2 == 0` and nothing else,
-    which is not enough to diagnose a 4-minute billable run."""
-    assert code == 0, (
-        f"{step} exited {code}\n--- stderr ---\n{captured.err}\n--- stdout ---\n{captured.out}"
-    )
-
-
-def _count_driver_reads(monkeypatch) -> list[str]:
-    # orchestrator.load_driver() execs the driver module fresh via
-    # importlib.util.spec_from_file_location on every call, never caching
-    # it in sys.modules (tests/test_orchestrator.py's
-    # test_each_call_returns_a_fresh_instance) -- so the statically
-    # imported drivers.digitalocean.compute.Driver class is never the
-    # same object orchestrator.py actually instantiates. Wrap the
-    # instance load_driver() itself returns instead.
-    calls: list[str] = []
-    real_load_driver = orchestrator.load_driver
-
-    def counting_load_driver(provider, resource_type):
-        driver = real_load_driver(provider, resource_type)
-        real_read = driver.read
-
-        def counting_read(id, credentials):
-            calls.append(id)
-            return real_read(id, credentials)
-
-        driver.read = counting_read
-        return driver
-
-    monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
-    return calls
 
 
 class TestFullLifecycleSequence:
@@ -106,7 +67,7 @@ class TestFullLifecycleSequence:
         # nothing in state yet to short-circuit it).
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 2: first plan create")
+        assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
         assert "[verbose]" in captured.err
         call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
@@ -116,7 +77,7 @@ class TestFullLifecycleSequence:
         # fires again (plan create never persists a driver-trust record).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 3: plan apply --yes")
+        assert_cli_ok(code, captured, "case 3: plan apply --yes")
         assert "[verbose]" in captured.err
         apply_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert apply_call_count >= 1
@@ -139,10 +100,10 @@ class TestFullLifecycleSequence:
         # -call no-op guarantee. ssh_keys is deliberately unset in this
         # fixture (see case 11 for the configuration where this is known
         # not to hold).
-        read_calls = _count_driver_reads(monkeypatch)
+        read_calls = count_driver_reads(monkeypatch)
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 4: unchanged plan create")
+        assert_cli_ok(code, captured, "case 4: unchanged plan create")
         assert "[verbose] 0 Anthropic API call(s) made" in captured.err
         assert f"= {key}: no-op" in captured.out
         assert len(read_calls) == 1
@@ -196,7 +157,7 @@ class TestFullLifecycleSequence:
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 6b: tags-only in-place apply")
+        assert_cli_ok(code, captured, "case 6b: tags-only in-place apply")
 
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
@@ -222,7 +183,7 @@ class TestFullLifecycleSequence:
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 7: forced-replace plan apply")
+        assert_cli_ok(code, captured, "case 7: forced-replace plan apply")
         replace_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert replace_call_count >= 1
 
@@ -238,7 +199,7 @@ class TestFullLifecycleSequence:
         # Case 8: `plan destroy --yes` -- gate #2 fires unconditionally.
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
-        _assert_ok(code, captured, "case 8: plan destroy --yes")
+        assert_cli_ok(code, captured, "case 8: plan destroy --yes")
         destroy_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
         assert destroy_call_count >= 1
 
@@ -304,13 +265,13 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
     write_aiform_md(project_dir, name=name, ssh_keys=[fingerprints[0]])
 
     code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
-    _assert_ok(code, capsys.readouterr(), "case 11: ssh_keys plan apply")
+    assert_cli_ok(code, capsys.readouterr(), "case 11: ssh_keys plan apply")
 
     code = cli.main(["plan", "refresh", "--state-file", str(state_path)])
-    _assert_ok(code, capsys.readouterr(), "case 11: plan refresh")
+    assert_cli_ok(code, capsys.readouterr(), "case 11: plan refresh")
 
     code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
     captured = capsys.readouterr()
-    _assert_ok(code, captured, "case 11: unchanged plan create")
+    assert_cli_ok(code, captured, "case 11: unchanged plan create")
     assert "[verbose] 0 Anthropic API call(s) made" in captured.err
     assert f"= {key}: no-op" in captured.out
