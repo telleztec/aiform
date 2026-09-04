@@ -148,6 +148,19 @@ def _managed(records: list[dict]) -> list[dict]:
     return [r for r in records if r["type"] != "SOA" and not _is_do_managed_ns(r)]
 
 
+def _record_identity(record: dict) -> tuple:
+    """Everything about a raw DO record except its id.
+
+    Every field, not a chosen subset: `(type, name, data)` looks
+    sufficient and collides on the CAA `issue`/`issuewild` pair, which
+    share all three and differ only in `tag` -- so one of them would drop
+    out of an identity-keyed mapping silently. That pair is precisely
+    what case 7c's id check exists to protect, so the key must separate
+    them.
+    """
+    return tuple(sorted((k, v) for k, v in record.items() if k != "id"))
+
+
 def _sorted_records(records: list[dict]) -> list[dict]:
     """Order-insensitive comparison key for a records list. `records` is
     in UNORDERED_FIELDS, so any two orderings are the same value."""
@@ -388,10 +401,17 @@ class TestDomainLifecycleSequence:
         # records written at the same ttl there is nothing to rectify, so
         # such an assertion could not fail for that reason. An earlier
         # version of this comment claimed otherwise.
-        ids_before = {
-            (r["type"], r["name"], r["data"]): r["id"]
-            for r in _managed(list_domain_records(token, zone))
-        }
+        managed_before = _managed(list_domain_records(token, zone))
+        before_by_identity = {_record_identity(r): r for r in managed_before}
+        # A collision here would silently drop a record from the check --
+        # and the first key tried, (type, name, data), collided on exactly
+        # the CAA pair this case is meant to protect, since issue and
+        # issuewild differ only in `tag`. Assert the mapping is total
+        # rather than trusting the key.
+        assert len(before_by_identity) == len(managed_before), (
+            f"identity keys collided: {len(managed_before)} records mapped to "
+            f"{len(before_by_identity)} keys, so some record's id is untracked"
+        )
 
         records = [r for r in records if r["type"] != "TXT"]
         records.append(
@@ -409,13 +429,19 @@ class TestDomainLifecycleSequence:
         assert surviving_mx["id"] == mx_id, "the untouched MX record was recreated"
         assert _find_live(live_records, type="MX", data="mail2.example.com")["priority"] == 20
 
-        ids_after = {(r["type"], r["name"], r["data"]): r["id"] for r in _managed(live_records)}
-        for identity, before in ids_before.items():
-            if identity[0] == "TXT":
+        after_by_identity = {_record_identity(r): r for r in _managed(live_records)}
+        for identity, record in before_by_identity.items():
+            if record["type"] == "TXT":
                 continue  # deliberately removed by this case
-            assert ids_after.get(identity) == before, (
-                f"{identity} was recreated rather than left alone -- reconciliation "
-                "touched a record this edit did not change"
+            survivor = after_by_identity.get(identity)
+            assert survivor is not None, (
+                f"{record['type']} {record['name']} {record['data']!r} disappeared -- "
+                "reconciliation removed a record this edit did not change"
+            )
+            assert survivor["id"] == record["id"], (
+                f"{record['type']} {record['name']} {record['data']!r} was recreated "
+                "rather than left alone -- reconciliation touched a record this edit "
+                "did not change"
             )
         _assert_converges(state_path, key, capsys, "case 7c")
 
@@ -455,6 +481,13 @@ class TestDomainLifecycleSequence:
         # empty diff WITH the driver's unordered_fields, non-empty
         # WITHOUT. The second half is what proves UNORDERED_FIELDS is
         # doing the work rather than the two lists happening to match.
+        #
+        # Be precise about how far this goes: it makes the PROPERTY
+        # LLM-free, and the `no-op` assertion further down is still an
+        # LLM-decided one. That is deliberate -- it is the end-to-end
+        # half, and its failure message says so -- but it does mean this
+        # case can still fail on a model answer. It is the weaker of the
+        # two assertions, not the load-bearing one.
         live = do_domain.Driver().read(zone, {"DIGITALOCEAN_TOKEN": token})
         desired = {"records": reordered}
         assert (
@@ -463,18 +496,32 @@ class TestDomainLifecycleSequence:
             )
             == {}
         ), "a pure reorder produced a diff even with UNORDERED_FIELDS applied"
+        # Non-vacuous for a reason worth stating exactly: read() returns
+        # records sorted by domain.py's _sort_key, and the fixture order
+        # is not that order -- so an ordered comparison differs here
+        # whether or not the list was reversed. What this rules out is a
+        # world where the two sides happen to match ordered, which would
+        # make the assertion above prove nothing about UNORDERED_FIELDS.
         assert planner.diff_attributes(live, desired) != {}, (
-            "the reorder was not actually a reorder -- ordered comparison saw no diff "
-            "either, so this case proves nothing about UNORDERED_FIELDS"
+            "ordered comparison saw no diff either, so the assertion above proves "
+            "nothing about UNORDERED_FIELDS"
         )
 
         write_domain_aiform_md(project_dir, name=zone, records=reordered)
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 7d: reordered plan create")
+        # The end-to-end half, and the LLM-decided one: with the file hash
+        # changed the plan is categorized by the model against an empty
+        # diff, so a failure here does NOT by itself mean
+        # UNORDERED_FIELDS regressed -- check the deterministic pair above
+        # first. If those passed and this failed, the model answered
+        # something other than no-op for an empty diff, which is a
+        # planner/prompt problem rather than a driver one.
         assert f"= {key}: no-op" in captured.out, (
-            "reordering the records list produced a diff -- UNORDERED_FIELDS is not "
-            "taking effect end to end"
+            "the reordered plan was not reported as a no-op. The deterministic "
+            "assertions above cover UNORDERED_FIELDS itself; if they passed, this is "
+            "the intent-orchestration model categorizing an empty diff as a change"
         )
 
         # Case 7e: records: []. A zone with only its DO-managed SOA/NS

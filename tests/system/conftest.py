@@ -752,14 +752,21 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     # droplet run into a session-teardown ERROR, failing a suite that has
     # nothing to do with domains.
     #
-    # EVERYTHING here warns rather than raises, for that reason: this is
-    # a best-effort backstop for a leak that has already happened, and it
+    # Every *transient* failure here warns rather than raises: this is a
+    # best-effort backstop for a leak that has already happened, and it
     # must never be the thing that fails an otherwise-passing run. That
     # applies to the per-zone DELETE as much as to the listing -- an
     # earlier version guarded the delete for HTTPError only, so a socket
     # timeout on one DELETE raised out of the fixture and aborted the
     # rest of the sweep, which is exactly the promise this docstring
     # makes and that version broke.
+    #
+    # Two things deliberately DO raise, and are not in
+    # _SWEEP_TRANSIENT_ERRORS: list_domains()'s refusal to follow an
+    # off-host `next`, and its page ceiling. Those are security refusals,
+    # not transient errors -- a body trying to redirect the bearer token
+    # should fail the run loudly rather than degrade to a warning nobody
+    # reads.
     try:
         domains = list_domains(token)
     except _SWEEP_TRANSIENT_ERRORS as exc:
