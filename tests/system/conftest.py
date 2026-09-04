@@ -6,6 +6,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import warnings
@@ -293,9 +294,11 @@ def teardown_tracked_resources(project_dir: Path):
             code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path)])
             if code != 0:
                 warnings.warn(
-                    f"teardown 'plan destroy' exited {code} -- a droplet may still be live "
-                    f"and billable; check {state_path} and DigitalOcean's droplet list "
-                    f"(tag {SYSTEM_TEST_TAG!r}) by hand",
+                    f"teardown 'plan destroy' exited {code} -- a resource may still be live; "
+                    f"check {state_path}, DigitalOcean's droplet list (tag "
+                    f"{SYSTEM_TEST_TAG!r}) and its domain list "
+                    f"({SYSTEM_TEST_ZONE_PREFIX}*.{SYSTEM_TEST_ZONE_PARENT}) by hand. "
+                    "Zones carry no tag, so the name prefix is the only handle for those.",
                     stacklevel=2,
                 )
 
@@ -450,6 +453,10 @@ def list_account_ssh_key_fingerprints(token: str) -> list[str]:
 # predates that rule being written down and is a constant rather than
 # logic -- not a precedent to extend here.)
 DO_API_BASE = "https://api.digitalocean.com/v2"
+# The only host a paginated `next` may point at, and a ceiling on how many
+# pages will be followed. See list_domains().
+DO_API_BASE_HOST = "https://api.digitalocean.com"
+DO_API_MAX_PAGES = 100
 DO_API_TIMEOUT_SECONDS = 30
 
 SYSTEM_TEST_ZONE_PREFIX = "systest-"
@@ -469,6 +476,19 @@ _ZONE_TIMESTAMP_LENGTH = 16
 # a threshold well above that can never race a healthy concurrent run
 # while still catching a real leak promptly.
 SWEEP_MIN_AGE_MINUTES = 60
+
+# Everything the sweep must survive rather than raise on. Deliberately as
+# wide as wait_until_domain_gone()'s: http.client.HTTPException is listed
+# explicitly because IncompleteRead and RemoteDisconnected are NOT
+# OSError subclasses and would otherwise escape. HTTPError is a URLError
+# subclass, so a 403 from a droplet-scoped token is covered.
+_SWEEP_TRANSIENT_ERRORS = (
+    urllib.error.URLError,
+    TimeoutError,
+    http.client.HTTPException,
+    OSError,
+    json.JSONDecodeError,
+)
 
 
 def unique_zone_name(label: str) -> str:
@@ -576,6 +596,8 @@ def get_domain_or_none(token: str, zone: str) -> dict | None:
         if exc.code == 404:
             return None
         raise
+    if payload is None:
+        raise AssertionError(f"empty 200 body from GET /v2/domains/{zone}")
     return payload["domain"]
 
 
@@ -585,6 +607,8 @@ def list_domain_records(token: str, zone: str) -> list[dict]:
     listing so a test can assert they really are present on DO's side and
     really are absent from state."""
     payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
+    if payload is None:
+        raise AssertionError(f"empty 200 body from GET /v2/domains/{zone}/records")
     return payload.get("domain_records", [])
 
 
@@ -595,15 +619,35 @@ def list_domains(token: str) -> list[dict]:
     zones alongside the suite's throwaways, so an unpaginated read could
     miss a leaked zone entirely -- the one failure this listing exists to
     catch.
+
+    `next` comes out of a response *body*, and this loop sends the live
+    DIGITALOCEAN_TOKEN to whatever it names -- so the host is checked
+    before it is followed, and the page count is capped. Both guards
+    mirror drivers/digitalocean/_common.py's `_check_host`/`MAX_PAGES`
+    and are deliberately re-implemented rather than imported, for the
+    same reason the rest of these helpers are: this is the backstop, and
+    it must not depend on the code it backs up. Re-implementing a
+    security guard means re-implementing *all* of it -- an earlier
+    version of this function copied the pagination and silently dropped
+    both, which is a token-exfiltration path, not a style nit.
     """
     domains: list[dict] = []
     url = f"{DO_API_BASE}/domains?per_page=200"
+    pages = 0
     while url:
+        parts = urllib.parse.urlsplit(url)
+        if f"{parts.scheme}://{parts.netloc}" != DO_API_BASE_HOST:
+            raise AssertionError(f"refusing to follow a next url off {DO_API_BASE_HOST}: {url}")
         payload = _domain_api(token, "GET", url)
+        pages += 1
         if payload is None:
             break
         domains.extend(payload.get("domains") or [])
         url = ((payload.get("links") or {}).get("pages") or {}).get("next")
+        if url and pages >= DO_API_MAX_PAGES:
+            raise AssertionError(
+                f"listing domains exceeded {DO_API_MAX_PAGES} pages; refusing to keep following"
+            )
     return domains
 
 
@@ -692,27 +736,33 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     """
     yield
 
-    if not os.environ.get("DIGITALOCEAN_TOKEN"):
-        return
     # live_token(), not os.environ directly: this is the one code path
     # that runs on every session, and a URLError/timeout inside
     # _domain_api() would otherwise put the raw token into the teardown
     # traceback's frame arguments. The scrub hook would still catch it,
     # but the whole point of the three layers is that none of them is
-    # relied on alone.
+    # relied on alone. No presence check is needed -- this fixture
+    # depends on _require_live_credentials, which has already skipped the
+    # session if either variable is unset.
     token = live_token()
 
     # This fixture is autouse for the whole of tests/system/, so it runs
     # on a compute-only session too -- where the token may legitimately
     # carry no `domain` scope. Listing would then 403 and turn a green
     # droplet run into a session-teardown ERROR, failing a suite that has
-    # nothing to do with domains. Anything that goes wrong here warns
-    # rather than raises for the same reason: this is a best-effort
-    # backstop for a leak that has already happened, and it must never be
-    # the thing that fails an otherwise-passing run.
+    # nothing to do with domains.
+    #
+    # EVERYTHING here warns rather than raises, for that reason: this is
+    # a best-effort backstop for a leak that has already happened, and it
+    # must never be the thing that fails an otherwise-passing run. That
+    # applies to the per-zone DELETE as much as to the listing -- an
+    # earlier version guarded the delete for HTTPError only, so a socket
+    # timeout on one DELETE raised out of the fixture and aborted the
+    # rest of the sweep, which is exactly the promise this docstring
+    # makes and that version broke.
     try:
         domains = list_domains(token)
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except _SWEEP_TRANSIENT_ERRORS as exc:
         warnings.warn(
             f"could not list domains to sweep leaked system-test zones ({exc}) -- "
             "check by hand for zones named "
@@ -730,7 +780,7 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
             continue
         try:
             delete_domain_directly(token, name)
-        except urllib.error.HTTPError as exc:
+        except _SWEEP_TRANSIENT_ERRORS as exc:
             warnings.warn(f"could not sweep leaked zone {name!r}: {exc}", stacklevel=2)
         else:
             swept.append(name)

@@ -94,6 +94,26 @@ class TestZoneCreatedAtClaimsOurOwn:
         assert name.endswith(f".{SYSTEM_TEST_ZONE_PARENT}")
 
 
+class TestAllTypeRecordsCoversTheDriver:
+    """Both specs claim the live suite verifies the per-type
+    required-field table for *every* type the driver supports. Nothing
+    enforced that: adding a ninth type to `_RECORD_TYPES` would leave the
+    claim silently false with the suite still green.
+
+    A real test rather than a module-level `assert` in the system suite.
+    That assert ran at *import* time, so it fired during collection of
+    the default `pytest` run — turning a ninth type into "1 error during
+    collection" with zero tests executed — and it would vanish entirely
+    under `python -O`.
+    """
+
+    def test_covers_every_supported_record_type(self):
+        from drivers.digitalocean import domain as do_domain
+        from tests.system.test_cli_domain import ALL_TYPE_RECORDS
+
+        assert {r["type"] for r in ALL_TYPE_RECORDS} == set(do_domain._RECORD_TYPES)
+
+
 class TestWriteDomainAiformMd:
     """The fixture writer's YAML must survive a real parse. It emits each
     record as a JSON object, relying on JSON being a YAML subset -- so the

@@ -3,26 +3,18 @@
 ## Purpose
 
 The domain-driver analogue of `specs/system_test.md`. That spec covers
-`drivers/digitalocean/compute.py` end to end against the real API;
-this one does the same for `drivers/digitalocean/domain.py`, which
-today has only mocked unit tests.
+`drivers/digitalocean/compute.py` end to end against the real API; this
+one does the same for `drivers/digitalocean/domain.py`, whose other tests
+are all mocked.
 
-`specs/digitalocean_domain.md` names this gap itself, under "Out of
-scope":
-
-> **A live system test.** `tests/system/` is its own module with its own
-> spec (`specs/system_test.md`) and `PROCESS.md` is one module per PR.
-> Worth filing as a follow-up, and cheap to run: DigitalOcean bills
-> nothing for DNS zones, unlike the droplet suite. It is also the only
-> way to settle the "recalled, not verified" items above — particularly
-> the trailing-dot and `TXT`-quoting behavior, which unit tests can only
-> assert against a mock that encodes the same assumption. Its
-> `write_aiform_md()` helper hardcodes `resource: compute` and would need
-> a parallel.
-
-and again under Edge cases → Knowledge-confidence, of the per-type
-required-field table: *"Still recalled and reasoned, NOT verified … This
-is the one remaining item for the live system test."*
+It exists because `specs/digitalocean_domain.md` named the gap for
+itself: a live system test was listed under "Out of scope" as a
+follow-up, on the grounds that it was the only way to settle that spec's
+"recalled, not verified" items — the trailing-dot round trip and
+`TXT` quoting, which mocked tests can only assert against an assumption
+they share with the driver — and that the per-type required-field table
+was "the one remaining item for the live system test." Those entries have
+since been updated to point here.
 
 This suite is that follow-up. Its point is **not** to re-prove the CLI,
 orchestrator, gates or state machinery — `specs/system_test.md`'s suite
@@ -103,7 +95,11 @@ was built to do — these were `specs/digitalocean_domain.md`'s last
   an expanding API would have produced a permanent phantom diff and the
   driver has no `AAAA` normalization to absorb it.
 - **`CAA` `issue` and `issuewild` coexist** at one name with identical
-  `data`, and reconciliation touches neither when the other changes.
+  `data` (case 6). Note the narrower claim: no case *edits* a CAA record,
+  so "reconciliation touches neither when the other changes" is not
+  directly verified. What case 7c does verify is adjacent and cheaper —
+  every record's DO id survives an edit to a different record, the CAA
+  pair included.
 
 **Recalled, not verified**: nothing this spec now depends on.
 
@@ -255,17 +251,18 @@ each its own teardown instance and destroy the zone after the first.
    the state entry carries `id` / `driver.sha256` / `driver.code_review`,
    and that `.aiform/state.json.backup` exists (CLAUDE.md's
    state-handling rule). Then the two live checks this case exists for:
-   - **The dot asymmetry.** Every `_FQDN_TYPES` record (`CNAME`, `MX`,
-     `NS`, `SRV`, `CAA`) is written **dotless** in the `.aiform.md`.
-     Assert the raw `GET /v2/domains/{zone}/records` payload returns it
-     dotless too, and that state's `attributes["records"]` matches what
-     was written, field for field. This is `_to_wire_record()`'s entire
-     justification, and the assumption a mock necessarily shares with the
-     driver.
+   - **The dot asymmetry.** The `_FQDN_TYPES` records in this case's
+     fixture (`CNAME` and `MX`; `NS`, `SRV` and `CAA` arrive in case 6)
+     are written **dotless** in the `.aiform.md`. Assert the raw
+     `GET /v2/domains/{zone}/records` payload returns them dotless too,
+     and that state's `attributes["records"]` matches what was written,
+     field for field. This is `_to_wire_record()`'s entire justification,
+     and the assumption a mock necessarily shares with the driver.
    - **SOA and apex NS are filtered.** Assert the raw payload *does*
-     contain the `SOA` and the three `ns{1,2,3}.digitalocean.com` records
-     (verified present above), and that state's `records` contains
-     neither — `_filter_managed()`.
+     contain an `SOA` and at least one apex `NS` — the fixture asserts
+     presence, not the specific `ns{1,2,3}.digitalocean.com` triple, so
+     it does not break if DigitalOcean changes its nameserver set — and
+     that state's `records` contains neither, per `_filter_managed()`.
 4. **Second `plan create`, file unchanged** — `[verbose] 0 Anthropic API
    call(s) made`, `= <key>: no-op`, and exactly one driver `read()`
    (`count_driver_reads()`, which wraps the instance
@@ -312,27 +309,47 @@ each its own teardown instance and destroy the zone after the first.
      delete/create pair; asserting only the new value would pass either way.
    - **7b, ttl-only on a set-path type.** Change only one `MX` record's
      `ttl`. Same assertion, for the `_key_without_ttl` pairing branch.
-   - **7c, add and remove.** Add a second `MX`, drop one `TXT`. Assert the
-     untouched records' ids survived — the POST and DELETE touched only
-     what changed — and that DO's silent TTL rectification did not rewrite
-     the sibling `MX`, the behavior `_validate_ttl_consistency` exists to
-     forestall.
-   - **7d, pure reorder.** Shuffle the `records` list with no semantic
-     change. `plan create` must report `no-op` — end-to-end proof of
-     `UNORDERED_FIELDS = ["records"]` against real `read()` output.
+   - **7c, add and remove.** Add a second `MX`, drop one `TXT`. Snapshot
+     **every** managed record's DO id before the apply and assert each one
+     except the removed `TXT` is unchanged after — the POST and DELETE
+     touched only what changed. Checking just the edited record's sibling
+     would let a regression that delete/recreated, say, the `CAA` pair on
+     every update pass 7a–7c and the convergence re-plans alike, since
+     each of those only looks at the record it edited.
 
-     It must **not** assert a zero Anthropic call count, and that is a
-     distinction this suite's first live run established rather than a
-     concession. `aiform/planner.py`'s short-circuit fires only when the
-     diff is empty **and** the `.aiform.md` sha256 is unchanged:
+     This case proves nothing about DO's silent TTL rectification, and
+     should not claim to: both `MX` records are written at the same `ttl`
+     (as `_validate_ttl_consistency` requires), so there is nothing to
+     rectify and such an assertion could not fail for that reason.
+   - **7d, pure reorder.** Shuffle the `records` list with no semantic
+     change.
+
+     **The load-bearing assertion is deterministic, not the plan output.**
+     Reordering rewrites the file, so `planner.py`'s short-circuit is
+     skipped and `categorize_diff()` runs against an *empty* diff — which
+     makes a `no-op` line whatever the `intent-orchestration-model`
+     answered. It could report `no-op` with `UNORDERED_FIELDS` removed
+     (two semantically identical lists) and could spuriously report
+     `update` with it present. This spec's own rule for cases 11 and 12 —
+     an assertion must not be able to pass or fail on a model's wording —
+     applies here too, and applied to the one case that is supposed to
+     prove `UNORDERED_FIELDS` end to end.
+
+     So assert against live `read()` output directly:
+     `diff_attributes(live, desired, unordered_fields=UNORDERED_FIELDS)`
+     is empty, **and** `diff_attributes(live, desired)` without it is
+     not. The second half is what shows `UNORDERED_FIELDS` is doing the
+     work rather than the two orderings happening to coincide. The
+     `plan create` `no-op` assertion stays as the end-to-end half.
+
+     It must **not** assert a zero Anthropic call count. `planner.py`'s
+     short-circuit fires only when the diff is empty **and** the
+     `.aiform.md` sha256 is unchanged:
 
      ```python
      if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
      ```
 
-     Reordering rewrites the file, so the hash changes, the Intent prose
-     is re-parsed and the plan re-categorized — correct behavior, since
-     prose the user edited in the same save could mean something new.
      **`UNORDERED_FIELDS` buys a no-op plan, not a free one**; the
      zero-call guarantee is keyed on the file, not on the diff, and cases
      4 and 7's convergence re-plans are where it is asserted. An earlier
@@ -342,7 +359,9 @@ each its own teardown instance and destroy the zone after the first.
      driver spec calls this "a stable no-op state, not a perpetual diff";
      only a live `read()`, which must return `[]` after filtering the
      SOA/NS records DO keeps, can confirm it.
-   - Across all of 7, assert `(likely replace)` appears **nowhere**.
+   - Across every *applying* step of 7 (7a–7c, 7e), assert
+     `(likely replace)` appears **nowhere**. 7d applies nothing — it
+     asserts a `no-op`, which already excludes a replace.
      `LIKELY_REPLACE_FIELDS` is empty for this driver, and this is the
      domain analogue of the compute suite's issue-#77 guard: no record
      edit may ever propose tearing the zone down. As there, `--yes` cannot

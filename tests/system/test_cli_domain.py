@@ -27,7 +27,7 @@ import urllib.error
 
 import pytest
 
-from aiform import cli, state
+from aiform import cli, planner, state
 from drivers.digitalocean import domain as do_domain
 from tests.system.conftest import (
     assert_cli_ok,
@@ -104,15 +104,6 @@ ALL_TYPE_RECORDS = [
 ]
 
 
-# Guards the claim both specs now make -- that this suite verifies the
-# per-type required-field table for EVERY type the driver supports. Add a
-# ninth type to _RECORD_TYPES without adding it here and that claim
-# silently becomes false while the suite stays green.
-assert {r["type"] for r in ALL_TYPE_RECORDS} == set(do_domain._RECORD_TYPES), (
-    "ALL_TYPE_RECORDS must cover every type in domain.py's _RECORD_TYPES"
-)
-
-
 def _resource_key(zone: str) -> str:
     return f"digitalocean.domain.{zone}"
 
@@ -135,15 +126,26 @@ def _find_live(records: list[dict], **match) -> dict:
     return hits[0]
 
 
+def _is_do_managed_ns(record: dict) -> bool:
+    """Mirrors domain.py's `_is_do_managed_ns`, anchored the same way.
+
+    A substring test for "digitalocean.com" would agree on today's live
+    data and disagree on `ns1.digitalocean.com.evil.net`, `digitalocean.com`
+    and `NS1.DIGITALOCEAN.COM` -- so a drift between this and the driver
+    would show up as a confusing count mismatch pointing at the driver
+    when the stale rule is here.
+    """
+    return (
+        record["type"] == "NS"
+        and record["name"] == "@"
+        and str(record.get("data") or "").rstrip(".").casefold().endswith(".digitalocean.com")
+    )
+
+
 def _managed(records: list[dict]) -> list[dict]:
     """The records a user manages -- what read() should report, i.e.
     everything DO did not create for itself."""
-    return [
-        r
-        for r in records
-        if r["type"] != "SOA"
-        and not (r["type"] == "NS" and r["name"] == "@" and "digitalocean.com" in r["data"])
-    ]
+    return [r for r in records if r["type"] != "SOA" and not _is_do_managed_ns(r)]
 
 
 def _sorted_records(records: list[dict]) -> list[dict]:
@@ -372,12 +374,25 @@ class TestDomainLifecycleSequence:
         )
         _assert_converges(state_path, key, capsys, "case 7b")
 
-        # Case 7c: add one MX, drop the TXT. The surviving MX's id must be
-        # untouched (POST and DELETE touched only what changed), and DO's
-        # silent TTL rectification must not have rewritten it -- the
-        # behavior _validate_ttl_consistency exists to forestall.
-        # ttl 3600 on the new MX matches the RRset, which that same
-        # validation requires.
+        # Case 7c: add one MX, drop the TXT. Reconciliation must touch
+        # ONLY those two -- every other record's DO id must survive.
+        #
+        # Snapshot every id first. Checking just the sibling MX would let
+        # a regression that delete/recreated, say, the CAA pair on every
+        # update sail through 7a-7c and _assert_converges alike, since
+        # both only ever look at the record they edited.
+        #
+        # ttl 3600 on the new MX matches the RRset, as
+        # _validate_ttl_consistency requires. Note this case does NOT
+        # prove anything about DO's silent TTL rectification: with both MX
+        # records written at the same ttl there is nothing to rectify, so
+        # such an assertion could not fail for that reason. An earlier
+        # version of this comment claimed otherwise.
+        ids_before = {
+            (r["type"], r["name"], r["data"]): r["id"]
+            for r in _managed(list_domain_records(token, zone))
+        }
+
         records = [r for r in records if r["type"] != "TXT"]
         records.append(
             {"type": "MX", "name": "@", "data": "mail2.example.com", "ttl": 3600, "priority": 20}
@@ -392,8 +407,16 @@ class TestDomainLifecycleSequence:
         assert not [r for r in live_records if r["type"] == "TXT"]
         surviving_mx = _find_live(live_records, type="MX", data="mail.example.com")
         assert surviving_mx["id"] == mx_id, "the untouched MX record was recreated"
-        assert surviving_mx["ttl"] == 3600
         assert _find_live(live_records, type="MX", data="mail2.example.com")["priority"] == 20
+
+        ids_after = {(r["type"], r["name"], r["data"]): r["id"] for r in _managed(live_records)}
+        for identity, before in ids_before.items():
+            if identity[0] == "TXT":
+                continue  # deliberately removed by this case
+            assert ids_after.get(identity) == before, (
+                f"{identity} was recreated rather than left alone -- reconciliation "
+                "touched a record this edit did not change"
+            )
         _assert_converges(state_path, key, capsys, "case 7c")
 
         # Case 7d: pure reorder, no semantic change. End-to-end proof of
@@ -415,7 +438,37 @@ class TestDomainLifecycleSequence:
         # _assert_converges are where that is asserted. An earlier draft of
         # this case asserted 0 here and failed on the first live run
         # against a plan that was, correctly, already a no-op.
-        write_domain_aiform_md(project_dir, name=zone, records=list(reversed(records)))
+        reordered = list(reversed(records))
+
+        # The deterministic half, and the one that actually carries the
+        # claim. Reordering changes the file hash, so planner.py's
+        # short-circuit is skipped and categorize_diff() runs against an
+        # EMPTY diff -- which means the `no-op` line below is whatever the
+        # intent-orchestration model answered. It could report no-op with
+        # UNORDERED_FIELDS removed (two semantically identical lists), and
+        # it could spuriously report update with it present. Either way an
+        # LLM decides, and specs/system_test_domain.md's own rule for
+        # cases 11/12 says an assertion must not be able to pass or fail
+        # on a model's wording.
+        #
+        # So assert the property directly against live read() output:
+        # empty diff WITH the driver's unordered_fields, non-empty
+        # WITHOUT. The second half is what proves UNORDERED_FIELDS is
+        # doing the work rather than the two lists happening to match.
+        live = do_domain.Driver().read(zone, {"DIGITALOCEAN_TOKEN": token})
+        desired = {"records": reordered}
+        assert (
+            planner.diff_attributes(
+                live, desired, unordered_fields=do_domain.Driver.UNORDERED_FIELDS
+            )
+            == {}
+        ), "a pure reorder produced a diff even with UNORDERED_FIELDS applied"
+        assert planner.diff_attributes(live, desired) != {}, (
+            "the reorder was not actually a reorder -- ordered comparison saw no diff "
+            "either, so this case proves nothing about UNORDERED_FIELDS"
+        )
+
+        write_domain_aiform_md(project_dir, name=zone, records=reordered)
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 7d: reordered plan create")
@@ -582,6 +635,18 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan():
             )
         assert excinfo.value.code == 422, (
             f"expected DO to reject a non-IP A record with 422, got {excinfo.value.code}"
+        )
+        # Pin that the 422 came from the RECORD post, not the zone post.
+        # `POST /v2/domains` sits outside create()'s try block, so a 422
+        # there satisfies every other assertion here -- the raise, the
+        # status, and a zone that 404s because it was never made -- with
+        # the rollback never entered. _fold_do_error_into_exc() runs only
+        # on the record-failure path, so a folded DO message in exc.msg
+        # is a free discriminator between the two.
+        assert ":" in excinfo.value.msg, (
+            "expected DigitalOcean's own error message folded into the exception, which "
+            "only happens on the record-post path -- this 422 may have come from the zone "
+            f"post instead, in which case the rollback never ran: {excinfo.value.msg!r}"
         )
 
         orphan = wait_until_domain_gone(token, zone)
