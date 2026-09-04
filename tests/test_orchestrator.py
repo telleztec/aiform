@@ -96,7 +96,7 @@ class FakeDriverWithNonDiffableFields(FakeDriver):
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
 
 
-# Written to disk for tests that exercise load_driver()/ensure_driver_trusted()/
+# Written to disk for tests that exercise load_driver()/driver_info_for()/
 # build_create_plan()/build_destroy_plan(), which dynamically import a real file.
 # Behavior is driven entirely by the `id`/`desired` values the orchestrator
 # naturally passes in -- no shared mutable test state, since each dynamic
