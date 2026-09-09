@@ -15,3 +15,12 @@ __pycache__/
 # direnv local cache -- not created by this repo's .envrc (which uses no
 # layout/use stdlib functions), but present if one is ever added.
 .direnv/
+
+# Emacs autosave (#file#), lock (.#file) and backup (file~) artifacts. The
+# credentials file above is ignored because it holds secrets, but Emacs writes
+# siblings holding the same contents under different names, and those were not
+# covered -- a broad `git add -A` would have staged `.aiform/#credentials.env#`.
+# The `#` patterns need escaping: unescaped, a leading `#` starts a comment.
+\#*\#
+.\#*
+*~
