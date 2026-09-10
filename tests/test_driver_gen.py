@@ -327,6 +327,44 @@ class TestDraftDriver:
         content = client.messages.calls[0]["messages"][0]["content"]
         assert "Unrelated resource's spec." not in content
 
+    @pytest.mark.parametrize(
+        ("provider", "resource", "filename"),
+        [
+            # Each of these resolves to a real spec in this repo that is
+            # NOT a driver acceptance spec. An unknown provider is the
+            # general guard; the hand-maintained set covers the residual
+            # case of a non-driver spec that does start with a real
+            # provider name.
+            ("driver", "gen", "driver_gen.md"),
+            ("driver", "creation", "driver_creation.md"),
+            ("merge", "gate", "merge_gate.md"),
+            ("system", "test", "system_test.md"),
+            ("unordered", "fields", "unordered_fields.md"),
+            ("resource", "tagging", "resource_tagging.md"),
+            ("run", "system_tests", "run_system_tests.md"),
+            ("digitalocean", "pagination", "digitalocean_pagination.md"),
+        ],
+    )
+    def test_never_pastes_a_non_driver_spec_as_ground_truth(
+        self, prompts_dir: Path, specs_dir: Path, provider: str, resource: str, filename: str
+    ):
+        (specs_dir / filename).write_text("## Purpose\n\nNot a driver spec.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider=provider, resource=resource), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" not in content
+        assert "not a driver spec" not in content
+
+    def test_still_pastes_a_real_driver_spec(self, prompts_dir: Path, specs_dir: Path):
+        (specs_dir / "digitalocean_firewall.md").write_text("## Purpose\n\nReal driver spec.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="firewall"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "Real driver spec." in content
+        assert "authoritative" in content.lower()
+
     def test_ignores_collision_with_a_reserved_module_spec_filename(
         self, prompts_dir: Path, specs_dir: Path
     ):

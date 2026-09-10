@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for probes/_audit.py -- see specs/driver_probing.md's
+"""Tests for probes/_audit.py -- see specs/driver_creation.md's
 "The audit log".
 
 The format is fixed before mechanism 2 exists precisely so a
@@ -89,7 +89,7 @@ class TestAudit:
             audit.append("probe", ref="01", verdict="maybe")
 
     def test_a_spec_step_must_cite_a_transcript(self, tmp_path):
-        # specs/driver_probing.md: a spec claim without `cites=` is not
+        # specs/driver_creation.md: a spec claim without `cites=` is not
         # allowed to say "verified".
         audit = Audit(tmp_path / "AUDIT.log")
         with pytest.raises(ValueError, match="cites"):

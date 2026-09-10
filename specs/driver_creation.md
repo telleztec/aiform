@@ -1,4 +1,4 @@
-# specs/driver_probing.md — the driver-creation loop
+# specs/driver_creation.md — the driver-creation loop
 
 ## Purpose
 

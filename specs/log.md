@@ -37,7 +37,7 @@ Named `log.py`, not `logging.py`, to avoid shadowing the stdlib module
 for any file that does `import logging` (Python 3's absolute-import
 semantics would actually resolve this correctly even so, but the
 filename is free real estate not worth spending on a collision risk
-for zero benefit). Needs no `driver_gen.py` `RESERVED_MODULE_SPEC_NAMES`
+for zero benefit). Needs no `driver_gen.py` `NON_DRIVER_SPEC_NAMES`
 entry — that set only guards spec filenames containing an underscore
 (per that file's own comment), and `log.md` has none.
 

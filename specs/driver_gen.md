@@ -191,7 +191,18 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      same way `llm.PROMPTS_DIR` is), introduced as authoritative ground
      truth the draft must follow exactly, more trustworthy than general
      training-data knowledge of the provider's API — omitted entirely
-     when no such file exists on disk yet.
+     when no such file exists on disk yet, **and omitted when the path
+     resolves to something that is not a driver's acceptance spec.**
+     `specs/` is a flat namespace shared with module and concept specs,
+     so a contrived pair like `provider="driver", resource="gen"` would
+     otherwise paste this module's own spec into the prompt as ground
+     truth for a resource. `_is_driver_spec()` decides: the provider
+     must appear in `config.PROVIDER_TOKEN_ENV_VARS` (a driver for a
+     provider absent from it could never authenticate anyway), which
+     rules out every spec whose name does not begin with a real provider
+     name, and the filename must not be in `NON_DRIVER_SPEC_NAMES`,
+     which covers the residual case of a non-driver spec that *does*
+     begin with one — today only `digitalocean_pagination.md`.
   When `feedback` is given, it's appended last, as a distinct "the
   previous draft was rejected for these reasons" block, so a retry's
   prompt is a strict superset of the first attempt's, not a replacement.

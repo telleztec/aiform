@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
-"""The per-driver audit log -- see specs/driver_probing.md.
+"""The per-driver audit log -- see specs/driver_creation.md.
 
 One append-only file per driver recording how it came to exist: what was
 probed, what contradicted a prediction, which spec claim cites which
