@@ -1,0 +1,25 @@
+2026-09-10T00:05:00Z step=recall provider=digitalocean skipped=0 traps=0 msg="first driver built this way; the audit log did not exist yet, so process lines below are backfilled from commit timestamps and probe lines were re-recorded by an identical later run"
+2026-09-10T00:15:49Z step=spec ref=behavior/create cites=02 msg="create() does not poll; unattached comes back succeeded"
+2026-09-10T00:15:49Z step=spec ref=behavior/read cites=02,03 msg="action is server-added and absent from the published schema; read() keeps it"
+2026-09-10T00:15:49Z step=spec ref=edge/reject cites=04,05,09,10 msg="int ports, uppercase protocol, all, omitted icmp ports are silently rewritten; rejected naming the storable spelling"
+2026-09-10T00:15:49Z step=spec ref=edge/tags cites=19,20 msg="referenced tags must pre-exist; closes an open question in specs/digitalocean_compute.md"
+2026-09-10T00:15:50Z step=test ref=test_digitalocean_firewall state=red msg="module not found"
+2026-09-10T00:15:50Z step=impl ref=drivers/digitalocean/firewall.py state=green tests=32
+2026-09-10T00:15:50Z step=verify kind=live result=pass msg="zero-diff after create and update; order-insensitive"
+2026-09-10T01:16:51Z step=review round=1 model=fable findings=10
+2026-09-10T01:16:51Z step=fix round=1 fixed=10 msg="nested target types, empty sub-lists, required fields, sweep age floor, dry-run teardown"
+2026-09-10T01:23:10Z step=review round=2 model=fable findings=5
+2026-09-10T01:23:10Z step=fix round=2 fixed=5 msg="zero-diff tautology, droplet_ids overclaim, stale citation, dry-run parity"
+2026-09-10T01:27:21Z step=review round=3 model=fable findings=1
+2026-09-10T01:27:21Z step=fix round=3 fixed=1 msg="self-contradicting comment left by the previous fix"
+2026-09-10T01:27:21Z step=verify kind=live result=pass tests=969 msg="re-verified after every fix round"
+2026-09-10T16:54:08Z step=recall provider=digitalocean skipped=0 traps=0 msg="knowledge base not built; nothing to recall"
+2026-09-10T16:54:10Z step=probe ref=04 verdict=contradicted msg="is an int port coerced or rejected: predicted 422, got 202"
+2026-09-10T16:54:10Z step=probe ref=05 verdict=contradicted msg="is an uppercase protocol rejected or case-folded: predicted 422, got 202"
+2026-09-10T16:54:11Z step=probe ref=08 verdict=contradicted msg="is a firewall with zero rules legal: predicted 202, got 422"
+2026-09-10T16:54:12Z step=probe ref=12 verdict=contradicted msg="is action deny accepted: predicted 422, got 202"
+2026-09-10T16:54:15Z step=probe ref=18 verdict=contradicted msg="how is a rule with an empty sources object rejected: predicted 422, got 202"
+2026-09-10T16:54:15Z step=probe ref=19 verdict=contradicted msg="does creating a firewall auto-create an unknown tag: predicted 202, got 422"
+2026-09-10T16:54:16Z step=probe ref=20 verdict=contradicted msg="is an unknown tag accepted inside a rule sources block: predicted 202, got 422"
+2026-09-10T16:54:20Z step=probe count=31 contradicted=7 msg="session digitalocean_firewall"
+2026-09-10T16:54:20Z step=learn promoted=0 msg="knowledge base not built; 3 candidates held in FINDINGS.md"

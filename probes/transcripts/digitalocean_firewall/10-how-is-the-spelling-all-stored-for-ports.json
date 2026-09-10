@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 404,
+ "elapsed_ms": 507,
  "note": "how is the spelling all stored for ports",
  "prediction": {
   "notes": "stored as '0'",
   "status": 202
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T01:15:05.507569+00:00",
+ "probed_at": "2026-09-10T16:54:11.836370+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -22,7 +22,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-portsall-20260910T011505Z-101242",
+   "name": "aiform-system-test-fw-portsall-20260910T165411Z-96799c",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,9 +35,9 @@
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T01:15:05Z",
+    "created_at": "2026-09-10T16:54:12Z",
     "droplet_ids": [],
-    "id": "9834dbef-1ad0-4b93-a9d6-8ba5f10bf1ff",
+    "id": "67626ab8-2a9d-4875-babd-e17180723946",
     "inbound_rules": [
      {
       "action": "allow",
@@ -50,7 +50,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-portsall-20260910T011505Z-101242",
+    "name": "aiform-system-test-fw-portsall-20260910T165411Z-96799c",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",

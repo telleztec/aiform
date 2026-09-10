@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 301,
+ "elapsed_ms": 293,
  "note": "does creating a firewall auto-create an unknown tag",
  "prediction": {
   "notes": "auto-created, as droplet create does",
   "status": 202
  },
  "prediction_matched": false,
- "probed_at": "2026-09-10T01:15:08.855372+00:00",
+ "probed_at": "2026-09-10T16:54:15.507460+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -22,10 +22,10 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-newtag-20260910T011508Z-fdb901",
+   "name": "aiform-system-test-fw-newtag-20260910T165415Z-bd185b",
    "outbound_rules": [],
    "tags": [
-    "aiform-probe-tag-20260910T011508Z-5fd192"
+    "aiform-probe-tag-20260910T165415Z-f44c8f"
    ]
   },
   "headers": {
@@ -37,8 +37,8 @@
  "response": {
   "body": {
    "id": "unprocessable_entity",
-   "message": "tag aiform-probe-tag-20260910T011508Z-5fd192 does not exist",
-   "request_id": "87ff2c4b-47b1-4a82-b019-a5bdee974a66"
+   "message": "tag aiform-probe-tag-20260910T165415Z-f44c8f does not exist",
+   "request_id": "73a35a87-a615-4828-8e43-775abc32579b"
   },
   "status": 422
  },

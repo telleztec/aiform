@@ -25,6 +25,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from _audit import Audit
+
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_ENV_VAR = "DIGITALOCEAN_TOKEN"
@@ -38,6 +40,7 @@ _SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "set-cookie"})
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 TRANSCRIPTS_ROOT = Path(__file__).parent / "transcripts"
+KNOWLEDGE_ROOT = Path(__file__).resolve().parent.parent / "knowledge"
 # A session never legitimately runs for more than a couple of minutes, so
 # an hour cannot race a healthy concurrent run. Same value and same
 # reasoning as specs/system_test.md's droplet sweep.
@@ -99,6 +102,10 @@ class Probe:
         self._seq = 0
         self._cleanups: list[tuple[str, str]] = []
         self.contradictions: list[str] = []
+        self.audit = Audit(
+            KNOWLEDGE_ROOT / "drivers" / session / "AUDIT.log",
+            secret=os.environ.get(TOKEN_ENV_VAR) or None,
+        )
         self._token = os.environ.get(TOKEN_ENV_VAR, "")
         if not self._token and not dry_run:
             raise ProbeError(
@@ -108,6 +115,15 @@ class Probe:
     def __enter__(self) -> "Probe":
         if not self.dry_run:
             self.dir.mkdir(parents=True, exist_ok=True)
+            # knowledge.py recall() does not exist yet, so this records
+            # the honest zero rather than implying a lookup happened.
+            self.audit.append(
+                "recall",
+                provider=self.session.split("_", 1)[0],
+                skipped=0,
+                traps=0,
+                msg="knowledge base not built; nothing to recall",
+            )
         return self
 
     def __exit__(self, *exc_info) -> None:
@@ -118,6 +134,14 @@ class Probe:
         # placeholder ids it never created.
         if self.dry_run:
             return
+        # One line per decision, not per action: individual probes are
+        # summarised here, and only contradictions got their own line.
+        self.audit.append(
+            "probe",
+            count=self._seq,
+            contradicted=len(self.contradictions),
+            msg=f"session {self.session}",
+        )
         for method, path in reversed(self._cleanups):
             try:
                 status, _ = self._send(method, path, None)
@@ -186,6 +210,16 @@ class Probe:
 
         flag = "" if matched is None else ("  [as predicted]" if matched else "  [CONTRADICTED]")
         print(f"[{seq:02d}] {method} {path} -> {status}  {note}{flag}")
+
+        if matched is False and record:
+            # Only contradictions earn their own audit line -- they are
+            # the findings, and `grep verdict=contradicted` is the list.
+            self.audit.append(
+                "probe",
+                ref=f"{seq:02d}",
+                verdict="contradicted",
+                msg=f"{note}: predicted {predict['status']}, got {status}",
+            )
 
         if not record:
             # Housekeeping (a --sweep listing) shares Probe's HTTP path

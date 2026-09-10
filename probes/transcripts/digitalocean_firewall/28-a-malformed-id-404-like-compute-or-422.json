@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 376,
+ "elapsed_ms": 420,
  "note": "a malformed id: 404 like compute, or 422",
  "prediction": {
   "notes": "compute 404s a malformed droplet id",
   "status": 404
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T01:15:11.979226+00:00",
+ "probed_at": "2026-09-10T16:54:18.783457+00:00",
  "request": {
   "body": null,
   "headers": {
@@ -20,7 +20,7 @@
   "body": {
    "id": "not_found",
    "message": "Firewall not found",
-   "request_id": "371a2c23-733e-4121-81d2-ea1d34c01245"
+   "request_id": "6a348ebf-037f-4ea2-b46c-1a1ad6657fa8"
   },
   "status": 404
  },

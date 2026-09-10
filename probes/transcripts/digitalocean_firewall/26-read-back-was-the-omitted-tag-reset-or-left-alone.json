@@ -1,27 +1,27 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 283,
+ "elapsed_ms": 295,
  "note": "read back: was the omitted tag reset or left alone",
  "prediction": {
   "notes": "tags reset to [] if PUT truly replaces",
   "status": 200
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T01:15:11.437227+00:00",
+ "probed_at": "2026-09-10T16:54:18.166967+00:00",
  "request": {
   "body": null,
   "headers": {
    "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
   },
   "method": "GET",
-  "url": "https://api.digitalocean.com/v2/firewalls/eb9969c5-6090-4b1c-8d40-c862f779a0dc"
+  "url": "https://api.digitalocean.com/v2/firewalls/d1e08ef2-fd2e-4fb9-976b-d543106fd664"
  },
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T01:15:10Z",
+    "created_at": "2026-09-10T16:54:17Z",
     "droplet_ids": [],
-    "id": "eb9969c5-6090-4b1c-8d40-c862f779a0dc",
+    "id": "d1e08ef2-fd2e-4fb9-976b-d543106fd664",
     "inbound_rules": [
      {
       "action": "allow",
@@ -34,7 +34,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-tagged-20260910T011510Z-b794f3",
+    "name": "aiform-system-test-fw-tagged-20260910T165417Z-435c1d",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",

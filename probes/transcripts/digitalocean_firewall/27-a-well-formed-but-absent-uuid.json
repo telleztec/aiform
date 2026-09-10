@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 256,
+ "elapsed_ms": 315,
  "note": "a well formed but absent uuid",
  "prediction": {
   "status": 404
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T01:15:11.721551+00:00",
+ "probed_at": "2026-09-10T16:54:18.463978+00:00",
  "request": {
   "body": null,
   "headers": {
@@ -19,7 +19,7 @@
   "body": {
    "id": "not_found",
    "message": "Firewall not found",
-   "request_id": "0dfaa8b4-13c9-4c17-90a8-e66333ced320"
+   "request_id": "a04ccce4-61bb-4b33-a8a4-58d986e918e7"
   },
   "status": 404
  },
