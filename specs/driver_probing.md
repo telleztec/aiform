@@ -2,8 +2,11 @@
 
 ## Purpose
 
-How a driver for a new `(provider, resource)` pair gets made: probe the
-live API, encode what it actually does, and keep what was learned where
+How a driver for a new `(provider, resource)` pair gets made, in a few
+hours, from five sources used additively: the provider's documented
+signature, what previous drivers learned, live probes for what the
+documentation does not say, an independent review, and a real system
+test. Encode what the API actually does, and keep what was learned where
 the next driver can find it.
 
 This spans a process, a tool (`scripts/probe_api.py`), a per-driver audit
@@ -28,26 +31,80 @@ to build `drivers/digitalocean/firewall.py`. The audit log, the
 knowledge base, and every mechanism-2 integration below are **specified
 here and not yet built.**
 
-## Why probing
+## Five sources, used additively
 
-Provider docs, OpenAPI specs, and mature Terraform providers all
-systematically under-describe side effects. The only reliable way to
-learn how a resource behaves is to exercise it.
+A driver is built from five sources, in cost order. **None replaces
+another**, and reaching for a later one before an earlier one is waste:
 
-The cost of not doing so is not "a bug" — it is a driver that never
-converges. `aiform/planner.py`'s `diff_attributes()` compares `read()`'s
-output against the user's raw `params` with no hook for a driver to
-normalize either side, so any value a CSP silently rewrites on store is a
-**permanent diff**, which permanently defeats the zero-LLM-call
-short-circuit for that resource.
+| Source | Cost | Catches | Cannot catch |
+|---|---|---|---|
+| **Documented signature** (OpenAPI) | free | endpoints, field names, types, required/optional, status codes | what the API does that it does not say |
+| **Knowledge recall** (`knowledge/`) | free | where this CSP has lied before, what a prior driver was bitten by | anything nobody has met yet |
+| **Probing** | minutes, one live account | silent rewrites, server-added fields, real rejection shapes, relationship edges | whether the resulting *diff* is right |
+| **LLM review** | minutes | diff-level errors: tautological tests, overclaims, unreachable branches | what the API actually does |
+| **System test** | minutes, real resources | integration through the CLI, the zero-diff invariant end to end | the individual behaviors above, cheaply |
+
+**The documented signature is what makes probing cheap.** A prediction
+written from the OpenAPI schema is a *good* prediction, and a good
+prediction is what makes a contradiction informative. Probing without
+the documented shape in hand means enumerating an API blind, which is
+both slower and less accurate. Docs generate the hypotheses; probing
+tests the ones that matter; the knowledge base remembers which ones ever
+failed, so the next driver stops asking them.
+
+What probing adds that the documented signature structurally cannot is
+narrow and specific: **what the API does but does not say.**
+`aiform/planner.py`'s `diff_attributes()` compares `read()`'s output
+against the user's raw `params` with no hook for a driver to normalize
+either side, so any value a CSP silently rewrites on store is a
+**permanent diff** — and a permanent diff permanently defeats the
+zero-LLM-call short-circuit for that resource. No published schema
+describes a rewrite-on-store, because from the provider's point of view
+nothing was violated.
 
 Measured, building one driver against DigitalOcean firewalls: **31
-probes, 7 contradicting their prediction.** Three were silent rewrites
-(an int port, an uppercase protocol, the spelling `"all"`). One was a
-field — `action` — that DigitalOcean adds to every rule and that appears
-nowhere in its own published OpenAPI schema. A generator working from
-that schema would have produced a driver that never converges, with
-nothing in the pipeline able to see why.
+probes, 7 contradicting their prediction** — where the predictions came
+from DigitalOcean's own published OpenAPI spec. Three contradictions
+were silent rewrites (an int port, an uppercase protocol, the spelling
+`"all"`). One was a field — `action` — that DigitalOcean adds to every
+rule and that appears nowhere in that schema. The schema got the driver
+90% right in minutes; the probes got the last 10% that decides whether
+it converges.
+
+## The time budget
+
+**A new driver must be achievable in a few hours.** An end user will not
+adopt a process slower than that, and a process nobody runs protects
+nobody. This is a constraint on the loop, not an aspiration: every rule
+below that adds work has to earn it against this budget.
+
+The one measurement so far: `drivers/digitalocean/firewall.py` went from
+first probe to a green suite, through three review rounds, in **1h22m**
+(`knowledge/drivers/digitalocean_firewall/AUDIT.log`, first and last
+lines). That is inside the budget, but it is one driver on a familiar
+CSP with an unusually convenient resource — free, unattached, no
+convergence to wait on. It is a floor, not a typical figure.
+
+Concretely:
+
+- **Probe count is bounded by the driver's own surface**, not by
+  curiosity. Probe each field the driver will validate or project, each
+  documented-vs-observed asymmetry the knowledge base flags for this
+  CSP, and the CRUD edges (not-found, idempotent delete, whole-object
+  vs partial update). That is tens of probes, not hundreds — 31 for
+  firewall, executing in **12 seconds** of wall clock (essentially all
+  of it HTTP round-trips). Probing is not what costs the hours;
+  deciding what to ask is.
+- **Stop probing when the remaining questions are either not
+  code-changing, or cheaper to settle by shipping the system test.** The
+  system test exercises the whole path once; it is the right instrument
+  for anything that needs the resource to exist anyway.
+- **Recall is the only thing that makes the budget hold as the knowledge
+  base grows.** The second driver on a provider must not re-ask what the
+  first settled. `probes_skipped / probes_planned` is recorded on the
+  `step=recall` line for exactly this reason.
+- **Elapsed wall-clock time is recorded per session**, because a budget
+  nobody measures is a preference.
 
 ## Interface
 
@@ -121,9 +178,16 @@ spec-first process, and are where the value is.
    provider; add the probes its `traps` name. Record what was skipped
    and why — a skipped probe is a claim, and it needs the same citation
    a run one does.
-1. **Question and predict.** One factual question, plus what it settles
-   — a behavior, an object's shape, or a relationship edge. Write the
-   expected request *and* response **before sending**.
+1. **Question and predict, from the documented signature.** One factual
+   question, plus what it settles — a behavior, an object's shape, or a
+   relationship edge. Write the expected request *and* response **before
+   sending**, taking both from the provider's OpenAPI spec wherever it
+   says anything. This is the step that keeps the loop inside its
+   budget: the schema supplies the shape for free, so a probe is
+   confirming or refuting a specific documented claim rather than
+   exploring. A question the schema already answers unambiguously, and
+   that no knowledge entry flags as a place this CSP lies, does not need
+   a probe at all.
 2. **Probe.** Run it. A transcript is written carrying both the
    prediction and the result.
 3. **Compare.** A mismatch is the finding. A match is *also* recorded:
@@ -139,10 +203,13 @@ spec-first process, and are where the value is.
 
 ### Which probes are legitimate
 
-Probe **behavior** freely — deterministic, and one observation settles
-it ("does this endpoint coerce an int port?"). Characterization probes
-count even when no code changes today: building an accurate model of the
-resource is the deliverable.
+Probe **behavior** — deterministic, and one observation settles it
+("does this endpoint coerce an int port?"). Characterization probes
+count even when no code changes today, because an accurate model of the
+resource is what the next driver recalls instead of re-deriving. But
+"freely" is bounded by the budget above: the surface worth probing is
+the driver's own, and a question the documented signature already
+settles is not worth a call.
 
 Refuse a probe whose **passing** result would be read as a guarantee it
 cannot support. The type is a *stability property* — "is this
@@ -225,9 +292,13 @@ generation attempts that all got the explicitly-stated credentials key
 wrong and two that silently dropped a whole call sequence, with the
 correct answer verified present in the prompt twice.
 
-1. **Ground generation in transcripts, not prose.** A stated fact is an
-   instruction, and instructions compete; a transcript is an
-   observation. Every session's step 0 records `credentials_key` from a
+1. **Ground generation in transcripts *as well as* the schema.** The
+   OpenAPI spec stays the primary input — it supplies the shape, for
+   free, and is what makes the rest cheap. Transcripts are added for the
+   narrow thing it cannot carry: what the API does but does not say. The
+   difference that matters is epistemic — a stated fact is an
+   instruction, and instructions compete with each other; a transcript
+   is an observation, and observations do not. Every session's step 0 records `credentials_key` from a
    call that demonstrably worked. `draft_driver()` already loads
    `specs/<provider>_<resource>.md` as ground truth — it gains a
    transcript index alongside it. This is the change that structurally
@@ -302,6 +373,7 @@ Recorded per session, on the closing `step=learn` line:
 | findings that changed the spec *after* implementation began | late findings are cycles; should fall as `_template.py` learns where surprises live |
 | review findings not caught by any probe | the disjoint class — see Edge cases |
 | live surprises after "done" | must reach zero; these are the rounds mechanism 2 would otherwise burn |
+| **elapsed wall-clock, first probe to green suite** | the budget. A driver that takes longer than a few hours is a process failure, whatever its correctness. |
 
 **Readiness for mechanism 2** is not a date: it is a session that runs
 without the process needing to change to accommodate it, on a **second
@@ -376,8 +448,10 @@ differ only in explainable ways.
 - the two failure modes in Edge cases, both observed in this repo
 
 *Inferred, not verified* — that recall reduces probe count on a second
-driver, that the promotion bar is set right at two observations, and
-that the audit log is legible enough to review against. All three need a
+driver, that the promotion bar is set right at two observations, that
+the audit log is legible enough to review against, and that the
+few-hours budget holds for a resource that costs money or takes time to
+converge. All three need a
 second driver, and this spec should be edited after it.
 
 *Recalled, not verified* — that this generalizes to a CSP other than
