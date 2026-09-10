@@ -334,15 +334,13 @@ class Driver(ResourceDriver):
         }
 
     def _wire_body(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
-        # Every managed field goes out on every write. Verified live: a
-        # PUT omitting tags and droplet_ids resets both to [], so a
-        # partial body silently discards state.
         # Every managed field is required by PARAM_SCHEMA and validated
         # before this runs, so each is present and a list -- no defaulting
         # here, which would only paper over an omission the driver
         # refuses. All four go out on every write because an omitted key
-        # is RESET, not preserved: verified live for tags (transcripts
-        # 24-26), and inferred for droplet_ids, which no probe attaches.
+        # is RESET rather than preserved, so a partial body would silently
+        # discard state. That is verified live for tags (transcripts
+        # 24-26) and inferred for droplet_ids, which no probe attaches.
         body: dict[str, Any] = {"name": name}
         for key in _MANAGED_FIELDS:
             body[key] = params[key]

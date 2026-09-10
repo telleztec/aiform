@@ -67,9 +67,10 @@ cannot establish, so it is reasoned about rather than measured
   `tags` key omitted (`25-`), reads back with `tags: []` (`26-`). Note
   this is established for `tags` only. The same is *inferred* for
   `droplet_ids` -- one PUT, one replace semantics -- but never observed,
-  because no probe attaches a droplet, so every transcript has
-  `droplet_ids: []` on both sides where "reset" and "left alone" are
-  indistinguishable. An
+  because no probe attaches a droplet, so every transcript carries
+  `droplet_ids: []` on both sides of the call.
+
+  An
   earlier probe appeared to show this but could not: it edited a
   firewall whose tags were already empty, so "reset" and "left alone"
   were indistinguishable. That is the same mistake
