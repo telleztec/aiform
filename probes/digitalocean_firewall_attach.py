@@ -71,8 +71,6 @@ def _created_id(result, key):
     slightly different reconstructions of that fact is how one of them
     ends up guarding `< 400` differently from the others.
     """
-    if result is None:
-        return DRY_ID
     if result.status >= 400:
         raise SystemExit(f"setup call failed with {result.status}; aborting session")
     if not isinstance(result.body, dict):
@@ -81,7 +79,7 @@ def _created_id(result, key):
 
 
 def _status_of(result):
-    if result is None or not isinstance(result.body, dict):
+    if not isinstance(result.body, dict):
         return "<dry-run>", "<dry-run>"
     firewall = result.body.get("firewall") or {}
     return firewall.get("status"), firewall.get("pending_changes")
@@ -101,7 +99,7 @@ def run(probe: Probe) -> None:
         },
     )
     droplet_id = _created_id(created, "droplet")
-    if created is not None and created.status < 400:
+    if created.status < 400:
         probe.cleanup("DELETE", f"/droplets/{droplet_id}")
 
     # --- 02: the question this session exists for ---------------------
@@ -130,7 +128,7 @@ def run(probe: Probe) -> None:
         },
     )
     fw_id = _created_id(attached, "firewall")
-    if attached is not None and attached.status < 400:
+    if attached.status < 400:
         probe.cleanup("DELETE", f"/firewalls/{fw_id}")
     status, pending = _status_of(attached)
     print(f"  [attach] status={status!r} pending_changes={pending!r}")

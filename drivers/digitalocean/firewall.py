@@ -449,6 +449,10 @@ class Driver(ResourceDriver):
                     f"failed ({delete_exc}) -- firewall {firewall_id} may be orphaned, live "
                     "and untracked"
                 ) from exc
+            logger.warning(
+                "rolled back: the firewall was deleted and is not live",
+                extra={"id": firewall_id, "error": str(exc)},
+            )
             raise
 
     def _get_firewall(self, id: str, credentials: dict[str, str]) -> dict[str, Any]:
@@ -571,10 +575,13 @@ class Driver(ResourceDriver):
                 "outcome": "timeout",
             },
         )
+        # Deliberately says nothing about whether the firewall still
+        # exists: create() rolls back and deletes it, update() cannot and
+        # leaves it live. Naming one of those here made the other a lie.
         raise RuntimeError(
             f"firewall {id}: timed out after "
             f"{ATTACH_POLL_ATTEMPTS * ATTACH_POLL_DELAY_SECONDS}s waiting for DigitalOcean to "
-            f"apply the rules during {step}; the firewall exists but may not be filtering yet"
+            f"apply the rules during {step}; the rules are not confirmed in force"
         )
 
     def delete(self, id: str, credentials: dict[str, str]) -> None:

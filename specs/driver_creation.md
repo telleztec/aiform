@@ -334,10 +334,13 @@ the band anchor from the rubric above: `recall`, `probe`, `spec`,
 `impl`, `verify` and `learn` do. `test`, `review`, `fix` and `note` do
 not — none of them changes what is known, only what is written, fixed,
 or said about the record itself. `probes/_audit.py` enforces the
-negative half; the harness sets `conf=` on the two lines it writes
-itself, which it can do without judgement because both are mechanical
-(nothing recalled and a contradicted prediction are each `guessed` by
-definition).
+negative half only — it refuses `conf=` where the rubric forbids it, and
+does not require it where the rubric expects it. The harness sets it on
+the two lines whose value is mechanical (nothing recalled, and a
+contradicted prediction, are each `guessed` by definition). Its third
+line, the closing `step=probe count=N` summary, carries none: a session
+has no single confidence, and inventing one would be the judgement the
+harness is not entitled to make.
 Reading the `conf=` column down the file is how a reviewer sees at a
 glance whether the loop converged or spun, which is the red flag above
 made visible without re-reading every message.

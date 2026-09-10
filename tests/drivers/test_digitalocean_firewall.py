@@ -584,6 +584,26 @@ def attached_id() -> str:
     return waiting_payload()["firewall"]["id"]
 
 
+def half_settled_payload(*, status: str, pending: bool) -> dict:
+    """A deliberately SYNTHETIC combination, unlike every other payload
+    here.
+
+    DigitalOcean moved `status` and `pending_changes` together in all 7
+    attach transcripts, so no recording separates them -- which is
+    exactly why they have to be separated here. A success condition
+    testing only one half passes every real payload, so only a
+    combination DO has not been observed to emit can tell the two
+    conditions apart. Derived from transcript 02 rather than hand-built,
+    so everything except the field under test is still real.
+    """
+    payload = waiting_payload()
+    firewall = payload["firewall"]
+    firewall["status"] = status
+    if not pending:
+        firewall["pending_changes"] = []
+    return payload
+
+
 def attached_url() -> str:
     return firewall_url(attached_id())
 
@@ -633,6 +653,38 @@ class TestWaitsUntilTheRulesAreActuallyInForce:
         assert len(fake_urlopen.calls) == 2, "one POST and one read; no extra poll"
         assert self.slept == [], "an unattached firewall is already succeeded"
 
+    def test_succeeded_with_changes_still_pending_is_not_active_yet(self, driver, fake_urlopen):
+        # Half the success condition. Dropping `pending_changes` from it
+        # passes every recorded payload, so this is what catches that.
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script(
+            "GET",
+            attached_url(),
+            FakeHTTPResponse(200, half_settled_payload(status="succeeded", pending=True)),
+            FakeHTTPResponse(200, settled_payload()),
+        )
+
+        driver.create(NAME, attached_params(), CREDENTIALS)
+
+        reads = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(reads) == 2, "an empty pending_changes is required, not just succeeded"
+
+    def test_waiting_with_no_pending_changes_is_not_active_yet(self, driver, fake_urlopen):
+        # The other half. Dropping the `status` check passes every
+        # recorded payload just as invisibly.
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script(
+            "GET",
+            attached_url(),
+            FakeHTTPResponse(200, half_settled_payload(status="waiting", pending=False)),
+            FakeHTTPResponse(200, settled_payload()),
+        )
+
+        driver.create(NAME, attached_params(), CREDENTIALS)
+
+        reads = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(reads) == 2, "status must reach 'succeeded', not just drain pending_changes"
+
     def test_a_failed_status_raises_at_once_rather_than_waiting_out_the_timeout(
         self, driver, fake_urlopen
     ):
@@ -655,8 +707,20 @@ class TestWaitsUntilTheRulesAreActuallyInForce:
         with pytest.raises(RuntimeError, match="timed out"):
             driver.create(NAME, attached_params(), CREDENTIALS)
 
-        # The firewall exists but never became active, and nothing has
-        # recorded its id -- the orphan case the rollback exists for.
+        # The ceiling is asserted, not just the fact of giving up: a
+        # shrunken ATTACH_POLL_ATTEMPTS would otherwise pass here while
+        # abandoning a firewall that was still converging normally.
+        reads = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(reads) == firewall_module.ATTACH_POLL_ATTEMPTS
+        assert len(self.slept) == firewall_module.ATTACH_POLL_ATTEMPTS - 1
+        assert (
+            firewall_module.ATTACH_POLL_ATTEMPTS * firewall_module.ATTACH_POLL_DELAY_SECONDS >= 120
+        ), (
+            "the ceiling must stay well clear of the tens of seconds convergence "
+            "probe session digitalocean_firewall_attach measured"
+        )
+        # The firewall never became active and nothing recorded its id --
+        # the orphan case the rollback exists for.
         assert any(c["method"] == "DELETE" for c in fake_urlopen.calls), "should have rolled back"
 
     def test_update_polls_too(self, driver, fake_urlopen):

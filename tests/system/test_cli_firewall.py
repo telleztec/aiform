@@ -301,11 +301,13 @@ class TestAttachedToARealDroplet:
     Everything else in this suite runs unattached, which left
     `droplet_ids` as the single managed field with no live evidence
     behind it: every probe sent `[]`, and probe 21 sent `[1]` only to see
-    a nonexistent id rejected. Two claims rested on that gap --
-    specs/digitalocean_firewall.md marked the `waiting -> succeeded` and
-    `pending_changes` transitions *recalled, not verified*, and create()
-    skips polling on the strength of an unattached firewall coming back
-    `succeeded` immediately.
+    a nonexistent id rejected. That gap is what left
+    specs/digitalocean_firewall.md marking the `waiting -> succeeded` and
+    `pending_changes` transitions *recalled, not verified*, and it is why
+    create() used to return without waiting for an attached firewall to
+    converge. Probe session digitalocean_firewall_attach settled the
+    behavior; the driver now polls, and this case is what exercises it
+    end to end.
 
     The droplet is the cheapest DigitalOcean sells, lives for about two
     minutes, and is destroyed in the fixture's finally whatever happens
@@ -313,8 +315,13 @@ class TestAttachedToARealDroplet:
     """
 
     def test_attach_converges_and_then_detaches(
-        self, project_dir, teardown_tracked_resources, throwaway_droplet, capsys
+        self, project_dir, throwaway_droplet, teardown_tracked_resources, capsys
     ):
+        # throwaway_droplet BEFORE teardown_tracked_resources: pytest
+        # finalizes in reverse of setup, so this order destroys the
+        # firewall first and the droplet it is attached to second. The
+        # other order deletes the droplet out from under a firewall that
+        # `plan destroy` is still detaching.
         token = live_token()
         _skip_without_firewall_scope(token)
 
@@ -345,11 +352,11 @@ class TestAttachedToARealDroplet:
             f"got droplet_ids={live['droplet_ids']!r}"
         )
 
-        # An attached firewall is the case that can report status=waiting
-        # while DigitalOcean applies the rules to the droplet. Whatever it
-        # says here, read() drops status and pending_changes, so a re-plan
-        # mid-convergence must still be a no-op -- that is the actual
-        # guarantee, and it is what made not polling safe.
+        # apply() has already waited for status=succeeded, so by here the
+        # rules are in force. The re-plan still has to be a no-op, and
+        # that is a separate guarantee: read() drops status and
+        # pending_changes, so state converges regardless of what
+        # DigitalOcean reports mid-flight.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "re-plan (attached)")

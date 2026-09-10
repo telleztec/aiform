@@ -55,8 +55,11 @@ cannot establish, so it is reasoned about rather than measured
   *firewall*, "aiform said done" must not precede "the rules are in
   force", because the user's next action assumes protection that does
   not exist yet. `status: "failed"` raises at once rather than waiting
-  out the ceiling; exhausting it raises too, saying the firewall exists
-  but may not be filtering.
+  out the ceiling; exhausting it raises too. Neither message says whether
+  the firewall still exists, because that differs by caller: inside
+  `create()` the existing rollback deletes it (the id was never recorded,
+  so leaving it would orphan it), while `update()` cannot un-send a PUT
+  and leaves it live but unconfirmed.
 - **`read()`** GETs the firewall and returns
   `{"id", "name", "inbound_rules", "outbound_rules", "droplet_ids",
   "tags"}`. A 404 raises `ResourceNotFoundError`.
@@ -313,7 +316,9 @@ feared cost does not materialise for the common case — an unattached
 firewall is already `succeeded` on the first read, so the loop returns
 on attempt 1 having never slept — and `PLAN.md` §5's zero-LLM-call
 short-circuit is about `plan`, not `apply`, so the cost of waiting is
-wall clock rather than tokens. Progress is logged rather than silent.
+wall clock rather than tokens. The wait is logged once on completion — attempts used and elapsed ms,
+the same shape `compute.py` emits — not per attempt, so a two-minute
+wait is silent until it ends.
 
 ## Open questions
 

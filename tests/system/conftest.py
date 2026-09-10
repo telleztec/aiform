@@ -735,7 +735,11 @@ def delete_firewall_directly(token: str, firewall_id: str) -> None:
             raise
 
 
-SYSTEM_TEST_DROPLET_PREFIX = "aiform-system-test-drop"
+# NOT a prefix of "aiform-system-test-droplet", the compute suite's own
+# name: this sweep would otherwise delete that suite's droplets too. Both
+# are throwaways so nothing would have been lost, but a sweep whose reach
+# is wider than its docstring says is how the next one gets it wrong.
+SYSTEM_TEST_DROPLET_PREFIX = "aiform-system-test-fwdrop"
 
 
 def unique_droplet_name(label: str = "attach") -> str:
@@ -769,24 +773,79 @@ def create_droplet_directly(token: str, name: str) -> int:
     throwaway_droplet fixture destroys it in a finally, and the session
     sweep below catches one a crash left behind.
     """
-    payload = _do_api(
-        token,
-        "POST",
-        f"{DO_API_BASE}/droplets",
-        body={
-            "name": name,
-            "region": REGION,
-            "size": SIZE,
-            "image": IMAGE,
-            "tags": [SYSTEM_TEST_TAG],
-            # No ssh_keys and no user_data: nothing ever logs into this
-            # droplet. It exists to be an integer that DigitalOcean will
-            # accept in droplet_ids.
-            "backups": False,
-            "monitoring": False,
-        },
-    )
+    try:
+        payload = _do_api(
+            token,
+            "POST",
+            f"{DO_API_BASE}/droplets",
+            body={
+                "name": name,
+                "region": REGION,
+                "size": SIZE,
+                "image": IMAGE,
+                "tags": [SYSTEM_TEST_TAG],
+                # No ssh_keys and no user_data: nothing ever logs into this
+                # droplet. It exists to be an integer that DigitalOcean will
+                # accept in droplet_ids.
+                "backups": False,
+                "monitoring": False,
+            },
+        )
+    except Exception:
+        # DigitalOcean may have accepted the create and failed us on the
+        # way back -- a truncated body, a timeout reading the response.
+        # The droplet would then be live with nobody holding its id, and
+        # the age floor keeps the in-session sweep from helping for an
+        # hour. The name is ours and unique, so it is recoverable.
+        recovered = _find_droplet_id_by_name(token, name)
+        if recovered is None:
+            raise
+        warnings.warn(
+            f"the create call for droplet {name!r} failed after DigitalOcean accepted it; "
+            f"recovered id {recovered} by name so it can still be destroyed",
+            stacklevel=2,
+        )
+        return recovered
     return int(payload["droplet"]["id"])
+
+
+def _find_droplet_id_by_name(token: str, name: str) -> int | None:
+    try:
+        for droplet in list_droplets(token):
+            if droplet.get("name") == name:
+                return int(droplet["id"])
+    except Exception:
+        return None
+    return None
+
+
+def destroy_droplet_or_shout(token: str, droplet_id: int | str, name: str) -> None:
+    """Delete the droplet, retrying, and make noise if it survives.
+
+    A single DELETE is not enough for the one resource here that bills.
+    One transient 5xx or socket timeout on that call and the droplet runs
+    until a human notices: the session sweep cannot help, because it
+    skips anything younger than SWEEP_MIN_AGE_MINUTES precisely so it
+    never deletes a droplet a concurrent run is using.
+
+    Tolerates the same transient errors wait_until_droplet_gone() does,
+    and on final failure warns with the id -- a warning naming what to
+    destroy by hand is the last line of defence.
+    """
+    last: Exception | None = None
+    for attempt in range(5):
+        try:
+            delete_droplet_directly(token, droplet_id)
+            return
+        except _SWEEP_TRANSIENT_ERRORS as exc:
+            last = exc
+            if attempt < 4:
+                time.sleep(2)
+    warnings.warn(
+        f"FAILED to destroy droplet {droplet_id} ({name!r}) after 5 attempts ({last}) -- "
+        "IT IS STILL BILLING. Destroy it by hand.",
+        stacklevel=2,
+    )
 
 
 @pytest.fixture
@@ -809,7 +868,7 @@ def throwaway_droplet(_require_live_credentials):
     try:
         yield droplet_id
     finally:
-        delete_droplet_directly(token, droplet_id)
+        destroy_droplet_or_shout(token, droplet_id, name)
 
 
 def write_firewall_aiform_md(
