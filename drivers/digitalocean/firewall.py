@@ -358,11 +358,41 @@ class Driver(ResourceDriver):
             self._fold_do_error_into_exc(exc)
             raise
         firewall_id = payload["firewall"]["id"]
-        logger.info("", extra={"id": firewall_id, "name": name})
-        # No polling: an unattached firewall comes back "succeeded" in
-        # the create response itself (verified live), so unlike
-        # compute.py there is nothing to converge.
-        return self.read(firewall_id, credentials)
+        # Everything after the POST runs under a rollback, mirroring
+        # domain.py's zone rollback and for the same reason: the resource
+        # is live from here on, but nothing has recorded its id yet, so
+        # anything that raises leaks a firewall the state file has never
+        # heard of and no teardown can find.
+        #
+        # This is not hypothetical. The live system test's first run
+        # raised here on a reserved-LogRecord-attribute collision, after
+        # the POST had succeeded, and left exactly such an orphan.
+        try:
+            # firewall_name, not name: 'name' is a reserved LogRecord
+            # attribute (the logger's own name), and stdlib logging
+            # raises "Attempt to overwrite 'name' in LogRecord" from
+            # makeRecord when an extra collides with one. It only fires
+            # once a handler has the level enabled, so unit tests --
+            # which never call log.configure() -- cannot reach it.
+            logger.info("", extra={"id": firewall_id, "firewall_name": name})
+            # No polling: an unattached firewall comes back "succeeded"
+            # in the create response itself (verified live), so unlike
+            # compute.py there is nothing to converge.
+            return self.read(firewall_id, credentials)
+        except Exception as exc:
+            logger.warning(
+                "create failed after the firewall was created; rolling back",
+                extra={"id": firewall_id, "error": str(exc)},
+            )
+            try:
+                self.delete(firewall_id, credentials)
+            except Exception as delete_exc:
+                raise RuntimeError(
+                    f"firewall {name}: create failed ({exc}) and the rollback delete also "
+                    f"failed ({delete_exc}) -- firewall {firewall_id} may be orphaned, live "
+                    "and untracked"
+                ) from exc
+            raise
 
     def read(self, id: str, credentials: dict[str, str]) -> dict[str, Any]:
         try:

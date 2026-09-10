@@ -23,3 +23,7 @@
 2026-09-10T16:54:16Z step=probe ref=20 verdict=contradicted msg="is an unknown tag accepted inside a rule sources block: predicted 202, got 422"
 2026-09-10T16:54:20Z step=probe count=31 contradicted=7 msg="session digitalocean_firewall"
 2026-09-10T16:54:20Z step=learn promoted=0 msg="knowledge base not built; 3 candidates held in FINDINGS.md"
+2026-09-11T00:37:39Z step=verify kind=system result=fail msg="first system-test run: create() raised on a reserved LogRecord attribute AFTER the POST, orphaning a live firewall"
+2026-09-11T00:40:36Z step=fix ref=create fixed=2 msg="rename the extra key off name; wrap everything after the POST in a rollback, mirroring domain.py"
+2026-09-11T00:52:00Z step=verify kind=system result=fail msg="call-count assertions assumed 0 Anthropic calls; measured 1 (intent parse) -- test_cli_domain.py is red on main for the same reason"
+2026-09-11T01:05:00Z step=verify kind=system result=pass tests=996 msg="both cases green live; 2 bugs found on first run, both invisible to unit tests"

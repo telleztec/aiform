@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
 from aiform import cli, config, orchestrator
 from drivers.digitalocean import compute as do_compute
@@ -560,7 +561,7 @@ def write_domain_aiform_md(
     return path
 
 
-def _domain_api(token: str, method: str, url: str, body: dict | None = None):
+def _do_api(token: str, method: str, url: str, body: dict | None = None):
     data = None
     headers = {"Authorization": f"Bearer {token}"}
     if body is not None:
@@ -581,7 +582,7 @@ def token_has_domain_scope(token: str) -> bool:
     on a False here rather than failing.
     """
     try:
-        _domain_api(token, "GET", f"{DO_API_BASE}/domains?per_page=1")
+        _do_api(token, "GET", f"{DO_API_BASE}/domains?per_page=1")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return False
@@ -591,7 +592,7 @@ def token_has_domain_scope(token: str) -> bool:
 
 def get_domain_or_none(token: str, zone: str) -> dict | None:
     try:
-        payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}")
+        payload = _do_api(token, "GET", f"{DO_API_BASE}/domains/{zone}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
@@ -606,7 +607,7 @@ def list_domain_records(token: str, zone: str) -> list[dict]:
     included. The driver's read() filters those out; this returns the raw
     listing so a test can assert they really are present on DO's side and
     really are absent from state."""
-    payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
+    payload = _do_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
     if payload is None:
         raise AssertionError(f"empty 200 body from GET /v2/domains/{zone}/records")
     return payload.get("domain_records", [])
@@ -638,7 +639,7 @@ def list_domains(token: str) -> list[dict]:
         parts = urllib.parse.urlsplit(url)
         if f"{parts.scheme}://{parts.netloc}" != DO_API_BASE_HOST:
             raise AssertionError(f"refusing to follow a next url off {DO_API_BASE_HOST}: {url}")
-        payload = _domain_api(token, "GET", url)
+        payload = _do_api(token, "GET", url)
         pages += 1
         if payload is None:
             break
@@ -651,14 +652,136 @@ def list_domains(token: str) -> list[dict]:
     return domains
 
 
+# --- firewalls (specs/system_test_firewall.md) -----------------------
+#
+# Unlike zones, firewalls carry tags AND return created_at, so the sweep
+# below can key on the same `aiform-system-test` tag specs/system_test.md
+# specifies rather than parsing a timestamp back out of a name. And
+# unlike droplets, an unattached firewall is free -- this whole suite
+# creates nothing billable and touches no traffic.
+SYSTEM_TEST_FW_PREFIX = "aiform-system-test-fw"
+
+
+def unique_firewall_name(label: str) -> str:
+    return unique_name(f"{SYSTEM_TEST_FW_PREFIX}-{label}")
+
+
+def token_has_firewall_scope(token: str) -> bool:
+    """Whether this token can read the firewall API at all.
+
+    `aiform init`'s preflight probes GET /v2/droplets only, so a
+    droplet-scoped token earns a green check and then fails at the first
+    firewall apply -- the same gap specs/digitalocean_domain.md records
+    for zones. The suite skips on a False here rather than failing.
+    """
+    try:
+        _do_api(token, "GET", f"{DO_API_BASE}/firewalls?per_page=1")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise
+    return True
+
+
+def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
+    try:
+        payload = _do_api(token, "GET", f"{DO_API_BASE}/firewalls/{firewall_id}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return (payload or {}).get("firewall")
+
+
+def list_firewalls(token: str) -> list[dict]:
+    """Every firewall on the account, following pagination.
+
+    Same two guards as list_domains(), and re-implemented for the same
+    reason: `next` comes out of a response body and this loop sends the
+    live token to whatever it names, so the host is checked before it is
+    followed and the page count is capped. This is the backstop; it must
+    not depend on the code it backs up.
+    """
+    firewalls: list[dict] = []
+    url = f"{DO_API_BASE}/firewalls?per_page=200"
+    pages = 0
+    while url:
+        parts = urllib.parse.urlsplit(url)
+        if f"{parts.scheme}://{parts.netloc}" != DO_API_BASE_HOST:
+            raise AssertionError(f"refusing to follow a next url off {DO_API_BASE_HOST}: {url}")
+        payload = _do_api(token, "GET", url)
+        pages += 1
+        if payload is None:
+            break
+        firewalls.extend(payload.get("firewalls") or [])
+        url = ((payload.get("links") or {}).get("pages") or {}).get("next")
+        if url and pages >= DO_API_MAX_PAGES:
+            raise AssertionError(
+                f"listing firewalls exceeded {DO_API_MAX_PAGES} pages; refusing to keep following"
+            )
+    return firewalls
+
+
+def delete_firewall_directly(token: str, firewall_id: str) -> None:
+    try:
+        _do_api(token, "DELETE", f"{DO_API_BASE}/firewalls/{firewall_id}")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+def write_firewall_aiform_md(
+    project_dir: Path,
+    *,
+    name: str,
+    inbound_rules: list[dict],
+    outbound_rules: list[dict] | None = None,
+    filename: str = "firewall.aiform.md",
+) -> Path:
+    """Write a firewall .aiform.md.
+
+    droplet_ids is always empty and never a parameter: an unattached
+    firewall is what makes this suite free and zero-blast-radius, and
+    specs/digitalocean_firewall.md's Out of scope commits to it. tags
+    always carries SYSTEM_TEST_TAG so the sweep below can find a leak.
+    """
+    body = {
+        "inbound_rules": inbound_rules,
+        "outbound_rules": outbound_rules or [],
+        "droplet_ids": [],
+        "tags": [SYSTEM_TEST_TAG],
+    }
+    # safe_dump, not hand-built YAML or indented JSON: aiform/parser.py
+    # loads this frontmatter with yaml.safe_load, so dumping with the
+    # same library is what guarantees the round-trip. Firewall params
+    # nest two levels (a rule's sources object), which is exactly where
+    # hand-indenting goes wrong.
+    dumped = yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
+    indented = "\n".join(f"  {line}" for line in dumped.rstrip("\n").splitlines())
+    content = (
+        "---\n"
+        "resource: firewall\n"
+        f"name: {name}\n"
+        "provider: digitalocean\n"
+        "params:\n" + indented + "\n"
+        "---\n\n"
+        "## Intent\n\n"
+        "Unattached firewall created by aiform's live system test suite "
+        f"(tag {SYSTEM_TEST_TAG!r}); free, carries no traffic, safe to destroy at any time.\n"
+    )
+    path = project_dir / filename
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def create_domain_directly(token: str, zone: str) -> dict:
-    payload = _domain_api(token, "POST", f"{DO_API_BASE}/domains", body={"name": zone})
+    payload = _do_api(token, "POST", f"{DO_API_BASE}/domains", body={"name": zone})
     return payload["domain"]
 
 
 def delete_domain_directly(token: str, zone: str) -> None:
     try:
-        _domain_api(token, "DELETE", f"{DO_API_BASE}/domains/{zone}")
+        _do_api(token, "DELETE", f"{DO_API_BASE}/domains/{zone}")
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
@@ -708,6 +831,75 @@ def wait_until_domain_gone(
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _sweep_leaked_system_test_firewalls(_require_live_credentials):
+    """Independent backstop for firewalls the per-test teardown missed.
+
+    Cleaner than the zone sweep below: firewalls carry tags and return
+    created_at, so this keys on specs/system_test.md's own
+    `aiform-system-test` tag AND the name prefix AND an age past the
+    floor, rather than parsing a timestamp back out of a name. All three
+    must hold, so a real firewall on the account cannot match even if
+    someone tags one by hand.
+
+    Same rules as the zone sweep: runs after the session so a crashed
+    run is cleaned up by the next one; transient failures warn rather
+    than raise, because a best-effort backstop must never be the thing
+    that fails an otherwise-green run; and a non-empty sweep is a bug
+    report, not routine maintenance. The off-host and page-ceiling
+    refusals inside list_firewalls() deliberately DO raise -- they are
+    security refusals, not transient errors.
+
+    Tolerates a token with no firewall scope: this fixture is autouse
+    for all of tests/system/, so it runs on a droplet-only session too.
+    """
+    yield
+
+    token = live_token()
+    try:
+        firewalls = list_firewalls(token)
+    except _SWEEP_TRANSIENT_ERRORS as exc:
+        warnings.warn(
+            f"could not list firewalls to sweep leaked system-test firewalls ({exc}) -- "
+            f"check by hand for firewalls named {SYSTEM_TEST_FW_PREFIX}*",
+            stacklevel=2,
+        )
+        return
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=SWEEP_MIN_AGE_MINUTES)
+    swept = []
+    for firewall in firewalls:
+        name = firewall.get("name", "")
+        if not name.startswith(SYSTEM_TEST_FW_PREFIX):
+            continue
+        if SYSTEM_TEST_TAG not in (firewall.get("tags") or []):
+            continue
+        created_raw = firewall.get("created_at")
+        if not created_raw:
+            continue
+        try:
+            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+        except ValueError:
+            # Unparseable means unrecognized, and unrecognized is never
+            # deleted.
+            continue
+        if created > cutoff:
+            continue
+        try:
+            delete_firewall_directly(token, firewall["id"])
+        except _SWEEP_TRANSIENT_ERRORS as exc:
+            warnings.warn(f"could not sweep leaked firewall {name!r}: {exc}", stacklevel=2)
+        else:
+            swept.append(name)
+
+    if swept:
+        warnings.warn(
+            f"swept {len(swept)} leaked system-test firewall(s) left by an earlier run: "
+            f"{swept} -- the per-test teardown did not run to completion",
+            stacklevel=2,
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _sweep_leaked_system_test_zones(_require_live_credentials):
     """Independent backstop for zones the per-test teardown never reached.
 
@@ -738,7 +930,7 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
 
     # live_token(), not os.environ directly: this is the one code path
     # that runs on every session, and a URLError/timeout inside
-    # _domain_api() would otherwise put the raw token into the teardown
+    # _do_api() would otherwise put the raw token into the teardown
     # traceback's frame arguments. The scrub hook would still catch it,
     # but the whole point of the three layers is that none of them is
     # relied on alone. No presence check is needed -- this fixture
