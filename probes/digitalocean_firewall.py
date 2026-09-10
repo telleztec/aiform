@@ -262,13 +262,17 @@ def run(probe: Probe) -> None:
             predict={"status": 202},
             tags=[tag],
         )
-        if tagged.status < 400 and not probe.dry_run:
-            tid = tagged.body["firewall"]["id"]
+        if tagged.status < 400:
+            # Same placeholder convention as the baseline create above:
+            # --dry-run has no response to key off, but these two calls
+            # are the whole point of this section and must still print.
+            tid = "<dry-run-id>" if probe.dry_run else tagged.body["firewall"]["id"]
+            tagged_name = "<dry-run>" if probe.dry_run else tagged.body["firewall"]["name"]
             probe.call(
                 "PUT",
                 f"/firewalls/{tid}",
                 {
-                    "name": tagged.body["firewall"]["name"],
+                    "name": tagged_name,
                     "inbound_rules": [dict(MINIMAL_RULE)],
                     "outbound_rules": [],
                 },

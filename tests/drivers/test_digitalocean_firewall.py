@@ -250,8 +250,35 @@ class TestRead:
 
 
 class TestZeroDiffInvariant:
-    def test_read_output_does_not_diff_against_the_params_that_made_it(self, driver, fake_urlopen):
+    def test_read_output_does_not_diff_against_the_params_a_user_wrote(self, driver, fake_urlopen):
         # The whole point: apply, then re-plan, must be a no-op.
+        #
+        # Both halves come from transcript 11-, the one probe whose
+        # REQUEST already carried a fully user-shaped rule (`action`
+        # included, which DigitalOcean would otherwise have added). Using
+        # its request body as params and its response body as what read()
+        # sees is what makes this a genuine round-trip. Comparing read()'s
+        # projection of a response against that same response -- which an
+        # earlier version of this test did -- proves nothing: a projection
+        # bug would be present on both sides and cancel out.
+        sent = transcripts.request_body(SESSION, "11-")
+        got = transcripts.response_body(SESSION, "11-")
+        params = {key: value for key, value in sent.items() if key != "name"}
+        fake_urlopen.script("GET", firewall_url(got["firewall"]["id"]), FakeHTTPResponse(200, got))
+
+        current = driver.read(got["firewall"]["id"], CREDENTIALS)
+
+        assert diff_attributes(current, params, unordered_fields=driver.UNORDERED_FIELDS) == {}
+
+    def test_the_user_written_params_are_actually_accepted_by_validation(self, driver):
+        # Guards the test above: if the recorded request body were not a
+        # legal params block, the round-trip would be proving nothing
+        # about anything a user could really write.
+        sent = transcripts.request_body(SESSION, "11-")
+        params = {key: value for key, value in sent.items() if key != "name"}
+        driver._validate_params(params)
+
+    def test_read_output_does_not_diff_for_the_baseline_firewall(self, driver, fake_urlopen):
         script_read(fake_urlopen)
         current = driver.read(firewall_id(), CREDENTIALS)
         assert (
@@ -279,8 +306,11 @@ class TestUpdate:
     def test_put_body_carries_every_field_because_put_replaces_wholesale(
         self, driver, fake_urlopen
     ):
-        # Verified live: a PUT omitting tags/droplet_ids resets them to
-        # []. Every managed field must therefore go out every time.
+        # Verified live for tags (transcripts 24-26): a PUT omitting a
+        # tag the firewall actually had reads back []. The same is
+        # INFERRED for droplet_ids -- same PUT, same replace semantics --
+        # but not observed, since no probe ever attaches a droplet.
+        # Every managed field therefore goes out every time.
         fake_urlopen.script(
             "PUT", firewall_url(firewall_id()), FakeHTTPResponse(200, created_payload())
         )

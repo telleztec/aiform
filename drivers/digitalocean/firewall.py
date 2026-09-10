@@ -182,18 +182,22 @@ class Driver(ResourceDriver):
         self._validate_scalar_list(params, "tags", str)
 
     def _validate_scalar_list(self, params: dict[str, Any], key: str, expected: type) -> None:
-        if key not in params:
-            return
+        # No "if key not in params" guard: every managed field is in
+        # PARAM_SCHEMA["required"] and checked above, so a missing one has
+        # already raised.
         value = params[key]
         if not isinstance(value, list):
             raise ValueError(f"{key!r} must be a list, got {type(value).__name__}")
+        self._reject_wrong_scalars(key, value, expected)
+
+    def _reject_wrong_scalars(self, label: str, value: list[Any], expected: type) -> None:
         for index, item in enumerate(value):
             # bool is an int subclass, so `droplet_ids: [true]` would
             # otherwise sail through isinstance(item, int).
             wrong_type = not isinstance(item, expected)
             sneaky_bool = expected is int and isinstance(item, bool)
             if wrong_type or sneaky_bool:
-                raise ValueError(f"{key}[{index}] must be a {expected.__name__}, got {item!r}")
+                raise ValueError(f"{label}[{index}] must be a {expected.__name__}, got {item!r}")
 
     def _validate_rule(
         self, list_key: str, index: int, rule: dict[str, Any], target_key: str
@@ -295,14 +299,7 @@ class Driver(ResourceDriver):
         # for ports), so it would read back as an int and diff forever:
         # the same bug the top-level scalar checks prevent, one level down.
         expected = int if key == "droplet_ids" else str
-        for index, item in enumerate(value):
-            wrong_type = not isinstance(item, expected)
-            sneaky_bool = expected is int and isinstance(item, bool)
-            if wrong_type or sneaky_bool:
-                raise ValueError(
-                    f"{where}: {target_key}.{key}[{index}] must be a "
-                    f"{expected.__name__}, got {item!r}"
-                )
+        self._reject_wrong_scalars(f"{where}: {target_key}.{key}", value, expected)
 
     # --- projection -------------------------------------------------
 
@@ -341,8 +338,11 @@ class Driver(ResourceDriver):
         # PUT omitting tags and droplet_ids resets both to [], so a
         # partial body silently discards state.
         # Every managed field is required by PARAM_SCHEMA and validated
-        # before this runs, so each is present and a list. No defaulting
-        # here: it would only paper over an omission the driver refuses.
+        # before this runs, so each is present and a list -- no defaulting
+        # here, which would only paper over an omission the driver
+        # refuses. All four go out on every write because an omitted key
+        # is RESET, not preserved: verified live for tags (transcripts
+        # 24-26), and inferred for droplet_ids, which no probe attaches.
         body: dict[str, Any] = {"name": name}
         for key in _MANAGED_FIELDS:
             body[key] = params[key]
