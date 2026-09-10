@@ -683,6 +683,30 @@ def token_has_firewall_scope(token: str) -> bool:
     return True
 
 
+def ensure_system_test_tag(token: str) -> None:
+    """Create the `aiform-system-test` tag if it does not exist.
+
+    Firewalls are the first resource where a referenced tag must already
+    exist: probes 19 and 20 established that both a firewall's own `tags`
+    and a rule's `sources.tags` 422 with "tag <name> does not exist",
+    unlike droplet creation, which auto-creates. So a firewall suite run
+    on a fresh account -- one where the droplet suite has never run and
+    incidentally created the tag -- would fail its first apply with a
+    DriverExecutionError that looks exactly like a driver bug.
+
+    Creating it is one idempotent call and costs nothing (tags are free
+    and carry no resources until something references them), which is
+    better than skipping: a suite that silently does not run on a fresh
+    account protects nobody.
+    """
+    try:
+        _do_api(token, "POST", f"{DO_API_BASE}/tags", body={"name": SYSTEM_TEST_TAG})
+    except urllib.error.HTTPError as exc:
+        # 422 is "already exists", which is the ordinary case.
+        if exc.code not in (409, 422):
+            raise
+
+
 def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
     try:
         payload = _do_api(token, "GET", f"{DO_API_BASE}/firewalls/{firewall_id}")

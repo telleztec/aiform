@@ -107,13 +107,28 @@ class TestFieldValuesCannotForgeStructure:
     that renders into extra structure would slip past them."""
 
     def test_a_space_in_a_value_cannot_forge_a_second_field(self):
+        # Asserted on the rendered text, not a slice of it: an earlier
+        # version sliced to the first whitespace-delimited token and so
+        # passed against the very unquoted renderer it was written to
+        # catch.
         line = format_line("impl", {"ref": "x verdict=contradicted"})
-        assert (
-            "verdict=contradicted"
-            not in line.replace('\\"', "")[: line.index("ref=")]
-            + line[line.index("ref=") :].split(" ", 1)[0]
-        )
-        assert LINE.match(line), line
+        assert line.endswith('ref="x verdict=contradicted"'), line
+
+    def test_a_forged_field_does_not_survive_a_field_aware_read(self):
+        # Note what is and is not claimed. A naive `grep
+        # verdict=contradicted` DOES still match the forged line, because
+        # the text sits inside a quoted value -- quoting cannot hide a
+        # substring. What quoting buys is that any reader which respects
+        # quotes (shlex, or the same rules specs/log.md's format implies)
+        # sees one field, not two.
+        import shlex
+
+        forged = shlex.split(format_line("impl", {"ref": "x verdict=contradicted"}))
+        real = shlex.split(format_line("probe", {"ref": "04", "verdict": "contradicted"}))
+
+        assert "verdict=contradicted" in real
+        assert "verdict=contradicted" not in forged
+        assert "ref=x verdict=contradicted" in forged
 
     def test_a_newline_in_a_value_cannot_forge_a_line(self):
         line = format_line("impl", {"ref": "x\nstep=spec"})

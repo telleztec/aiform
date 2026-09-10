@@ -539,10 +539,15 @@ class TestLoggingUnderAConfiguredHandler:
         assert record.id == firewall_id()
 
     def test_no_extra_key_shadows_a_logrecord_attribute(self, driver, fake_urlopen, caplog):
-        # The general form of the bug: any reserved name would raise.
+        # The general form of the bug. An earlier version subtracted the
+        # reserved set before asserting "name" was absent, which made the
+        # assertion a tautology -- "name" is reserved, so it could never
+        # have been in what was left. Assert on the keys the driver
+        # actually passes instead, recovered by diffing against a bare
+        # record.
         import logging
 
-        reserved = set(vars(logging.LogRecord("n", 20, "p", 1, "m", None, None)))
+        reserved = set(vars(logging.makeLogRecord({}))) | {"message", "asctime", "taskName"}
         caplog.set_level("INFO", logger="aiform.driver.digitalocean.firewall")
         fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
         script_read(fake_urlopen)
@@ -550,8 +555,13 @@ class TestLoggingUnderAConfiguredHandler:
         driver.create(NAME, minimal_params(), CREDENTIALS)
 
         for record in caplog.records:
-            supplied = set(vars(record)) - reserved - {"message", "asctime", "taskName"}
-            assert "name" not in supplied
+            supplied = set(vars(record)) - reserved
+            assert supplied, "expected the driver to attach its own extras"
+            collisions = supplied & set(vars(logging.makeLogRecord({})))
+            assert not collisions, (
+                f"driver passed extra={sorted(collisions)}, which shadow LogRecord "
+                "attributes and make logging raise once a handler is attached"
+            )
 
 
 class TestCreateRollsBackAfterTheResourceExists:
@@ -577,10 +587,12 @@ class TestCreateRollsBackAfterTheResourceExists:
         fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
         url = firewall_url(firewall_id())
         fake_urlopen.script("GET", url, http_error(url, 500))
-        fake_urlopen.script("DELETE", url, http_error(url, 500))
+        fake_urlopen.script("DELETE", url, http_error(url, 500, {"message": "firewall is in use"}))
 
-        with pytest.raises(RuntimeError, match="orphaned"):
+        with pytest.raises(RuntimeError, match="orphaned") as excinfo:
             driver.create(NAME, minimal_params(), CREDENTIALS)
+        # DigitalOcean's own reason survives into the orphan message.
+        assert "firewall is in use" in str(excinfo.value)
 
     def test_a_rollback_swallows_a_404_because_delete_is_idempotent(self, driver, fake_urlopen):
         fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
@@ -588,7 +600,6 @@ class TestCreateRollsBackAfterTheResourceExists:
         fake_urlopen.script("GET", url, http_error(url, 500))
         fake_urlopen.script("DELETE", url, http_error(url, 404))
 
-        # The original error propagates; the 404 rollback is success.
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             driver.create(NAME, minimal_params(), CREDENTIALS)
         assert excinfo.value.code == 500

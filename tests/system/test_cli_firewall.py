@@ -29,6 +29,7 @@ from tests.system.conftest import (
     SYSTEM_TEST_TAG,
     assert_cli_ok,
     count_driver_reads,
+    ensure_system_test_tag,
     get_firewall_or_none,
     live_token,
     token_has_firewall_scope,
@@ -71,6 +72,12 @@ def _skip_without_firewall_scope(token) -> None:
             "this DIGITALOCEAN_TOKEN cannot read /v2/firewalls -- the firewall suite needs a "
             "token with `firewall` scope; aiform init's preflight only checks droplet access"
         )
+    # Every firewall here carries SYSTEM_TEST_TAG, and one rule targets
+    # sources.tags -- both 422 if the tag does not already exist. On this
+    # account the droplet suite had created it incidentally; a fresh
+    # account would have failed the first apply with what looks like a
+    # driver bug.
+    ensure_system_test_tag(token)
 
 
 class TestFirewallLifecycle:
@@ -170,9 +177,10 @@ class TestFirewallLifecycle:
         assert f"~ {key}: update" in captured.out
         assert "[verbose] 2 Anthropic API call(s) made" in captured.err
 
-        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply after edit")
+        assert "[verbose] 2 Anthropic API call(s) made" in captured.err
 
         live = get_firewall_or_none(token, firewall_id)
         assert len(live["inbound_rules"]) == 2
@@ -194,9 +202,13 @@ class TestFirewallLifecycle:
 
         # Destroy, and confirm it is really gone rather than merely
         # untracked.
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path)])
+        # One call: gate #2 reviews a DESTROY. The last row of
+        # specs/system_test_firewall.md's table, now actually asserted
+        # rather than merely tabulated.
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan destroy")
+        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
         assert get_firewall_or_none(token, firewall_id) is None, (
             "firewall still exists on DigitalOcean after destroy"
         )

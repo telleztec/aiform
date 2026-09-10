@@ -387,6 +387,11 @@ class Driver(ResourceDriver):
             try:
                 self.delete(firewall_id, credentials)
             except Exception as delete_exc:
+                if isinstance(delete_exc, urllib.error.HTTPError):
+                    # Same as domain.py: without this the orphan message
+                    # carries a bare "HTTP Error 4xx" and drops the one
+                    # sentence saying why the rollback failed.
+                    self._fold_do_error_into_exc(delete_exc)
                 raise RuntimeError(
                     f"firewall {name}: create failed ({exc}) and the rollback delete also "
                     f"failed ({delete_exc}) -- firewall {firewall_id} may be orphaned, live "

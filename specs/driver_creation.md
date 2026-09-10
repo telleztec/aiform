@@ -66,12 +66,20 @@ describes a rewrite-on-store, because from the provider's point of view
 nothing was violated.
 
 Measured, building one driver against DigitalOcean firewalls: **31
-probes, 7 whose HTTP status contradicted the prediction** (`04`, `05`,
-`08`, `12`, `18`, `19`, `20`) — where the predictions came from
-DigitalOcean's own published OpenAPI spec. Two were silent rewrites (an
-int port, an uppercase protocol); the rest were rejections the schema
-did not imply, including that a firewall with no rules is a 422 and that
-a referenced tag must already exist.
+probes, 7 whose HTTP status contradicted the prediction** — where the
+predictions came from DigitalOcean's own published OpenAPI spec. They
+fall into three kinds, and the split matters more than the count:
+
+| Kind | Probes | Example |
+|---|---|---|
+| accepted, then silently rewritten | `04`, `05` | `ports: 22` stored as `"22"` |
+| rejected where the schema implied acceptance | `08`, `19`, `20` | a firewall with no rules is a 422 |
+| accepted where the schema implied rejection | `12`, `18` | `action: "deny"` is stored; an empty `sources: {}` is allowed |
+
+Two earlier drafts of this paragraph got that taxonomy wrong — first by
+naming probes that had matched on status, then by calling `12` and `18`
+rejections when both returned 202. Both errors were caught by review
+rather than by the loop, which is the point Edge cases makes below.
 
 **The status code is not where most of the value was, and the tooling
 should not be mistaken for measuring it.** `Probe.call()` compares only
@@ -79,8 +87,10 @@ should not be mistaken for measuring it.** `Probe.call()` compares only
 never compared. Three of the most consequential findings therefore
 registered as *confirmed*: probe `02` predicted 202 and got 202 while
 its notes predicted `status: "waiting"` and got `"succeeded"`; the same
-probe revealed the undocumented `action` field; probe `10` predicted 202
-for `ports: "all"` and got 202 while the value was stored as `"0"`.
+probe revealed the undocumented `action` field. (Probe `10` is *not* a
+third example, though an earlier draft offered it as one: its notes
+correctly predicted that `"all"` would be stored as `"0"`, so nothing
+there went unnoticed.)
 A notes-level surprise has to be noticed by the person reading the
 transcript and written up as a finding — the `verdict=contradicted`
 count is a floor on the loop's yield, not a measure of it.
@@ -96,8 +106,12 @@ nobody. This is a constraint on the loop, not an aspiration: every rule
 below that adds work has to earn it against this budget.
 
 The one measurement so far: `drivers/digitalocean/firewall.py` went from
-its first probe (`2026-09-10T00:09:09Z`, transcript `01`) to the last
-review round landing (`01:27:21Z`, commit `9855f9c`) in **1h18m**. Not
+its first probe to the last review round landing in **1h18m**
+(`2026-09-10T00:09:09Z`, transcript `01` **as committed in `b3d0cde`**,
+to `01:27:21Z`, commit `9855f9c`). The commit matters: `ede2694`
+re-recorded every transcript, so transcript `01` at HEAD carries a later
+stamp, and citing it without the commit sends a reader to the wrong
+number. Not
 the audit log's first and last lines — those span a later re-run and a
 later system-test session, and an earlier draft of this spec cited them
 as if they were the build. That is inside the budget, but it is one driver on a familiar
@@ -273,7 +287,11 @@ Rules that keep it auditable:
 - **Every `step=spec` line carries `cites=`**, or the claim is not
   allowed to say "verified".
 - **`verdict=` is only `contradicted` or `confirmed`**, so
-  `grep verdict=contradicted` is the finding list. Only
+  `grep verdict=contradicted` is the finding list. It is a convenience,
+  not a guarantee: field values are quoted, so a field-aware reader
+  cannot be fooled into seeing a verdict a value merely contains — but
+  grep is not field-aware, and a quoted `msg` carrying that text will
+  match. Only
   `contradicted` is emitted today: a confirmation is recorded in the
   transcript's `prediction_matched`, and writing a line per confirmed
   probe would bury the findings in a file whose whole value is that it

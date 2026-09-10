@@ -65,6 +65,10 @@ is what made the domain suite wrong. Measured by running the sequence:
 | **re-plan after the update** | **0** | converged |
 | `plan destroy` | 1 | gate #2 reviews a DESTROY |
 
+All seven rows are asserted by the suite, not merely tabulated — an
+earlier version left the update-apply and destroy rows unmeasured
+because those steps ran without `--verbose`.
+
 The two zeros are the point. Zero is only reachable if `read()`
 round-trips exactly against the params the user wrote, which is what
 every rejection in `_validate_rule()` exists to guarantee.
@@ -91,6 +95,17 @@ tags *and* return `created_at`, so identity is the name prefix **and**
 no timestamp parsed back out of a name. All three must hold; anything
 unrecognized is skipped, never deleted. A non-empty sweep warns loudly —
 it is a bug report, never routine maintenance.
+
+### Preconditions
+
+The `aiform-system-test` tag must exist before the first apply.
+Firewalls are the first resource where that matters: a referenced tag
+must already exist (probes `19`/`20`), unlike droplet creation which
+auto-creates one. `ensure_system_test_tag()` creates it idempotently
+rather than skipping, because a suite that silently does not run on a
+fresh account protects nobody. On this account the droplet suite had
+created it incidentally, which is why the gap was invisible until
+review.
 
 ## Edge cases / errors
 
