@@ -346,11 +346,27 @@ DigitalOcean and one that tolerates a CSP nobody has tried.
   invariant trivially true). `probing/` — how to ask a kind of question
   well (to test whether an omitted field is *reset* or *left alone*, the
   resource must first hold a non-empty value).
-- **Promotion has a bar.** A finding stays in the driver's own
-  `FINDINGS.md` until it is observed a second time, in a second resource
-  or a second provider, at which point it is promoted with both
-  citations. One observation is an anecdote; the bar stops the base
-  filling with over-generalised singletons.
+- **Promotion has a bar: two observations.** A finding stays in the
+  driver's own `FINDINGS.md` until it is seen a second time, then is
+  promoted carrying both citations. One observation is an anecdote, and
+  the bar is what stops the base filling with over-generalised
+  singletons.
+- **What counts as the second observation depends on the category**, and
+  this matters because Gates #1 and #2 are deliberately run on one
+  provider:
+  - `csp/<provider>/` — a claim about *this* provider. Two observations
+    in two of its resources. Reachable on DigitalOcean alone.
+  - `driver/` — a claim about how CSP APIs behave **in general**. Two
+    observations in **two different providers**. No number of
+    DigitalOcean drivers can establish one, so these stay candidates
+    until Gate #3. "A server-added field absent from the published
+    schema is a phantom-diff source" is exactly this shape: true of
+    DigitalOcean, unknown of anyone else.
+  - `probing/` — a rule about *method*, not an empirical claim about any
+    CSP ("to learn whether an omitted field is reset or left alone, the
+    resource must first hold a non-empty value"). Two observations of
+    the method paying off; same provider is fine, because the rule is
+    not about the provider.
 - **Recall pays out as skipped probes.** A `csp/` entry marked
   `verified` for a provider means the next driver on that provider does
   not re-ask it. The efficiency metric is
@@ -372,13 +388,43 @@ Recorded per session, on the closing `step=learn` line:
 | probes skipped by recall | whether the knowledge base is paying for itself |
 | findings that changed the spec *after* implementation began | late findings are cycles; should fall as `_template.py` learns where surprises live |
 | review findings not caught by any probe | the disjoint class — see Edge cases |
+| **review rounds to a clean pass** | a Gate #1 signal: each round is a generate-fix cycle mechanism 2 would pay for |
+| **system-test bugs on the first run** | the other Gate #1 signal: each one is a probe that should have been asked |
 | live surprises after "done" | must reach zero; these are the rounds mechanism 2 would otherwise burn |
 | **elapsed wall-clock, first probe to green suite** | the budget. A driver that takes longer than a few hours is a process failure, whatever its correctness. |
 
-**Readiness for mechanism 2** is not a date: it is a session that runs
-without the process needing to change to accommodate it, on a **second
-provider**, plus a run against a **different account** whose transcripts
-differ only in explainable ways.
+### Three gates
+
+Readiness is not a date and not a metric threshold. Three gates, in
+order, each with a different question:
+
+**Gate #1 — is mechanism 1 smooth?** A judgement call, deliberately.
+Keep building DigitalOcean drivers until the loop runs smoothly and
+quickly: **minimal LLM review cycles, and zero or minimal system-test
+bugs on the first run.** Those two are the signal, because they are what
+mechanism 2 would otherwise burn its budget on — a review cycle is a
+generate-fix round, and a system-test bug on first run is a probe that
+should have been asked. The metrics above inform this call; they do not
+make it.
+
+**Gate #2 — does mechanism 2 match?** Once built, re-build one or two
+*existing* drivers with mechanism 2 and compare against the mechanism-1
+originals. This is the whole reason both mechanisms write the same audit
+log in the same format: the comparison is a diff of two `AUDIT.log`
+files for the same resource — which probes it skipped, which findings it
+missed, how many review rounds it needed, how long it took.
+
+**Gate #3 — does it port?** Build AWS drivers matching the DigitalOcean
+functions. Portability across CSPs is **not** a precondition for
+building mechanism 2 — it is a challenge mechanism 2 must be built to
+handle, and this is where that gets tested. The same is true of other
+end users driving it and other models backing it.
+
+Staying on one provider through Gates #1 and #2 is deliberate and cheap.
+It has one consequence the knowledge base must respect — see "How the
+loop learns" above: a claim about CSP APIs *in general* cannot be
+established by any number of DigitalOcean drivers, so those claims stay
+candidates until Gate #3.
 
 ## Edge cases / errors
 
