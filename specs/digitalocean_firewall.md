@@ -244,14 +244,26 @@ transcripts in `probes/transcripts/digitalocean_firewall/`:
 - delete is idempotent: 204 then 404 (`30-`, `31-`)
 
 The `waiting → succeeded` and `pending_changes` transitions for an
-**attached** firewall are no longer *recalled, not verified*:
-`TestAttachedToARealDroplet` reaches them against a real droplet. What
-it asserts is deliberately not the transition itself but the property
-that made not polling safe — `read()` returns neither `status` nor
-`pending_changes`, so a re-plan is a no-op whatever state DigitalOcean
-is in mid-convergence. Asserting on the transition would pin a timing
-DigitalOcean never promised; asserting on the no-op pins what aiform
-actually needs.
+**attached** firewall are **observed**, in probe session
+`digitalocean_firewall_attach` (7 probes, one throwaway droplet):
+
+- Attaching returns `202` with `"status": "waiting"` and
+  `pending_changes: [{"droplet_id": …, "status": "waiting",
+  "removing": false}]` (`attach/02-`). The unattached case returns
+  `succeeded` immediately (`digitalocean_firewall/02-`), so the two
+  differ exactly as recalled.
+- Detaching shows the same shape with `"removing": true`
+  (`attach/05-`), and the create path and the `update()` path behave
+  identically (`attach/06-`).
+- **Convergence is slower than it looks.** A read 20s after attaching
+  was *still* `waiting` (`attach/04-`); `succeeded` was first seen 20s
+  after a later edit (`attach/07-`). Tens of seconds, not a moment, and
+  not a figure DigitalOcean promises.
+
+`TestAttachedToARealDroplet` still asserts the *consequence* rather than
+the transition — `read()` returns neither field, so a re-plan is a no-op
+whatever state DO is in mid-convergence. Pinning the timing would make a
+live test flaky against a number nobody guaranteed.
 
 ## Resource graph
 
@@ -270,6 +282,27 @@ makes a firewall a pure *consumer* of other resources — it is a leaf in
 any future dependency graph, never a thing others point at. Whether a
 reference silently shrinks when its referent is deleted is **not yet
 probed**; doing so needs a disposable droplet or tag and is worth adding.
+
+### `apply` returns before the rules are in force
+
+`create()` and `update()` return as soon as DigitalOcean accepts the
+write, which — for an **attached** firewall — is tens of seconds before
+`status` reaches `succeeded` (`attach/02-`, `attach/04-`). Convergence
+of aiform's *state* is unaffected, and deliberately so: `read()` drops
+`status` and `pending_changes`, so a re-plan is a no-op either way.
+
+But "aiform reported success" and "this firewall is filtering traffic"
+are not the same instant, and for a firewall specifically that gap has a
+direction that matters: rules a user believes are protecting a droplet
+are not yet protecting it. Nothing here establishes how long that window
+is in general, or what a droplet does with traffic during it — no probe
+in this repo sends any.
+
+Polling until `succeeded` would close it and is deliberately not done:
+it would put a wait loop on the hot path for the common unattached case
+that never needs one, and `PLAN.md` §5's zero-LLM-call short-circuit is
+about `plan`, not `apply`, so the cost is wall clock rather than tokens.
+**Flagged for a human decision** rather than settled here.
 
 ## Open questions
 
