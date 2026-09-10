@@ -41,14 +41,22 @@ cannot establish, so it is reasoned about rather than measured
 
 ## Behavior
 
-- **`create()`** POSTs the whole firewall in one call and returns
-  `read()`'s projection. It does **not** poll. An unattached firewall
-  comes back `"status": "succeeded"` in the create response itself
-  (`02-create-unattached-firewall...`), so there is nothing to converge —
-  unlike `compute.py`, whose droplet is genuinely `new` for a while.
-  A firewall attached to droplets does pass through `waiting`; aiform
-  never creates one attached (see Out of scope), so that path is
-  unexercised — recalled, not verified.
+- **`create()`** POSTs the whole firewall in one call, then **polls
+  until DigitalOcean has actually applied the rules** before returning
+  `read()`'s projection. An unattached firewall is `"succeeded"` in the
+  create response itself (`02-create-unattached-firewall...`), so the
+  common case returns on the first read having slept not at all. An
+  attached one is `"waiting"`, with a `pending_changes` entry per
+  droplet, for tens of seconds (`attach/02-`, `attach/04-`).
+
+  Returning at that point would report success about a firewall that is
+  not yet filtering anything. State would still converge — `read()`
+  drops both fields — so this is not about diffs: it is that for a
+  *firewall*, "aiform said done" must not precede "the rules are in
+  force", because the user's next action assumes protection that does
+  not exist yet. `status: "failed"` raises at once rather than waiting
+  out the ceiling; exhausting it raises too, saying the firewall exists
+  but may not be filtering.
 - **`read()`** GETs the firewall and returns
   `{"id", "name", "inbound_rules", "outbound_rules", "droplet_ids",
   "tags"}`. A 404 raises `ResourceNotFoundError`.
@@ -298,11 +306,14 @@ are not yet protecting it. Nothing here establishes how long that window
 is in general, or what a droplet does with traffic during it — no probe
 in this repo sends any.
 
-Polling until `succeeded` would close it and is deliberately not done:
-it would put a wait loop on the hot path for the common unattached case
-that never needs one, and `PLAN.md` §5's zero-LLM-call short-circuit is
-about `plan`, not `apply`, so the cost is wall clock rather than tokens.
-**Flagged for a human decision** rather than settled here.
+**Decided: the driver polls.** `create()` and `update()` wait for
+`status: "succeeded"` with `pending_changes` empty before returning, so
+`apply` cannot report done while a firewall is still being applied. The
+feared cost does not materialise for the common case — an unattached
+firewall is already `succeeded` on the first read, so the loop returns
+on attempt 1 having never slept — and `PLAN.md` §5's zero-LLM-call
+short-circuit is about `plan`, not `apply`, so the cost of waiting is
+wall clock rather than tokens. Progress is logged rather than silent.
 
 ## Open questions
 

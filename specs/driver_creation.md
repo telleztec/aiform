@@ -346,7 +346,7 @@ made visible without re-reading every message.
 2026-09-09T23:58:00Z step=recall  provider=digitalocean skipped=0 traps=0 conf=10 msg="no prior entries"
 2026-09-10T00:05:12Z step=probe   ref=02 verdict=contradicted conf=10 msg="create unattached -> 202 but status=succeeded, not waiting"
 2026-09-10T00:05:14Z step=probe   ref=04 verdict=contradicted conf=10 msg="ports 22 accepted, stored as \"22\""
-2026-09-10T00:31:00Z step=spec    ref=behavior/create cites=02 conf=60 msg="create() does not poll"
+2026-09-10T00:31:00Z step=spec    ref=behavior/create cites=02 conf=60 msg="unattached create returns status=succeeded, nothing to converge"
 2026-09-10T00:40:11Z step=test    ref=test_does_not_poll state=red
 2026-09-10T00:52:03Z step=impl    ref=create state=green tests=32 conf=80
 2026-09-10T01:10:00Z step=review  round=1 model=fable findings=10

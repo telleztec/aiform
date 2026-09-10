@@ -3,15 +3,29 @@
 
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 
+from aiform import log
 from aiform.driver import ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
+
+# DigitalOcean applies an attached firewall asynchronously. Probe session
+# digitalocean_firewall_attach measured it: still `waiting` 20s after the
+# attach, `succeeded` some tens of seconds in. The ceiling is generous
+# because the cost of waiting slightly too long is a slow apply, while
+# the cost of giving up too early is reporting a firewall active when it
+# is not -- and DigitalOcean promises no figure at all.
+ATTACH_POLL_ATTEMPTS = 60
+ATTACH_POLL_DELAY_SECONDS = 2
+# The terminal states. Anything else means keep waiting.
+_STATUS_ACTIVE = "succeeded"
+_STATUS_FAILED = "failed"
 
 # Named explicitly rather than via logging.getLogger(__name__) -- see
 # drivers/digitalocean/compute.py's and domain.py's identical comment.
@@ -416,10 +430,7 @@ class Driver(ResourceDriver):
             # once a handler has the level enabled, so unit tests --
             # which never call log.configure() -- cannot reach it.
             logger.info("", extra={"id": firewall_id, "firewall_name": name})
-            # No polling: an unattached firewall comes back "succeeded"
-            # in the create response itself (verified live), so unlike
-            # compute.py there is nothing to converge.
-            return self.read(firewall_id, credentials)
+            return self._project(self._wait_until_active(firewall_id, credentials, "create"))
         except Exception as exc:
             logger.warning(
                 "create failed after the firewall was created; rolling back",
@@ -440,7 +451,13 @@ class Driver(ResourceDriver):
                 ) from exc
             raise
 
-    def read(self, id: str, credentials: dict[str, str]) -> dict[str, Any]:
+    def _get_firewall(self, id: str, credentials: dict[str, str]) -> dict[str, Any]:
+        """The raw firewall object, including the server-set fields.
+
+        read() projects those away, deliberately, so the poll loop needs
+        the unprojected object: `status` and `pending_changes` are
+        exactly what it waits on.
+        """
         try:
             payload = self._request("GET", f"{BASE_URL}/firewalls/{id}", credentials)
         except urllib.error.HTTPError as exc:
@@ -449,7 +466,10 @@ class Driver(ResourceDriver):
                 # one does, so no separate 422 branch is needed.
                 raise ResourceNotFoundError(f"DigitalOcean firewall {id} not found") from exc
             raise
-        return self._project(payload["firewall"])
+        return payload["firewall"]
+
+    def read(self, id: str, credentials: dict[str, str]) -> dict[str, Any]:
+        return self._project(self._get_firewall(id, credentials))
 
     def update(
         self,
@@ -493,7 +513,69 @@ class Driver(ResourceDriver):
         except urllib.error.HTTPError as exc:
             self._fold_do_error_into_exc(exc)
             raise
-        return self.read(id, credentials)
+        # No rollback here, unlike create(): a PUT cannot be un-sent, and
+        # the resource was already tracked. A timeout leaves the change
+        # accepted but unconfirmed, which the next plan's refresh shows.
+        return self._project(self._wait_until_active(id, credentials, "update"))
+
+    def _wait_until_active(self, id: str, credentials: dict[str, str], step: str) -> dict[str, Any]:
+        """Poll until DigitalOcean has actually applied the rules.
+
+        A firewall attached to a droplet comes back `waiting`, with a
+        pending_changes entry per droplet, and stays that way for tens of
+        seconds (probe session digitalocean_firewall_attach). Returning
+        then would have aiform report success about a firewall that is
+        not yet filtering anything -- the one direction that matters for
+        a firewall, since the user believes a rule is in force before it
+        is.
+
+        The unattached case costs nothing: it is `succeeded` in the very
+        first read, so this returns on attempt 1 without sleeping. Mirrors
+        compute.py's _poll_until(), including logging the outcome rather
+        than staying silent about a wait the user is sitting through.
+        """
+        start = time.monotonic()
+        for attempt in range(ATTACH_POLL_ATTEMPTS):
+            firewall = self._get_firewall(id, credentials)
+            status = firewall.get("status")
+            pending = firewall.get("pending_changes") or []
+            if status == _STATUS_ACTIVE and not pending:
+                logger.info(
+                    "",
+                    extra={
+                        "id": id,
+                        "step": step,
+                        "attempts_used": attempt + 1,
+                        "duration_ms": log.elapsed_ms(start),
+                        "outcome": "active",
+                    },
+                )
+                return firewall
+            if status == _STATUS_FAILED:
+                # Terminal: retrying cannot change it, and waiting out
+                # the full ceiling would turn a clear error into a
+                # two-minute hang.
+                raise RuntimeError(
+                    f"firewall {id}: DigitalOcean reported status={status!r} while applying "
+                    f"the rules during {step}; pending_changes={pending!r}"
+                )
+            if attempt < ATTACH_POLL_ATTEMPTS - 1:
+                time.sleep(ATTACH_POLL_DELAY_SECONDS)
+        logger.error(
+            "",
+            extra={
+                "id": id,
+                "step": step,
+                "attempts_used": ATTACH_POLL_ATTEMPTS,
+                "duration_ms": log.elapsed_ms(start),
+                "outcome": "timeout",
+            },
+        )
+        raise RuntimeError(
+            f"firewall {id}: timed out after "
+            f"{ATTACH_POLL_ATTEMPTS * ATTACH_POLL_DELAY_SECONDS}s waiting for DigitalOcean to "
+            f"apply the rules during {step}; the firewall exists but may not be filtering yet"
+        )
 
     def delete(self, id: str, credentials: dict[str, str]) -> None:
         try:

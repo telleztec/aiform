@@ -24,6 +24,7 @@ import pytest
 
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
+from drivers.digitalocean import firewall as firewall_module
 from drivers.digitalocean.firewall import Driver
 from tests.drivers import transcripts
 
@@ -47,6 +48,20 @@ def created_payload() -> dict:
 
 def firewall_id() -> str:
     return created_payload()["firewall"]["id"]
+
+
+def attached_params() -> dict:
+    """Params matching the attach transcript, so both sides are real."""
+    firewall = waiting_payload()["firewall"]
+    return {
+        "inbound_rules": [
+            {k: v for k, v in rule.items() if k != "destinations"}
+            for rule in firewall["inbound_rules"]
+        ],
+        "outbound_rules": [],
+        "droplet_ids": sorted(firewall["droplet_ids"]),
+        "tags": sorted(firewall["tags"] or []),
+    }
 
 
 def minimal_rule() -> dict:
@@ -551,6 +566,113 @@ class TestLoggingUnderAConfiguredHandler:
         record = next(r for r in caplog.records if r.name.endswith("digitalocean.firewall"))
         assert record.firewall_name == NAME
         assert record.id == firewall_id()
+
+
+ATTACH_SESSION = "digitalocean_firewall_attach"
+
+
+def waiting_payload() -> dict:
+    """An attached firewall mid-convergence, exactly as DO returned it."""
+    return transcripts.response_body(ATTACH_SESSION, "02-")
+
+
+def settled_payload() -> dict:
+    return transcripts.response_body(ATTACH_SESSION, "07-")
+
+
+def attached_id() -> str:
+    return waiting_payload()["firewall"]["id"]
+
+
+def attached_url() -> str:
+    return firewall_url(attached_id())
+
+
+class TestWaitsUntilTheRulesAreActuallyInForce:
+    """create() and update() must not report success while DigitalOcean
+    is still applying the rules to the droplet.
+
+    Probe session digitalocean_firewall_attach settled this live: an
+    attached firewall comes back `waiting` with a pending_changes entry
+    and was still `waiting` 20 seconds later. Returning there would have
+    aiform say "done" about a firewall that is not yet filtering
+    anything -- and for a firewall that gap points the wrong way.
+
+    An unattached firewall is `succeeded` in the create response itself,
+    so the common case still costs exactly one read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleeping(self, monkeypatch):
+        self.slept = []
+        monkeypatch.setattr(firewall_module.time, "sleep", self.slept.append)
+
+    def test_create_polls_until_the_attach_is_active(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script(
+            "GET",
+            attached_url(),
+            FakeHTTPResponse(200, waiting_payload()),
+            FakeHTTPResponse(200, waiting_payload()),
+            FakeHTTPResponse(200, settled_payload()),
+        )
+
+        result = driver.create(NAME, attached_params(), CREDENTIALS)
+
+        reads = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(reads) == 3, "should have kept reading until status left 'waiting'"
+        assert self.slept, "polling must back off between reads"
+        assert result["droplet_ids"] == settled_payload()["firewall"]["droplet_ids"]
+
+    def test_an_unattached_create_never_sleeps(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        driver.create(NAME, minimal_params(), CREDENTIALS)
+
+        assert len(fake_urlopen.calls) == 2, "one POST and one read; no extra poll"
+        assert self.slept == [], "an unattached firewall is already succeeded"
+
+    def test_a_failed_status_raises_at_once_rather_than_waiting_out_the_timeout(
+        self, driver, fake_urlopen
+    ):
+        failed = waiting_payload()
+        failed["firewall"]["status"] = "failed"
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script("GET", attached_url(), FakeHTTPResponse(200, failed))
+        fake_urlopen.script("DELETE", attached_url(), FakeHTTPResponse(204, None))
+
+        with pytest.raises(RuntimeError, match="failed"):
+            driver.create(NAME, attached_params(), CREDENTIALS)
+
+        assert self.slept == [], "a terminal failure must not be retried"
+
+    def test_a_create_that_never_converges_rolls_back(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script("GET", attached_url(), FakeHTTPResponse(200, waiting_payload()))
+        fake_urlopen.script("DELETE", attached_url(), FakeHTTPResponse(204, None))
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            driver.create(NAME, attached_params(), CREDENTIALS)
+
+        # The firewall exists but never became active, and nothing has
+        # recorded its id -- the orphan case the rollback exists for.
+        assert any(c["method"] == "DELETE" for c in fake_urlopen.calls), "should have rolled back"
+
+    def test_update_polls_too(self, driver, fake_urlopen):
+        fake_urlopen.script("PUT", attached_url(), FakeHTTPResponse(200, waiting_payload()))
+        fake_urlopen.script(
+            "GET",
+            attached_url(),
+            FakeHTTPResponse(200, waiting_payload()),
+            FakeHTTPResponse(200, settled_payload()),
+        )
+
+        current = dict(driver_current(), id=attached_id(), name=NAME)
+        driver.update(attached_id(), current, attached_params(), CREDENTIALS)
+
+        reads = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(reads) == 2, "update must wait for the change to take effect too"
 
 
 class TestRejectionsWithNoTranscriptBehindThem:
