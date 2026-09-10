@@ -154,7 +154,7 @@ in here.
     `git rev-list --left-right --count main...origin/main`, and prefer
     `git grep <pattern> origin/main` over grepping the working tree.
   - *When coding and testing*, work in a dedicated worktree —
-    `git worktree add --no-track .claude/worktrees/<branch> -b <branch> origin/main`
+    `git fetch origin && git worktree add --no-track .claude/worktrees/<branch> -b <branch> origin/main`
     — not in the main checkout. Each pass then starts from current
     `main` by construction; several passes can be in flight without one
     pass's half-finished tree breaking another's test run; and the main
