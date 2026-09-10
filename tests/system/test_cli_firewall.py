@@ -292,3 +292,87 @@ class TestEverySupportedRuleShape:
             f"a supported rule shape does not round-trip; got:\n{captured.out}"
         )
         assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+
+
+class TestAttachedToARealDroplet:
+    """The one case that costs money, and the only one that exercises
+    `droplet_ids` with a real id.
+
+    Everything else in this suite runs unattached, which left
+    `droplet_ids` as the single managed field with no live evidence
+    behind it: every probe sent `[]`, and probe 21 sent `[1]` only to see
+    a nonexistent id rejected. Two claims rested on that gap --
+    specs/digitalocean_firewall.md marked the `waiting -> succeeded` and
+    `pending_changes` transitions *recalled, not verified*, and create()
+    skips polling on the strength of an unattached firewall coming back
+    `succeeded` immediately.
+
+    The droplet is the cheapest DigitalOcean sells, lives for about two
+    minutes, and is destroyed in the fixture's finally whatever happens
+    here. A leak is caught a second time by the session sweep.
+    """
+
+    def test_attach_converges_and_then_detaches(
+        self, project_dir, teardown_tracked_resources, throwaway_droplet, capsys
+    ):
+        token = live_token()
+        _skip_without_firewall_scope(token)
+
+        state_path = project_dir / ".aiform" / "state.json"
+        name = unique_firewall_name("attach")
+        key = _resource_key(name)
+
+        write_firewall_aiform_md(
+            project_dir, name=name, inbound_rules=[SSH_RULE], droplet_ids=[throwaway_droplet]
+        )
+
+        code = cli.main(["plan", "create", "--state-file", str(state_path)])
+        captured = capsys.readouterr()
+        assert_cli_ok(code, captured, "plan create (attached)")
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        captured = capsys.readouterr()
+        assert_cli_ok(code, captured, "plan apply (attached)")
+
+        st = state.load(state_path)
+        live = get_firewall_or_none(token, st.resources[key].id)
+        assert live is not None
+        # The claim under test: a real droplet id round-trips as the int
+        # it was written as. compute.py stringifies a droplet id and this
+        # API does not, so the asymmetry is worth pinning live.
+        assert live["droplet_ids"] == [throwaway_droplet], (
+            f"expected the firewall attached to {throwaway_droplet}, "
+            f"got droplet_ids={live['droplet_ids']!r}"
+        )
+
+        # An attached firewall is the case that can report status=waiting
+        # while DigitalOcean applies the rules to the droplet. Whatever it
+        # says here, read() drops status and pending_changes, so a re-plan
+        # mid-convergence must still be a no-op -- that is the actual
+        # guarantee, and it is what made not polling safe.
+        code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
+        captured = capsys.readouterr()
+        assert_cli_ok(code, captured, "re-plan (attached)")
+        assert f"{key}: no-op" in captured.out, (
+            f"an attached firewall did not converge (live status={live.get('status')!r}, "
+            f"pending_changes={live.get('pending_changes')!r}); got:\n{captured.out}"
+        )
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+
+        # Detach through update(), which is the whole-object PUT dropping
+        # the id from droplet_ids -- the path specs/digitalocean_firewall.md
+        # warns silently clears a field when it is omitted.
+        write_firewall_aiform_md(project_dir, name=name, inbound_rules=[SSH_RULE], droplet_ids=[])
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        captured = capsys.readouterr()
+        assert_cli_ok(code, captured, "plan apply (detach)")
+
+        live = get_firewall_or_none(token, st.resources[key].id)
+        assert live is not None
+        assert live["droplet_ids"] == [], f"detach left droplet_ids={live['droplet_ids']!r}"
+
+        code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
+        captured = capsys.readouterr()
+        assert_cli_ok(code, captured, "re-plan (detached)")
+        assert f"{key}: no-op" in captured.out
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err

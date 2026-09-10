@@ -78,9 +78,17 @@ class Driver(ResourceDriver):
         "required": ["inbound_rules", "outbound_rules", "droplet_ids", "tags"],
         "additionalProperties": False,
     }
-    # A firewall is replaced wholesale by a single PUT, and its name --
-    # aiform's state key -- is never updatable through update(), so
-    # nothing about this resource forces a replace.
+    # Nothing about this resource forces a replace: every PARAM_SCHEMA
+    # field is changeable in place, on the live firewall, keeping its id.
+    # That follows from the PUT carrying the whole object rather than a
+    # partial patch -- one call can express any combination of fields, so
+    # there is no change the API cannot apply to an existing firewall.
+    # ("Whole object" describes the request body, not the resource: the
+    # firewall is edited, not recreated.) A rename is the one thing that
+    # does produce a new resource, and it never reaches update() at all:
+    # 'name' is aiform's state key rather than a PARAM_SCHEMA field, so
+    # renaming yields a different key -- a create plus a destroy, not a
+    # diff. See update() for why DriverUpdateNotSupported is unreachable.
     LIKELY_REPLACE_FIELDS: list[str] = []
     # read() recovers every managed field from the API.
     NON_DIFFABLE_FIELDS: list[str] = []

@@ -13,16 +13,63 @@ clean up after. Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 import yaml
 
 from tests.system.conftest import (
+    SYSTEM_TEST_DROPLET_PREFIX,
+    SYSTEM_TEST_TAG,
     SYSTEM_TEST_ZONE_PARENT,
     SYSTEM_TEST_ZONE_PREFIX,
+    is_sweepable_droplet,
     unique_zone_name,
     write_domain_aiform_md,
     zone_created_at,
 )
+
+NOW = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+CUTOFF = NOW - timedelta(minutes=60)
+OLD = (NOW - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+RECENT = (NOW - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+
+
+def a_droplet(**overrides) -> dict:
+    droplet = {
+        "name": f"{SYSTEM_TEST_DROPLET_PREFIX}-attach-abc123",
+        "tags": [SYSTEM_TEST_TAG],
+        "created_at": OLD,
+    }
+    droplet.update(overrides)
+    return droplet
+
+
+class TestDropletSweepNeverTouchesProduction:
+    """This matcher decides which live droplets get destroyed on an
+    account that runs production workloads, and unlike the zone and
+    firewall sweeps a mistake here also costs money until noticed. All
+    three signals must hold; each of these drops exactly one."""
+
+    def test_a_leaked_system_test_droplet_is_swept(self):
+        assert is_sweepable_droplet(a_droplet(), CUTOFF)
+
+    @pytest.mark.parametrize(
+        "droplet, why",
+        [
+            (a_droplet(name="telleztec-wordpress"), "a production name"),
+            (a_droplet(name="telleztec-wordpress", tags=[SYSTEM_TEST_TAG]), "tagged by hand"),
+            (a_droplet(tags=[]), "our prefix but untagged"),
+            (a_droplet(tags=["something-else"]), "our prefix, a foreign tag"),
+            (a_droplet(created_at=RECENT), "young enough that a live run may own it"),
+            (a_droplet(created_at=None), "no timestamp to check the age floor against"),
+            (a_droplet(created_at="not-a-timestamp"), "an unparseable timestamp"),
+            (a_droplet(name="aiform-system-test-fw-x"), "a firewall's prefix, not a droplet's"),
+            ({}, "an empty object"),
+        ],
+    )
+    def test_anything_short_of_all_three_signals_is_left_alone(self, droplet, why):
+        assert not is_sweepable_droplet(droplet, CUTOFF), why
 
 
 class TestZoneCreatedAtRefusesForeignNames:

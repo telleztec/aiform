@@ -197,15 +197,17 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
 
 ## Out of scope
 
-- **Attaching to droplets is expressible but never exercised live.**
-  `droplet_ids` is in `PARAM_SCHEMA` and goes out in the PUT/POST body
-  like any other field, but every probe uses `droplet_ids: []`. (There is
-  no firewall system test yet — `tests/system/` covers droplets and
-  domains only. Both prior drivers shipped one, and the domain spec
-  credits the live path with catching what unit tests could not, so this
-  is a real gap, tracked as its own follow-up rather than silently
-  omitted.) Unattached firewalls are free and carry no traffic,
-  which is what makes this resource safe to characterize live at all.
+- **Attaching to droplets is exercised live, by one test that pays for
+  it.** Every probe uses `droplet_ids: []`, and unattached firewalls are
+  free and carry no traffic, which is what made this resource safe to
+  characterize live at all. But that left `droplet_ids` the one managed
+  field with no live evidence behind it, so
+  `tests/system/test_cli_firewall.py`'s `TestAttachedToARealDroplet`
+  creates the cheapest droplet DigitalOcean sells, attaches, asserts
+  convergence, detaches, and destroys it — about two minutes of hourly
+  billing. Cleanup is guaranteed twice over: the `throwaway_droplet`
+  fixture destroys it in a `finally`, and a session sweep catches one a
+  crash left behind.
 - **`droplet_ids` can only hold literal integers.** There is no
   cross-resource reference mechanism — `PLAN.md` §10, "No dependency
   graph" — so a firewall cannot say "the droplet aiform just created".
@@ -241,12 +243,15 @@ transcripts in `probes/transcripts/digitalocean_firewall/`:
 - 404 covers both absent and malformed ids (`27-`, `28-`)
 - delete is idempotent: 204 then 404 (`30-`, `31-`)
 
-*Recalled, not verified* — the `waiting → succeeded` and
-`pending_changes` transitions for an **attached** firewall. Only
-reachable by attaching to a real droplet, which this work deliberately
-never does. Mitigated by `read()` not returning `status` or
-`pending_changes` at all, so a mid-`waiting` read produces no diff
-either way.
+The `waiting → succeeded` and `pending_changes` transitions for an
+**attached** firewall are no longer *recalled, not verified*:
+`TestAttachedToARealDroplet` reaches them against a real droplet. What
+it asserts is deliberately not the transition itself but the property
+that made not polling safe — `read()` returns neither `status` nor
+`pending_changes`, so a re-plan is a no-op whatever state DigitalOcean
+is in mid-convergence. Asserting on the transition would pin a timing
+DigitalOcean never promised; asserting on the no-op pins what aiform
+actually needs.
 
 ## Resource graph
 
