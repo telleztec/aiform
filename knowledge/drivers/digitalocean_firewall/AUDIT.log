@@ -30,3 +30,6 @@
 2026-09-11T01:20:00Z step=spec ref=edge/tags cites=19,20 msg="CORRECTION of the 00:15:49Z line: probes 19/20 do NOT settle specs/digitalocean_compute.md's open question, which is about POST /v2/tags/{name}/resources, a different endpoint"
 2026-09-11T02:10:00Z step=review round=5 model=fable findings=6 msg="range 36243ae..ed37040; code sound, findings in tests and prose"
 2026-09-11T02:35:00Z step=fix round=5 fixed=6 msg="contradiction taxonomy wrong a second time; two vacuous tests; tag precondition; stale citation; two unasserted call counts"
+2026-09-10T19:53:09Z step=spec ref=audit/timestamps msg="CORRECTION of the six lines from 00:37:39Z to 02:35:00Z: they are dated 2026-09-11 but describe commits 620d97c..2ea7f3b, made 17:45:32Z-18:10:03Z on 09-10. The PDT offset was applied twice, putting each ~7h ahead. Lines below carry real UTC, which is why they sort earlier than the block above"
+2026-09-10T19:53:10Z step=review round=6 model=fable angles=1/3 findings=6 msg="simplification angle only; the correctness and conventions angles died on a model session limit, so the round is incomplete and satisfies no gate"
+2026-09-10T19:53:11Z step=fix round=6 fixed=2 deferred=4 msg="drop a collision assertion that was a tautology (its reserved set was a superset of the operand it intersected); delete dead _SERVER_SET_FIELDS and move its reasoning onto _project"

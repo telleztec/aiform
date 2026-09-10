@@ -523,7 +523,12 @@ class TestLoggingUnderAConfiguredHandler:
     """`logger.info(..., extra=...)` only builds a LogRecord when a
     handler has the level enabled, so a reserved-attribute collision is
     invisible to a suite that never configures logging. It cost a live
-    system-test failure once; these pin it at unit speed."""
+    system-test failure once; this pins it at unit speed.
+
+    `caplog.set_level` attaching a handler is what gives the test its
+    teeth: stdlib `makeRecord` raises on a colliding `extra` key, so any
+    key the driver adds later that shadows a LogRecord attribute fails
+    this test at the `create()` call, before its own assertions run."""
 
     def test_create_logs_without_colliding_with_a_reserved_attribute(
         self, driver, fake_urlopen, caplog
@@ -537,31 +542,6 @@ class TestLoggingUnderAConfiguredHandler:
         record = next(r for r in caplog.records if r.name.endswith("digitalocean.firewall"))
         assert record.firewall_name == NAME
         assert record.id == firewall_id()
-
-    def test_no_extra_key_shadows_a_logrecord_attribute(self, driver, fake_urlopen, caplog):
-        # The general form of the bug. An earlier version subtracted the
-        # reserved set before asserting "name" was absent, which made the
-        # assertion a tautology -- "name" is reserved, so it could never
-        # have been in what was left. Assert on the keys the driver
-        # actually passes instead, recovered by diffing against a bare
-        # record.
-        import logging
-
-        reserved = set(vars(logging.makeLogRecord({}))) | {"message", "asctime", "taskName"}
-        caplog.set_level("INFO", logger="aiform.driver.digitalocean.firewall")
-        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
-        script_read(fake_urlopen)
-
-        driver.create(NAME, minimal_params(), CREDENTIALS)
-
-        for record in caplog.records:
-            supplied = set(vars(record)) - reserved
-            assert supplied, "expected the driver to attach its own extras"
-            collisions = supplied & set(vars(logging.makeLogRecord({})))
-            assert not collisions, (
-                f"driver passed extra={sorted(collisions)}, which shadow LogRecord "
-                "attributes and make logging raise once a handler is attached"
-            )
 
 
 class TestCreateRollsBackAfterTheResourceExists:

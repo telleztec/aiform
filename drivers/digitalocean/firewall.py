@@ -27,10 +27,6 @@ _ACTIONS = ("allow", "deny")
 # object. Every one of them is a reference to another resource kind --
 # see specs/digitalocean_firewall.md's "Resource graph".
 _TARGET_KEYS = ("addresses", "droplet_ids", "tags", "load_balancer_uids", "kubernetes_ids")
-# Server-set and excluded from read(): they churn on every edit, so
-# storing them would rewrite state.json on every refresh. Same reasoning
-# as domain.py's zone_file exclusion.
-_SERVER_SET_FIELDS = ("status", "created_at", "pending_changes")
 _MANAGED_FIELDS = ("inbound_rules", "outbound_rules", "droplet_ids", "tags")
 
 _TARGET_KEY_FOR = {"inbound_rules": "sources", "outbound_rules": "destinations"}
@@ -316,6 +312,10 @@ class Driver(ResourceDriver):
         }
 
     def _project(self, firewall: dict[str, Any]) -> dict[str, Any]:
+        # A whitelist, not a blacklist: the server-set fields it thereby
+        # drops -- status, created_at, pending_changes -- churn on every
+        # edit, so storing them would rewrite state.json on every
+        # refresh. Same reasoning as domain.py's zone_file exclusion.
         return {
             "id": firewall["id"],
             # Not a PARAM_SCHEMA key. Carried because update()'s
