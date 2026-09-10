@@ -41,6 +41,7 @@ STEPS = (
     "fix",
     "verify",  # kind=live/unit result=pass/fail
     "learn",  # promoted=N -- what generalised into knowledge/
+    "note",  # a correction to the record itself; asserts nothing about the resource
 )
 
 # `grep verdict=contradicted` is the finding list for a whole driver, so
@@ -50,12 +51,20 @@ VERDICTS = ("confirmed", "contradicted")
 # specs/driver_creation.md's Confidence rubric. Five anchors and nothing
 # between them: the score is a judgement on a five-point ladder, and a
 # value like 73 would read as a measurement that no step produces.
-CONF_ANCHORS = (10, 40, 60, 80, 95)
+CONF_GUESSED, CONF_DOCUMENTED, CONF_OBSERVED, CONF_REPRODUCED, CONF_CONVERGED = (
+    10,
+    40,
+    60,
+    80,
+    95,
+)
+CONF_ANCHORS = (CONF_GUESSED, CONF_DOCUMENTED, CONF_OBSERVED, CONF_REPRODUCED, CONF_CONVERGED)
 
-# Steps that record work rather than knowledge. Letting them carry conf=
-# would let the column climb on a pass that learned nothing -- the exact
-# red flag reading that column down the file is meant to expose.
-STEPS_WITHOUT_CONF = ("test", "review", "fix")
+# Steps that record work, or the record itself, rather than knowledge.
+# Letting them carry conf= would let the column climb on a pass that
+# learned nothing -- the exact red flag reading that column down the file
+# is meant to expose.
+STEPS_WITHOUT_CONF = ("test", "review", "fix", "note")
 
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -111,7 +120,9 @@ class Audit:
 
         conf = fields.get("conf")
         if conf is not None:
-            if conf not in CONF_ANCHORS:
+            # bool is an int subclass, and 60.0 == 60 passes a membership
+            # test then renders as conf=60.0 -- a spelling no band has.
+            if type(conf) is not int or conf not in CONF_ANCHORS:
                 raise ValueError(f"conf must be one of {list(CONF_ANCHORS)}, got {conf!r}")
             if step in STEPS_WITHOUT_CONF:
                 raise ValueError(

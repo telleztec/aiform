@@ -220,8 +220,8 @@ class Driver(ResourceDriver):
                 # published schema, so "missing 'action'" reads as a bug
                 # in aiform rather than something the user must write.
                 hint = (
-                    ' -- write "action": "allow"; DigitalOcean adds this to every rule '
-                    "it returns, so a rule without it can never equal one read back"
+                    f" -- write one of {list(_ACTIONS)}; DigitalOcean adds this to every "
+                    "rule it returns, so a rule without it can never equal one read back"
                 )
             raise ValueError(f"{where} is missing required field(s) {sorted(missing)}{hint}")
         unexpected = set(rule) - allowed

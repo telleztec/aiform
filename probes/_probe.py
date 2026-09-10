@@ -26,7 +26,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from _audit import Audit
+from _audit import CONF_GUESSED, Audit
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
@@ -62,9 +62,12 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        # Host only. A Location echoing the token in its query string or
-        # its userinfo would otherwise land in a terminal traceback --
-        # the one place this class's own refusal cannot protect.
+        # Host only, which narrows the leak surface without closing it:
+        # the server that received the bearer header can echo it into a
+        # query string or userinfo -- dropped here -- but equally into
+        # the hostname itself, split across labels to fit 63 chars. The
+        # host is kept because a refusal naming nothing is not
+        # debuggable, and this handler already refuses to follow it.
         host = urllib.parse.urlsplit(newurl).hostname or "<unparseable>"
         raise ProbeError(f"refused a {code} redirect to host {host!r} on a token-bearing request")
 
@@ -139,6 +142,10 @@ class Probe:
                 provider=self.session.split("_", 1)[0],
                 skipped=0,
                 traps=0,
+                # Nothing recalled, so nothing is believed on prior
+                # evidence: the starting band is `guessed` by definition
+                # (specs/driver_creation.md's rubric, step 0).
+                conf=CONF_GUESSED,
                 msg="knowledge base not built; nothing to recall",
             )
         return self
@@ -236,6 +243,10 @@ class Probe:
                 "probe",
                 ref=f"{seq:02d}",
                 verdict="contradicted",
+                # Mechanical, and the one confidence the harness can set
+                # without judgement: a contradicted prediction means what
+                # the schema said is no longer evidence for anything.
+                conf=CONF_GUESSED,
                 msg=f"{note}: predicted {predict['status']}, got {status}",
             )
 

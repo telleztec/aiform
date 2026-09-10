@@ -119,6 +119,27 @@ class TestAudit:
             with pytest.raises(ValueError, match="may not carry conf="):
                 audit.append(step, conf=60)
 
+    def test_a_note_records_the_log_itself_and_takes_neither_cites_nor_conf(self, tmp_path):
+        # A correction about the record -- a miscounted tally, a bad
+        # timestamp -- asserts nothing about the resource. Without a step
+        # for it the only way to log one was step=spec, which forces a
+        # cites= that no transcript supports: the gate then reads as
+        # satisfied by a citation that was decoration. Both of this
+        # driver's corrections were logged that way before this existed.
+        audit = Audit(tmp_path / "AUDIT.log")
+        assert "step=note" in audit.append("note", msg="CORRECTION of the line above")
+        with pytest.raises(ValueError, match="may not carry conf="):
+            audit.append("note", conf=40, msg="x")
+
+    def test_conf_must_be_an_int(self, tmp_path):
+        # 60.0 == 60 is True, so a float sails through a membership test
+        # and then renders as conf=60.0 -- a spelling the rubric has no
+        # band for. bool is an int subclass and is likewise not a band.
+        audit = Audit(tmp_path / "AUDIT.log")
+        for bad in (60.0, True):
+            with pytest.raises(ValueError, match="conf must be one of"):
+                audit.append("impl", conf=bad)
+
     def test_rejects_an_unknown_step(self, tmp_path):
         audit = Audit(tmp_path / "AUDIT.log")
         with pytest.raises(ValueError, match="step"):

@@ -553,6 +553,29 @@ class TestLoggingUnderAConfiguredHandler:
         assert record.id == firewall_id()
 
 
+class TestRejectionsWithNoTranscriptBehindThem:
+    """Two rejections that are conservative readings rather than observed
+    behavior, so nothing in probes/ pins them: what DigitalOcean does with
+    an empty `ports` is unprobed, and `action` is required by this driver
+    rather than by DigitalOcean."""
+
+    def test_an_empty_ports_string_is_rejected(self, driver, fake_urlopen):
+        params = minimal_params()
+        params["inbound_rules"][0]["ports"] = ""
+        with pytest.raises(ValueError, match="'ports' is empty"):
+            driver.create(NAME, params, CREDENTIALS)
+        assert fake_urlopen.calls == []
+
+    def test_the_missing_action_error_names_both_spellings(self, driver, fake_urlopen):
+        # Probe 12 stored action="deny", so a hint naming only "allow"
+        # would send a user writing a deny rule to the wrong value.
+        params = minimal_params()
+        del params["inbound_rules"][0]["action"]
+        with pytest.raises(ValueError, match="allow.*deny"):
+            driver.create(NAME, params, CREDENTIALS)
+        assert fake_urlopen.calls == []
+
+
 class TestNestedTargetListOrder:
     """`unordered_equal` is top-level only -- a rule is compared through
     `canonical_key()`, which serializes any list nested inside it

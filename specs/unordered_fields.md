@@ -206,8 +206,8 @@ doesn't "simplify" the explicit declaration away.
   level down, and DigitalOcean does not promise the order it was written in. A
   driver in that position closes the gap on its own side, by requiring the
   nested list sorted and sorting what `read()` returns, rather than by widening
-  this rule. If a third driver needs the same thing, that is the point to
-  reconsider — two is a pattern, one was a special case.
+  this rule. One driver is a special case; if a second needs the same
+  thing, that is the point to reconsider widening it here.
 - **A name in `UNORDERED_FIELDS` that isn't a `PARAM_SCHEMA` property** is not
   validated here. It is a driver-authoring mistake, and mechanically catching
   that class of error across all three field lists is #114's job, not this

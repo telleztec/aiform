@@ -226,9 +226,11 @@ spec-first process, and are where the value is.
 
 ### Confidence
 
-Every step carries a **confidence score** for each claim the driver
-rests on: how far the current model of this resource is believed to
-match reality. Like `step=spec` and `step=learn`, and unlike anything
+Every step that changes what is *known* carries a **confidence score**
+for each claim the driver rests on: how far the current model of this
+resource is believed to match reality. The steps that only record work
+done — a test written, a review run, a fix applied — carry none, and the
+table below says which. Like `step=spec` and `step=learn`, and unlike anything
 the harness emits on its own, it is assigned by whoever runs the loop.
 The harness cannot know how much a claim deserves to be believed.
 
@@ -239,9 +241,19 @@ that band's anchor value:
 |---|---|---|
 | 10 | `guessed` | neither documentation nor a probe settles it; the behavior is assumed |
 | 40 | `documented` | the schema states it, and nothing has tested whether it is true |
-| 60 | `observed` | a live probe agrees with the prediction, or a contradiction has been encoded and re-probed |
+| 60 | `observed` | a live probe settled it — agreeing with the prediction, or contradicting it and the corrected behavior then encoded from that same transcript |
 | 80 | `reproduced` | the driver reproduces the transcript, with unit tests loading their payloads from it |
 | 95 | `converged` | the live system test passes and its second run is a zero-diff no-op |
+
+`step=spec` has no uncited form: `probes/_audit.py` refuses to record
+one at all, rather than recording it at a lower band. That is deliberate
+— a claim with no transcript behind it is the failure this process
+exists to prevent — but it means a line that asserts nothing about the
+resource must not be a `step=spec`. Corrections to the record itself
+(a miscounted tally, a bad timestamp) are `step=note`, which takes
+neither `cites=` nor `conf=`. Without that step the only way to log one
+was to attach a citation that did not support it, and a gate satisfied
+by decoration is worse than no gate.
 
 Only the transitions carry meaning. The numbers exist so a score can be
 compared across passes and nothing more — **do no arithmetic on them**,
@@ -255,8 +267,8 @@ What each step may move, and on what evidence:
 | 0 Recall | the starting band | an entry that settles the question starts at `documented`; an entry whose `traps` name this behavior starts at `guessed`, however clear the schema is |
 | 1 Question and predict | `documented` | the schema answers fully and unambiguously. Silent, partial or ambiguous leaves it `guessed` — and that gap is what earns the probe its call |
 | 2 Probe | nothing | issuing a request is not evidence. Only comparing its result is |
-| 3 Compare | `observed`, or down to `guessed` | agreement raises it; a contradiction **lowers** it, because the model that produced the prediction was wrong. It returns only once step 4 encodes the corrected behavior |
-| 4 Encode into the spec | holds | a claim without `cites=` may not exceed `documented`, whatever was observed |
+| 3 Compare | `observed` on agreement, `guessed` on a contradiction | agreement raises it. A contradiction **lowers** it, because the model that produced the prediction was wrong; step 4 is where it climbs back |
+| 4 Encode into the spec | `observed`, for a contradiction step 3 knocked down | this is where a corrected claim recovers, and only because the line cites the transcript that corrected it. A claim citing nothing may not be recorded at all |
 | 5 Failing test | nothing | red is a property of the test, not of the knowledge |
 | 6 Implement | `reproduced` | suite green, with the mock payload loaded from the transcript |
 | 7 Verify, consolidate | `converged` | the re-run probe reproduces the transcript **and** the system test's second run is a no-op |
@@ -319,8 +331,13 @@ not runtime diagnostics for one command.
 
 **A line that asserts something about the resource carries `conf=`**,
 the band anchor from the rubric above: `recall`, `probe`, `spec`,
-`impl`, `verify` and `learn` do. `test`, `review` and `fix` do not —
-none of them changes what is known, only what is written or fixed.
+`impl`, `verify` and `learn` do. `test`, `review`, `fix` and `note` do
+not — none of them changes what is known, only what is written, fixed,
+or said about the record itself. `probes/_audit.py` enforces the
+negative half; the harness sets `conf=` on the two lines it writes
+itself, which it can do without judgement because both are mechanical
+(nothing recalled and a contradicted prediction are each `guessed` by
+definition).
 Reading the `conf=` column down the file is how a reviewer sees at a
 glance whether the loop converged or spun, which is the red flag above
 made visible without re-reading every message.
@@ -343,8 +360,9 @@ prediction's model was wrong, so what the schema said is no longer
 evidence for anything. The `spec` line that follows is where it climbs
 back, and only because that line cites the transcript.
 
-`knowledge/drivers/digitalocean_firewall/AUDIT.log` predates this field
-and does not carry it. It is append-only, so it is not backfilled.
+`knowledge/drivers/digitalocean_firewall/AUDIT.log` was opened before
+this field existed, so its earlier lines do not carry it and are not
+backfilled — the file is append-only. Lines appended after it does.
 
 Rules that keep it auditable:
 
