@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 423,
+ "elapsed_ms": 370,
  "note": "scope check: can this token read firewalls",
  "prediction": {
   "notes": "200 proves read scope; a 401/403 means reissue",
   "status": 200
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:09.896236+00:00",
+ "probed_at": "2026-09-10T01:15:01.901429+00:00",
  "request": {
   "body": null,
   "headers": {

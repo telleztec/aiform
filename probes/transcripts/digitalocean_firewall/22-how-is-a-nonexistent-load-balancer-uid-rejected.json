@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 406,
+ "elapsed_ms": 270,
  "note": "how is a nonexistent load balancer uid rejected",
  "prediction": {
   "status": 422
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:17.274442+00:00",
+ "probed_at": "2026-09-10T01:15:09.887341+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -21,7 +21,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-nolb-20260910T000917Z-05e622",
+   "name": "aiform-system-test-fw-nolb-20260910T011509Z-1e770f",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,7 +35,7 @@
   "body": {
    "id": "unprocessable_entity",
    "message": "load balancer does not exist",
-   "request_id": "0d035758-46f8-4e17-a595-858b535191d2"
+   "request_id": "731f0d29-72bd-49a6-a291-912cb2953839"
   },
   "status": 422
  },

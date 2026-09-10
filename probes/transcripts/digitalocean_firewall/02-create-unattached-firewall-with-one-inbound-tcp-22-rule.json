@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 379,
+ "elapsed_ms": 354,
  "note": "create unattached firewall with one inbound tcp/22 rule",
  "prediction": {
   "notes": "status 'waiting' until it settles",
   "status": 202
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:10.320677+00:00",
+ "probed_at": "2026-09-10T01:15:02.273028+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -22,7 +22,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-minimal-20260910T000910Z-c2a5b8",
+   "name": "aiform-system-test-fw-minimal-20260910T011502Z-43079a",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,9 +35,9 @@
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T00:09:10Z",
+    "created_at": "2026-09-10T01:15:02Z",
     "droplet_ids": [],
-    "id": "26c7b496-15f9-4f94-9467-b7442afddaba",
+    "id": "9bf58090-4cc4-4ff6-a755-a1ae33fbc59e",
     "inbound_rules": [
      {
       "action": "allow",
@@ -50,7 +50,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-minimal-20260910T000910Z-c2a5b8",
+    "name": "aiform-system-test-fw-minimal-20260910T011502Z-43079a",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",

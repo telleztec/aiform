@@ -62,9 +62,15 @@ cannot establish, so it is reasoned about rather than measured
   iterates `desired` only, so an extra key in `read()`'s output can never
   produce a diff. The alternative — an extra GET inside `update()` — buys
   nothing.
-- **`update()`** is a **single `PUT`**, which DigitalOcean documents and
-  `13-does-put-omitting-tags...` confirms is a whole-object replace:
-  omitting `tags` and `droplet_ids` reset both to `[]`. One atomic call
+- **`update()`** is a **single `PUT`**, verified to be a whole-object
+  replace: a firewall created carrying a tag (`24-`), PUT with the
+  `tags` key omitted (`25-`), reads back with `tags: []` (`26-`). An
+  earlier probe appeared to show this but could not: it edited a
+  firewall whose tags were already empty, so "reset" and "left alone"
+  were indistinguishable. That is the same mistake
+  `specs/digitalocean_domain.md` §"How this was gotten wrong twice"
+  describes -- a confidence label attached to an unchecked belief -- and
+  it was caught in review, not by the probe. One atomic call
   makes `driver.py`'s ordering invariant — never raise
   `DriverUpdateNotSupported` after mutating anything — trivially true,
   because validation and any refusal happen strictly before the single
@@ -72,13 +78,19 @@ cannot establish, so it is reasoned about rather than measured
   impossible. `domain.py` reconciles across many calls only because
   DigitalOcean has no whole-zone PUT; a firewall has one, so the
   `/rules`, `/tags` and `/droplets` sub-endpoints are not used.
+  Because an omitted key is reset rather than preserved, **every**
+  managed field is required in `params` and sent on every write: an
+  omitted key is invisible to `planner.diff_attributes()` (it iterates
+  `desired` only), so allowing omission would let an unrelated edit
+  silently clear `tags` or detach every droplet, with no plan line
+  naming it.
 - **`update()` never raises `DriverUpdateNotSupported`.** Every
   `PARAM_SCHEMA` field is expressible in the PUT body, and `name` is
   aiform's state key so it never reaches `update()` as a diff. (A rename
   *is* accepted by the API — `14-can-a-firewall-be-renamed...` — but is
   deliberately not exposed.)
 - **`delete()`** DELETEs and treats 404 as success
-  (`26-`/`27-delete-the-same-firewall-again`: 204 then 404).
+  (`30-`/`27-delete-the-same-firewall-again`: 204 then 404).
 
 ### Values the driver rejects rather than normalizes
 
@@ -97,6 +109,15 @@ that can never converge:
 | `protocol: "TCP"` | `"tcp"` | `05-` |
 | `ports: "all"` | `"0"` | `10-` |
 | `ports` omitted on an icmp rule | `"0"` | `09-` |
+
+The same guard applies **inside** a rule's `sources`/`destinations`:
+`droplet_ids` entries must be ints and every other target list must hold
+strings. Nothing upstream enforces `PARAM_SCHEMA` — no part of `aiform/`
+runs a JSON-schema validator, it is grounding shown to the model — so the
+driver's own validation is the only guard, and a string droplet id would
+otherwise be coerced on store exactly as an int port is. An empty target
+sub-list (`{"addresses": []}`) is refused for the same reason an empty
+target object is.
 
 Not rejected, because DigitalOcean stores them verbatim: a bare address
 `"1.2.3.4"` is **not** expanded to `/32` (`06-`), and an IPv6 range is
@@ -129,7 +150,7 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   exist"` (`21-`), `"load balancer does not exist"` (`22-`). Folded into
   the raised error by `_fold_do_error_into_exc`, as `domain.py` does.
 - **A malformed id 404s**, exactly as a well-formed but absent uuid does
-  (`23-`, `24-`) — the same behavior `compute.py` records for a
+  (`27-`, `28-`) — the same behavior `compute.py` records for a
   malformed droplet id, so `read()` needs no special 422 branch.
 - **An empty `sources: {}` is accepted by the API** (202, stored as `{}`
   — `18-`) and produces a rule that matches no traffic. The driver
@@ -150,8 +171,12 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
 
 - **Attaching to droplets is expressible but never exercised live.**
   `droplet_ids` is in `PARAM_SCHEMA` and goes out in the PUT/POST body
-  like any other field, but every probe and system test uses
-  `droplet_ids: []`. Unattached firewalls are free and carry no traffic,
+  like any other field, but every probe uses `droplet_ids: []`. (There is
+  no firewall system test yet — `tests/system/` covers droplets and
+  domains only. Both prior drivers shipped one, and the domain spec
+  credits the live path with catching what unit tests could not, so this
+  is a real gap, tracked as its own follow-up rather than silently
+  omitted.) Unattached firewalls are free and carry no traffic,
   which is what makes this resource safe to characterize live at all.
 - **`droplet_ids` can only hold literal integers.** There is no
   cross-resource reference mechanism — `PLAN.md` §10, "No dependency
@@ -171,9 +196,10 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
 
 ## Knowledge-confidence
 
-*Verified live by a disposable-resource probe* — 27 probes, all against
-free unattached firewalls, all cleaned up in a `finally`; transcripts in
-`probes/transcripts/digitalocean_firewall/`:
+*Verified live by a disposable-resource probe* — 31 probes, all against
+free unattached firewalls (plus one throwaway tag), every created
+resource deleted by the session's context manager on the way out;
+transcripts in `probes/transcripts/digitalocean_firewall/`:
 
 - create returns `succeeded` immediately when unattached (`02-`)
 - `action` is server-added and absent from the published schema (`02-`, `03-`)
@@ -181,10 +207,11 @@ free unattached firewalls, all cleaned up in a `finally`; transcripts in
   silently rewritten (`04-`, `05-`, `09-`, `10-`)
 - bare addresses and IPv6 ranges are stored verbatim (`06-`, `07-`)
 - zero rules is a 422 (`08-`)
-- PUT is a whole-object replace (`13-`)
+- PUT is a whole-object replace: an omitted `tags` key is reset to `[]`,
+  demonstrated on a firewall that actually had one (`24-`, `25-`, `26-`)
 - tags must pre-exist, in both positions (`19-`, `20-`)
-- 404 covers both absent and malformed ids (`23-`, `24-`)
-- delete is idempotent: 204 then 404 (`26-`, `27-`)
+- 404 covers both absent and malformed ids (`27-`, `28-`)
+- delete is idempotent: 204 then 404 (`30-`, `31-`)
 
 *Recalled, not verified* — the `waiting → succeeded` and
 `pending_changes` transitions for an **attached** firewall. Only

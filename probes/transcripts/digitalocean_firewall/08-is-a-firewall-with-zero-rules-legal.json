@@ -1,17 +1,17 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 257,
+ "elapsed_ms": 325,
  "note": "is a firewall with zero rules legal",
  "prediction": {
   "status": 202
  },
  "prediction_matched": false,
- "probed_at": "2026-09-10T00:09:12.503121+00:00",
+ "probed_at": "2026-09-10T01:15:04.813902+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
    "inbound_rules": [],
-   "name": "aiform-system-test-fw-norules-20260910T000912Z-33bfcc",
+   "name": "aiform-system-test-fw-norules-20260910T011504Z-90ad54",
    "outbound_rules": [],
    "tags": []
   },
@@ -25,7 +25,7 @@
   "body": {
    "id": "unprocessable_entity",
    "message": "must have at least one rule",
-   "request_id": "eab6e4f7-65bd-47cc-97e0-552c59c39f00"
+   "request_id": "4abfa886-7b21-43c7-860c-6263dbe4cf33"
   },
   "status": 422
  },

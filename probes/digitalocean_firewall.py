@@ -12,12 +12,19 @@ Run:  python probes/digitalocean_firewall.py --dry-run   # sends nothing
       python probes/digitalocean_firewall.py --mutate    # against your account
 """
 
+import datetime
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _probe import Probe, ProbeError, base_arg_parser, unique_name  # noqa: E402
+from _probe import (  # noqa: E402
+    SWEEP_MIN_AGE_MINUTES,
+    Probe,
+    ProbeError,
+    base_arg_parser,
+    unique_name,
+)
 
 SESSION = "digitalocean_firewall"
 NAME_PREFIX = "aiform-system-test-fw"
@@ -233,6 +240,48 @@ def run(probe: Probe) -> None:
         ],
     )
 
+    # --- Increment 4 (continued): does PUT actually RESET an omitted
+    # field, or merely leave it alone? The earlier PUT probe cannot tell
+    # those apart, because the firewall it edited had tags: [] already.
+    # A tag must exist before a firewall may reference it (probe 19), so
+    # create one first.
+    tag = unique_name("aiform-probe-reset")
+    tag_made = probe.call(
+        "POST",
+        "/tags",
+        {"name": tag},
+        note="create a tag to reference",
+        predict={"status": 201},
+    )
+    if tag_made.status < 400:
+        probe.cleanup("DELETE", f"/tags/{tag}")
+        tagged = _create(
+            probe,
+            "tagged",
+            note="create a firewall that actually carries a tag",
+            predict={"status": 202},
+            tags=[tag],
+        )
+        if tagged.status < 400 and not probe.dry_run:
+            tid = tagged.body["firewall"]["id"]
+            probe.call(
+                "PUT",
+                f"/firewalls/{tid}",
+                {
+                    "name": tagged.body["firewall"]["name"],
+                    "inbound_rules": [dict(MINIMAL_RULE)],
+                    "outbound_rules": [],
+                },
+                note="PUT omitting a tag the firewall actually had",
+                predict={"status": 200},
+            )
+            probe.call(
+                "GET",
+                f"/firewalls/{tid}",
+                note="read back: was the omitted tag reset or left alone",
+                predict={"status": 200, "notes": "tags reset to [] if PUT truly replaces"},
+            )
+
     # --- Increment 3: not-found semantics and delete idempotency ---
     probe.call(
         "GET",
@@ -268,16 +317,34 @@ def run(probe: Probe) -> None:
         )
 
 
+def _age_minutes(created_at: str) -> float:
+    stamp = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    return (datetime.datetime.now(datetime.UTC) - stamp).total_seconds() / 60
+
+
 def sweep(probe: Probe) -> int:
-    """Delete leftover probe firewalls. A non-empty sweep is a bug report."""
-    result = probe.call("GET", "/firewalls?per_page=200", note="sweep: list firewalls")
-    leaked = [
-        f for f in (result.body or {}).get("firewalls", []) if f["name"].startswith(NAME_PREFIX)
-    ]
+    """Delete leftover probe firewalls. A non-empty sweep is a bug report.
+
+    Identity is the name prefix AND an age past the floor, so a sweep can
+    never delete a healthy concurrent run's resources out from under it.
+    Anything unrecognized is left alone rather than deleted.
+    """
+    result = probe.call(
+        "GET", "/firewalls?per_page=200", note="sweep: list firewalls", record=False
+    )
+    leaked = []
+    for f in (result.body or {}).get("firewalls", []):
+        if not f["name"].startswith(NAME_PREFIX):
+            continue
+        age = _age_minutes(f["created_at"])
+        if age < SWEEP_MIN_AGE_MINUTES:
+            print(f"  skipping {f['name']} -- {age:.0f}m old, a live run may still own it")
+            continue
+        leaked.append(f)
     for f in leaked:
-        print(f"  LEAKED {f['id']} {f['name']}")
+        print(f"  LEAKED {f['id']} {f['name']} ({_age_minutes(f['created_at']):.0f}m old)")
         if probe.mutate:
-            probe._send("DELETE", f"/firewalls/{f['id']}", None)
+            probe.call("DELETE", f"/firewalls/{f['id']}", note="sweep: delete", record=False)
     return len(leaked)
 
 

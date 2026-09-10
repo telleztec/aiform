@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 283,
- "note": "create a firewall to delete twice",
+ "elapsed_ms": 536,
+ "note": "create a firewall that actually carries a tag",
  "prediction": {
   "status": 202
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:18.325776+00:00",
+ "probed_at": "2026-09-10T01:15:10.458602+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -21,9 +21,11 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-delete-20260910T000918Z-a35395",
+   "name": "aiform-system-test-fw-tagged-20260910T011510Z-b794f3",
    "outbound_rules": [],
-   "tags": []
+   "tags": [
+    "aiform-probe-reset-20260910T011510Z-d9c3ea"
+   ]
   },
   "headers": {
    "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
@@ -34,9 +36,9 @@
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T00:09:18Z",
+    "created_at": "2026-09-10T01:15:10Z",
     "droplet_ids": [],
-    "id": "7e153ef6-0c2a-4c64-9ba9-014d241d9992",
+    "id": "eb9969c5-6090-4b1c-8d40-c862f779a0dc",
     "inbound_rules": [
      {
       "action": "allow",
@@ -49,14 +51,16 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-delete-20260910T000918Z-a35395",
+    "name": "aiform-system-test-fw-tagged-20260910T011510Z-b794f3",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",
-    "tags": []
+    "tags": [
+     "aiform-probe-reset-20260910T011510Z-d9c3ea"
+    ]
    }
   },
   "status": 202
  },
- "seq": 25
+ "seq": 24
 }

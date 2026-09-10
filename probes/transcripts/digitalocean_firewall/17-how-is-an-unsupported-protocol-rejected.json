@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 308,
+ "elapsed_ms": 260,
  "note": "how is an unsupported protocol rejected",
  "prediction": {
   "status": 422
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:15.775012+00:00",
+ "probed_at": "2026-09-10T01:15:08.204500+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -21,7 +21,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-sctp-20260910T000915Z-c642d2",
+   "name": "aiform-system-test-fw-sctp-20260910T011508Z-cc3705",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,7 +35,7 @@
   "body": {
    "id": "unprocessable_entity",
    "message": "you specified an invalid protocol",
-   "request_id": "55f5c3a0-2783-43d9-9d2b-ba33369714fa"
+   "request_id": "5766e163-2f7c-4878-ab7e-3528206d8739"
   },
   "status": 422
  },

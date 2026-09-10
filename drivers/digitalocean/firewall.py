@@ -73,7 +73,13 @@ class Driver(ResourceDriver):
             "droplet_ids": {"type": "array", "items": {"type": "integer"}},
             "tags": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["inbound_rules", "outbound_rules"],
+        # All four are required. An omitted key is invisible to
+        # planner.diff_attributes() (it iterates `desired` only), yet the
+        # whole-object PUT still sends [] for it -- so omitting 'tags' or
+        # 'droplet_ids' would silently clear them on the next unrelated
+        # edit, with no plan line naming the change. Requiring them makes
+        # "clear this" something a user writes on purpose.
+        "required": ["inbound_rules", "outbound_rules", "droplet_ids", "tags"],
         "additionalProperties": False,
     }
     # A firewall is replaced wholesale by a single PUT, and its name --
@@ -146,7 +152,7 @@ class Driver(ResourceDriver):
                 f"unsupported params key(s) {sorted(unexpected)}; this driver's "
                 f"PARAM_SCHEMA accepts {sorted(self.PARAM_SCHEMA['properties'])}"
             )
-        for key in ("inbound_rules", "outbound_rules"):
+        for key in self.PARAM_SCHEMA["required"]:
             if key not in params:
                 raise ValueError(f"params is missing required key {key!r}")
 
@@ -194,19 +200,20 @@ class Driver(ResourceDriver):
     ) -> None:
         where = f"{list_key}[{index}]"
         allowed = {"protocol", "ports", "action", target_key}
+        # Checked before the missing-field check: an outbound rule written
+        # with 'sources' is BOTH missing 'destinations' and carrying an
+        # unexpected key, and the generic "missing destinations" message
+        # would not name what the user actually did wrong.
+        other = _TARGET_KEY_FOR["outbound_rules" if target_key == "sources" else "inbound_rules"]
+        if other in rule:
+            raise ValueError(
+                f"{where} has {other!r}; an entry in {list_key!r} must use {target_key!r} instead"
+            )
         missing = allowed - set(rule)
         if missing:
             raise ValueError(f"{where} is missing required field(s) {sorted(missing)}")
         unexpected = set(rule) - allowed
         if unexpected:
-            other = _TARGET_KEY_FOR[
-                "outbound_rules" if target_key == "sources" else "inbound_rules"
-            ]
-            if other in unexpected:
-                raise ValueError(
-                    f"{where} has {other!r}; an entry in {list_key!r} must use "
-                    f"{target_key!r} instead"
-                )
             raise ValueError(f"{where} has unsupported field(s) {sorted(unexpected)}")
 
         protocol = rule["protocol"]
@@ -267,6 +274,35 @@ class Driver(ResourceDriver):
                 raise ValueError(
                     f"{where}: {target_key}.{key} must be a list, got {type(value).__name__}"
                 )
+            if not value:
+                # An empty sub-list matches no traffic just as an empty
+                # target object does, and what DigitalOcean returns for one
+                # is unprobed -- an omitempty-style API would return {} and
+                # then diff forever against {"addresses": []}.
+                raise ValueError(
+                    f"{where}: {target_key}.{key} is empty, which matches no traffic; "
+                    "list at least one entry or drop the key"
+                )
+            self._validate_target_items(where, target_key, key, value)
+
+    def _validate_target_items(
+        self, where: str, target_key: str, key: str, value: list[Any]
+    ) -> None:
+        # Nothing upstream enforces PARAM_SCHEMA -- nothing in aiform/ runs
+        # a JSON-schema validator, it is grounding shown to the LLM -- so
+        # this is the only guard. Without it a string droplet id sails
+        # through, and DigitalOcean coerces scalars on store (verified live
+        # for ports), so it would read back as an int and diff forever:
+        # the same bug the top-level scalar checks prevent, one level down.
+        expected = int if key == "droplet_ids" else str
+        for index, item in enumerate(value):
+            wrong_type = not isinstance(item, expected)
+            sneaky_bool = expected is int and isinstance(item, bool)
+            if wrong_type or sneaky_bool:
+                raise ValueError(
+                    f"{where}: {target_key}.{key}[{index}] must be a "
+                    f"{expected.__name__}, got {item!r}"
+                )
 
     # --- projection -------------------------------------------------
 
@@ -304,9 +340,12 @@ class Driver(ResourceDriver):
         # Every managed field goes out on every write. Verified live: a
         # PUT omitting tags and droplet_ids resets both to [], so a
         # partial body silently discards state.
+        # Every managed field is required by PARAM_SCHEMA and validated
+        # before this runs, so each is present and a list. No defaulting
+        # here: it would only paper over an omission the driver refuses.
         body: dict[str, Any] = {"name": name}
         for key in _MANAGED_FIELDS:
-            body[key] = params.get(key) or []
+            body[key] = params[key]
         return body
 
     # --- ResourceDriver ---------------------------------------------
@@ -358,11 +397,17 @@ class Driver(ResourceDriver):
         # is therefore unreachable here -- every PARAM_SCHEMA field is
         # expressible in the PUT body, and 'name' is aiform's state key
         # so it never arrives as a diff.
-        name = current.get("name") or desired.get("name")
+        # Only `current` can supply it: read() returns 'name', and
+        # _validate_params rejects a 'name' key in `desired`, so there is
+        # no second source to fall back to. Reachable only from a state
+        # entry hand-edited or written before read() carried 'name'.
+        name = current.get("name")
         if not name:
             raise ValueError(
-                f"firewall {id}: cannot update without the firewall's name; state "
-                "entry is missing 'name' -- refresh the resource and retry"
+                f"firewall {id}: state entry has no 'name', which the whole-object "
+                "PUT requires; the entry was hand-edited or predates this driver -- "
+                "add the firewall's current name to it, or delete the entry and "
+                "recreate the resource"
             )
         try:
             self._request(

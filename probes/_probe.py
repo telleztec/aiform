@@ -9,7 +9,7 @@ PROVIDER_ACCOUNT_PROBES, cli.py's _probe), which asks only whether a
 token works at all -- the word is reused deliberately, since both are
 "send one request and find out", but they answer different questions.
 
-The session records every call as a JSON transcript. Those transcripts
+The session records every probe call as a JSON transcript. Those transcripts
 are the point: they become the payloads a driver's unit tests mock with,
 so a fixture cannot encode a belief nobody checked.
 """
@@ -38,6 +38,10 @@ _SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "set-cookie"})
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 TRANSCRIPTS_ROOT = Path(__file__).parent / "transcripts"
+# A session never legitimately runs for more than a couple of minutes, so
+# an hour cannot race a healthy concurrent run. Same value and same
+# reasoning as specs/system_test.md's droplet sweep.
+SWEEP_MIN_AGE_MINUTES = 60
 
 
 class ProbeError(RuntimeError):
@@ -109,6 +113,11 @@ class Probe:
     def __exit__(self, *exc_info) -> None:
         # Registered teardown runs whatever happened above, so a probe
         # that raises mid-session still cannot leak a live resource.
+        # --dry-run created nothing, so it must delete nothing: without
+        # this guard a dry run would send real DELETEs for the
+        # placeholder ids it never created.
+        if self.dry_run:
+            return
         for method, path in reversed(self._cleanups):
             try:
                 status, _ = self._send(method, path, None)
@@ -117,6 +126,10 @@ class Probe:
                 print(f"  cleanup {method} {path} FAILED: {exc}")
 
     def cleanup(self, method: str, path: str) -> None:
+        # Only reachable after a successful mutating call, but asserted
+        # rather than merely true-in-practice: this is the one path that
+        # sends a request without going through call()'s --mutate guard.
+        assert self.mutate or self.dry_run, "cleanup() registered without --mutate"
         self._cleanups.append((method, path))
 
     def _send(self, method: str, path: str, body: Any):
@@ -144,6 +157,7 @@ class Probe:
         *,
         note: str,
         predict: dict[str, Any] | None = None,
+        record: bool = True,
     ) -> Recorded:
         """Send one request and record it.
 
@@ -173,6 +187,11 @@ class Probe:
         flag = "" if matched is None else ("  [as predicted]" if matched else "  [CONTRADICTED]")
         print(f"[{seq:02d}] {method} {path} -> {status}  {note}{flag}")
 
+        if not record:
+            # Housekeeping (a --sweep listing) shares Probe's HTTP path
+            # but is not a finding, and writing it would collide with the
+            # run's own seq numbering in the same directory.
+            return Recorded(status, response_body, matched)
         self._write(
             seq,
             note,
@@ -211,5 +230,7 @@ def base_arg_parser(description: str) -> argparse.ArgumentParser:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--mutate", action="store_true", help="allow non-GET calls")
     group.add_argument("--dry-run", action="store_true", help="print the calls, send nothing")
-    parser.add_argument("--sweep", action="store_true", help="delete aged-out leftovers and exit")
+    parser.add_argument(
+        "--sweep", action="store_true", help="delete leftovers past the age floor, and exit"
+    )
     return parser

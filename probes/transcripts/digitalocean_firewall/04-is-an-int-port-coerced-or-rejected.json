@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 327,
+ "elapsed_ms": 401,
  "note": "is an int port coerced or rejected",
  "prediction": {
   "notes": "a typed API should reject an int where a string is documented",
   "status": 422
  },
  "prediction_matched": false,
- "probed_at": "2026-09-10T00:09:11.069431+00:00",
+ "probed_at": "2026-09-10T01:15:03.197119+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -22,7 +22,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-intport-20260910T000911Z-8a93d5",
+   "name": "aiform-system-test-fw-intport-20260910T011503Z-cf9cca",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,9 +35,9 @@
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T00:09:11Z",
+    "created_at": "2026-09-10T01:15:03Z",
     "droplet_ids": [],
-    "id": "ffe0ccca-6f82-4056-a221-7f2bdd1dbf34",
+    "id": "5c0bd8fd-270b-4d23-9c94-3195eaef1c6a",
     "inbound_rules": [
      {
       "action": "allow",
@@ -50,7 +50,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-intport-20260910T000911Z-8a93d5",
+    "name": "aiform-system-test-fw-intport-20260910T011503Z-cf9cca",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",

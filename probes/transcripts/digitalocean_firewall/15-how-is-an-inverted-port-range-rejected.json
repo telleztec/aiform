@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 324,
+ "elapsed_ms": 250,
  "note": "how is an inverted port range rejected",
  "prediction": {
   "status": 422
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:15.205915+00:00",
+ "probed_at": "2026-09-10T01:15:07.615749+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -21,7 +21,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-invrange-20260910T000915Z-999d3a",
+   "name": "aiform-system-test-fw-invrange-20260910T011507Z-cc9fee",
    "outbound_rules": [],
    "tags": []
   },
@@ -35,7 +35,7 @@
   "body": {
    "id": "unprocessable_entity",
    "message": "invalid port range",
-   "request_id": "e24ab271-67a4-4265-ac2e-5d23cc954055"
+   "request_id": "fe99a387-2112-4d85-b5ea-7f12646e393c"
   },
   "status": 422
  },

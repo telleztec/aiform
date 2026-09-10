@@ -1,28 +1,28 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 237,
+ "elapsed_ms": 398,
  "note": "delete the same firewall again",
  "prediction": {
   "notes": "404 must read as success in delete()",
   "status": 404
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:19.038924+00:00",
+ "probed_at": "2026-09-10T01:15:13.102605+00:00",
  "request": {
   "body": null,
   "headers": {
    "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
   },
   "method": "DELETE",
-  "url": "https://api.digitalocean.com/v2/firewalls/7e153ef6-0c2a-4c64-9ba9-014d241d9992"
+  "url": "https://api.digitalocean.com/v2/firewalls/b616be0f-238f-4166-8478-ad0d4c12fc33"
  },
  "response": {
   "body": {
    "id": "not_found",
    "message": "Firewall not found",
-   "request_id": "edbf3959-f0cb-4a1e-83ce-f9a62e9acfb8"
+   "request_id": "3a1fc010-ac33-43c2-a4f2-c605e3c365db"
   },
   "status": 404
  },
- "seq": 27
+ "seq": 31
 }

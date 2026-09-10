@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 439,
+ "elapsed_ms": 448,
  "note": "can a firewall be renamed through PUT",
  "prediction": {
   "notes": "accepted; aiform still will not expose it",
   "status": 200
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:14.765429+00:00",
+ "probed_at": "2026-09-10T01:15:07.165505+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -22,7 +22,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-renamed-20260910T000914Z-2c0dc4",
+   "name": "aiform-system-test-fw-renamed-20260910T011507Z-60fe60",
    "outbound_rules": [],
    "tags": []
   },
@@ -30,14 +30,14 @@
    "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
   },
   "method": "PUT",
-  "url": "https://api.digitalocean.com/v2/firewalls/26c7b496-15f9-4f94-9467-b7442afddaba"
+  "url": "https://api.digitalocean.com/v2/firewalls/9bf58090-4cc4-4ff6-a755-a1ae33fbc59e"
  },
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T00:09:10Z",
+    "created_at": "2026-09-10T01:15:02Z",
     "droplet_ids": [],
-    "id": "26c7b496-15f9-4f94-9467-b7442afddaba",
+    "id": "9bf58090-4cc4-4ff6-a755-a1ae33fbc59e",
     "inbound_rules": [
      {
       "action": "allow",
@@ -50,7 +50,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-renamed-20260910T000914Z-2c0dc4",
+    "name": "aiform-system-test-fw-renamed-20260910T011507Z-60fe60",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",

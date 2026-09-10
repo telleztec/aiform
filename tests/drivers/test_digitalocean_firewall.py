@@ -149,8 +149,16 @@ class TestClassAttributes:
         assert rule["additionalProperties"] is False
         assert set(rule["required"]) == {"protocol", "ports", "action", "sources"}
 
-    def test_rule_lists_are_required(self, driver):
-        assert set(driver.PARAM_SCHEMA["required"]) == {"inbound_rules", "outbound_rules"}
+    def test_every_managed_field_is_required(self, driver):
+        # droplet_ids and tags included deliberately: an omitted key is
+        # invisible to diff_attributes() but still sent as [] by the
+        # whole-object PUT, so omission would silently clear them.
+        assert set(driver.PARAM_SCHEMA["required"]) == {
+            "inbound_rules",
+            "outbound_rules",
+            "droplet_ids",
+            "tags",
+        }
 
     def test_unordered_fields_covers_every_collection(self, driver):
         assert set(driver.UNORDERED_FIELDS) == {
@@ -394,3 +402,88 @@ class TestScalarListValidation:
         params = {**minimal_params(), "tags": [7]}
         with pytest.raises(ValueError, match="tags"):
             driver.create(NAME, params, CREDENTIALS)
+
+
+class TestNestedTargetValidation:
+    """PARAM_SCHEMA is never enforced upstream, so these are the only
+    guard against the int-port bug recurring inside a rule's target."""
+
+    def _params(self, target):
+        rule = {"protocol": "tcp", "ports": "22", "action": "allow", "sources": target}
+        return {"inbound_rules": [rule], "outbound_rules": [], "droplet_ids": [], "tags": []}
+
+    def test_a_string_droplet_id_inside_sources_is_rejected(self, driver):
+        with pytest.raises(ValueError, match=r"sources\.droplet_ids\[0\]"):
+            driver.create(NAME, self._params({"droplet_ids": ["123"]}), CREDENTIALS)
+
+    def test_a_bool_droplet_id_inside_sources_is_rejected(self, driver):
+        with pytest.raises(ValueError, match=r"sources\.droplet_ids\[0\]"):
+            driver.create(NAME, self._params({"droplet_ids": [True]}), CREDENTIALS)
+
+    def test_a_non_string_address_is_rejected(self, driver):
+        with pytest.raises(ValueError, match=r"sources\.addresses\[0\]"):
+            driver.create(NAME, self._params({"addresses": [1]}), CREDENTIALS)
+
+    def test_an_empty_sub_list_is_rejected(self, driver):
+        with pytest.raises(ValueError, match="matches no traffic"):
+            driver.create(NAME, self._params({"addresses": []}), CREDENTIALS)
+
+    def test_an_unknown_target_key_is_rejected(self, driver):
+        with pytest.raises(ValueError, match="unsupported key"):
+            driver.create(NAME, self._params({"nonsense": ["x"]}), CREDENTIALS)
+
+
+class TestOutboundRules:
+    def test_destinations_are_projected_for_outbound_rules(self, driver, fake_urlopen):
+        outbound = {
+            "protocol": "udp",
+            "ports": "53",
+            "action": "allow",
+            "destinations": {"addresses": ["0.0.0.0/0"]},
+        }
+        payload = {"firewall": {**created_payload()["firewall"], "outbound_rules": [outbound]}}
+        script_read(fake_urlopen, payload)
+        assert driver.read(firewall_id(), CREDENTIALS)["outbound_rules"] == [outbound]
+
+    def test_an_outbound_rule_written_with_sources_names_the_real_mistake(self, driver):
+        params = {
+            "inbound_rules": [],
+            "outbound_rules": [minimal_rule()],
+            "droplet_ids": [],
+            "tags": [],
+        }
+        with pytest.raises(ValueError, match="must use 'destinations' instead"):
+            driver.create(NAME, params, CREDENTIALS)
+
+
+class TestErrorMessagesAreFoldedIn:
+    """The 422 messages the spec advertises ("tag <name> does not exist",
+    "droplet does not exist") are only useful if they reach the user."""
+
+    def test_create_folds_the_digitalocean_message_into_the_error(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "POST",
+            firewalls_url(),
+            http_error(firewalls_url(), 422, {"message": "tag nope does not exist"}),
+        )
+        with pytest.raises(urllib.error.HTTPError, match="tag nope does not exist"):
+            driver.create(NAME, minimal_params(), CREDENTIALS)
+
+    def test_update_folds_the_digitalocean_message_into_the_error(self, driver, fake_urlopen):
+        url = firewall_url(firewall_id())
+        fake_urlopen.script("PUT", url, http_error(url, 422, {"message": "droplet does not exist"}))
+        with pytest.raises(urllib.error.HTTPError, match="droplet does not exist"):
+            driver.update(firewall_id(), driver_current(), minimal_params(), CREDENTIALS)
+
+    def test_a_malformed_error_body_does_not_crash_error_handling(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), http_error(firewalls_url(), 500, None))
+        with pytest.raises(urllib.error.HTTPError):
+            driver.create(NAME, minimal_params(), CREDENTIALS)
+
+
+class TestUpdateWithoutAName:
+    def test_a_state_entry_missing_name_fails_before_mutating(self, driver, fake_urlopen):
+        current = {k: v for k, v in driver_current().items() if k != "name"}
+        with pytest.raises(ValueError, match="no 'name'"):
+            driver.update(firewall_id(), current, minimal_params(), CREDENTIALS)
+        assert fake_urlopen.calls == []

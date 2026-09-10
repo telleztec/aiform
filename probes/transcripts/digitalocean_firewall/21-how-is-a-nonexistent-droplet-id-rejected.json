@@ -1,12 +1,12 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 324,
+ "elapsed_ms": 292,
  "note": "how is a nonexistent droplet id rejected",
  "prediction": {
   "status": 422
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:16.948831+00:00",
+ "probed_at": "2026-09-10T01:15:09.593514+00:00",
  "request": {
   "body": {
    "droplet_ids": [
@@ -23,7 +23,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-nodroplet-20260910T000916Z-068fbc",
+   "name": "aiform-system-test-fw-nodroplet-20260910T011509Z-dc7d6b",
    "outbound_rules": [],
    "tags": []
   },
@@ -37,7 +37,7 @@
   "body": {
    "id": "unprocessable_entity",
    "message": "droplet does not exist",
-   "request_id": "cb5bc3ac-c3c3-4e7d-8881-1a9f6c9260af"
+   "request_id": "0689e438-f405-45fb-80eb-64fcd552b3fe"
   },
   "status": 422
  },

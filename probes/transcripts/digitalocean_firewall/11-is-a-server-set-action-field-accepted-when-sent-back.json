@@ -1,13 +1,13 @@
 {
  "credentials_key": "DIGITALOCEAN_TOKEN",
- "elapsed_ms": 451,
+ "elapsed_ms": 346,
  "note": "is a server-set action field accepted when sent back",
  "prediction": {
   "notes": "accepted and echoed",
   "status": 202
  },
  "prediction_matched": true,
- "probed_at": "2026-09-10T00:09:13.646372+00:00",
+ "probed_at": "2026-09-10T01:15:05.913492+00:00",
  "request": {
   "body": {
    "droplet_ids": [],
@@ -23,7 +23,7 @@
      }
     }
    ],
-   "name": "aiform-system-test-fw-actionsent-20260910T000913Z-14afa8",
+   "name": "aiform-system-test-fw-actionsent-20260910T011505Z-528bbf",
    "outbound_rules": [],
    "tags": []
   },
@@ -36,9 +36,9 @@
  "response": {
   "body": {
    "firewall": {
-    "created_at": "2026-09-10T00:09:14Z",
+    "created_at": "2026-09-10T01:15:06Z",
     "droplet_ids": [],
-    "id": "9d646ace-3f70-42f0-839b-608cd857c757",
+    "id": "7bd16079-190c-47e6-be7f-17ec377bf4f3",
     "inbound_rules": [
      {
       "action": "allow",
@@ -51,7 +51,7 @@
       }
      }
     ],
-    "name": "aiform-system-test-fw-actionsent-20260910T000913Z-14afa8",
+    "name": "aiform-system-test-fw-actionsent-20260910T011505Z-528bbf",
     "outbound_rules": [],
     "pending_changes": [],
     "status": "succeeded",
