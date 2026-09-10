@@ -154,7 +154,7 @@ in here.
     `git rev-list --left-right --count main...origin/main`, and prefer
     `git grep <pattern> origin/main` over grepping the working tree.
   - *When coding and testing*, work in a dedicated worktree —
-    `git worktree add .claude/worktrees/<branch> -b <branch> origin/main`
+    `git worktree add --no-track .claude/worktrees/<branch> -b <branch> origin/main`
     — not in the main checkout. Each pass then starts from current
     `main` by construction; several passes can be in flight without one
     pass's half-finished tree breaking another's test run; and the main
@@ -163,8 +163,15 @@ in here.
     are both per-directory, so until you do, a fresh worktree has
     neither `DIGITALOCEAN_TOKEN` in the environment nor a
     `credentials.env` to fall back to. `config.resolve_credentials()`
-    fails cleanly in that state — a `RuntimeError` naming both the env
-    var and the file — so the cost is one wasted run, not a mystery.
+    then raises a `RuntimeError` naming both the env var and the file, so
+    the cost is one wasted run rather than a mystery. Two caveats worth
+    knowing: an ambient token exported globally would be inherited
+    instead, which is the failure `.envrc`'s own preamble exists to
+    prevent; and direnv does not fire in non-interactive shells, so an
+    agent's shell inherits whatever the session started with regardless
+    of `direnv allow`. `--no-track` keeps the new branch from taking
+    `origin/main` as its upstream, which would otherwise make
+    `git status` report ahead/behind against the wrong ref.
 - **CI**: a GitHub Actions workflow (`.github/workflows/tests.yml`) runs
   `pytest` on every PR. This turns "tests pass" from something someone
   remembers to check into something that blocks merge. It's a no-op

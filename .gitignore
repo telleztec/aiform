@@ -24,3 +24,10 @@ __pycache__/
 \#*\#
 .\#*
 *~
+
+# Worktrees, which PROCESS.md's "Supporting practices" tells contributors
+# to create here. Ignored locally on the author's machine via
+# .git/info/exclude, which does not travel -- so without this a fresh
+# clone following that instruction gets an untracked .claude/ and a
+# "adding embedded git repository" warning from `git add -A`.
+.claude/worktrees/
