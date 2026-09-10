@@ -1,0 +1,62 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 392,
+ "note": "is ports synthesized for an icmp rule with none given",
+ "prediction": {
+  "notes": "ports comes back as '0'",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T00:09:12.762037+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "protocol": "icmp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-icmp-20260910T000912Z-85654b",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T00:09:13Z",
+    "droplet_ids": [],
+    "id": "36d0286e-4c88-4bbd-a40a-eb8fb8f1e656",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "0",
+      "protocol": "icmp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-icmp-20260910T000912Z-85654b",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 9
+}

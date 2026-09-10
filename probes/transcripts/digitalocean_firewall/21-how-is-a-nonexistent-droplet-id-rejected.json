@@ -1,0 +1,45 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 324,
+ "note": "how is a nonexistent droplet id rejected",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T00:09:16.948831+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [
+    1
+   ],
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-nodroplet-20260910T000916Z-068fbc",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "droplet does not exist",
+   "request_id": "cb5bc3ac-c3c3-4e7d-8881-1a9f6c9260af"
+  },
+  "status": 422
+ },
+ "seq": 21
+}

@@ -1,0 +1,63 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 490,
+ "note": "how is the spelling all stored for ports",
+ "prediction": {
+  "notes": "stored as '0'",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T00:09:13.154720+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "all",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-portsall-20260910T000913Z-d6cc78",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T00:09:13Z",
+    "droplet_ids": [],
+    "id": "92737ae6-ded6-4dc4-8bc2-f445329cc0d4",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "0",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-portsall-20260910T000913Z-d6cc78",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 10
+}

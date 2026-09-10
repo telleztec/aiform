@@ -1,0 +1,63 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 327,
+ "note": "is an int port coerced or rejected",
+ "prediction": {
+  "notes": "a typed API should reject an int where a string is documented",
+  "status": 422
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-10T00:09:11.069431+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": 22,
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-intport-20260910T000911Z-8a93d5",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T00:09:11Z",
+    "droplet_ids": [],
+    "id": "ffe0ccca-6f82-4056-a221-7f2bdd1dbf34",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-intport-20260910T000911Z-8a93d5",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 4
+}

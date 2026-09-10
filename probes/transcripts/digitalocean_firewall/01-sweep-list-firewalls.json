@@ -1,0 +1,27 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 294,
+ "note": "sweep: list firewalls",
+ "prediction": null,
+ "prediction_matched": null,
+ "probed_at": "2026-09-10T00:10:10.590870+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/firewalls?per_page=200"
+ },
+ "response": {
+  "body": {
+   "firewalls": [],
+   "links": {},
+   "meta": {
+    "total": 0
+   }
+  },
+  "status": 200
+ },
+ "seq": 1
+}

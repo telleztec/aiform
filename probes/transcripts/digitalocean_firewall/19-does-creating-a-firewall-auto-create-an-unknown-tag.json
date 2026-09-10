@@ -1,0 +1,46 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 331,
+ "note": "does creating a firewall auto-create an unknown tag",
+ "prediction": {
+  "notes": "auto-created, as droplet create does",
+  "status": 202
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-10T00:09:16.380239+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-newtag-20260910T000916Z-3ae29a",
+   "outbound_rules": [],
+   "tags": [
+    "aiform-probe-tag-20260910T000916Z-f78a68"
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "tag aiform-probe-tag-20260910T000916Z-f78a68 does not exist",
+   "request_id": "90c81fe8-f987-4da5-91c6-7cefe1743d6a"
+  },
+  "status": 422
+ },
+ "seq": 19
+}

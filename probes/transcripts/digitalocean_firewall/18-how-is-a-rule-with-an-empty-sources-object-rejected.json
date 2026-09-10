@@ -1,0 +1,54 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 294,
+ "note": "how is a rule with an empty sources object rejected",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-10T00:09:16.084394+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "80",
+     "protocol": "tcp",
+     "sources": {}
+    }
+   ],
+   "name": "aiform-system-test-fw-emptysrc-20260910T000916Z-362a84",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T00:09:16Z",
+    "droplet_ids": [],
+    "id": "e2652b08-d03a-4c33-ad21-163e395ef6ab",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "80",
+      "protocol": "tcp",
+      "sources": {}
+     }
+    ],
+    "name": "aiform-system-test-fw-emptysrc-20260910T000916Z-362a84",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 18
+}

@@ -1,0 +1,30 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 423,
+ "note": "scope check: can this token read firewalls",
+ "prediction": {
+  "notes": "200 proves read scope; a 401/403 means reissue",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T00:09:09.896236+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/firewalls?per_page=1"
+ },
+ "response": {
+  "body": {
+   "firewalls": [],
+   "links": {},
+   "meta": {
+    "total": 0
+   }
+  },
+  "status": 200
+ },
+ "seq": 1
+}

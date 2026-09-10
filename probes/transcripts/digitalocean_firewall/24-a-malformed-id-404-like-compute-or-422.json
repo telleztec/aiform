@@ -1,0 +1,28 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 232,
+ "note": "a malformed id: 404 like compute, or 422",
+ "prediction": {
+  "notes": "compute 404s a malformed droplet id",
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T00:09:18.092371+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/firewalls/not-a-uuid"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "Firewall not found",
+   "request_id": "4ee160d1-6228-4dde-8355-f73a3b7682bf"
+  },
+  "status": 404
+ },
+ "seq": 24
+}
