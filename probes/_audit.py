@@ -59,10 +59,25 @@ def _quote(msg: str) -> str:
     return '"' + flattened.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def _field(value: Any) -> str:
+    """Render one field value.
+
+    Quoted whenever it contains whitespace or a quote, matching
+    specs/log.md's own key=value convention. Not cosmetic: an unquoted
+    value carrying a space could otherwise forge a second field, and one
+    carrying a newline could forge a whole line -- past the cites= and
+    verdict= checks, which look at the dict, not the rendered text.
+    """
+    rendered = str(value)
+    if rendered and not any(c.isspace() or c == '"' for c in rendered):
+        return rendered
+    return _quote(rendered)
+
+
 def format_line(step: str, fields: dict[str, Any], msg: str | None = None) -> str:
     stamp = datetime.datetime.now(datetime.UTC).strftime(TIMESTAMP_FORMAT)
     parts = [stamp, f"step={step}"]
-    parts += [f"{key}={value}" for key, value in fields.items()]
+    parts += [f"{key}={_field(value)}" for key, value in fields.items()]
     if msg:
         parts.append(f"msg={_quote(msg)}")
     return " ".join(parts)

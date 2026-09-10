@@ -26,10 +26,13 @@ creation is not implemented, and is not currently being built" — this
 spec does not build it, it specifies the loop that entry's target shape
 must execute.
 
-**Build status.** The loop and the probe harness are real and were used
-to build `drivers/digitalocean/firewall.py`. The audit log, the
-knowledge base, and every mechanism-2 integration below are **specified
-here and not yet built.**
+**Build status.** Built: the loop, the probe harness
+(`probes/_probe.py`), the audit log (`probes/_audit.py`, and one opened
+at `knowledge/drivers/digitalocean_firewall/`), and the firewall driver
+and system test that came out of them. **Not built**: `knowledge/`'s
+`INDEX.md`, `csp/`, `driver/` and `probing/` trees, `scripts/knowledge.py`,
+`scripts/probe_api.py`, `probes/_template.py`, and every mechanism-2
+integration below. Individual sections say which is which.
 
 ## Five sources, used additively
 
@@ -63,13 +66,27 @@ describes a rewrite-on-store, because from the provider's point of view
 nothing was violated.
 
 Measured, building one driver against DigitalOcean firewalls: **31
-probes, 7 contradicting their prediction** — where the predictions came
-from DigitalOcean's own published OpenAPI spec. Three contradictions
-were silent rewrites (an int port, an uppercase protocol, the spelling
-`"all"`). One was a field — `action` — that DigitalOcean adds to every
-rule and that appears nowhere in that schema. The schema got the driver
-90% right in minutes; the probes got the last 10% that decides whether
-it converges.
+probes, 7 whose HTTP status contradicted the prediction** (`04`, `05`,
+`08`, `12`, `18`, `19`, `20`) — where the predictions came from
+DigitalOcean's own published OpenAPI spec. Two were silent rewrites (an
+int port, an uppercase protocol); the rest were rejections the schema
+did not imply, including that a firewall with no rules is a 422 and that
+a referenced tag must already exist.
+
+**The status code is not where most of the value was, and the tooling
+should not be mistaken for measuring it.** `Probe.call()` compares only
+`predict["status"]`; `predict["notes"]` is free text and is recorded but
+never compared. Three of the most consequential findings therefore
+registered as *confirmed*: probe `02` predicted 202 and got 202 while
+its notes predicted `status: "waiting"` and got `"succeeded"`; the same
+probe revealed the undocumented `action` field; probe `10` predicted 202
+for `ports: "all"` and got 202 while the value was stored as `"0"`.
+A notes-level surprise has to be noticed by the person reading the
+transcript and written up as a finding — the `verdict=contradicted`
+count is a floor on the loop's yield, not a measure of it.
+
+The schema got the driver most of the way in minutes; the probes got the
+part that decides whether it converges.
 
 ## The time budget
 
@@ -79,9 +96,11 @@ nobody. This is a constraint on the loop, not an aspiration: every rule
 below that adds work has to earn it against this budget.
 
 The one measurement so far: `drivers/digitalocean/firewall.py` went from
-first probe to a green suite, through three review rounds, in **1h22m**
-(`knowledge/drivers/digitalocean_firewall/AUDIT.log`, first and last
-lines). That is inside the budget, but it is one driver on a familiar
+its first probe (`2026-09-10T00:09:09Z`, transcript `01`) to the last
+review round landing (`01:27:21Z`, commit `9855f9c`) in **1h18m**. Not
+the audit log's first and last lines — those span a later re-run and a
+later system-test session, and an earlier draft of this spec cited them
+as if they were the build. That is inside the budget, but it is one driver on a familiar
 CSP with an unusually convenient resource — free, unattached, no
 convergence to wait on. It is a floor, not a typical figure.
 
@@ -254,7 +273,14 @@ Rules that keep it auditable:
 - **Every `step=spec` line carries `cites=`**, or the claim is not
   allowed to say "verified".
 - **`verdict=` is only `contradicted` or `confirmed`**, so
-  `grep verdict=contradicted` is the finding list.
+  `grep verdict=contradicted` is the finding list. Only
+  `contradicted` is emitted today: a confirmation is recorded in the
+  transcript's `prediction_matched`, and writing a line per confirmed
+  probe would bury the findings in a file whose whole value is that it
+  is short.
+- **`step=learn` and `step=spec` are written by the person or agent
+  running the loop, not by the harness**, which emits only `recall` and
+  `probe`. The harness cannot know what a spec claim cites.
 - **Never a credential, never a full payload.** Evidence is a transcript
   reference; the payload lives there.
 - **Append-only.** A correction is a new line, never an edit — the
@@ -325,8 +351,9 @@ correct answer verified present in the prompt twice.
    `create → read → diff_attributes(read_output, params) == {}` is one
    executable property that catches every phantom-diff failure at once.
    It belongs alongside gate #1, not in a reviewer's judgement. This is
-   `PLAN.md` §10's driver-conformance item (issue #114); firewall is its
-   third data point.
+   issue #114 (a GitHub issue; `PLAN.md` carries no such item, and an
+   earlier draft wrongly attributed it there); firewall is its third
+   data point.
 5. **Make the probe session the interactive spine** of `aiform driver
    create`, per the approval table above.
 6. **Grade every generated claim.** A spec line either cites a

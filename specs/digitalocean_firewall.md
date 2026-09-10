@@ -148,10 +148,16 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   unknown tag fails 422 `"tag <name> does not exist"`, both in the
   firewall's own `tags` and inside a rule's `sources.tags` (`19-`,
   `20-`). This driver does **not** auto-create tags. Note this
-  contradicts droplet creation, which does auto-create — and it closes
-  the open question `specs/digitalocean_compute.md` left standing
-  ("the tag-must-exist-first behavior is read off DigitalOcean's
-  published OpenAPI responses, not observed live"). It is now observed.
+  contrasts with droplet *creation*, which does auto-create.
+
+  This does **not** settle the open question
+  `specs/digitalocean_compute.md` leaves standing, and an earlier draft
+  of this spec wrongly said it did. That question is about
+  `POST /v2/tags/{name}/resources` — *assigning* an existing tag to a
+  droplet — which no probe here touches. Different endpoint, different
+  operation. The two findings are related but not the same, and treating
+  a near-miss as a confirmation is the failure this whole process exists
+  to prevent.
 - **Unknown referents 422 with a readable message**: `"droplet does not
   exist"` (`21-`), `"load balancer does not exist"` (`22-`). Folded into
   the raised error by `_fold_do_error_into_exc`, as `domain.py` does.

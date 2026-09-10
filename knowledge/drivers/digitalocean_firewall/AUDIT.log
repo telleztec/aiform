@@ -27,3 +27,4 @@
 2026-09-11T00:40:36Z step=fix ref=create fixed=2 msg="rename the extra key off name; wrap everything after the POST in a rollback, mirroring domain.py"
 2026-09-11T00:52:00Z step=verify kind=system result=fail msg="call-count assertions assumed 0 Anthropic calls; measured 1 (intent parse) -- test_cli_domain.py is red on main for the same reason"
 2026-09-11T01:05:00Z step=verify kind=system result=pass tests=996 msg="both cases green live; 2 bugs found on first run, both invisible to unit tests"
+2026-09-11T01:20:00Z step=spec ref=edge/tags cites=19,20 msg="CORRECTION of the 00:15:49Z line: probes 19/20 do NOT settle specs/digitalocean_compute.md's open question, which is about POST /v2/tags/{name}/resources, a different endpoint"

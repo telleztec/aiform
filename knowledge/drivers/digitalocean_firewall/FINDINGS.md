@@ -23,8 +23,10 @@ rule needs two cases of the method paying off.
   `create()` must not poll (`02`).
 - A firewall must have at least one rule; both lists empty is 422 (`08`).
 - Referenced tags must pre-exist, in both `tags` and `sources.tags`
-  (`19`, `20`) — unlike droplet creation, which auto-creates. This
-  settles an open question in `specs/digitalocean_compute.md`.
+  (`19`, `20`) — unlike droplet creation, which auto-creates. Does
+  **not** settle `specs/digitalocean_compute.md`'s open question, which
+  is about `POST /v2/tags/{name}/resources` (assigning an existing tag
+  to a droplet) — a different endpoint no probe here touched.
 - A malformed id 404s exactly as an absent one does (`27`, `28`), so
   `read()` needs no separate 422 branch.
 - `PUT` is a whole-object replace: an omitted `tags` key is reset to `[]`

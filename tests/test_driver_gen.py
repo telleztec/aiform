@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from aiform import driver_gen, llm
+from aiform.config import PROVIDER_TOKEN_ENV_VARS
 from aiform.models import ResourceSpec
 
 VALID_DRIVER_SOURCE = """\
@@ -552,3 +553,28 @@ class TestGenerateDriver:
 class TestConstants:
     def test_max_draft_attempts_is_two(self):
         assert driver_gen.MAX_DRAFT_ATTEMPTS == 2
+
+
+class TestNonDriverSpecResidualIsComplete:
+    """The parametrized cases above pin `_is_driver_spec`'s logic against
+    a tmp specs dir, which cannot notice a NEW non-driver spec landing in
+    the real `specs/`. This pins the repo invariant instead: any spec
+    beginning with a real provider name must either have a driver behind
+    it or be declared a non-driver spec."""
+
+    def test_every_provider_prefixed_spec_is_a_driver_or_declared(self):
+        repo = Path(driver_gen.__file__).resolve().parents[1]
+        for spec_path in sorted((repo / "specs").glob("*.md")):
+            name = spec_path.stem
+            for provider in PROVIDER_TOKEN_ENV_VARS:
+                if not name.startswith(f"{provider}_"):
+                    continue
+                resource = name[len(provider) + 1 :]
+                has_driver = (repo / "drivers" / provider / f"{resource}.py").is_file()
+                declared = spec_path.name in driver_gen.NON_DRIVER_SPEC_NAMES
+                assert has_driver or declared, (
+                    f"{spec_path.name} looks like a driver spec for "
+                    f"({provider}, {resource}) but drivers/{provider}/{resource}.py does not "
+                    "exist -- add it to driver_gen.NON_DRIVER_SPEC_NAMES, or draft_driver() "
+                    "will paste it into a generation prompt as authoritative ground truth"
+                )

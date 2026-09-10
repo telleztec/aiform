@@ -354,7 +354,7 @@ def sweep(probe: Probe) -> int:
 
 def main(argv=None) -> int:
     args = base_arg_parser(__doc__).parse_args(argv)
-    with Probe(SESSION, mutate=args.mutate, dry_run=args.dry_run) as probe:
+    with Probe(SESSION, mutate=args.mutate, dry_run=args.dry_run, audit=not args.sweep) as probe:
         if args.sweep:
             n = sweep(probe)
             print(f"\n{n} leftover firewall(s)" + (" -- investigate" if n else ""))

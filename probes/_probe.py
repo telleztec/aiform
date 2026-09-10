@@ -94,10 +94,22 @@ class Recorded:
 
 
 class Probe:
-    def __init__(self, session: str, *, mutate: bool = False, dry_run: bool = False):
+    def __init__(
+        self,
+        session: str,
+        *,
+        mutate: bool = False,
+        dry_run: bool = False,
+        audit: bool = True,
+    ):
         self.session = session
         self.mutate = mutate
         self.dry_run = dry_run
+        # A --sweep run is housekeeping, not a session: it would
+        # otherwise append a recall line and a probe-count line covering
+        # its own list/delete calls to a file the spec calls a durable,
+        # one-line-per-decision record of how a driver was built.
+        self.auditing = audit
         self.dir = TRANSCRIPTS_ROOT / session
         self._seq = 0
         self._cleanups: list[tuple[str, str]] = []
@@ -113,7 +125,7 @@ class Probe:
             )
 
     def __enter__(self) -> "Probe":
-        if not self.dry_run:
+        if not self.dry_run and self.auditing:
             self.dir.mkdir(parents=True, exist_ok=True)
             # knowledge.py recall() does not exist yet, so this records
             # the honest zero rather than implying a lookup happened.
@@ -136,12 +148,13 @@ class Probe:
             return
         # One line per decision, not per action: individual probes are
         # summarised here, and only contradictions got their own line.
-        self.audit.append(
-            "probe",
-            count=self._seq,
-            contradicted=len(self.contradictions),
-            msg=f"session {self.session}",
-        )
+        if self.auditing:
+            self.audit.append(
+                "probe",
+                count=self._seq,
+                contradicted=len(self.contradictions),
+                msg=f"session {self.session}",
+            )
         for method, path in reversed(self._cleanups):
             try:
                 status, _ = self._send(method, path, None)
@@ -211,7 +224,7 @@ class Probe:
         flag = "" if matched is None else ("  [as predicted]" if matched else "  [CONTRADICTED]")
         print(f"[{seq:02d}] {method} {path} -> {status}  {note}{flag}")
 
-        if matched is False and record:
+        if matched is False and record and self.auditing:
             # Only contradictions earn their own audit line -- they are
             # the findings, and `grep verdict=contradicted` is the list.
             self.audit.append(

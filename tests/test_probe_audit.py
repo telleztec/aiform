@@ -100,3 +100,29 @@ class TestAudit:
         audit = Audit(tmp_path / "AUDIT.log")
         with pytest.raises(ValueError, match="step"):
             audit.append("ponder", msg="hmm")
+
+
+class TestFieldValuesCannotForgeStructure:
+    """The cites= and verdict= rules inspect the fields dict, so a value
+    that renders into extra structure would slip past them."""
+
+    def test_a_space_in_a_value_cannot_forge_a_second_field(self):
+        line = format_line("impl", {"ref": "x verdict=contradicted"})
+        assert (
+            "verdict=contradicted"
+            not in line.replace('\\"', "")[: line.index("ref=")]
+            + line[line.index("ref=") :].split(" ", 1)[0]
+        )
+        assert LINE.match(line), line
+
+    def test_a_newline_in_a_value_cannot_forge_a_line(self):
+        line = format_line("impl", {"ref": "x\nstep=spec"})
+        assert "\n" not in line
+
+    def test_an_ordinary_value_is_not_quoted(self):
+        assert "ref=02" in format_line("probe", {"ref": "02"})
+
+    def test_a_quote_in_a_value_is_escaped(self):
+        line = format_line("impl", {"ref": 'a"b'})
+        assert r"\"" in line
+        assert LINE.match(line), line
