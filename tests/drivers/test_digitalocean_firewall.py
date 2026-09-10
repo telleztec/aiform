@@ -22,7 +22,6 @@ from email.message import Message
 
 import pytest
 
-from aiform.compare import unordered_equal
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
 from drivers.digitalocean.firewall import Driver
@@ -258,9 +257,9 @@ class TestZeroDiffInvariant:
         # included, which DigitalOcean would otherwise have added). Using
         # its request body as params and its response body as what read()
         # sees is what makes this a genuine round-trip. Comparing read()'s
-        # projection of a response against that same response -- which an
-        # earlier version of this test did -- proves nothing: a projection
-        # bug would be present on both sides and cancel out.
+        # projection of a response against that same response proves
+        # nothing: a projection bug is present on both sides and cancels
+        # out.
         sent = transcripts.request_body(SESSION, "11-")
         got = transcripts.response_body(SESSION, "11-")
         params = {key: value for key, value in sent.items() if key != "name"}
@@ -278,18 +277,28 @@ class TestZeroDiffInvariant:
         params = {key: value for key, value in sent.items() if key != "name"}
         driver._validate_params(params)
 
-    def test_read_output_does_not_diff_for_the_baseline_firewall(self, driver, fake_urlopen):
-        script_read(fake_urlopen)
-        current = driver.read(firewall_id(), CREDENTIALS)
-        assert (
-            diff_attributes(current, minimal_params(), unordered_fields=driver.UNORDERED_FIELDS)
-            == {}
-        )
+    def test_rule_order_alone_is_not_a_diff(self, driver, fake_urlopen):
+        # Through the driver's own UNORDERED_FIELDS, not unordered_equal
+        # directly: asserting on the helper passes unchanged even if the
+        # declaration is empty, which is the thing under test.
+        second = {
+            "protocol": "tcp",
+            "ports": "80",
+            "action": "allow",
+            "sources": {"addresses": ["0.0.0.0/0"]},
+        }
+        params = minimal_params()
+        params["inbound_rules"] = [params["inbound_rules"][0], second]
+        payload = created_payload()
+        payload["firewall"]["inbound_rules"] = [
+            second,
+            payload["firewall"]["inbound_rules"][0],
+        ]
+        fake_urlopen.script("GET", firewall_url(firewall_id()), FakeHTTPResponse(200, payload))
 
-    def test_rule_order_alone_is_not_a_diff(self, driver):
-        a = {"protocol": "tcp", "ports": "22", "action": "allow", "sources": {}}
-        b = {"protocol": "tcp", "ports": "80", "action": "allow", "sources": {}}
-        assert unordered_equal([a, b], [b, a])
+        current = driver.read(firewall_id(), CREDENTIALS)
+
+        assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
 
 
 class TestUpdate:
@@ -542,6 +551,34 @@ class TestLoggingUnderAConfiguredHandler:
         record = next(r for r in caplog.records if r.name.endswith("digitalocean.firewall"))
         assert record.firewall_name == NAME
         assert record.id == firewall_id()
+
+
+class TestNestedTargetListOrder:
+    """`unordered_equal` is top-level only -- a rule is compared through
+    `canonical_key()`, which serializes any list nested inside it
+    positionally. So `UNORDERED_FIELDS` makes rule *order* free but does
+    nothing for the order of `sources.addresses` inside a rule, and
+    DigitalOcean is under no obligation to return one as written (its
+    Terraform provider models all five target keys as sets)."""
+
+    def test_a_reordered_nested_list_from_the_api_is_not_a_diff(self, driver, fake_urlopen):
+        params = minimal_params()
+        params["inbound_rules"][0]["sources"] = {"addresses": ["0.0.0.0/0", "10.0.0.0/8"]}
+        payload = created_payload()
+        payload["firewall"]["inbound_rules"][0]["sources"] = {
+            "addresses": ["10.0.0.0/8", "0.0.0.0/0"]
+        }
+        fake_urlopen.script("GET", firewall_url(firewall_id()), FakeHTTPResponse(200, payload))
+
+        current = driver.read(firewall_id(), CREDENTIALS)
+
+        assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
+
+    def test_an_unsorted_nested_list_is_rejected_naming_the_sorted_spelling(self, driver):
+        params = minimal_params()
+        params["inbound_rules"][0]["sources"] = {"addresses": ["10.0.0.0/8", "0.0.0.0/0"]}
+        with pytest.raises(ValueError, match=r"sorted.*'0\.0\.0\.0/0'"):
+            driver.create(NAME, params, CREDENTIALS)
 
 
 class TestCreateRollsBackAfterTheResourceExists:

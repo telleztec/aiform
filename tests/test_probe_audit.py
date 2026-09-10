@@ -34,7 +34,8 @@ class TestLineFormat:
     def test_timestamp_is_whole_second_utc(self):
         # Same %Y-%m-%dT%H:%M:%SZ convention as specs/log.md, so the two
         # records can be read side by side.
-        assert format_line("impl", {}).split(" ")[0].endswith("Z")
+        stamp = format_line("impl", {}).split(" ")[0]
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", stamp), stamp
 
     def test_fields_keep_the_order_given(self):
         line = format_line("review", {"round": 1, "model": "fable", "findings": 10})
@@ -96,6 +97,28 @@ class TestAudit:
             audit.append("spec", ref="behavior/create", msg="create() does not poll")
         audit.append("spec", ref="behavior/create", cites="02", msg="ok")
 
+    def test_conf_must_be_a_band_anchor(self, tmp_path):
+        # A value between the anchors would imply a precision the
+        # judgement does not have -- specs/driver_creation.md's
+        # Confidence rubric fixes five and only five.
+        audit = Audit(tmp_path / "AUDIT.log")
+        with pytest.raises(ValueError, match="conf must be one of"):
+            audit.append("probe", ref="02", conf=73)
+
+    def test_each_band_anchor_is_accepted(self, tmp_path):
+        audit = Audit(tmp_path / "AUDIT.log")
+        for anchor in (10, 40, 60, 80, 95):
+            assert f"conf={anchor}" in audit.append("impl", ref="create", conf=anchor)
+
+    def test_a_step_that_changes_nothing_known_may_not_claim_confidence(self, tmp_path):
+        # test/review/fix record work done, not knowledge gained. Letting
+        # them carry conf= would let the column climb on a pass that
+        # learned nothing, which is exactly the red flag it exists to show.
+        audit = Audit(tmp_path / "AUDIT.log")
+        for step in ("test", "review", "fix"):
+            with pytest.raises(ValueError, match="may not carry conf="):
+                audit.append(step, conf=60)
+
     def test_rejects_an_unknown_step(self, tmp_path):
         audit = Audit(tmp_path / "AUDIT.log")
         with pytest.raises(ValueError, match="step"):
@@ -107,10 +130,9 @@ class TestFieldValuesCannotForgeStructure:
     that renders into extra structure would slip past them."""
 
     def test_a_space_in_a_value_cannot_forge_a_second_field(self):
-        # Asserted on the rendered text, not a slice of it: an earlier
-        # version sliced to the first whitespace-delimited token and so
-        # passed against the very unquoted renderer it was written to
-        # catch.
+        # Asserted on the rendered text, not a slice of it: slicing to
+        # the first whitespace-delimited token passes against the very
+        # unquoted renderer this is written to catch.
         line = format_line("impl", {"ref": "x verdict=contradicted"})
         assert line.endswith('ref="x verdict=contradicted"'), line
 

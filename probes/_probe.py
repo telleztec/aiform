@@ -21,6 +21,7 @@ import os
 import re
 import secrets
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -61,7 +62,11 @@ class _RejectRedirects(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise ProbeError(f"refused a {code} redirect to {newurl!r} on a token-bearing request")
+        # Host only. A Location echoing the token in its query string or
+        # its userinfo would otherwise land in a terminal traceback --
+        # the one place this class's own refusal cannot protect.
+        host = urllib.parse.urlsplit(newurl).hostname or "<unparseable>"
+        raise ProbeError(f"refused a {code} redirect to host {host!r} on a token-bearing request")
 
 
 _OPENER = urllib.request.build_opener(_RejectRedirects)

@@ -366,7 +366,7 @@ class TestDraftDriver:
         assert "Real driver spec." in content
         assert "authoritative" in content.lower()
 
-    def test_ignores_collision_with_a_reserved_module_spec_filename(
+    def test_ignores_collision_with_a_module_spec_filename(
         self, prompts_dir: Path, specs_dir: Path
     ):
         # provider="driver", resource="gen" would otherwise resolve to

@@ -47,6 +47,16 @@ STEPS = (
 # a third spelling would silently hide findings.
 VERDICTS = ("confirmed", "contradicted")
 
+# specs/driver_creation.md's Confidence rubric. Five anchors and nothing
+# between them: the score is a judgement on a five-point ladder, and a
+# value like 73 would read as a measurement that no step produces.
+CONF_ANCHORS = (10, 40, 60, 80, 95)
+
+# Steps that record work rather than knowledge. Letting them carry conf=
+# would let the column climb on a pass that learned nothing -- the exact
+# red flag reading that column down the file is meant to expose.
+STEPS_WITHOUT_CONF = ("test", "review", "fix")
+
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -98,6 +108,15 @@ class Audit:
         verdict = fields.get("verdict")
         if verdict is not None and verdict not in VERDICTS:
             raise ValueError(f"verdict must be one of {list(VERDICTS)}, got {verdict!r}")
+
+        conf = fields.get("conf")
+        if conf is not None:
+            if conf not in CONF_ANCHORS:
+                raise ValueError(f"conf must be one of {list(CONF_ANCHORS)}, got {conf!r}")
+            if step in STEPS_WITHOUT_CONF:
+                raise ValueError(
+                    f"a step={step} entry may not carry conf=; it records work, not knowledge"
+                )
 
         # A spec claim with no transcript behind it is exactly the
         # failure this process exists to prevent, so it cannot be

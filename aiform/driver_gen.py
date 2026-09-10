@@ -33,12 +33,6 @@ SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 # with a real provider name: driver_gen, driver_creation, merge_gate,
 # system_test, unordered_fields, resource_tagging, run_system_tests.
 #
-# An earlier version was a hand-maintained set holding exactly one entry,
-# with a comment asserting entries were needed only for an aiform/*.py
-# module whose own name contains an underscore. That was wrong twice
-# over: it left six non-driver specs unguarded, and it missed the case
-# below entirely.
-#
 # NON_DRIVER_SPEC_NAMES is the residual the derived check cannot see: a
 # spec that DOES begin with a real provider name but is not a driver's
 # acceptance criteria. Add an entry only for that case.

@@ -628,9 +628,9 @@ def list_domains(token: str) -> list[dict]:
     and are deliberately re-implemented rather than imported, for the
     same reason the rest of these helpers are: this is the backstop, and
     it must not depend on the code it backs up. Re-implementing a
-    security guard means re-implementing *all* of it -- an earlier
-    version of this function copied the pagination and silently dropped
-    both, which is a token-exfiltration path, not a style nit.
+    security guard means re-implementing *all* of it: copying the
+    pagination while dropping either is a token-exfiltration path, not a
+    style nit.
     """
     domains: list[dict] = []
     url = f"{DO_API_BASE}/domains?per_page=200"
@@ -971,11 +971,10 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     # Every *transient* failure here warns rather than raises: this is a
     # best-effort backstop for a leak that has already happened, and it
     # must never be the thing that fails an otherwise-passing run. That
-    # applies to the per-zone DELETE as much as to the listing -- an
-    # earlier version guarded the delete for HTTPError only, so a socket
-    # timeout on one DELETE raised out of the fixture and aborted the
-    # rest of the sweep, which is exactly the promise this docstring
-    # makes and that version broke.
+    # applies to the per-zone DELETE as much as to the listing: guarding
+    # it for HTTPError alone lets a socket timeout on one DELETE raise
+    # out of the fixture and abort the rest of the sweep, breaking the
+    # promise this docstring makes.
     #
     # Two things deliberately DO raise, and are not in
     # _SWEEP_TRANSIENT_ERRORS: list_domains()'s refusal to follow an

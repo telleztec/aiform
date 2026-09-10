@@ -47,23 +47,21 @@ another**, and reaching for a later one before an earlier one is waste:
 | **LLM review** | minutes | diff-level errors: tautological tests, overclaims, unreachable branches | what the API actually does |
 | **System test** | minutes, real resources | integration through the CLI, the zero-diff invariant end to end | the individual behaviors above, cheaply |
 
-**The documented signature is what makes probing cheap.** A prediction
-written from the OpenAPI schema is a *good* prediction, and a good
-prediction is what makes a contradiction informative. Probing without
-the documented shape in hand means enumerating an API blind, which is
-both slower and less accurate. Docs generate the hypotheses; probing
-tests the ones that matter; the knowledge base remembers which ones ever
-failed, so the next driver stops asking them.
+**The documented signature is what makes probing cheap; probing is what
+makes the signature trustworthy.** A prediction written from the OpenAPI
+schema is a good prediction, and only a good prediction makes a
+contradiction informative — probing without the documented shape in hand
+is enumerating an API blind. Docs generate the hypotheses, probes test
+the ones that matter, and the knowledge base remembers which ever failed
+so the next driver stops asking.
 
-What probing adds that the documented signature structurally cannot is
-narrow and specific: **what the API does but does not say.**
-`aiform/planner.py`'s `diff_attributes()` compares `read()`'s output
-against the user's raw `params` with no hook for a driver to normalize
-either side, so any value a CSP silently rewrites on store is a
-**permanent diff** — and a permanent diff permanently defeats the
-zero-LLM-call short-circuit for that resource. No published schema
-describes a rewrite-on-store, because from the provider's point of view
-nothing was violated.
+What probing adds is narrow and specific: **what the API does but does
+not say.** No published schema describes a rewrite-on-store, because
+from the provider's point of view nothing was violated — and
+`diff_attributes()` compares `read()`'s output against the user's raw
+`params` with no hook to normalize either side, so a silent rewrite is a
+**permanent diff**, and a permanent diff permanently defeats the
+zero-LLM-call short-circuit for that resource.
 
 Measured, building one driver against DigitalOcean firewalls: **31
 probes, 7 whose HTTP status contradicted the prediction** — where the
@@ -76,24 +74,16 @@ fall into three kinds, and the split matters more than the count:
 | rejected where the schema implied acceptance | `08`, `19`, `20` | a firewall with no rules is a 422 |
 | accepted where the schema implied rejection | `12`, `18` | `action: "deny"` is stored; an empty `sources: {}` is allowed |
 
-Two earlier drafts of this paragraph got that taxonomy wrong — first by
-naming probes that had matched on status, then by calling `12` and `18`
-rejections when both returned 202. Both errors were caught by review
-rather than by the loop, which is the point Edge cases makes below.
-
 **The status code is not where most of the value was, and the tooling
 should not be mistaken for measuring it.** `Probe.call()` compares only
-`predict["status"]`; `predict["notes"]` is free text and is recorded but
-never compared. Three of the most consequential findings therefore
-registered as *confirmed*: probe `02` predicted 202 and got 202 while
-its notes predicted `status: "waiting"` and got `"succeeded"`; the same
-probe revealed the undocumented `action` field. (Probe `10` is *not* a
-third example, though an earlier draft offered it as one: its notes
-correctly predicted that `"all"` would be stored as `"0"`, so nothing
-there went unnoticed.)
-A notes-level surprise has to be noticed by the person reading the
-transcript and written up as a finding — the `verdict=contradicted`
-count is a floor on the loop's yield, not a measure of it.
+`predict["status"]`; `predict["notes"]` is recorded but never compared,
+so a probe can match on status and still overturn a belief. Probe `02`
+is the example: it predicted 202 and got 202, while its notes predicted
+`status: "waiting"` and got `"succeeded"` — and the same response
+carried the undocumented `action` field. A notes-level surprise has to
+be caught by whoever reads the transcript and written up as a finding,
+so the `verdict=contradicted` count is a floor on the loop's yield, not
+a measure of it.
 
 The schema got the driver most of the way in minutes; the probes got the
 part that decides whether it converges.
@@ -111,12 +101,12 @@ its first probe to the last review round landing in **1h18m**
 to `01:27:21Z`, commit `9855f9c`). The commit matters: `ede2694`
 re-recorded every transcript, so transcript `01` at HEAD carries a later
 stamp, and citing it without the commit sends a reader to the wrong
-number. Not
-the audit log's first and last lines — those span a later re-run and a
-later system-test session, and an earlier draft of this spec cited them
-as if they were the build. That is inside the budget, but it is one driver on a familiar
-CSP with an unusually convenient resource — free, unattached, no
-convergence to wait on. It is a floor, not a typical figure.
+number. The audit log's first and last lines are the wrong bracket too —
+they span a later re-run and a later system-test session.
+
+That is inside the budget, but it is one driver on a familiar CSP with
+an unusually convenient resource — free, unattached, no convergence to
+wait on. It is a floor, not a typical figure.
 
 Concretely:
 
@@ -234,6 +224,58 @@ spec-first process, and are where the value is.
    and confirm the driver reproduces the transcript. Then promote any
    finding that generalizes into `knowledge/`.
 
+### Confidence
+
+Every step carries a **confidence score** for each claim the driver
+rests on: how far the current model of this resource is believed to
+match reality. Like `step=spec` and `step=learn`, and unlike anything
+the harness emits on its own, it is assigned by whoever runs the loop.
+The harness cannot know how much a claim deserves to be believed.
+
+Five bands, each named for the evidence that reaches it and recorded as
+that band's anchor value:
+
+| Score | Band | Reached when |
+|---|---|---|
+| 10 | `guessed` | neither documentation nor a probe settles it; the behavior is assumed |
+| 40 | `documented` | the schema states it, and nothing has tested whether it is true |
+| 60 | `observed` | a live probe agrees with the prediction, or a contradiction has been encoded and re-probed |
+| 80 | `reproduced` | the driver reproduces the transcript, with unit tests loading their payloads from it |
+| 95 | `converged` | the live system test passes and its second run is a zero-diff no-op |
+
+Only the transitions carry meaning. The numbers exist so a score can be
+compared across passes and nothing more — **do no arithmetic on them**,
+and do not record a value between the anchors, which would imply a
+precision the judgement does not have.
+
+What each step may move, and on what evidence:
+
+| Step | Moves it to | Rubric |
+|---|---|---|
+| 0 Recall | the starting band | an entry that settles the question starts at `documented`; an entry whose `traps` name this behavior starts at `guessed`, however clear the schema is |
+| 1 Question and predict | `documented` | the schema answers fully and unambiguously. Silent, partial or ambiguous leaves it `guessed` — and that gap is what earns the probe its call |
+| 2 Probe | nothing | issuing a request is not evidence. Only comparing its result is |
+| 3 Compare | `observed`, or down to `guessed` | agreement raises it; a contradiction **lowers** it, because the model that produced the prediction was wrong. It returns only once step 4 encodes the corrected behavior |
+| 4 Encode into the spec | holds | a claim without `cites=` may not exceed `documented`, whatever was observed |
+| 5 Failing test | nothing | red is a property of the test, not of the knowledge |
+| 6 Implement | `reproduced` | suite green, with the mock payload loaded from the transcript |
+| 7 Verify, consolidate | `converged` | the re-run probe reproduces the transcript **and** the system test's second run is a no-op |
+
+**A pass that moves no score is the red flag.** If a full turn through
+steps 1–3 leaves every claim in the band it started in, the probes are
+not buying information — the questions are either ones the schema
+already settled or ones about something other than this driver's
+surface. Change the questions rather than spending more budget. A loop
+that cannot move a score is the shape a runaway budget takes, and it is
+the one failure the time budget above cannot catch by itself, because
+each individual pass looks affordable.
+
+The corollary is that documentation quality is visible before any probe
+runs. A resource whose schema is complete starts at `documented` across
+the board and needs probes only where the knowledge base flags this CSP
+as unreliable; a resource whose schema is thin starts at `guessed` and
+earns its probes.
+
 ### Which probes are legitimate
 
 Probe **behavior** — deterministic, and one observation settles it
@@ -243,6 +285,16 @@ resource is what the next driver recalls instead of re-deriving. But
 "freely" is bounded by the budget above: the surface worth probing is
 the driver's own, and a question the documented signature already
 settles is not worth a call.
+
+Probe **dependency edges** — a relationship between resources the
+documentation does not state, or that the implementation does not make
+obvious. These earn a call even when the driver's own fields are all
+settled, because an undocumented precondition does not surface at
+validation time: it surfaces at apply time, as a runtime failure against
+a resource the user has already been told is being created. Probes `19`
+and `20` are the in-repo instance — a referenced tag must already exist,
+which DigitalOcean documents nowhere, and which is the opposite of
+droplet creation, where the same API auto-creates it.
 
 Refuse a probe whose **passing** result would be read as a guarantee it
 cannot support. The type is a *stability property* — "is this
@@ -265,18 +317,34 @@ constant on every line, and lives in its own file rather than
 `.aiform/logs/`: this is a durable record of how a driver came to exist,
 not runtime diagnostics for one command.
 
+**A line that asserts something about the resource carries `conf=`**,
+the band anchor from the rubric above: `recall`, `probe`, `spec`,
+`impl`, `verify` and `learn` do. `test`, `review` and `fix` do not —
+none of them changes what is known, only what is written or fixed.
+Reading the `conf=` column down the file is how a reviewer sees at a
+glance whether the loop converged or spun, which is the red flag above
+made visible without re-reading every message.
+
 ```
-2026-09-09T23:58:00Z step=recall  provider=digitalocean skipped=0 traps=0 msg="no prior entries"
-2026-09-10T00:05:12Z step=probe   ref=02 verdict=contradicted msg="create unattached -> 202 but status=succeeded, not waiting"
-2026-09-10T00:05:14Z step=probe   ref=04 verdict=contradicted msg="ports 22 accepted, stored as \"22\""
-2026-09-10T00:31:00Z step=spec    ref=behavior/create cites=02 msg="create() does not poll"
+2026-09-09T23:58:00Z step=recall  provider=digitalocean skipped=0 traps=0 conf=10 msg="no prior entries"
+2026-09-10T00:05:12Z step=probe   ref=02 verdict=contradicted conf=10 msg="create unattached -> 202 but status=succeeded, not waiting"
+2026-09-10T00:05:14Z step=probe   ref=04 verdict=contradicted conf=10 msg="ports 22 accepted, stored as \"22\""
+2026-09-10T00:31:00Z step=spec    ref=behavior/create cites=02 conf=60 msg="create() does not poll"
 2026-09-10T00:40:11Z step=test    ref=test_does_not_poll state=red
-2026-09-10T00:52:03Z step=impl    ref=create state=green tests=32
+2026-09-10T00:52:03Z step=impl    ref=create state=green tests=32 conf=80
 2026-09-10T01:10:00Z step=review  round=1 model=fable findings=10
 2026-09-10T01:35:00Z step=fix     round=1 fixed=10 msg="nested target types, required fields, sweep age floor"
-2026-09-10T02:05:00Z step=verify  kind=live result=pass msg="zero-diff after create and update"
-2026-09-10T02:10:00Z step=learn   promoted=2 msg="csp/digitalocean/scalar-coercion, probing/reset-vs-unchanged"
+2026-09-10T02:05:00Z step=verify  kind=live result=pass conf=95 msg="zero-diff after create and update"
+2026-09-10T02:10:00Z step=learn   promoted=2 conf=95 msg="csp/digitalocean/scalar-coercion, probing/reset-vs-unchanged"
 ```
+
+A contradicted probe records `conf=10`, not the band it held before: the
+prediction's model was wrong, so what the schema said is no longer
+evidence for anything. The `spec` line that follows is where it climbs
+back, and only because that line cites the transcript.
+
+`knowledge/drivers/digitalocean_firewall/AUDIT.log` predates this field
+and does not carry it. It is append-only, so it is not backfilled.
 
 Rules that keep it auditable:
 
@@ -369,9 +437,8 @@ correct answer verified present in the prompt twice.
    `create → read → diff_attributes(read_output, params) == {}` is one
    executable property that catches every phantom-diff failure at once.
    It belongs alongside gate #1, not in a reviewer's judgement. This is
-   issue #114 (a GitHub issue; `PLAN.md` carries no such item, and an
-   earlier draft wrongly attributed it there); firewall is its third
-   data point.
+   issue #114 (a GitHub issue; `PLAN.md` carries no such item); firewall
+   is its third data point.
 5. **Make the probe session the interactive spine** of `aiform driver
    create`, per the approval table above.
 6. **Grade every generated claim.** A spec line either cites a

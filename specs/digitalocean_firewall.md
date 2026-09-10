@@ -125,9 +125,26 @@ otherwise be coerced on store exactly as an int port is. An empty target
 sub-list (`{"addresses": []}`) is refused for the same reason an empty
 target object is.
 
+An **unsorted** target list is rejected for a different reason, and it is
+not about rewriting on store. `unordered_equal()` is top-level only: a
+rule reaches it through `canonical_key()`, which serializes any list
+nested inside it positionally (`specs/unordered_fields.md`). So
+`UNORDERED_FIELDS` frees the order of `inbound_rules` but not the order
+of `sources.addresses` *within* a rule, and DigitalOcean does not promise
+to return one as written — its own Terraform provider models all five
+target keys as sets. Since `diff_attributes()` reads `params` raw, the
+driver cannot sort that side; it requires the written list sorted, naming
+the sorted spelling, and `_project_rule()` sorts what it reads back. Both
+sides canonical is what makes the comparison converge at all.
+
 Not rejected, because DigitalOcean stores them verbatim: a bare address
 `"1.2.3.4"` is **not** expanded to `/32` (`06-`), and an IPv6 range is
 returned unchanged (`07-`).
+
+`ports: ""` is rejected as a separate case: it is a `str` and it is not
+`"all"`, so every other check passes it through. What DigitalOcean stores
+for it is **unprobed** — probe `09` establishes only that an *omitted*
+icmp `ports` becomes `"0"`. Rejecting is the conservative reading.
 
 ### `action` is required on every rule
 
@@ -151,8 +168,7 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   contrasts with droplet *creation*, which does auto-create.
 
   This does **not** settle the open question
-  `specs/digitalocean_compute.md` leaves standing, and an earlier draft
-  of this spec wrongly said it did. That question is about
+  `specs/digitalocean_compute.md` leaves standing. That question is about
   `POST /v2/tags/{name}/resources` — *assigning* an existing tag to a
   droplet — which no probe here touches. Different endpoint, different
   operation. The two findings are related but not the same, and treating

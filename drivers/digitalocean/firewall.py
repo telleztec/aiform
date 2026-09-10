@@ -89,7 +89,10 @@ class Driver(ResourceDriver):
     # write, and plain != would then diff forever. Declared as an
     # assumption with its reasoning rather than measured -- a single live
     # observation cannot establish order-stability
-    # (specs/unordered_fields.md).
+    # (specs/unordered_fields.md). This covers each field's own order
+    # only. A list nested inside a rule is compared positionally however
+    # this is declared, which is why _validate_target_items() requires
+    # one sorted and _project_rule() sorts what it reads back.
     UNORDERED_FIELDS: list[str] = ["inbound_rules", "outbound_rules", "droplet_ids", "tags"]
 
     # --- HTTP -------------------------------------------------------
@@ -204,14 +207,23 @@ class Driver(ResourceDriver):
         # with 'sources' is BOTH missing 'destinations' and carrying an
         # unexpected key, and the generic "missing destinations" message
         # would not name what the user actually did wrong.
-        other = _TARGET_KEY_FOR["outbound_rules" if target_key == "sources" else "inbound_rules"]
+        other = "destinations" if target_key == "sources" else "sources"
         if other in rule:
             raise ValueError(
                 f"{where} has {other!r}; an entry in {list_key!r} must use {target_key!r} instead"
             )
         missing = allowed - set(rule)
         if missing:
-            raise ValueError(f"{where} is missing required field(s) {sorted(missing)}")
+            hint = ""
+            if "action" in missing:
+                # The only required field absent from DigitalOcean's own
+                # published schema, so "missing 'action'" reads as a bug
+                # in aiform rather than something the user must write.
+                hint = (
+                    ' -- write "action": "allow"; DigitalOcean adds this to every rule '
+                    "it returns, so a rule without it can never equal one read back"
+                )
+            raise ValueError(f"{where} is missing required field(s) {sorted(missing)}{hint}")
         unexpected = set(rule) - allowed
         if unexpected:
             raise ValueError(f"{where} has unsupported field(s) {sorted(unexpected)}")
@@ -238,6 +250,10 @@ class Driver(ResourceDriver):
             raise ValueError(
                 f"{where}: 'ports' must be a str -- DigitalOcean stores it that "
                 f"way; write {str(ports)!r} instead of {ports!r}"
+            )
+        if not ports:
+            raise ValueError(
+                f"{where}: 'ports' is empty; write '0' for every port, or a port or range"
             )
         if ports.lower() == "all":
             # Verified live: "all" is stored as "0".
@@ -296,6 +312,19 @@ class Driver(ResourceDriver):
         # the same bug the top-level scalar checks prevent, one level down.
         expected = int if key == "droplet_ids" else str
         self._reject_wrong_scalars(f"{where}: {target_key}.{key}", value, expected)
+        # unordered_equal() is top-level only: a rule reaches it through
+        # canonical_key(), which serializes a list nested inside it
+        # positionally. UNORDERED_FIELDS therefore frees the order of
+        # inbound_rules but not the order of sources.addresses within a
+        # rule, and diff_attributes() reads params raw, so the driver
+        # cannot sort that side. Requiring it sorted and sorting the
+        # read side is what makes the two comparable at all.
+        if value != sorted(value):
+            raise ValueError(
+                f"{where}: {target_key}.{key} must be sorted -- DigitalOcean does not "
+                f"promise the order it was written in, and a rule's nested lists are "
+                f"compared positionally; write {sorted(value)!r}"
+            )
 
     # --- projection -------------------------------------------------
 
@@ -304,11 +333,15 @@ class Driver(ResourceDriver):
         # rule it returns even though it is absent from the published
         # firewall_rule_base schema, so dropping it would make read()'s
         # rules permanently unequal to the user's params.
+        target = raw_rule.get(target_key, {})
         return {
             "protocol": raw_rule["protocol"],
             "ports": raw_rule["ports"],
             "action": raw_rule["action"],
-            target_key: raw_rule.get(target_key, {}),
+            target_key: {
+                key: sorted(value) if isinstance(value, list) else value
+                for key, value in target.items()
+            },
         }
 
     def _project(self, firewall: dict[str, Any]) -> dict[str, Any]:

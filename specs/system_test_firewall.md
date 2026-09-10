@@ -65,9 +65,8 @@ is what made the domain suite wrong. Measured by running the sequence:
 | **re-plan after the update** | **0** | converged |
 | `plan destroy` | 1 | gate #2 reviews a DESTROY |
 
-All seven rows are asserted by the suite, not merely tabulated — an
-earlier version left the update-apply and destroy rows unmeasured
-because those steps ran without `--verbose`.
+All seven rows are asserted by the suite, not merely tabulated: every
+step runs under `--verbose`, which is what makes the counts observable.
 
 The two zeros are the point. Zero is only reachable if `read()`
 round-trips exactly against the params the user wrote, which is what
