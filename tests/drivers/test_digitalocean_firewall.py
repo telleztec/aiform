@@ -699,6 +699,26 @@ class TestWaitsUntilTheRulesAreActuallyInForce:
 
         assert self.slept == [], "a terminal failure must not be retried"
 
+    def test_a_failed_status_is_logged_before_it_raises(self, driver, fake_urlopen, caplog):
+        # The one terminal outcome of this loop that reaches no sink
+        # otherwise: the exception carries it, but a run whose stderr is
+        # captured loses that while keeping the log. Its keys must also
+        # not collide with a reserved LogRecord attribute -- this driver
+        # shipped that exact bug once, with `name`.
+        caplog.set_level("ERROR", logger="aiform.driver.digitalocean.firewall")
+        failed = waiting_payload()
+        failed["firewall"]["status"] = "failed"
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script("GET", attached_url(), FakeHTTPResponse(200, failed))
+        fake_urlopen.script("DELETE", attached_url(), FakeHTTPResponse(204, None))
+
+        with pytest.raises(RuntimeError, match="failed"):
+            driver.create(NAME, attached_params(), CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "outcome", None) == "failed")
+        assert record.step == "create"
+        assert record.attempts_used == 1
+
     def test_a_create_that_never_converges_rolls_back(self, driver, fake_urlopen):
         fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
         fake_urlopen.script("GET", attached_url(), FakeHTTPResponse(200, waiting_payload()))

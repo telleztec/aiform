@@ -814,10 +814,14 @@ def _find_droplet_id_by_name(token: str, name: str) -> int | None:
 
     The name carries a timestamp and 6 hex characters, and the match is
     equality, so this cannot return another suite's droplet or a partial
-    match. A transient failure here is reported rather than swallowed:
-    the caller re-raises the original create error either way, and
-    without this warning the user is told "create failed" with no hint
-    that a droplet may exist under a name they could search for.
+    match. A transient failure warns and returns None, and the caller then
+    re-raises the original create error -- without that warning the user
+    is told "create failed" with no hint that a droplet may exist under a
+    name they could search for. Anything else (an AssertionError from
+    _list_all's off-host or page-cap guard, say) propagates and becomes
+    the primary exception, with the create error kept as its __context__.
+    Deliberately louder than the transient path: a security refusal must
+    not be reduced to a warning about billing.
     """
     try:
         for droplet in list_droplets(token):

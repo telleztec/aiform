@@ -229,7 +229,8 @@ class TestDestroyingTheBillableDroplet:
 
     @pytest.fixture(autouse=True)
     def _no_real_sleeping(self, monkeypatch):
-        monkeypatch.setattr(conftest.time, "sleep", lambda _: None)
+        self.slept = []
+        monkeypatch.setattr(conftest.time, "sleep", self.slept.append)
 
     def test_a_transient_failure_is_retried_until_it_succeeds(self, monkeypatch):
         attempts = []
@@ -242,6 +243,10 @@ class TestDestroyingTheBillableDroplet:
         monkeypatch.setattr(conftest, "delete_droplet_directly", flaky)
         destroy_droplet_or_shout("tok", 42, "d")
         assert len(attempts) == 3
+        # Pinned, not incidental: retrying with no pause between attempts
+        # would hammer an API that is already failing and exhaust all
+        # five within milliseconds of the first error.
+        assert self.slept == [2, 2]
 
     def test_a_droplet_that_survives_every_attempt_RAISES(self, monkeypatch):
         # Not a warning. pyproject.toml sets no filterwarnings=error and
@@ -269,6 +274,19 @@ class TestDestroyingTheBillableDroplet:
 
 
 class TestRecoveringADropletIdByName:
+    def test_a_security_refusal_is_not_downgraded_to_a_billing_warning(self, monkeypatch):
+        # _list_all raises AssertionError to refuse an off-host redirect
+        # or a runaway page count. Catching Exception here would turn
+        # that into "could not check ... it is billing" and let the run
+        # continue, which is the wrong end of the severity scale.
+        monkeypatch.setattr(
+            conftest,
+            "list_droplets",
+            lambda _: (_ for _ in ()).throw(AssertionError("refusing to follow a next url")),
+        )
+        with pytest.raises(AssertionError, match="refusing to follow"):
+            _find_droplet_id_by_name("tok", "wanted")
+
     def test_an_exact_name_match_is_returned(self, monkeypatch):
         monkeypatch.setattr(conftest, "list_droplets", lambda _: [{"id": "7", "name": "wanted"}])
         assert _find_droplet_id_by_name("tok", "wanted") == 7

@@ -392,6 +392,13 @@ Rules that keep it auditable:
   reference; the payload lives there.
 - **Append-only.** A correction is a new line, never an edit — the
   history of what was believed is the record's value.
+- **A timestamp records when the line was appended, not when the work
+  happened.** Entries are commonly written in a batch at the end of a
+  round, so several may sit a second apart describing work spread over
+  an hour, and the file's order is the order they were written in. Read
+  the sequence from the `step=` values and the `round=` numbers, not
+  from the clock. Recording a stamp the writer wishes were true would be
+  worse; this is the honest reading of what the field means.
 
 ### Human review and observability
 

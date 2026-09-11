@@ -68,7 +68,7 @@ SETTLE_SECONDS = 20
 DRY_ID = "<dry-run-id>"
 
 
-def _created_id(result, key):
+def _created_id(result, key, name=None):
     """The id a create returned, or a placeholder under --dry-run.
 
     One place rather than at each call site: --dry-run sends nothing, so
@@ -87,9 +87,10 @@ def _created_id(result, key):
         # that will catch it, rather than returning a placeholder that
         # would register a DELETE for an id that does not exist.
         raise SystemExit(
-            f"{key} was created ({result.status}) but its body did not parse, so no cleanup "
-            f"could be registered -- it is LIVE and untracked. Run this probe with --sweep, "
-            f"or destroy it by hand."
+            f"{key} {name!r} was created ({result.status}) but its body did not parse, so no "
+            f"cleanup could be registered -- it is LIVE and untracked. Destroy it by hand NOW: "
+            f"--sweep will not touch it until it is over {SWEEP_MIN_AGE_MINUTES} minutes old, "
+            f"because a younger one may belong to a run still in progress."
         )
     return result.body[key]["id"]
 
@@ -114,7 +115,7 @@ def run(probe: Probe) -> None:
             "notes": "202 with droplet.status='new'; it is billable from this moment",
         },
     )
-    droplet_id = _created_id(created, "droplet")
+    droplet_id = _created_id(created, "droplet", droplet_name)
     if created.status < 400:
         probe.cleanup("DELETE", f"/droplets/{droplet_id}")
 
@@ -143,7 +144,7 @@ def run(probe: Probe) -> None:
             ),
         },
     )
-    fw_id = _created_id(attached, "firewall")
+    fw_id = _created_id(attached, "firewall", fw_name)
     if attached.status < 400:
         probe.cleanup("DELETE", f"/firewalls/{fw_id}")
     status, pending = _status_of(attached)
