@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from aiform import driver_gen, llm
+from aiform.config import PROVIDER_TOKEN_ENV_VARS
 from aiform.models import ResourceSpec
 
 VALID_DRIVER_SOURCE = """\
@@ -327,7 +328,45 @@ class TestDraftDriver:
         content = client.messages.calls[0]["messages"][0]["content"]
         assert "Unrelated resource's spec." not in content
 
-    def test_ignores_collision_with_a_reserved_module_spec_filename(
+    @pytest.mark.parametrize(
+        ("provider", "resource", "filename"),
+        [
+            # Each of these resolves to a real spec in this repo that is
+            # NOT a driver acceptance spec. An unknown provider is the
+            # general guard; the hand-maintained set covers the residual
+            # case of a non-driver spec that does start with a real
+            # provider name.
+            ("driver", "gen", "driver_gen.md"),
+            ("driver", "creation", "driver_creation.md"),
+            ("merge", "gate", "merge_gate.md"),
+            ("system", "test", "system_test.md"),
+            ("unordered", "fields", "unordered_fields.md"),
+            ("resource", "tagging", "resource_tagging.md"),
+            ("run", "system_tests", "run_system_tests.md"),
+            ("digitalocean", "pagination", "digitalocean_pagination.md"),
+        ],
+    )
+    def test_never_pastes_a_non_driver_spec_as_ground_truth(
+        self, prompts_dir: Path, specs_dir: Path, provider: str, resource: str, filename: str
+    ):
+        (specs_dir / filename).write_text("## Purpose\n\nNot a driver spec.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(make_spec(provider=provider, resource=resource), client=client)
+        content = client.messages.calls[0]["messages"][0]["content"].lower()
+        assert "authoritative" not in content
+        assert "not a driver spec" not in content
+
+    def test_still_pastes_a_real_driver_spec(self, prompts_dir: Path, specs_dir: Path):
+        (specs_dir / "digitalocean_firewall.md").write_text("## Purpose\n\nReal driver spec.\n")
+        client = FakeClient([VALID_DRIVER_SOURCE])
+        driver_gen.draft_driver(
+            make_spec(provider="digitalocean", resource="firewall"), client=client
+        )
+        content = client.messages.calls[0]["messages"][0]["content"]
+        assert "Real driver spec." in content
+        assert "authoritative" in content.lower()
+
+    def test_ignores_collision_with_a_module_spec_filename(
         self, prompts_dir: Path, specs_dir: Path
     ):
         # provider="driver", resource="gen" would otherwise resolve to
@@ -514,3 +553,28 @@ class TestGenerateDriver:
 class TestConstants:
     def test_max_draft_attempts_is_two(self):
         assert driver_gen.MAX_DRAFT_ATTEMPTS == 2
+
+
+class TestNonDriverSpecResidualIsComplete:
+    """The parametrized cases above pin `_is_driver_spec`'s logic against
+    a tmp specs dir, which cannot notice a NEW non-driver spec landing in
+    the real `specs/`. This pins the repo invariant instead: any spec
+    beginning with a real provider name must either have a driver behind
+    it or be declared a non-driver spec."""
+
+    def test_every_provider_prefixed_spec_is_a_driver_or_declared(self):
+        repo = Path(driver_gen.__file__).resolve().parents[1]
+        for spec_path in sorted((repo / "specs").glob("*.md")):
+            name = spec_path.stem
+            for provider in PROVIDER_TOKEN_ENV_VARS:
+                if not name.startswith(f"{provider}_"):
+                    continue
+                resource = name[len(provider) + 1 :]
+                has_driver = (repo / "drivers" / provider / f"{resource}.py").is_file()
+                declared = spec_path.name in driver_gen.NON_DRIVER_SPEC_NAMES
+                assert has_driver or declared, (
+                    f"{spec_path.name} looks like a driver spec for "
+                    f"({provider}, {resource}) but drivers/{provider}/{resource}.py does not "
+                    "exist -- add it to driver_gen.NON_DRIVER_SPEC_NAMES, or draft_driver() "
+                    "will paste it into a generation prompt as authoritative ground truth"
+                )

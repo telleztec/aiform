@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import yaml
 
 from aiform import cli, config, orchestrator
 from drivers.digitalocean import compute as do_compute
@@ -560,7 +561,7 @@ def write_domain_aiform_md(
     return path
 
 
-def _domain_api(token: str, method: str, url: str, body: dict | None = None):
+def _do_api(token: str, method: str, url: str, body: dict | None = None):
     data = None
     headers = {"Authorization": f"Bearer {token}"}
     if body is not None:
@@ -581,7 +582,7 @@ def token_has_domain_scope(token: str) -> bool:
     on a False here rather than failing.
     """
     try:
-        _domain_api(token, "GET", f"{DO_API_BASE}/domains?per_page=1")
+        _do_api(token, "GET", f"{DO_API_BASE}/domains?per_page=1")
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             return False
@@ -591,7 +592,7 @@ def token_has_domain_scope(token: str) -> bool:
 
 def get_domain_or_none(token: str, zone: str) -> dict | None:
     try:
-        payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}")
+        payload = _do_api(token, "GET", f"{DO_API_BASE}/domains/{zone}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
@@ -606,19 +607,14 @@ def list_domain_records(token: str, zone: str) -> list[dict]:
     included. The driver's read() filters those out; this returns the raw
     listing so a test can assert they really are present on DO's side and
     really are absent from state."""
-    payload = _domain_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
+    payload = _do_api(token, "GET", f"{DO_API_BASE}/domains/{zone}/records?per_page=200")
     if payload is None:
         raise AssertionError(f"empty 200 body from GET /v2/domains/{zone}/records")
     return payload.get("domain_records", [])
 
 
-def list_domains(token: str) -> list[dict]:
-    """Every zone on the account, following pagination.
-
-    GET /v2/domains defaults to per_page=20 and this account hosts real
-    zones alongside the suite's throwaways, so an unpaginated read could
-    miss a leaked zone entirely -- the one failure this listing exists to
-    catch.
+def _list_all(token: str, collection: str) -> list[dict]:
+    """Every object in a paginated DigitalOcean collection.
 
     `next` comes out of a response *body*, and this loop sends the live
     DIGITALOCEAN_TOKEN to whatever it names -- so the host is checked
@@ -627,38 +623,331 @@ def list_domains(token: str) -> list[dict]:
     and are deliberately re-implemented rather than imported, for the
     same reason the rest of these helpers are: this is the backstop, and
     it must not depend on the code it backs up. Re-implementing a
-    security guard means re-implementing *all* of it -- an earlier
-    version of this function copied the pagination and silently dropped
-    both, which is a token-exfiltration path, not a style nit.
+    security guard means re-implementing *all* of it: copying the
+    pagination while dropping either is a token-exfiltration path, not a
+    style nit.
+
+    One implementation rather than one per collection, so that stays
+    true of every caller at once. The default per_page is 20 and this
+    account hosts real resources alongside the suite's throwaways, so an
+    unpaginated read could miss a leak entirely -- the one failure these
+    listings exist to catch.
     """
-    domains: list[dict] = []
-    url = f"{DO_API_BASE}/domains?per_page=200"
+    objects: list[dict] = []
+    url = f"{DO_API_BASE}/{collection}?per_page=200"
     pages = 0
     while url:
         parts = urllib.parse.urlsplit(url)
         if f"{parts.scheme}://{parts.netloc}" != DO_API_BASE_HOST:
             raise AssertionError(f"refusing to follow a next url off {DO_API_BASE_HOST}: {url}")
-        payload = _domain_api(token, "GET", url)
+        payload = _do_api(token, "GET", url)
         pages += 1
         if payload is None:
             break
-        domains.extend(payload.get("domains") or [])
+        objects.extend(payload.get(collection) or [])
         url = ((payload.get("links") or {}).get("pages") or {}).get("next")
         if url and pages >= DO_API_MAX_PAGES:
             raise AssertionError(
-                f"listing domains exceeded {DO_API_MAX_PAGES} pages; refusing to keep following"
+                f"listing {collection} exceeded {DO_API_MAX_PAGES} pages; "
+                "refusing to keep following"
             )
-    return domains
+    return objects
+
+
+def list_domains(token: str) -> list[dict]:
+    return _list_all(token, "domains")
+
+
+# --- firewalls (specs/system_test_firewall.md) -----------------------
+#
+# Unlike zones, firewalls carry tags AND return created_at, so the sweep
+# below can key on the same `aiform-system-test` tag specs/system_test.md
+# specifies rather than parsing a timestamp back out of a name. And
+# unlike droplets, an unattached firewall is free -- this whole suite
+# creates nothing billable and touches no traffic.
+SYSTEM_TEST_FW_PREFIX = "aiform-system-test-fw"
+
+
+def unique_firewall_name(label: str) -> str:
+    return unique_name(f"{SYSTEM_TEST_FW_PREFIX}-{label}")
+
+
+def token_has_firewall_scope(token: str) -> bool:
+    """Whether this token can read the firewall API at all.
+
+    `aiform init`'s preflight probes GET /v2/droplets only, so a
+    droplet-scoped token earns a green check and then fails at the first
+    firewall apply -- the same gap specs/digitalocean_domain.md records
+    for zones. The suite skips on a False here rather than failing.
+    """
+    try:
+        _do_api(token, "GET", f"{DO_API_BASE}/firewalls?per_page=1")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return False
+        raise
+    return True
+
+
+def ensure_system_test_tag(token: str) -> None:
+    """Create the `aiform-system-test` tag if it does not exist.
+
+    Firewalls are the first resource where a referenced tag must already
+    exist: probes 19 and 20 established that both a firewall's own `tags`
+    and a rule's `sources.tags` 422 with "tag <name> does not exist",
+    unlike droplet creation, which auto-creates. So a firewall suite run
+    on a fresh account -- one where the droplet suite has never run and
+    incidentally created the tag -- would fail its first apply with a
+    DriverExecutionError that looks exactly like a driver bug.
+
+    Creating it is one idempotent call and costs nothing (tags are free
+    and carry no resources until something references them), which is
+    better than skipping: a suite that silently does not run on a fresh
+    account protects nobody.
+    """
+    try:
+        _do_api(token, "POST", f"{DO_API_BASE}/tags", body={"name": SYSTEM_TEST_TAG})
+    except urllib.error.HTTPError as exc:
+        # 422 is "already exists", which is the ordinary case.
+        if exc.code not in (409, 422):
+            raise
+
+
+def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
+    try:
+        payload = _do_api(token, "GET", f"{DO_API_BASE}/firewalls/{firewall_id}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+    return (payload or {}).get("firewall")
+
+
+def list_firewalls(token: str) -> list[dict]:
+    return _list_all(token, "firewalls")
+
+
+def delete_firewall_directly(token: str, firewall_id: str) -> None:
+    try:
+        _do_api(token, "DELETE", f"{DO_API_BASE}/firewalls/{firewall_id}")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+# NOT a prefix of "aiform-system-test-droplet", the compute suite's own
+# name: this sweep would otherwise delete that suite's droplets too. Both
+# are throwaways so nothing would have been lost, but a sweep whose reach
+# is wider than its docstring says is how the next one gets it wrong.
+SYSTEM_TEST_DROPLET_PREFIX = "aiform-system-test-fwdrop"
+
+
+def unique_droplet_name(label: str = "attach") -> str:
+    return unique_name(f"{SYSTEM_TEST_DROPLET_PREFIX}-{label}")
+
+
+def list_droplets(token: str) -> list[dict]:
+    return _list_all(token, "droplets")
+
+
+def delete_droplet_directly(token: str, droplet_id: int | str) -> None:
+    try:
+        _do_api(token, "DELETE", f"{DO_API_BASE}/droplets/{droplet_id}")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+def create_droplet_directly(token: str, name: str) -> int:
+    """Create the smallest droplet DigitalOcean sells, and return its id.
+
+    Created through the API rather than through aiform, because this is
+    scaffolding for the firewall test rather than a thing under test --
+    routing it through compute.py would make a firewall failure
+    indistinguishable from a droplet-driver failure.
+
+    This is the ONE billable thing the suite creates. `s-1vcpu-512mb-10gb`
+    bills hourly at the bottom of the price list, so a droplet alive for
+    the couple of minutes this test needs costs a fraction of a cent --
+    but only if it always dies. Two independent guarantees: the
+    throwaway_droplet fixture destroys it in a finally, and the session
+    sweep below catches one a crash left behind.
+    """
+    try:
+        payload = _do_api(
+            token,
+            "POST",
+            f"{DO_API_BASE}/droplets",
+            body={
+                "name": name,
+                "region": REGION,
+                "size": SIZE,
+                "image": IMAGE,
+                "tags": [SYSTEM_TEST_TAG],
+                # No ssh_keys and no user_data: nothing ever logs into this
+                # droplet. It exists to be an integer that DigitalOcean will
+                # accept in droplet_ids.
+                "backups": False,
+                "monitoring": False,
+            },
+        )
+    except Exception:
+        # DigitalOcean may have accepted the create and failed us on the
+        # way back -- a truncated body, a timeout reading the response.
+        # The droplet would then be live with nobody holding its id, and
+        # the age floor keeps the in-session sweep from helping for an
+        # hour. The name is ours and unique, so it is recoverable.
+        recovered = _find_droplet_id_by_name(token, name)
+        if recovered is None:
+            raise
+        warnings.warn(
+            f"the create call for droplet {name!r} failed after DigitalOcean accepted it; "
+            f"recovered id {recovered} by name so it can still be destroyed",
+            stacklevel=2,
+        )
+        return recovered
+    return int(payload["droplet"]["id"])
+
+
+def _find_droplet_id_by_name(token: str, name: str) -> int | None:
+    """The id of a droplet with exactly this name, if the list call works.
+
+    The name carries a timestamp and 6 hex characters, and the match is
+    equality, so this cannot return another suite's droplet or a partial
+    match. A transient failure warns and returns None, and the caller then
+    re-raises the original create error -- without that warning the user
+    is told "create failed" with no hint that a droplet may exist under a
+    name they could search for. Anything else (an AssertionError from
+    _list_all's off-host or page-cap guard, say) propagates and becomes
+    the primary exception, with the create error kept as its __context__.
+    Deliberately louder than the transient path: a security refusal must
+    not be reduced to a warning about billing.
+    """
+    try:
+        for droplet in list_droplets(token):
+            if droplet.get("name") == name:
+                return int(droplet["id"])
+    except _SWEEP_TRANSIENT_ERRORS as exc:
+        warnings.warn(
+            f"could not check whether droplet {name!r} was created before the error "
+            f"({exc}) -- if it exists it is billing; search for that name by hand",
+            stacklevel=2,
+        )
+        return None
+    return None
+
+
+def destroy_droplet_or_shout(token: str, droplet_id: int | str, name: str) -> None:
+    """Delete the droplet, retrying, and make noise if it survives.
+
+    A single DELETE is not enough for the one resource here that bills.
+    One transient 5xx or socket timeout on that call and the droplet runs
+    until a human notices: the session sweep cannot help, because it
+    skips anything younger than SWEEP_MIN_AGE_MINUTES precisely so it
+    never deletes a droplet a concurrent run is using.
+
+    Tolerates the same transient errors wait_until_droplet_gone() does.
+    On final failure it RAISES rather than warning: a warning is invisible
+    to every machine that reads this suite. pyproject.toml sets no
+    filterwarnings=error and scripts/run_system_tests.py forwards only
+    pytest's returncode, so warning here would exit 0 with a live droplet
+    billing -- a quieter outcome than the single DELETE this replaced,
+    which at least produced a teardown ERROR. Raising in a finalizer
+    keeps the message AND the non-zero exit; pytest reports it as a
+    teardown error alongside whatever the test itself did.
+    """
+    last: Exception | None = None
+    for attempt in range(5):
+        try:
+            delete_droplet_directly(token, droplet_id)
+            return
+        except _SWEEP_TRANSIENT_ERRORS as exc:
+            last = exc
+            if attempt < 4:
+                time.sleep(2)
+    raise RuntimeError(
+        f"FAILED to destroy droplet {droplet_id} ({name!r}) after 5 attempts ({last}) -- "
+        "IT IS STILL BILLING. Destroy it by hand."
+    ) from last
+
+
+@pytest.fixture
+def throwaway_droplet(_require_live_credentials):
+    """A real droplet, destroyed however the test ends.
+
+    specs/digitalocean_firewall.md's Out of scope said attaching was
+    "expressible but never exercised live", and the waiting -> succeeded
+    transition was marked *recalled, not verified*. droplet_ids was the
+    one managed field with no live evidence behind it. This fixture is
+    what closes that, at the cost of one droplet for about two minutes.
+
+    The destroy is in a finally, not after a yield's happy path, so an
+    assertion failure, a KeyboardInterrupt or an error in another
+    fixture still bills for minutes rather than indefinitely.
+    """
+    token = live_token()
+    name = unique_droplet_name()
+    droplet_id = create_droplet_directly(token, name)
+    try:
+        yield droplet_id
+    finally:
+        destroy_droplet_or_shout(token, droplet_id, name)
+
+
+def write_firewall_aiform_md(
+    project_dir: Path,
+    *,
+    name: str,
+    inbound_rules: list[dict],
+    outbound_rules: list[dict] | None = None,
+    droplet_ids: list[int] | None = None,
+    filename: str = "firewall.aiform.md",
+) -> Path:
+    """Write a firewall .aiform.md.
+
+    droplet_ids defaults to empty, which is what makes most of this suite
+    free and zero-blast-radius. The attach case passes a real id
+    deliberately, and pays for one throwaway droplet to do it (see
+    throwaway_droplet). tags always carries SYSTEM_TEST_TAG so the sweeps
+    below can find a leak.
+    """
+    body = {
+        "inbound_rules": inbound_rules,
+        "outbound_rules": outbound_rules or [],
+        "droplet_ids": list(droplet_ids or []),
+        "tags": [SYSTEM_TEST_TAG],
+    }
+    # safe_dump, not hand-built YAML or indented JSON: aiform/parser.py
+    # loads this frontmatter with yaml.safe_load, so dumping with the
+    # same library is what guarantees the round-trip. Firewall params
+    # nest two levels (a rule's sources object), which is exactly where
+    # hand-indenting goes wrong.
+    dumped = yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
+    indented = "\n".join(f"  {line}" for line in dumped.rstrip("\n").splitlines())
+    content = (
+        "---\n"
+        "resource: firewall\n"
+        f"name: {name}\n"
+        "provider: digitalocean\n"
+        "params:\n" + indented + "\n"
+        "---\n\n"
+        "## Intent\n\n"
+        "Unattached firewall created by aiform's live system test suite "
+        f"(tag {SYSTEM_TEST_TAG!r}); free, carries no traffic, safe to destroy at any time.\n"
+    )
+    path = project_dir / filename
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 def create_domain_directly(token: str, zone: str) -> dict:
-    payload = _domain_api(token, "POST", f"{DO_API_BASE}/domains", body={"name": zone})
+    payload = _do_api(token, "POST", f"{DO_API_BASE}/domains", body={"name": zone})
     return payload["domain"]
 
 
 def delete_domain_directly(token: str, zone: str) -> None:
     try:
-        _domain_api(token, "DELETE", f"{DO_API_BASE}/domains/{zone}")
+        _do_api(token, "DELETE", f"{DO_API_BASE}/domains/{zone}")
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
@@ -707,6 +996,162 @@ def wait_until_domain_gone(
         time.sleep(poll_seconds)
 
 
+def is_sweepable_droplet(droplet: dict, cutoff: datetime) -> bool:
+    """Whether the orphan sweep may destroy this droplet.
+
+    Extracted as a pure function, and tested in the DEFAULT pytest run
+    (tests/test_system_conftest.py), for the reason that file's docstring
+    gives: this decides which live droplets get deleted on an account
+    that also runs production workloads. Gating its only coverage behind
+    `-m system` and live credentials would leave the one function that
+    can destroy a production droplet exercised solely by the suite it
+    exists to clean up after.
+
+    THREE independent signals must all hold -- the suite's name prefix,
+    the suite's tag, and an age past the floor. Any one alone is
+    forgeable by coincidence: someone can name a droplet with our prefix,
+    or tag one by hand. All three together cannot happen by accident, and
+    the age floor means a droplet a concurrent run is actively using is
+    never swept out from under it.
+    """
+    if not droplet.get("name", "").startswith(SYSTEM_TEST_DROPLET_PREFIX):
+        return False
+    if SYSTEM_TEST_TAG not in (droplet.get("tags") or []):
+        return False
+    created_raw = droplet.get("created_at")
+    if not created_raw:
+        # No timestamp means the age floor cannot be checked, and an
+        # unverifiable droplet is never deleted.
+        return False
+    try:
+        created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return created <= cutoff
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_leaked_system_test_droplets(_require_live_credentials):
+    """Independent backstop for the one billable thing this suite makes.
+
+    The firewall and zone sweeps below guard against clutter; this one
+    guards against a bill. A leaked droplet keeps charging until someone
+    notices, so unlike those, a non-empty sweep here is reported as the
+    cost incident it is.
+
+    Same three-way match as the firewall sweep -- name prefix AND the
+    `aiform-system-test` tag AND an age past the floor -- so a real
+    droplet on this account cannot match. That matters more here than
+    anywhere else in this file: this account runs production workloads,
+    and a sweep keying on one signal could delete one.
+    """
+    yield
+
+    token = live_token()
+    try:
+        droplets = list_droplets(token)
+    except _SWEEP_TRANSIENT_ERRORS as exc:
+        warnings.warn(
+            f"could not list droplets to sweep leaked system-test droplets ({exc}) -- "
+            f"CHECK BY HAND for droplets named {SYSTEM_TEST_DROPLET_PREFIX}*, which bill "
+            "until destroyed",
+            stacklevel=2,
+        )
+        return
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=SWEEP_MIN_AGE_MINUTES)
+    swept = []
+    for droplet in droplets:
+        if not is_sweepable_droplet(droplet, cutoff):
+            continue
+        name = droplet["name"]
+        try:
+            delete_droplet_directly(token, droplet["id"])
+        except _SWEEP_TRANSIENT_ERRORS as exc:
+            warnings.warn(
+                f"could not sweep leaked droplet {name!r} ({exc}) -- it is still billing",
+                stacklevel=2,
+            )
+        else:
+            swept.append(name)
+
+    if swept:
+        warnings.warn(
+            f"swept {len(swept)} leaked system-test DROPLET(s) that had been billing since an "
+            f"earlier run: {swept} -- the throwaway_droplet teardown did not run to completion",
+            stacklevel=2,
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_leaked_system_test_firewalls(_require_live_credentials):
+    """Independent backstop for firewalls the per-test teardown missed.
+
+    Cleaner than the zone sweep below: firewalls carry tags and return
+    created_at, so this keys on specs/system_test.md's own
+    `aiform-system-test` tag AND the name prefix AND an age past the
+    floor, rather than parsing a timestamp back out of a name. All three
+    must hold, so a real firewall on the account cannot match even if
+    someone tags one by hand.
+
+    Same rules as the zone sweep: runs after the session so a crashed
+    run is cleaned up by the next one; transient failures warn rather
+    than raise, because a best-effort backstop must never be the thing
+    that fails an otherwise-green run; and a non-empty sweep is a bug
+    report, not routine maintenance. The off-host and page-ceiling
+    refusals inside list_firewalls() deliberately DO raise -- they are
+    security refusals, not transient errors.
+
+    Tolerates a token with no firewall scope: this fixture is autouse
+    for all of tests/system/, so it runs on a droplet-only session too.
+    """
+    yield
+
+    token = live_token()
+    try:
+        firewalls = list_firewalls(token)
+    except _SWEEP_TRANSIENT_ERRORS as exc:
+        warnings.warn(
+            f"could not list firewalls to sweep leaked system-test firewalls ({exc}) -- "
+            f"check by hand for firewalls named {SYSTEM_TEST_FW_PREFIX}*",
+            stacklevel=2,
+        )
+        return
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=SWEEP_MIN_AGE_MINUTES)
+    swept = []
+    for firewall in firewalls:
+        name = firewall.get("name", "")
+        if not name.startswith(SYSTEM_TEST_FW_PREFIX):
+            continue
+        if SYSTEM_TEST_TAG not in (firewall.get("tags") or []):
+            continue
+        created_raw = firewall.get("created_at")
+        if not created_raw:
+            continue
+        try:
+            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+        except ValueError:
+            # Unparseable means unrecognized, and unrecognized is never
+            # deleted.
+            continue
+        if created > cutoff:
+            continue
+        try:
+            delete_firewall_directly(token, firewall["id"])
+        except _SWEEP_TRANSIENT_ERRORS as exc:
+            warnings.warn(f"could not sweep leaked firewall {name!r}: {exc}", stacklevel=2)
+        else:
+            swept.append(name)
+
+    if swept:
+        warnings.warn(
+            f"swept {len(swept)} leaked system-test firewall(s) left by an earlier run: "
+            f"{swept} -- the per-test teardown did not run to completion",
+            stacklevel=2,
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _sweep_leaked_system_test_zones(_require_live_credentials):
     """Independent backstop for zones the per-test teardown never reached.
@@ -738,7 +1183,7 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
 
     # live_token(), not os.environ directly: this is the one code path
     # that runs on every session, and a URLError/timeout inside
-    # _domain_api() would otherwise put the raw token into the teardown
+    # _do_api() would otherwise put the raw token into the teardown
     # traceback's frame arguments. The scrub hook would still catch it,
     # but the whole point of the three layers is that none of them is
     # relied on alone. No presence check is needed -- this fixture
@@ -755,11 +1200,10 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     # Every *transient* failure here warns rather than raises: this is a
     # best-effort backstop for a leak that has already happened, and it
     # must never be the thing that fails an otherwise-passing run. That
-    # applies to the per-zone DELETE as much as to the listing -- an
-    # earlier version guarded the delete for HTTPError only, so a socket
-    # timeout on one DELETE raised out of the fixture and aborted the
-    # rest of the sweep, which is exactly the promise this docstring
-    # makes and that version broke.
+    # applies to the per-zone DELETE as much as to the listing: guarding
+    # it for HTTPError alone lets a socket timeout on one DELETE raise
+    # out of the fixture and abort the rest of the sweep, breaking the
+    # promise this docstring makes.
     #
     # Two things deliberately DO raise, and are not in
     # _SWEEP_TRANSIENT_ERRORS: list_domains()'s refusal to follow an

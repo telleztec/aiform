@@ -1,0 +1,47 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 460,
+ "note": "create a tag to reference",
+ "prediction": {
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:16.799762+00:00",
+ "request": {
+  "body": {
+   "name": "aiform-probe-reset-20260910T165416Z-3d5252"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags"
+ },
+ "response": {
+  "body": {
+   "tag": {
+    "name": "aiform-probe-reset-20260910T165416Z-3d5252",
+    "resources": {
+     "count": 0,
+     "databases": {
+      "count": 0
+     },
+     "droplets": {
+      "count": 0
+     },
+     "images": {
+      "count": 0
+     },
+     "volume_snapshots": {
+      "count": 0
+     },
+     "volumes": {
+      "count": 0
+     }
+    }
+   }
+  },
+  "status": 201
+ },
+ "seq": 23
+}

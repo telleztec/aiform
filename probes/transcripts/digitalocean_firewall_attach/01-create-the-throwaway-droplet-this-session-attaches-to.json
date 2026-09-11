@@ -1,0 +1,260 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 1525,
+ "note": "create the throwaway droplet this session attaches to",
+ "prediction": {
+  "notes": "202 with droplet.status='new'; it is billable from this moment",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T23:13:19.231399+00:00",
+ "request": {
+  "body": {
+   "backups": false,
+   "image": "ubuntu-24-04-x64",
+   "monitoring": false,
+   "name": "aiform-system-test-drop-probe-20260910T231319Z-fe7a8c",
+   "region": "sfo3",
+   "size": "s-1vcpu-512mb-10gb",
+   "tags": [
+    "aiform-system-test"
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/droplets"
+ },
+ "response": {
+  "body": {
+   "droplet": {
+    "backup_ids": [],
+    "created_at": "2026-09-10T23:13:20Z",
+    "disk": 10,
+    "disk_info": [
+     {
+      "size": {
+       "amount": 10,
+       "unit": "gib"
+      },
+      "type": "local"
+     }
+    ],
+    "features": [
+     "droplet_agent"
+    ],
+    "id": 599478535,
+    "image": {
+     "created_at": "2026-07-01T16:38:32Z",
+     "description": "Ubuntu 24.04 (LTS) x64",
+     "distribution": "Ubuntu",
+     "id": 235153036,
+     "min_disk_size": 7,
+     "name": "24.04 (LTS) x64",
+     "public": true,
+     "regions": [
+      "nyc3",
+      "ams2",
+      "ams3",
+      "atl1",
+      "blr1",
+      "fra1",
+      "lon1",
+      "mem1",
+      "mkc1",
+      "nyc1",
+      "nyc2",
+      "ric1",
+      "sfo1",
+      "sfo2",
+      "sfo3",
+      "sgp1",
+      "syd1",
+      "tor1"
+     ],
+     "size_gigabytes": 3.76,
+     "slug": "ubuntu-24-04-x64",
+     "status": "available",
+     "tags": [],
+     "type": "base"
+    },
+    "kernel": null,
+    "locked": false,
+    "memory": 512,
+    "name": "aiform-system-test-drop-probe-20260910T231319Z-fe7a8c",
+    "networks": {
+     "v4": [],
+     "v6": []
+    },
+    "next_backup_window": null,
+    "region": {
+     "available": true,
+     "features": [
+      "backups",
+      "ipv6",
+      "metadata",
+      "install_agent",
+      "storage",
+      "image_transfer"
+     ],
+     "name": "San Francisco 3",
+     "sizes": [
+      "s-1vcpu-512mb-10gb",
+      "s-1vcpu-1gb",
+      "s-1vcpu-1gb-amd",
+      "s-1vcpu-1gb-intel",
+      "s-1vcpu-1gb-35gb-intel",
+      "s-1vcpu-2gb",
+      "s-1vcpu-2gb-amd",
+      "s-1vcpu-2gb-intel",
+      "s-1vcpu-2gb-70gb-intel",
+      "s-2vcpu-2gb",
+      "s-2vcpu-2gb-amd",
+      "s-2vcpu-2gb-intel",
+      "s-2vcpu-2gb-90gb-intel",
+      "s-2vcpu-4gb",
+      "s-2vcpu-4gb-amd",
+      "s-2vcpu-4gb-intel",
+      "s-2vcpu-4gb-120gb-intel",
+      "s-2vcpu-8gb-amd",
+      "c-2",
+      "c2-2vcpu-4gb",
+      "s-2vcpu-8gb-160gb-intel",
+      "s-4vcpu-8gb",
+      "s-4vcpu-8gb-amd",
+      "s-4vcpu-8gb-intel",
+      "c5-2vcpu-4gb",
+      "g-2vcpu-8gb",
+      "s-4vcpu-8gb-240gb-intel",
+      "gd-2vcpu-8gb",
+      "s-4vcpu-16gb-amd",
+      "m-2vcpu-16gb",
+      "c-4",
+      "g6_5-2vcpu-8gb",
+      "c2-4vcpu-8gb",
+      "s-4vcpu-16gb-320gb-intel",
+      "s-8vcpu-16gb",
+      "m3-2vcpu-16gb",
+      "s-8vcpu-16gb-amd",
+      "s-8vcpu-16gb-intel",
+      "c5-4vcpu-8gb",
+      "g-4vcpu-16gb",
+      "s-8vcpu-16gb-480gb-intel",
+      "so-2vcpu-16gb",
+      "m6-2vcpu-16gb",
+      "gd-4vcpu-16gb",
+      "so1_5-2vcpu-16gb",
+      "s-8vcpu-32gb-amd",
+      "m-4vcpu-32gb",
+      "c-8",
+      "g6_5-4vcpu-16gb",
+      "c2-8vcpu-16gb",
+      "s-8vcpu-32gb-640gb-intel",
+      "m3-4vcpu-32gb",
+      "c5-8vcpu-16gb",
+      "g-8vcpu-32gb",
+      "so-4vcpu-32gb",
+      "m6-4vcpu-32gb",
+      "gd-8vcpu-32gb",
+      "so1_5-4vcpu-32gb",
+      "m-8vcpu-64gb",
+      "c-16",
+      "g6_5-8vcpu-32gb",
+      "c2-16vcpu-32gb",
+      "m3-8vcpu-64gb",
+      "c5-16vcpu-32gb",
+      "g-16vcpu-64gb",
+      "so-8vcpu-64gb",
+      "m6-8vcpu-64gb",
+      "gd-16vcpu-64gb",
+      "so1_5-8vcpu-64gb",
+      "m-16vcpu-128gb",
+      "c-32",
+      "g6_5-16vcpu-64gb",
+      "c2-32vcpu-64gb",
+      "m3-16vcpu-128gb",
+      "c5-32vcpu-64gb",
+      "c-48",
+      "m-24vcpu-192gb",
+      "g-32vcpu-128gb",
+      "so-16vcpu-128gb",
+      "m6-16vcpu-128gb",
+      "gd-32vcpu-128gb",
+      "c2-48vcpu-96gb",
+      "m3-24vcpu-192gb",
+      "g-40vcpu-160gb",
+      "so1_5-16vcpu-128gb",
+      "m-32vcpu-256gb",
+      "gd-40vcpu-160gb",
+      "g6_5-32vcpu-128gb",
+      "c5-48vcpu-96gb",
+      "so-24vcpu-192gb",
+      "m6-24vcpu-192gb",
+      "m3-32vcpu-256gb",
+      "g6_5-40vcpu-160gb",
+      "so1_5-24vcpu-192gb",
+      "so-32vcpu-256gb",
+      "m6-32vcpu-256gb",
+      "so1_5-32vcpu-256gb"
+     ],
+     "slug": "sfo3"
+    },
+    "size": {
+     "available": true,
+     "description": "Basic",
+     "disk": 10,
+     "disk_info": [
+      {
+       "size": {
+        "amount": 10,
+        "unit": "gib"
+       },
+       "type": "local"
+      }
+     ],
+     "memory": 512,
+     "networking_throughput": 2000,
+     "price_hourly": 0.00595,
+     "price_monthly": 4,
+     "regions": [
+      "ams3",
+      "blr1",
+      "fra1",
+      "lon1",
+      "nyc1",
+      "nyc2",
+      "nyc3",
+      "sfo2",
+      "sfo3",
+      "sgp1",
+      "syd1",
+      "tor1"
+     ],
+     "slug": "s-1vcpu-512mb-10gb",
+     "transfer": 0.5,
+     "vcpus": 1
+    },
+    "size_slug": "s-1vcpu-512mb-10gb",
+    "snapshot_ids": [],
+    "status": "new",
+    "tags": [
+     "aiform-system-test"
+    ],
+    "vcpus": 1,
+    "volume_ids": []
+   },
+   "links": {
+    "actions": [
+     {
+      "href": "/v2/actions/3399858318",
+      "id": 3399858318,
+      "rel": "create"
+     }
+    ]
+   }
+  },
+  "status": 202
+ },
+ "seq": 1
+}

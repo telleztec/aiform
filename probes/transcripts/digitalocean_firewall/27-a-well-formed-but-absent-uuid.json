@@ -1,0 +1,27 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 315,
+ "note": "a well formed but absent uuid",
+ "prediction": {
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:18.463978+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/firewalls/00000000-0000-0000-0000-000000000000"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "Firewall not found",
+   "request_id": "a04ccce4-61bb-4b33-a8a4-58d986e918e7"
+  },
+  "status": 404
+ },
+ "seq": 27
+}

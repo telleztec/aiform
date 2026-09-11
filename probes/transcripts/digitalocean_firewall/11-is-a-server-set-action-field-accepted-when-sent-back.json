@@ -1,0 +1,64 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 304,
+ "note": "is a server-set action field accepted when sent back",
+ "prediction": {
+  "notes": "accepted and echoed",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:12.345141+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "action": "allow",
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-actionsent-20260910T165412Z-74c286",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T16:54:12Z",
+    "droplet_ids": [],
+    "id": "73678eb6-e30d-4545-9bfd-6d9a0c9ca5df",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-actionsent-20260910T165412Z-74c286",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 11
+}

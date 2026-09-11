@@ -1,0 +1,43 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 318,
+ "note": "how is a malformed CIDR rejected",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:14.636408+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "80",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "999.1.1.1/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-badcidr-20260910T165414Z-eb31f7",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "invalid address: 999.1.1.1/0",
+   "request_id": "00c2afd7-e571-42a9-936b-abf292bd5081"
+  },
+  "status": 422
+ },
+ "seq": 16
+}

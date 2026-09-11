@@ -1,0 +1,63 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 340,
+ "note": "is a bare IP expanded to a 32 CIDR",
+ "prediction": {
+  "notes": "expanded to 1.2.3.4/32",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:10.366487+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "80",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "1.2.3.4"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-bareip-20260910T165410Z-78f202",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T16:54:10Z",
+    "droplet_ids": [],
+    "id": "0878b450-3310-47f2-8a20-8043dcd5a8f7",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "80",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "1.2.3.4"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-bareip-20260910T165410Z-78f202",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 6
+}

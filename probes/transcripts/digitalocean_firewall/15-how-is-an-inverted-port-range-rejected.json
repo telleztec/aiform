@@ -1,0 +1,43 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 443,
+ "note": "how is an inverted port range rejected",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:14.191588+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "9000-8000",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-invrange-20260910T165414Z-d640e3",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "invalid port range",
+   "request_id": "4255d8bd-6470-46f1-8b5b-96509791388b"
+  },
+  "status": 422
+ },
+ "seq": 15
+}

@@ -1,0 +1,63 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 683,
+ "note": "create unattached firewall with one inbound tcp/22 rule",
+ "prediction": {
+  "notes": "status 'waiting' until it settles",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:08.662767+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-minimal-20260910T165408Z-3086f9",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T16:54:09Z",
+    "droplet_ids": [],
+    "id": "3fffbb79-c528-43da-9cc4-cdae89f63456",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-minimal-20260910T165408Z-3086f9",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 2
+}

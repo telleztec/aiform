@@ -13,16 +13,67 @@ clean up after. Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 
+import urllib.error
+from datetime import UTC, datetime, timedelta
+
 import pytest
 import yaml
 
+from tests.system import conftest
 from tests.system.conftest import (
+    SYSTEM_TEST_DROPLET_PREFIX,
+    SYSTEM_TEST_TAG,
     SYSTEM_TEST_ZONE_PARENT,
     SYSTEM_TEST_ZONE_PREFIX,
+    _find_droplet_id_by_name,
+    destroy_droplet_or_shout,
+    is_sweepable_droplet,
     unique_zone_name,
     write_domain_aiform_md,
     zone_created_at,
 )
+
+NOW = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+CUTOFF = NOW - timedelta(minutes=60)
+OLD = (NOW - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+RECENT = (NOW - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+
+
+def a_droplet(**overrides) -> dict:
+    droplet = {
+        "name": f"{SYSTEM_TEST_DROPLET_PREFIX}-attach-abc123",
+        "tags": [SYSTEM_TEST_TAG],
+        "created_at": OLD,
+    }
+    droplet.update(overrides)
+    return droplet
+
+
+class TestDropletSweepNeverTouchesProduction:
+    """This matcher decides which live droplets get destroyed on an
+    account that runs production workloads, and unlike the zone and
+    firewall sweeps a mistake here also costs money until noticed. All
+    three signals must hold; each of these drops exactly one."""
+
+    def test_a_leaked_system_test_droplet_is_swept(self):
+        assert is_sweepable_droplet(a_droplet(), CUTOFF)
+
+    @pytest.mark.parametrize(
+        "droplet, why",
+        [
+            (a_droplet(name="telleztec-wordpress"), "a production name"),
+            (a_droplet(name="telleztec-wordpress", tags=[SYSTEM_TEST_TAG]), "tagged by hand"),
+            (a_droplet(tags=[]), "our prefix but untagged"),
+            (a_droplet(tags=["something-else"]), "our prefix, a foreign tag"),
+            (a_droplet(created_at=RECENT), "young enough that a live run may own it"),
+            (a_droplet(created_at=None), "no timestamp to check the age floor against"),
+            (a_droplet(created_at="not-a-timestamp"), "an unparseable timestamp"),
+            (a_droplet(name="aiform-system-test-fw-x"), "a firewall's prefix, not a droplet's"),
+            ({}, "an empty object"),
+        ],
+    )
+    def test_anything_short_of_all_three_signals_is_left_alone(self, droplet, why):
+        assert not is_sweepable_droplet(droplet, CUTOFF), why
 
 
 class TestZoneCreatedAtRefusesForeignNames:
@@ -165,3 +216,94 @@ class TestWriteDomainAiformMd:
         assert frontmatter["resource"] == "domain"
         assert frontmatter["provider"] == "digitalocean"
         assert frontmatter["name"] == "zone.example.com"
+
+
+class TestDestroyingTheBillableDroplet:
+    """The teardown for the one resource this suite pays for.
+
+    An earlier round's audit line claimed these were live-path helpers
+    unit tests could not exercise. They are loops over two functions and
+    time.sleep, so they can be, and the consequence of leaving them
+    untested is a droplet that bills until a human notices.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleeping(self, monkeypatch):
+        self.slept = []
+        monkeypatch.setattr(conftest.time, "sleep", self.slept.append)
+
+    def test_a_transient_failure_is_retried_until_it_succeeds(self, monkeypatch):
+        attempts = []
+
+        def flaky(token, droplet_id):
+            attempts.append(droplet_id)
+            if len(attempts) < 3:
+                raise urllib.error.URLError("connection reset")
+
+        monkeypatch.setattr(conftest, "delete_droplet_directly", flaky)
+        destroy_droplet_or_shout("tok", 42, "d")
+        assert len(attempts) == 3
+        # Pinned, not incidental: retrying with no pause between attempts
+        # would hammer an API that is already failing and exhaust all
+        # five within milliseconds of the first error.
+        assert self.slept == [2, 2]
+
+    def test_a_droplet_that_survives_every_attempt_RAISES(self, monkeypatch):
+        # Not a warning. pyproject.toml sets no filterwarnings=error and
+        # run_system_tests.py forwards only the returncode, so warning
+        # here exits 0 with a droplet still billing -- quieter than the
+        # single unguarded DELETE this replaced.
+        monkeypatch.setattr(
+            conftest,
+            "delete_droplet_directly",
+            lambda *_: (_ for _ in ()).throw(urllib.error.URLError("down")),
+        )
+        with pytest.raises(RuntimeError, match="STILL BILLING"):
+            destroy_droplet_or_shout("tok", 42, "doomed")
+
+    def test_a_non_transient_error_is_not_retried_away(self, monkeypatch):
+        # AssertionError is how the listing helpers refuse an off-host
+        # redirect; retrying or swallowing one would defeat that guard.
+        monkeypatch.setattr(
+            conftest,
+            "delete_droplet_directly",
+            lambda *_: (_ for _ in ()).throw(AssertionError("refusing to follow")),
+        )
+        with pytest.raises(AssertionError, match="refusing"):
+            destroy_droplet_or_shout("tok", 42, "d")
+
+
+class TestRecoveringADropletIdByName:
+    def test_a_security_refusal_is_not_downgraded_to_a_billing_warning(self, monkeypatch):
+        # _list_all raises AssertionError to refuse an off-host redirect
+        # or a runaway page count. Catching Exception here would turn
+        # that into "could not check ... it is billing" and let the run
+        # continue, which is the wrong end of the severity scale.
+        monkeypatch.setattr(
+            conftest,
+            "list_droplets",
+            lambda _: (_ for _ in ()).throw(AssertionError("refusing to follow a next url")),
+        )
+        with pytest.raises(AssertionError, match="refusing to follow"):
+            _find_droplet_id_by_name("tok", "wanted")
+
+    def test_an_exact_name_match_is_returned(self, monkeypatch):
+        monkeypatch.setattr(conftest, "list_droplets", lambda _: [{"id": "7", "name": "wanted"}])
+        assert _find_droplet_id_by_name("tok", "wanted") == 7
+
+    @pytest.mark.parametrize("name", ["wanted-extra", "want", "WANTED", "telleztec-wordpress"])
+    def test_anything_short_of_an_exact_match_is_not_claimed(self, monkeypatch, name):
+        # This id is handed straight to a deleter, so a prefix or
+        # case-insensitive match here would destroy someone else's
+        # droplet.
+        monkeypatch.setattr(conftest, "list_droplets", lambda _: [{"id": "7", "name": name}])
+        assert _find_droplet_id_by_name("tok", "wanted") is None
+
+    def test_a_failed_listing_warns_rather_than_passing_silently(self, monkeypatch):
+        monkeypatch.setattr(
+            conftest,
+            "list_droplets",
+            lambda _: (_ for _ in ()).throw(urllib.error.URLError("403")),
+        )
+        with pytest.warns(UserWarning, match="it is billing"):
+            assert _find_droplet_id_by_name("tok", "wanted") is None

@@ -1,0 +1,43 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 236,
+ "note": "how is an unsupported protocol rejected",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:14.956206+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "80",
+     "protocol": "sctp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-sctp-20260910T165414Z-153279",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "you specified an invalid protocol",
+   "request_id": "e01c9963-6afa-4e35-8064-7b8773e83596"
+  },
+  "status": 422
+ },
+ "seq": 17
+}

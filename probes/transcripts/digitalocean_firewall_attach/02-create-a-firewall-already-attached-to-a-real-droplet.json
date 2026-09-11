@@ -1,0 +1,73 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 817,
+ "note": "create a firewall ALREADY attached to a real droplet",
+ "prediction": {
+  "notes": "status='waiting' and pending_changes carrying one entry for the droplet -- this is what specs/digitalocean_firewall.md recorded as recalled, not verified. The unattached case (session digitalocean_firewall, probe 02) returned 'succeeded' immediately",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T23:13:20.758415+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [
+    599478535
+   ],
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-attach-20260910T231320Z-1048f7",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-10T23:13:21Z",
+    "droplet_ids": [
+     599478535
+    ],
+    "id": "d26b51c8-fee3-4eb3-af60-7605464bbcc7",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-attach-20260910T231320Z-1048f7",
+    "outbound_rules": [],
+    "pending_changes": [
+     {
+      "droplet_id": 599478535,
+      "removing": false,
+      "status": "waiting"
+     }
+    ],
+    "status": "waiting",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 2
+}

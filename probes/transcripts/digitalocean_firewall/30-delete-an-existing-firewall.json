@@ -1,0 +1,23 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 467,
+ "note": "delete an existing firewall",
+ "prediction": {
+  "status": 204
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-10T16:54:19.761425+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/firewalls/bd2430e9-d032-4cd8-ba40-86e438bcb903"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 30
+}

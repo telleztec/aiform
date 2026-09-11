@@ -1,0 +1,43 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 434,
+ "note": "is an unknown tag accepted inside a rule sources block",
+ "prediction": {
+  "status": 202
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-10T16:54:15.802141+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [],
+   "inbound_rules": [
+    {
+     "ports": "80",
+     "protocol": "tcp",
+     "sources": {
+      "tags": [
+       "aiform-probe-srctag-20260910T165415Z-37e4be"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-srctag-20260910T165415Z-b823a4",
+   "outbound_rules": [],
+   "tags": []
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "tag aiform-probe-srctag-20260910T165415Z-37e4be does not exist",
+   "request_id": "c19d1837-58c4-4f32-932e-99dcb8348740"
+  },
+  "status": 422
+ },
+ "seq": 20
+}

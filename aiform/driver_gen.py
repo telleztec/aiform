@@ -17,25 +17,26 @@ logger = logging.getLogger(__name__)
 SPECS_DIR = Path(__file__).resolve().parent.parent / "specs"
 
 # specs/ is a shared flat namespace: specs/<module>.md for hand-written
-# aiform/*.py module specs (specs/README.md's convention) alongside
+# module and concept specs (specs/README.md's convention) alongside
 # specs/<provider>_<resource>.md for generated-driver acceptance specs. A
 # contrived (provider, resource) pair -- e.g. provider="driver",
 # resource="gen" -- would otherwise resolve to one of the former and get
 # pasted into a generation prompt as if it were authoritative for that
-# resource. Reserved names are excluded explicitly rather than trusted to
-# never collide with a filename match.
+# resource.
 #
-# Only a module spec filename containing an underscore can ever actually
-# collide: f"{provider}_{resource}.md" always inserts a literal "_"
-# between the two (ResourceSpec.provider/resource are non-empty per
-# RESOURCE_OR_PROVIDER_PATTERN, aiform/models.py), so an underscore-free
-# name -- "README.md", "config.md", "driver.md", "exceptions.md",
-# "llm.md", "models.md", "planner.md", "state.md" -- can never be
-# produced by that pattern no matter what provider/resource values
-# exist, and listing them here would be dead code giving false
-# confidence the collision surface is covered. Add a new entry only if a
-# future aiform/*.py module's own name contains an underscore.
-RESERVED_MODULE_SPEC_NAMES = frozenset({"driver_gen.md"})
+# The guard is derived, not hand-maintained: a driver acceptance spec is
+# f"{provider}_{resource}.md" for a provider aiform can actually
+# authenticate against, and PROVIDER_TOKEN_ENV_VARS is the list of those
+# -- config.resolve_credentials() raises for anything absent from it, so
+# a driver for an unlisted provider could never run anyway. That single
+# check covers every module and concept spec whose name does not begin
+# with a real provider name: driver_gen, driver_creation, merge_gate,
+# system_test, unordered_fields, resource_tagging, run_system_tests.
+#
+# NON_DRIVER_SPEC_NAMES is the residual the derived check cannot see: a
+# spec that DOES begin with a real provider name but is not a driver's
+# acceptance criteria. Add an entry only for that case.
+NON_DRIVER_SPEC_NAMES = frozenset({"digitalocean_pagination.md"})
 
 EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
     "create": ["self", "name", "params", "credentials"],
@@ -192,6 +193,14 @@ def validate_driver_source(source: str) -> None:
         raise DriverValidationError(reasons)
 
 
+def _is_driver_spec(provider: str, spec_path: Path) -> bool:
+    """Whether this path is a driver's acceptance spec, safe to paste
+    into a generation prompt as authoritative for the resource."""
+    if provider not in PROVIDER_TOKEN_ENV_VARS:
+        return False
+    return spec_path.name not in NON_DRIVER_SPEC_NAMES
+
+
 def _format_feedback(reasons: list[str]) -> str:
     return "\n".join(f"- {r}" for r in reasons)
 
@@ -218,7 +227,7 @@ def draft_driver(
         )
 
     spec_path = SPECS_DIR / f"{spec.provider}_{spec.resource}.md"
-    if spec_path.name not in RESERVED_MODULE_SPEC_NAMES and spec_path.is_file():
+    if _is_driver_spec(spec.provider, spec_path) and spec_path.is_file():
         user_content += (
             "\nAn acceptance-criteria spec already exists for this exact "
             "(provider, resource) pair -- it is authoritative ground truth, "

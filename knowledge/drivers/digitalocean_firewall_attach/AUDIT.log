@@ -1,0 +1,2 @@
+2026-09-10T23:13:19Z step=recall provider=digitalocean skipped=0 traps=0 conf=10 msg="knowledge base not built; nothing to recall"
+2026-09-10T23:14:03Z step=probe count=7 contradicted=0 msg="session digitalocean_firewall_attach"
