@@ -137,6 +137,41 @@ in here.
   this document — that skill is the authority. See "PR approval and
   merge" below for a human-readable summary of how that skill decides
   when a PR is actually allowed to merge.
+- **Start from current `origin/main`, and don't code in the main
+  checkout**: two habits, both cheap, both learned from real misses.
+  - *When planning*, `git fetch origin` first, then read from
+    `origin/main` (`git show origin/main:PLAN.md`) rather than from
+    whatever the main checkout happens to have checked out. A stale
+    checkout silently answers "does this exist yet?" with the wrong
+    answer, and a plan built on that answer is wrong in its structure,
+    not just its details: one planning pass concluded the DigitalOcean
+    domain driver was still unmerged work on a branch and designed a
+    whole stacking-and-duplication strategy around reaching
+    `UNORDERED_FIELDS` and `_common.py` — all of which had landed on
+    `main` days earlier, importable in one line. The checkout was 39
+    commits behind. Before trusting any "X doesn't exist yet"
+    conclusion, run
+    `git rev-list --left-right --count main...origin/main`, and prefer
+    `git grep <pattern> origin/main` over grepping the working tree.
+  - *When coding and testing*, work in a dedicated worktree —
+    `git fetch origin && git worktree add --no-track .claude/worktrees/<branch> -b <branch> origin/main`
+    — not in the main checkout. Each pass then starts from current
+    `main` by construction; several passes can be in flight without one
+    pass's half-finished tree breaking another's test run; and the main
+    checkout stays a clean, current place to read from. Run
+    `direnv allow` once in each new worktree: `.envrc` and `.aiform/`
+    are both per-directory, so until you do, a fresh worktree has
+    neither `DIGITALOCEAN_TOKEN` in the environment nor a
+    `credentials.env` to fall back to. `config.resolve_credentials()`
+    then raises a `RuntimeError` naming both the env var and the file, so
+    the cost is one wasted run rather than a mystery. Two caveats worth
+    knowing: an ambient token exported globally would be inherited
+    instead, which is the failure `.envrc`'s own preamble exists to
+    prevent; and direnv does not fire in non-interactive shells, so an
+    agent's shell inherits whatever the session started with regardless
+    of `direnv allow`. `--no-track` keeps the new branch from taking
+    `origin/main` as its upstream, which would otherwise make
+    `git status` report ahead/behind against the wrong ref.
 - **CI**: a GitHub Actions workflow (`.github/workflows/tests.yml`) runs
   `pytest` on every PR. This turns "tests pass" from something someone
   remembers to check into something that blocks merge. It's a no-op

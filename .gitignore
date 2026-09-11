@@ -15,3 +15,19 @@ __pycache__/
 # direnv local cache -- not created by this repo's .envrc (which uses no
 # layout/use stdlib functions), but present if one is ever added.
 .direnv/
+
+# Emacs autosave (#file#), lock (.#file) and backup (file~) artifacts. The
+# credentials file above is ignored because it holds secrets, but Emacs writes
+# siblings holding the same contents under different names, and those were not
+# covered -- a broad `git add -A` would have staged `.aiform/#credentials.env#`.
+# The `#` patterns need escaping: unescaped, a leading `#` starts a comment.
+\#*\#
+.\#*
+*~
+
+# Worktrees, which PROCESS.md's "Supporting practices" tells contributors
+# to create here. Ignored locally on the author's machine via
+# .git/info/exclude, which does not travel -- so without this a fresh
+# clone following that instruction gets an untracked .claude/ and a
+# "adding embedded git repository" warning from `git add -A`.
+.claude/worktrees/
