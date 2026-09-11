@@ -130,7 +130,7 @@ Check specifically for:
       and raise the second as a `concerns` entry rather than guessing:
       (a) its name must end in `_total`, and it must not be computed by
       subtracting or differencing two values the driver read — both
-      visible in the diff; (b) `COUNTER` is only correct for a value the
+      visible in the source in front of you; (b) `COUNTER` is only correct for a value the
       CSP *documents* as cumulative and monotonic over the resource's
       lifetime, which you cannot verify without that documentation in
       front of you. A value that resets on reboot is a `GAUGE`. Getting
@@ -138,7 +138,7 @@ Check specifically for:
       number — worse than no metric.
     - **Setting an identity label.** `provider`, `resource_type`, `name`
       and `id` in `Sample.labels` are stamped by the renderer; a driver
-      setting one collides and gets its samples dropped.
+      setting one collides, and that sample is dropped.
     Narrower issues here are `concerns`: a metric name missing its base
     unit suffix (`_bytes`, `_seconds`), an unbounded HTTP call (the
     contract targets ≤5s per resource but cannot enforce it), or an

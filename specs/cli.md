@@ -731,9 +731,12 @@ by contract, so it is never handed a `_CountingClient`.
 `if args.command == "init"` and otherwise falls through to `args.plan_command`;
 a second top-level command needs its own explicit branch there, or it raises
 `AttributeError` on a `Namespace` that has no `plan_command`. And the parser
-must be added with `parents=[global_parent, state_parent]` — `main()` reads
-`args.verbose` before `_dispatch()` is ever called, so omitting
-`global_parent` fails earlier and more confusingly than the missing branch.
+should be added with `parents=[global_parent, state_parent]`, matching every
+sibling — not because `args.verbose` would otherwise be missing (the root
+parser carries `global_parent` too, so it is always present) but so that
+`aiform scan -v` parses at all. Without it only the pre-subcommand spelling
+`aiform -v scan` works, and the post-subcommand one fails with argparse's
+bare "unrecognized arguments: -v".
 
 Behavior, output formats, the atomic `--output` write and the `.prom` suffix
 requirement are specified in `specs/driver_observability.md` — not restated

@@ -187,8 +187,9 @@ to make something easier to build.
   `delete`); `health()`/`metrics()` are **optional** and reached only from
   `aiform scan`, never from `plan`/`apply`. **Specified but NOT YET
   BUILT** — `specs/driver_observability.md` is the design;
-  `CapabilityNotSupported`, the two base methods, `aiform/scan.py` and the
-  `scan` command do not exist in the code yet, so don't import them.
+  `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
+  `Sample`, the two base methods, `aiform/scan.py` and the `scan` command
+  do not exist in the code yet, so don't import them.
   Once they do: a driver omitting both is complete, not unfinished,
   because the base class implements them by raising. Don't add them to a
   driver speculatively — they call CSP endpoints that need their own

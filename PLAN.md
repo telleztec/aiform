@@ -337,7 +337,7 @@ aiform/
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
-│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported + CapabilityNotSupported
+│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
 │   ├── scan.py                     # `aiform scan`: sweep health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
@@ -578,8 +578,9 @@ resource working, and what are its counters — and they are **optional**:
 the base implementations raise, and a driver either overrides with a
 real implementation or overrides to raise with a resource-specific
 reason. See `specs/driver_observability.md` for the full rules (control
-plane only, read-only, no state write, counter honesty) and for why
-these are not a second caller of `read()`.
+plane only, read-only, no state write, counter honesty). Note a driver's
+`health()` MAY delegate to its own `read()` where that returns enough --
+what it must not do is widen `read()` to make that possible.
 
 ```python
 # aiform/driver.py — hand-written, not generated
@@ -1211,9 +1212,9 @@ aiform plan show [--state-file PATH]
 aiform scan [--format text|json|prometheus] [--output PATH]
             [--state-file PATH] [FILE.aiform.md ...]
     NOT YET IMPLEMENTED -- specified in specs/driver_observability.md,
-    built in a later PR. Unlike the `aiform driver` commands below, this
-    one is being built; it is listed here rather than under that divider
-    because it has nothing to do with mechanism 2.
+    to be built in a later PR. Listed here rather than under the divider
+    below because that divider is specifically about mechanism 2's
+    driver-generation commands, which this has nothing to do with.
     Sweeps every tracked resource (or those matching the given files),
     calling driver.health() and driver.metrics() on each (§4). Reads
     state, NEVER writes it, and makes zero Anthropic API calls — it is

@@ -82,10 +82,27 @@ forbade the cheap implementation below.
 
 **So a driver's `health()` MAY call its own `read()`** and classify the result,
 whenever `read()` happens to return enough — `compute.py`'s does, since
-`status` and `ipv4_address` survive its projection. That is the cheapest
-correct implementation, it halves the per-resource request count the
-Scrape-cost section below is worried about, and nothing here discourages it.
-What a driver must not do is *widen* `read()` to make that possible.
+`status` and `ipv4_address` survive its projection. `firewall.py`'s does not,
+so its `health()` must call `_get_firewall()` directly. What a driver must not
+do is *widen* `read()` to make reuse possible.
+
+The benefit is code reuse, not fewer requests. A `health()` delegating to
+`read()` makes one GET; a `health()` issuing its own GET makes one GET too —
+an earlier draft claimed this "halves the per-resource request count", which
+is wrong, and that claim was the stated justification for the permission. The
+real justification is that duplicating `read()`'s response parsing in a second
+method is how the two drift apart.
+
+**This collides with rule 5's timeout target, and the collision is not
+resolved here.** `read()` reaches `urlopen` through `_request()`, which
+hardcodes `REQUEST_TIMEOUT_SECONDS` and takes no timeout argument, so a
+`health()` delegating to `read()` inherits the 30-second bound and cannot get
+the ≤5s one. Threading a timeout through would change `read()`'s signature,
+which `driver_gen.py` validates by exact parameter-list equality. A driver
+therefore picks one: reuse `read()` and accept 30s, or issue its own bounded
+GET and accept the duplication. Both are permitted. A real fix belongs with
+`PLAN.md` §10's "Timeout/retry/failover orchestration" entry, which owns this
+for every driver call rather than inventing a second mechanism for these two.
 
 What survives as the reason for separate **methods** is narrower than "`read()`
 is unusable": `read()` returns an attribute dict with no room for a verdict,
@@ -207,8 +224,10 @@ aiform scan [--format text|json|prometheus] [--output PATH]
 `scan` is a **top-level** command, not an `aiform plan` subcommand: it neither
 plans nor applies anything. Note the reason is only that — an earlier draft
 also argued "every `plan` subcommand may write state", which is false of
-`plan show` (`state.load()` plus print) and of `plan refresh` on its
-read-only path. The grouping is about what the verb means, not about state.
+`plan show` (`state.load()` plus print). It is **true** of `plan refresh`,
+which calls `refresh_state()` and saves unconditionally; a correction to that
+draft over-extended to claim otherwise. The grouping is about what the verb
+means, not about state.
 
 ## Behavior
 
@@ -298,8 +317,10 @@ that never runs.
    test that forgets it asserts nothing. Note also what it does not cover: it
    patches `llm.build_client`, so a driver constructing `anthropic.Anthropic()`
    directly inside `metrics()` walks straight past it. That case is caught by
-   `/code-review` and by `driver_gen.py`'s `_imports_anthropic` AST check, not
-   by this fixture.
+   `/code-review` at PR time — **not** by `driver_gen.py`'s
+   `_imports_anthropic` AST check, which has no caller either, per the
+   enforcement note above. An earlier draft cited it here, fifteen lines after
+   correcting the same mistake about `review_driver.md`.
 5. **Bounded, and not by inheriting the driver's own timeout.** The target is
    ≤5s per resource. Every existing driver already bounds each call —
    `compute.py`, `domain.py` and `firewall.py` all set
@@ -319,7 +340,7 @@ that never runs.
    driver call rather than just these two.
 6. **No identity labels.** A driver does not set `provider`, `resource_type`,
    `name` or `id` in `Sample.labels`; the renderer stamps those. A driver that
-   sets one has its samples dropped for that resource (see Edge cases). This
+   sets one has **that sample** dropped (see Edge cases). This
    means a driver cannot misspell or omit an identity label, and cannot smuggle
    a credential into one.
 
@@ -345,9 +366,12 @@ blank dashboard) whenever a file was renamed or `scan` runs from another
 directory. `refresh_state()` is not the model here — it takes no `paths` at
 all.
 
-- A path that parses to a key **not in state** is reported as a warning, like
-  `build_create_plan()`'s uncovered-key warnings. Not an error: a resource that
-  was never applied has nothing to scan.
+- A path that parses to a key **not in state** is reported as a warning. Not
+  an error: a resource that was never applied has nothing to scan. This is a
+  new behavior, not a copied one — `build_destroy_plan()` plans a destroy for
+  such a file rather than warning, and `build_create_plan()`'s warnings are the
+  inverse case (a state key with no file this run). Only the mechanism, a
+  returned `warnings` list, is borrowed.
 - A **malformed `.aiform.md`** raises `ValueError` from the parser. Caught,
   reported as that file's error, sweep continues — the file is an input to
   resource selection, not a resource.
@@ -358,12 +382,26 @@ Everything is caught per resource and per method. One driver raising means that
 resource reports `UNKNOWN` and the rest still render — a single broken driver
 must not blank the dashboard. Concretely, for each of the paths that can fail:
 
-| Failure | `health` | `health_unsupported` | Effect |
-|---|---|---|---|
-| Driver declines (`CapabilityNotSupported`) | `None` | the reason | no `up` series |
-| Driver raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | no `up` series |
-| Driver file missing (`PlanBlockedError`) | `None` | `None` | no `up` series, error recorded |
-| Credentials unresolvable | `None` | `None` | no `up` series, error recorded |
+| Failure | `health` | `health_unsupported` | `samples` | `errors` |
+|---|---|---|---|---|
+| `health()` declines (`CapabilityNotSupported`) | `None` | the reason | `metrics()` still attempted | unchanged |
+| `health()` raises `ResourceNotFoundError` | `HealthReport(FAILING, "resource not found")` | `None` | `[]`, `metrics()` skipped | unchanged |
+| `health()` raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | `metrics()` still attempted | the exception text |
+| `metrics()` declines | untouched | untouched | `[]`, `samples_unsupported` set | unchanged |
+| `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | unchanged |
+| `metrics()` raises anything else | untouched | untouched | `[]` | the exception text |
+| Driver file missing (`PlanBlockedError`) | `None` | `None` | `[]` | the error |
+| Credentials unresolvable | `None` | `None` | `[]` | the error |
+
+Every row that records an error also logs it at `WARNING` on the `aiform`
+logger, matching `refresh_resource()`'s handling of a drifted resource. A row
+whose `errors` column says "unchanged" is a normal outcome, not a failure —
+declining a capability is not an error anywhere in this spec.
+
+`ResourceNotFoundError` gets its own rows because "raises anything else" would
+otherwise classify it `UNKNOWN`, contradicting the `FAILING` mapping below. It
+is not an error in `errors` either: the resource being gone is the finding, and
+`health()` has already reported it.
 
 `UNKNOWN` is represented as a real `HealthReport`, not as `health=None`, so
 `render_prometheus()` can tell it from a decline and from a never-reached
@@ -394,11 +432,13 @@ name is a hard parse error**. So `render_prometheus()` collects all samples,
 buckets them by rendered name, and emits one group per name.
 
 ```
+# HELP aiform_resource_up Whether the CSP reports this resource as working.
 # TYPE aiform_resource_up gauge
 aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
 aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
 # TYPE aiform_memory_bytes gauge
 aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
+# HELP aiform_scan_duration_seconds Wall-clock seconds for the whole sweep.
 # TYPE aiform_scan_duration_seconds gauge
 aiform_scan_duration_seconds 0.83
 ```
@@ -507,11 +547,22 @@ written." What remains:
   driver bug. `aiform_resource_up` comes from `health()` and is unaffected.
 - **No tracked resources at all** — `scan` prints an empty result and exits 0.
   A scrape of an empty formation is not an error.
-- **`.aiform/state.json` missing or malformed** — exits 2, like any other
-  handled error. There is no partial result, and a scrape target that silently
-  reports zero resources because state failed to parse is worse than one that
-  fails.
+- **`.aiform/state.json` missing** — empty result, exit 0. Not an error, and
+  `scan` adds no `exists()` check of its own: `state.load()` already returns an
+  empty `State()` for a missing path, no other command treats that as a
+  failure, and a fresh project's cron scrape should report nothing rather than
+  fail until the first `apply`. An earlier draft said exit 2 on the strength of
+  a `FileNotFoundError` that `load()` never raises.
+- **`.aiform/state.json` malformed** — exits 2. This one genuinely raises
+  (`json.loads`, or Pydantic validation), and a scrape reporting zero resources
+  because state failed to parse is worse than one that fails loudly.
 - **`--output` to an unwritable path** exits 2. Same reasoning.
+- **A `FILE.aiform.md` argument that does not exist** exits 2, unlike the
+  malformed-file case above which continues the sweep. The distinction is
+  whose mistake it is: a file that cannot be found is a typo in the command
+  the operator just typed, and silently sweeping a subset of what they asked
+  for is worse than refusing. A file that exists but does not parse is a
+  problem with the repository, which the sweep reports and works around.
 
 ### Exit codes
 
@@ -536,6 +587,8 @@ A consumer contract, so it is fixed here rather than left to the renderer:
 ```json
 {
   "elapsed_seconds": 0.83,
+  "warnings": ["examples/old.aiform.md parses to digitalocean.compute.gone, not in state"],
+  "errors": ["examples/broken.aiform.md: frontmatter is not a mapping"],
   "resources": [
     {
       "resource_key": "digitalocean.compute.web-01",
@@ -557,6 +610,22 @@ Names are **bare** here, as the driver returned them — unlike the prometheus
 rendering, which prefixes and stamps identity labels. A JSON consumer already
 has the identity fields beside the samples, and duplicating them into every
 label map would be noise.
+
+The top-level `warnings` and `errors` arrays carry what has no `ResourceScan`
+to hang on: the two file-level outcomes under "What `paths` means", and any
+family-level rejection from validation. Without them those findings would
+exist only in the log, and a JSON consumer would see a short `resources` list
+with no indication anything was dropped. `render_text` prints the same two
+lists; `render_prometheus` cannot, so it logs them at `WARNING` — an
+exposition file has no channel for prose, and inventing a
+`aiform_scan_errors` counter would be a metric nobody asked for.
+
+**Validation runs before rendering, not inside `render_prometheus()`.** An
+earlier draft specified it only under the prometheus section, which would have
+let `cpu%` through unvalidated in JSON — the same driver bug reported
+differently depending on a flag. `scan_resources()` validates every `Sample`
+and drops the bad ones once; all three renderers receive the same already-
+validated set.
 
 ## Out of scope
 

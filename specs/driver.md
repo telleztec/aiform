@@ -312,6 +312,10 @@ make them required (`specs/driver_gen.md`).
 
 Neither method is reachable from `plan`/`apply`. `aiform scan` is their only
 caller, and it never writes state. Full rules — control plane only, read-only,
-zero LLM calls, counter honesty, and why these are not a second caller of
-`read()` — are in `specs/driver_observability.md`; not restated here, to avoid
-the drift this file already documents twice.
+zero LLM calls, counter honesty — are in `specs/driver_observability.md`; not
+restated here, to avoid the drift this file already documents twice. One point
+worth carrying, since it is the opposite of what an earlier draft said: a
+driver's `health()` **may** delegate to its own `read()` when that returns
+enough to classify (`compute.py`'s does; `firewall.py`'s does not, having
+projected `status` away). What it may not do is widen `read()` to make that
+work.
