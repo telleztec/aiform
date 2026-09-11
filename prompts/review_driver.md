@@ -10,7 +10,12 @@ oversight, ever.
 You will be given the full source of one driver file. It is expected to
 define a class named `Driver` subclassing `aiform.driver.ResourceDriver`,
 implementing `create`, `read`, `update`, `delete`, and the `PARAM_SCHEMA`
-class attribute (optionally `LIKELY_REPLACE_FIELDS`).
+class attribute (optionally `LIKELY_REPLACE_FIELDS`,
+`NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS`). It may also implement either
+or both of the **optional** `health()` and `metrics()` methods; if it
+does, item 12 below applies, and if it does not, or overrides them to
+raise `CapabilityNotSupported`, that is entirely legitimate and not a
+finding.
 
 Check specifically for:
 
@@ -101,6 +106,38 @@ Check specifically for:
     `ResourceNotFoundError` (or idempotent-delete-success, item 3) was
     supposed to be raised instead is the same class of bug as either of
     those, not a separate lesser one.
+12. **`health()`/`metrics()`, if present, are safe to call on a loop.**
+    These are optional and never reached from `plan`/`apply` — `aiform
+    scan` calls them, potentially every few seconds, indefinitely. Each
+    of the following is a blocking issue:
+    - **Not read-only.** Anything other than `GET`/`HEAD` against the
+      CSP, or any side effect that creates or modifies something — a
+      tag, an alert subscription, a temporary resource. A scrape must
+      not mutate the infrastructure it observes.
+    - **Data-plane traffic.** Originating a connection toward the
+      resource itself — a TCP connect to a droplet's port, a DNS
+      resolution against a record this driver manages. The contract is
+      control plane only: ask the CSP what it believes. A data-plane
+      check makes the verdict a property of where aiform is running, so
+      the same healthy resource reads `failing` from behind a firewall.
+    - **Writing state.** Touching `.aiform/state.json` or its backup.
+    - **Returning `HealthStatus.UNKNOWN`.** That state means "aiform
+      could not find out" and is set by `aiform scan` when the method
+      raises. A driver catching its own timeout and returning `UNKNOWN`
+      destroys the error text that says what went wrong.
+    - **A `MetricKind.COUNTER` that isn't one.** `COUNTER` is only for a
+      value the CSP documents as cumulative and monotonic over the
+      resource's lifetime, and its name must end in `_total`. A value
+      that resets on reboot, or one the driver computed by subtracting
+      two reads, is a `GAUGE`. Getting this wrong makes `rate()` produce
+      a plausible, silently false number — worse than no metric.
+    - **Setting an identity label.** `provider`, `resource_type`, `name`
+      and `id` in `Sample.labels` are stamped by the renderer; a driver
+      setting one collides and gets its samples dropped.
+    Narrower issues here are `concerns`: a metric name missing its base
+    unit suffix (`_bytes`, `_seconds`), an unbounded HTTP call (the
+    contract targets ≤5s per resource but cannot enforce it), or an
+    `observations` dict large enough to be unreadable.
 
 Respond with your structured verdict only. Use `blocking_issues` for
 anything from the list above that's actually violated — these block

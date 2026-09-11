@@ -711,3 +711,26 @@ than papering over it with a generic `except Exception`.
 - **Concurrent-invocation safety** — `PLAN.md` §10's "Single local state
   file, no locking" limitation is orchestrator/state-level and applies
   unchanged here; this module adds no locking of its own.
+
+## Addendum: `aiform scan` (`specs/driver_observability.md`, not yet implemented)
+
+A new **top-level** command — not an `aiform plan` subcommand, since it neither
+plans nor applies and must never write state:
+
+```
+aiform scan [--format text|json|prometheus] [--output PATH]
+            [--state-file PATH] [FILE.aiform.md ...]
+```
+
+`_cmd_scan` is a thin wrapper over `aiform/scan.py`, matching how
+`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. It belongs to the
+**plain** dispatch set, not the LLM set: `scan` makes zero Anthropic API calls
+by contract, so it is never handed a `_CountingClient`.
+
+**Implementation note for whoever adds it**: `_dispatch()` currently reads
+`if args.command == "init"` and otherwise falls through to `args.plan_command`.
+A second top-level command needs its own explicit branch there, or it raises
+`AttributeError` on a `Namespace` that has no `plan_command`.
+
+Behavior, output formats, exit codes and the atomic `--output` write are
+specified in `specs/driver_observability.md` — not restated here.

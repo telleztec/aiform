@@ -1034,3 +1034,17 @@ Returns the destination path.
 module's involvement -- it reads the declaration off the driver and forwards
 it, exactly as it already does for the other per-field lists, and makes no
 decision of its own about it. See `specs/unordered_fields.md`.
+
+## Addendum: `health()`/`metrics()` are not this module's concern
+
+`specs/driver_observability.md` adds two optional methods to the driver
+contract. **`orchestrator.py` never calls either one.** They are swept by
+`aiform/scan.py`, which does its own state load, driver import and credential
+resolution rather than routing through `build_create_plan()`/`refresh_state()`.
+
+That separation is deliberate, not duplication for its own sake: every path in
+this module either writes `.aiform/state.json` or exists to feed one that does,
+and a scrape running every few seconds must not. `scan_resources()` does mirror
+this module's walk-every-tracked-resource loop and its `(provider,
+resource_type)` driver caching — see `refresh_state()` and
+`build_destroy_plan()` for the shape it copies.

@@ -324,20 +324,21 @@ aiform/
 ├── .gitignore                      # credentials.env, state.json*, .aiform/logs/, .aiform/testlog/*.log, __pycache__/, *.pyc, .venv/, caches
 ├── .github/
 │   └── workflows/tests.yml         # CI: ruff check, ruff format --check, pytest
-├── specs/                          # one spec per module (18 files) — see specs/README.md
+├── specs/                          # one spec per module, plus a few cross-cutting feature specs — see specs/README.md
 ├── scripts/
 │   └── run_system_tests.py         # credential-checked runner for the live tests/system/ suite
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
-│   ├── cli.py                      # plan / apply / destroy / init / refresh / show
+│   ├── cli.py                      # plan / apply / destroy / init / refresh / show / scan
 │   ├── config.py                   # env var + credentials-file resolution (§8)
 │   ├── parser.py                   # aiform.md -> ResourceSpec
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
-│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported
+│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported + CapabilityNotSupported
+│   ├── scan.py                     # `aiform scan`: sweep health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -568,11 +569,25 @@ this contract per `CLAUDE.md`'s "follow the `ResourceDriver` interface
 in `PLAN.md` §4 exactly" — see `specs/driver.md` and
 `specs/resource_tagging.md` for their full behavior.
 
+**Addendum (`specs/driver_observability.md`, not yet reflected in the
+actual `aiform/driver.py` file on disk as of this writing):**
+`CapabilityNotSupported` and two further concrete (non-abstract)
+methods, `health()`/`metrics()`, included below on the same footing and
+for the same reason. They are the day-2 half of the contract — is this
+resource working, and what are its counters — and they are **optional**:
+the base implementations raise, and a driver either overrides with a
+real implementation or overrides to raise with a resource-specific
+reason. See `specs/driver_observability.md` for the full rules (control
+plane only, read-only, no state write, counter honesty) and for why
+these are not a second caller of `read()`.
+
 ```python
 # aiform/driver.py — hand-written, not generated
 
 from abc import ABC, abstractmethod
 from typing import Any
+
+from aiform.models import HealthReport, Sample
 
 AIFORM_MANAGED_TAG = "aiform-managed"
 
@@ -589,6 +604,20 @@ class DriverUpdateNotSupported(Exception):
         self.reason = reason
         self.unsupported_fields = unsupported_fields or []
         super().__init__(reason)
+
+
+class CapabilityNotSupported(Exception):
+    """Raised by health()/metrics() when this driver cannot answer that
+    question for this resource kind. Lives here rather than in
+    exceptions.py because the base class itself raises it, so it is part
+    of the contract — same reasoning as DriverUpdateNotSupported above.
+    `aiform scan` catches it per-resource and reports "unsupported:
+    <reason>"; it is never an error."""
+
+    def __init__(self, capability: str, reason: str):
+        self.capability = capability
+        self.reason = reason
+        super().__init__(f"{capability}: {reason}")
 
 
 class ResourceDriver(ABC):
@@ -706,6 +735,70 @@ class ResourceDriver(ABC):
         Destroy the resource. MUST be idempotent: a 404 from the CSP
         (resource already gone) is treated as success, not an error.
         """
+
+    # The two below are OPTIONAL and therefore concrete, not abstract:
+    # making either @abstractmethod would break every existing driver at
+    # instantiation time and force a resource that cannot answer to write
+    # a stub anyway. A driver opts in by overriding, exactly as it does
+    # with _tags_for_create/_tags_for_attributes above. Neither is ever
+    # reached from plan/apply — `aiform scan` (§7) is their only caller.
+    # Full rules: specs/driver_observability.md.
+
+    def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
+        """
+        A shallow, cheap verdict on whether the resource is functional.
+
+        CONTROL PLANE ONLY. Ask the CSP what it believes about the
+        resource; never originate traffic toward the resource itself (no
+        TCP connect, no DNS resolution against a record this driver
+        manages). A data-plane check would make the verdict a property of
+        where aiform happens to be running rather than of the resource —
+        the same droplet would read `failing` from a laptop behind a
+        firewall and `ok` from inside the VPC. The honest cost of that
+        choice: this cannot tell you sshd is up, only that the CSP has
+        not noticed anything wrong.
+
+        Returns: HealthReport with status OK / DEGRADED / FAILING. Do NOT
+            return UNKNOWN — that state means "aiform could not find
+            out", and `aiform scan` sets it when this method raises. A
+            driver catching its own timeout and returning UNKNOWN
+            destroys the error text that says what went wrong.
+        Raises: ResourceNotFoundError if the resource is gone (scan
+            renders it FAILING, and does not mark drift — it cannot write
+            state). CapabilityNotSupported, with a resource-specific
+            reason, if this driver deliberately cannot answer.
+
+        MUST be read-only (GET/HEAD only), MUST NOT write state, and MUST
+        make zero Anthropic API calls — it may be called every few
+        seconds by a scrape, indefinitely.
+        """
+        raise CapabilityNotSupported("health", "this driver does not implement health()")
+
+    def metrics(self, id: str, credentials: dict[str, str]) -> list[Sample]:
+        """
+        Counters and gauges for this resource, for a Prometheus/Grafana
+        scrape.
+
+        Returns: list[Sample], each with a BARE snake_case name carrying
+            its base unit (`memory_bytes`, not `aiform_memory_bytes`) —
+            `aiform scan` adds the prefix and the provider/resource_type/
+            name/id labels, so this driver must not set those itself.
+
+        COUNTER is only for a value the CSP documents as cumulative and
+        monotonic over the resource's lifetime, and its name must end in
+        `_total`. aiform never derives a counter by differencing two
+        reads — `scan` is stateless by construction and holds no history
+        to difference against. When in doubt, GAUGE: a wrong gauge reads
+        as noise, a wrong counter makes rate() produce a plausible,
+        silently false number.
+
+        Raises: CapabilityNotSupported, with a resource-specific reason,
+            when the CSP exposes nothing worth reporting for this kind.
+
+        Same read-only / no-state-write / zero-LLM-call requirements as
+        health() above.
+        """
+        raise CapabilityNotSupported("metrics", "this driver does not implement metrics()")
 ```
 
 A driver subclasses this and does nothing more — no shared base-class logic beyond the contract itself:
@@ -1114,7 +1207,24 @@ aiform plan refresh [--state-file PATH]
 aiform plan show [--state-file PATH]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
-    
+
+aiform scan [--format text|json|prometheus] [--output PATH]
+            [--state-file PATH] [FILE.aiform.md ...]
+    Sweeps every tracked resource (or those matching the given files),
+    calling driver.health() and driver.metrics() on each (§4). Reads
+    state, NEVER writes it, and makes zero Anthropic API calls — it is
+    meant to be run repeatedly on a scrape interval. --format text is
+    human-readable; json feeds Grafana's Infinity datasource; prometheus
+    emits exposition format for node_exporter's textfile collector, in
+    which case --output writes atomically (tmp + rename) since that
+    collector will happily parse a half-written file. A resource whose
+    driver declines either capability reports "unsupported: <reason>";
+    one whose driver raises reports UNKNOWN. Neither aborts the sweep —
+    a single broken driver must not blank a dashboard. Top-level rather
+    than an `aiform plan` subcommand: it neither plans nor applies, and
+    every `plan` subcommand may write state, which this must not.
+    See specs/driver_observability.md.
+
 --- Not yet implemented below, and not currently being built (§6,
     mechanism 2's target interactive shape — see "Driver curation").
     driver_gen.py implements only the minimal draft/validate/review
@@ -1368,6 +1478,26 @@ entry's own note below.
   model above — this item and "centralized servers" below are related
   but not the same thing; a status URL doesn't by itself require the
   centralized multi-source server described there.
+  **Extended, not superseded, by `specs/driver_observability.md`**
+  (#131), which adds per-resource runtime health and metrics to the
+  driver contract (§4) and an `aiform scan` command (§7). The two are
+  related in spirit and unrelated in mechanism, and neither discharges
+  the other — recorded here explicitly so a reader doesn't mistake one
+  for the other, and so a future pass doesn't close this entry on the
+  strength of that one having shipped:
+
+  | | This entry | `driver_observability.md` |
+  |---|---|---|
+  | Subject | a *formation* — one plan/apply run | a *resource* — one live thing |
+  | Question | what's planned/applying/succeeded/failed, when | is it functional, what are its counters |
+  | Shape | a status URL, CI-run-status-page-like | a stateless CLI sweep, scrape-shaped |
+  | Lifetime | spans one run | runs indefinitely, on an interval |
+
+  A long-running `/metrics` exporter — the shape that would let
+  Prometheus scrape aiform directly instead of through a textfile
+  collector — is deliberately **not** part of that spec either: it would
+  be this repo's first inbound socket, and it belongs with "Centralized
+  server support" below.
 - ~~**Logging.**~~ **Built.** `aiform/log.py` (`specs/log.md`) closes this
   item: one predictable `key=value` log-line format across
   `plan`/`apply`/`destroy`/`refresh`, covering both the mechanical driver

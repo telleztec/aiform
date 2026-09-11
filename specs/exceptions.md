@@ -97,3 +97,14 @@ for exactly which call sites raise each and why.
   `DriverGenerationFailed`, per `specs/driver_gen.md`'s own stance on not
   anticipating `exceptions.py` types ahead of a real need; unrelated to
   the two types added here, which exist for `orchestrator.py` alone.
+
+## Addendum: `CapabilityNotSupported` does not live here
+
+`specs/driver_observability.md` adds `CapabilityNotSupported`, raised by
+`ResourceDriver.health()`/`metrics()` when a driver cannot answer for its
+resource kind. It is defined in `aiform/driver.py`, alongside
+`DriverUpdateNotSupported`, **not** in this module — the base class itself
+raises it, so it is part of the driver contract rather than a general-purpose
+error type. Recorded here so the next reader looking for it doesn't conclude it
+was forgotten, and doesn't "fix" it by moving it and re-creating the `PLAN.md`
+§1 discrepancy `specs/driver.md` has flagged since it was written.

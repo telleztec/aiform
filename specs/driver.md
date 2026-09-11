@@ -259,3 +259,54 @@ mechanism per field would be a poor trade against simply rejecting the input.
 **`PLAN.md` §4's contract should carry this too** — noted as a prerequisite,
 not done here, mirroring how `specs/resource_tagging.md` handled its own §4
 addendum.
+
+## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`)
+
+`ResourceDriver` grows two **optional** methods and one exception, for the
+day-2 questions `read()` cannot answer:
+
+```python
+class CapabilityNotSupported(Exception):
+    def __init__(self, capability: str, reason: str):
+        self.capability = capability
+        self.reason = reason
+        super().__init__(f"{capability}: {reason}")
+
+
+class ResourceDriver(ABC):
+    ...
+
+    def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
+        raise CapabilityNotSupported("health", "this driver does not implement health()")
+
+    def metrics(self, id: str, credentials: dict[str, str]) -> list[Sample]:
+        raise CapabilityNotSupported("metrics", "this driver does not implement metrics()")
+```
+
+**Concrete, not abstract** — the same reasoning as the marker-tag helpers
+above, and for an additional reason of its own: making either
+`@abstractmethod` would break every existing driver at instantiation time and
+force a resource that genuinely cannot answer to write a stub. A driver opts in
+by overriding; one that deliberately cannot implement one overrides it to raise
+`CapabilityNotSupported` with a resource-specific reason, so the decision is
+recorded where a reviewer reads it rather than being indistinguishable from a
+forgotten method (which is what a `hasattr` check would give).
+
+`CapabilityNotSupported` lives here in `driver.py`, alongside
+`DriverUpdateNotSupported` and for the same reason — the base class itself
+raises it, so it is part of the contract, not a general-purpose error. Putting
+it in `exceptions.py` would re-create the §1 discrepancy this file has been
+flagging at the top since it was written.
+
+**Parameter lists are `["self", "id", "credentials"]`** — identical to `read()`
+and `delete()`, and binding: `driver_gen.py`'s validator does exact list
+equality, so a driver renaming `id` fails validation. Because these are
+optional, they are checked via a separate `OPTIONAL_METHOD_PARAMS` dict applied
+only when the method is present; adding them to `EXPECTED_METHOD_PARAMS` would
+make them required (`specs/driver_gen.md`).
+
+Neither method is reachable from `plan`/`apply`. `aiform scan` is their only
+caller, and it never writes state. Full rules — control plane only, read-only,
+zero LLM calls, counter honesty, and why these are not a second caller of
+`read()` — are in `specs/driver_observability.md`; not restated here, to avoid
+the drift this file already documents twice.

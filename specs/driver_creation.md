@@ -609,9 +609,22 @@ candidates until Gate #3.
   command must execute; §7's CLI surface, and wiring `driver_gen.py` to
   anything, remain `PLAN.md` §10's "Self-service driver creation" item.
 - **Runtime observability.** `PLAN.md` §10's "Observability" entry is a
-  status URL for a live formation. The audit log here is *build-time*
-  observability for how a driver came to exist — related in spirit,
-  unrelated in mechanism.
+  status URL for a live formation, and `specs/driver_observability.md`'s
+  `health()`/`metrics()` are a per-resource scrape. The audit log here is
+  *build-time* observability for how a driver came to exist — related in
+  spirit to both, unrelated in mechanism to either.
+
+  **But the loop itself does apply to them.** `health()` and `metrics()`
+  are optional driver methods, and a driver implementing one is adding
+  CSP surface like any other: it needs probes with recorded transcripts
+  for the endpoints it calls, and its unit tests mock those transcripts.
+  This matters more than for the four required methods, not less —
+  `metrics()` in particular tends to call endpoints no existing driver
+  has touched (DigitalOcean's `/v2/monitoring/metrics/droplet/*` return
+  *time series* rather than instantaneous values, and only when the
+  droplet was created with `monitoring: true`), so the documented
+  signature is furthest from settled exactly where a guess is easiest.
+  A driver may not ship `metrics()` on a prediction alone.
 - **Publishing knowledge entries or drivers anywhere.** §10's "Driver
   submission and publishing" is untouched; `knowledge/` is a directory
   in this repo.
