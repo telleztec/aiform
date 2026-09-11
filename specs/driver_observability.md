@@ -93,8 +93,8 @@ is wrong, and that claim was the stated justification for the permission. The
 real justification is that duplicating `read()`'s response parsing in a second
 method is how the two drift apart.
 
-**This collides with rule 5's timeout target, and the collision is not
-resolved here.** `read()` reaches `urlopen` through `_request()`, which
+**This costs the ≤5s target, which rule 5 accommodates rather than
+resolves.** `read()` reaches `urlopen` through `_request()`, which
 hardcodes `REQUEST_TIMEOUT_SECONDS` and takes no timeout argument, so a
 `health()` delegating to `read()` inherits the 30-second bound and cannot get
 the ≤5s one. Threading a timeout through would change `read()`'s signature,
@@ -206,7 +206,7 @@ class ScanResult:
     scans: list[ResourceScan]
     elapsed_seconds: float
     warnings: list[str]  # file-level: a path whose key is not in state
-    errors: list[str]  # file-level and family-level; see Rendering
+    errors: list[str]  # file- and family-level only; per-sample goes on the ResourceScan
 
 
 def scan_resources(paths=None, *, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
@@ -412,6 +412,7 @@ must not blank the dashboard. Concretely, for each of the paths that can fail:
 | `metrics()` raises anything else | untouched | untouched | `[]` | the exception text |
 | Driver file missing (`PlanBlockedError`) | `None` | `None` | `[]` | the error |
 | Credentials unresolvable | `None` | `None` | `[]` | the error |
+| A returned `Sample` fails validation | untouched | untouched | the surviving samples | one entry per rejected sample |
 
 Every row that records an error also logs it at `WARNING` on the `aiform`
 logger, matching `refresh_resource()`'s handling of a drifted resource. A row
@@ -498,7 +499,7 @@ declined, the driver file was missing, or credentials would not resolve. Same
 reasoning as `UNKNOWN`: aiform has no observation to report, and `0` would
 assert one. An implementation emitting `0` on a credentials failure would page
 on an expired token rather than surfacing it as the configuration problem it
-is. The four `health=None` rows in the failure table above all land here.
+is. All three `health=None` rows in the failure table above land here.
 
 `DEGRADED` mapping to `1` is a deliberate loss: `up` is binary, and a degraded
 resource is still serving. The distinction survives in `text` and `json`
@@ -535,8 +536,17 @@ rather than an optional one.
 prometheus alone — as an earlier draft did — would let `cpu%` through
 unvalidated in JSON, reporting the same driver bug differently depending on a
 flag. Each `Sample` is validated once, on the way out of the sweep; all three
-renderers receive the same already-validated set, and every rejection lands in
-`ScanResult.errors`.
+renderers receive the same already-validated set.
+
+**Where a rejection is recorded follows what it belongs to.** A per-sample
+rejection — a bad name, a mistyped counter, a non-finite value, a colliding
+label — goes in that resource's `ResourceScan.errors`, because there is a
+resource that produced it and an operator asking "why is `web-01` missing
+`memory_bytes`" looks there. Only the two findings with no resource to attach
+to go in `ScanResult.errors`: a file whose key is not in state, and a metric
+family rejected across drivers. That is the rule `ScanResult`'s own rationale
+states, and an earlier draft of this paragraph contradicted it by sending
+every rejection to the top level.
 
 ### `--output`
 
@@ -647,7 +657,7 @@ A consumer contract, so it is fixed here rather than left to the renderer:
       "samples": [{"name": "memory_bytes", "kind": "gauge",
                    "value": 2147483648.0, "labels": {}}],
       "samples_unsupported": null,
-      "errors": []
+      "errors": ["dropped sample 'cpu%': name is not a valid metric name"]
     }
   ]
 }
@@ -658,15 +668,15 @@ rendering, which prefixes and stamps identity labels. A JSON consumer already
 has the identity fields beside the samples, and duplicating them into every
 label map would be noise.
 
-The top-level `warnings` and `errors` arrays carry what has no `ResourceScan`
-to hang on: the two file-level outcomes under "What `paths` means", and any
-family-level rejection from validation. Without them those findings would
+The top-level `warnings` and `errors` arrays carry only what has no
+`ResourceScan` to hang on: the two file-level outcomes under "What `paths`
+means", and any family-level rejection from validation. A per-sample rejection
+has a resource, so it appears in that resource's own `errors` — as above. Without them those findings would
 exist only in the log, and a JSON consumer would see a short `resources` list
 with no indication anything was dropped. `render_text` prints the same two
 lists; `render_prometheus` cannot, so it logs them at `WARNING` — an
 exposition file has no channel for prose, and inventing a
 `aiform_scan_errors` counter would be a metric nobody asked for.
-
 
 ## Out of scope
 

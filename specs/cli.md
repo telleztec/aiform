@@ -54,6 +54,10 @@ nothing calls back into it. Tests exercise it exclusively through
 `-v`/`--verbose`, `--no-color` are accepted both before and after the
 subcommand token (`aiform -v plan create` and `aiform plan create -v`
 both work) via a shared argparse parent parser attached at every level.
+**This is the intent, and it is currently false — see #134**: the
+subparser's `store_true` default overwrites the root parser's parsed
+value, so only the post-subcommand spelling takes effect. The addendum
+on `aiform scan` at the end of this file has the reproduction.
 `--state-file PATH` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
