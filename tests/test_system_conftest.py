@@ -13,16 +13,20 @@ clean up after. Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 
+import urllib.error
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import yaml
 
+from tests.system import conftest
 from tests.system.conftest import (
     SYSTEM_TEST_DROPLET_PREFIX,
     SYSTEM_TEST_TAG,
     SYSTEM_TEST_ZONE_PARENT,
     SYSTEM_TEST_ZONE_PREFIX,
+    _find_droplet_id_by_name,
+    destroy_droplet_or_shout,
     is_sweepable_droplet,
     unique_zone_name,
     write_domain_aiform_md,
@@ -212,3 +216,76 @@ class TestWriteDomainAiformMd:
         assert frontmatter["resource"] == "domain"
         assert frontmatter["provider"] == "digitalocean"
         assert frontmatter["name"] == "zone.example.com"
+
+
+class TestDestroyingTheBillableDroplet:
+    """The teardown for the one resource this suite pays for.
+
+    An earlier round's audit line claimed these were live-path helpers
+    unit tests could not exercise. They are loops over two functions and
+    time.sleep, so they can be, and the consequence of leaving them
+    untested is a droplet that bills until a human notices.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleeping(self, monkeypatch):
+        monkeypatch.setattr(conftest.time, "sleep", lambda _: None)
+
+    def test_a_transient_failure_is_retried_until_it_succeeds(self, monkeypatch):
+        attempts = []
+
+        def flaky(token, droplet_id):
+            attempts.append(droplet_id)
+            if len(attempts) < 3:
+                raise urllib.error.URLError("connection reset")
+
+        monkeypatch.setattr(conftest, "delete_droplet_directly", flaky)
+        destroy_droplet_or_shout("tok", 42, "d")
+        assert len(attempts) == 3
+
+    def test_a_droplet_that_survives_every_attempt_RAISES(self, monkeypatch):
+        # Not a warning. pyproject.toml sets no filterwarnings=error and
+        # run_system_tests.py forwards only the returncode, so warning
+        # here exits 0 with a droplet still billing -- quieter than the
+        # single unguarded DELETE this replaced.
+        monkeypatch.setattr(
+            conftest,
+            "delete_droplet_directly",
+            lambda *_: (_ for _ in ()).throw(urllib.error.URLError("down")),
+        )
+        with pytest.raises(RuntimeError, match="STILL BILLING"):
+            destroy_droplet_or_shout("tok", 42, "doomed")
+
+    def test_a_non_transient_error_is_not_retried_away(self, monkeypatch):
+        # AssertionError is how the listing helpers refuse an off-host
+        # redirect; retrying or swallowing one would defeat that guard.
+        monkeypatch.setattr(
+            conftest,
+            "delete_droplet_directly",
+            lambda *_: (_ for _ in ()).throw(AssertionError("refusing to follow")),
+        )
+        with pytest.raises(AssertionError, match="refusing"):
+            destroy_droplet_or_shout("tok", 42, "d")
+
+
+class TestRecoveringADropletIdByName:
+    def test_an_exact_name_match_is_returned(self, monkeypatch):
+        monkeypatch.setattr(conftest, "list_droplets", lambda _: [{"id": "7", "name": "wanted"}])
+        assert _find_droplet_id_by_name("tok", "wanted") == 7
+
+    @pytest.mark.parametrize("name", ["wanted-extra", "want", "WANTED", "telleztec-wordpress"])
+    def test_anything_short_of_an_exact_match_is_not_claimed(self, monkeypatch, name):
+        # This id is handed straight to a deleter, so a prefix or
+        # case-insensitive match here would destroy someone else's
+        # droplet.
+        monkeypatch.setattr(conftest, "list_droplets", lambda _: [{"id": "7", "name": name}])
+        assert _find_droplet_id_by_name("tok", "wanted") is None
+
+    def test_a_failed_listing_warns_rather_than_passing_silently(self, monkeypatch):
+        monkeypatch.setattr(
+            conftest,
+            "list_droplets",
+            lambda _: (_ for _ in ()).throw(urllib.error.URLError("403")),
+        )
+        with pytest.warns(UserWarning, match="it is billing"):
+            assert _find_droplet_id_by_name("tok", "wanted") is None

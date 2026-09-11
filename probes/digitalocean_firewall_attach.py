@@ -43,7 +43,12 @@ from _probe import (  # noqa: E402
 
 SESSION = "digitalocean_firewall_attach"
 FW_PREFIX = "aiform-system-test-fw-attach"
-DROPLET_PREFIX = "aiform-system-test-drop-probe"
+# Shares tests/system/conftest.py's SYSTEM_TEST_DROPLET_PREFIX stem
+# deliberately: that sweep is the backstop for a droplet this session
+# leaks, and it matches on the prefix. A name outside that stem makes
+# this session's droplets invisible to the only thing that would catch
+# one an interrupted run left behind.
+DROPLET_PREFIX = "aiform-system-test-fwdrop-probe"
 RULE = {"protocol": "tcp", "ports": "22", "sources": {"addresses": ["0.0.0.0/0"]}}
 
 # The cheapest thing DigitalOcean sells, billed hourly.
@@ -74,7 +79,18 @@ def _created_id(result, key):
     if result.status >= 400:
         raise SystemExit(f"setup call failed with {result.status}; aborting session")
     if not isinstance(result.body, dict):
-        return DRY_ID
+        if not result.status:
+            return DRY_ID
+        # A 2xx whose body did not parse: DigitalOcean accepted the
+        # create, so the resource is live, and nothing here holds its id
+        # to register a cleanup for. Say so loudly and name the sweep
+        # that will catch it, rather than returning a placeholder that
+        # would register a DELETE for an id that does not exist.
+        raise SystemExit(
+            f"{key} was created ({result.status}) but its body did not parse, so no cleanup "
+            f"could be registered -- it is LIVE and untracked. Run this probe with --sweep, "
+            f"or destroy it by hand."
+        )
     return result.body[key]["id"]
 
 

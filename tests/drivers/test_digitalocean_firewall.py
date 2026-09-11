@@ -723,6 +723,20 @@ class TestWaitsUntilTheRulesAreActuallyInForce:
         # the orphan case the rollback exists for.
         assert any(c["method"] == "DELETE" for c in fake_urlopen.calls), "should have rolled back"
 
+    def test_the_rollback_says_the_firewall_was_deleted(self, driver, fake_urlopen, caplog):
+        # The exception cannot carry this: its type has to survive for
+        # callers that match on it, so the message stays caller-neutral
+        # and the log is where "it is gone" is actually stated.
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.firewall")
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, waiting_payload()))
+        fake_urlopen.script("GET", attached_url(), FakeHTTPResponse(200, waiting_payload()))
+        fake_urlopen.script("DELETE", attached_url(), FakeHTTPResponse(204, None))
+
+        with pytest.raises(RuntimeError):
+            driver.create(NAME, attached_params(), CREDENTIALS)
+
+        assert any("deleted and is not live" in r.getMessage() for r in caplog.records)
+
     def test_update_polls_too(self, driver, fake_urlopen):
         fake_urlopen.script("PUT", attached_url(), FakeHTTPResponse(200, waiting_payload()))
         fake_urlopen.script(

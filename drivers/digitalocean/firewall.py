@@ -559,6 +559,16 @@ class Driver(ResourceDriver):
                 # Terminal: retrying cannot change it, and waiting out
                 # the full ceiling would turn a clear error into a
                 # two-minute hang.
+                logger.error(
+                    "",
+                    extra={
+                        "id": id,
+                        "step": step,
+                        "attempts_used": attempt + 1,
+                        "duration_ms": log.elapsed_ms(start),
+                        "outcome": "failed",
+                    },
+                )
                 raise RuntimeError(
                     f"firewall {id}: DigitalOcean reported status={status!r} while applying "
                     f"the rules during {step}; pending_changes={pending!r}"

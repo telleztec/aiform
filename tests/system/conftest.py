@@ -810,11 +810,25 @@ def create_droplet_directly(token: str, name: str) -> int:
 
 
 def _find_droplet_id_by_name(token: str, name: str) -> int | None:
+    """The id of a droplet with exactly this name, if the list call works.
+
+    The name carries a timestamp and 6 hex characters, and the match is
+    equality, so this cannot return another suite's droplet or a partial
+    match. A transient failure here is reported rather than swallowed:
+    the caller re-raises the original create error either way, and
+    without this warning the user is told "create failed" with no hint
+    that a droplet may exist under a name they could search for.
+    """
     try:
         for droplet in list_droplets(token):
             if droplet.get("name") == name:
                 return int(droplet["id"])
-    except Exception:
+    except _SWEEP_TRANSIENT_ERRORS as exc:
+        warnings.warn(
+            f"could not check whether droplet {name!r} was created before the error "
+            f"({exc}) -- if it exists it is billing; search for that name by hand",
+            stacklevel=2,
+        )
         return None
     return None
 
@@ -828,9 +842,15 @@ def destroy_droplet_or_shout(token: str, droplet_id: int | str, name: str) -> No
     skips anything younger than SWEEP_MIN_AGE_MINUTES precisely so it
     never deletes a droplet a concurrent run is using.
 
-    Tolerates the same transient errors wait_until_droplet_gone() does,
-    and on final failure warns with the id -- a warning naming what to
-    destroy by hand is the last line of defence.
+    Tolerates the same transient errors wait_until_droplet_gone() does.
+    On final failure it RAISES rather than warning: a warning is invisible
+    to every machine that reads this suite. pyproject.toml sets no
+    filterwarnings=error and scripts/run_system_tests.py forwards only
+    pytest's returncode, so warning here would exit 0 with a live droplet
+    billing -- a quieter outcome than the single DELETE this replaced,
+    which at least produced a teardown ERROR. Raising in a finalizer
+    keeps the message AND the non-zero exit; pytest reports it as a
+    teardown error alongside whatever the test itself did.
     """
     last: Exception | None = None
     for attempt in range(5):
@@ -841,11 +861,10 @@ def destroy_droplet_or_shout(token: str, droplet_id: int | str, name: str) -> No
             last = exc
             if attempt < 4:
                 time.sleep(2)
-    warnings.warn(
+    raise RuntimeError(
         f"FAILED to destroy droplet {droplet_id} ({name!r}) after 5 attempts ({last}) -- "
-        "IT IS STILL BILLING. Destroy it by hand.",
-        stacklevel=2,
-    )
+        "IT IS STILL BILLING. Destroy it by hand."
+    ) from last
 
 
 @pytest.fixture
