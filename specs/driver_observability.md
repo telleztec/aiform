@@ -201,16 +201,22 @@ class ResourceScan:
     errors: list[str]
 
 
-def scan_resources(
-    paths=None, *, state_path=state.DEFAULT_STATE_PATH
-) -> tuple[list[ResourceScan], float]:
-    """Sweep every tracked resource. Returns the scans and elapsed seconds.
-    Reads state; never writes it. Makes zero Anthropic API calls."""
+@dataclass
+class ScanResult:
+    scans: list[ResourceScan]
+    elapsed_seconds: float
+    warnings: list[str]  # file-level: a path whose key is not in state
+    errors: list[str]  # file-level and family-level; see Rendering
 
 
-def render_text(scans: list[ResourceScan], elapsed: float) -> str: ...
-def render_json(scans: list[ResourceScan], elapsed: float) -> str: ...
-def render_prometheus(scans: list[ResourceScan], elapsed: float) -> str: ...
+def scan_resources(paths=None, *, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
+    """Sweep every tracked resource. Reads state; never writes it.
+    Makes zero Anthropic API calls."""
+
+
+def render_text(result: ScanResult) -> str: ...
+def render_json(result: ScanResult) -> str: ...
+def render_prometheus(result: ScanResult) -> str: ...
 def write_atomically(text: str, path: Path) -> None: ...
 ```
 
@@ -321,15 +327,22 @@ that never runs.
    `_imports_anthropic` AST check, which has no caller either, per the
    enforcement note above. An earlier draft cited it here, fifteen lines after
    correcting the same mistake about `review_driver.md`.
-5. **Bounded, and not by inheriting the driver's own timeout.** The target is
-   ≤5s per resource. Every existing driver already bounds each call —
+5. **Bounded — with one permitted exception.** The target is ≤5s per
+   resource. Every existing driver already bounds each call —
    `compute.py`, `domain.py` and `firewall.py` all set
    `REQUEST_TIMEOUT_SECONDS = 30` and pass it to `urlopen` — so the hazard is
    not an unbounded call, it is a **30-second** one: a `health()` that reuses
    the driver's existing `_request()` helper silently gets a bound six times
    the target, and ten such resources put a sequential sweep well past a
-   15-second scrape interval. A driver implementing these should pass a
-   shorter timeout on this path explicitly.
+   15-second scrape interval.
+
+   **The exception:** a `health()` that delegates to `self.read()` (permitted
+   above, and the reason it is permitted is there) inherits that 30s bound and
+   has no way to shorten it without changing `read()`'s signature. That is
+   allowed. A `health()` issuing its own request should pass a shorter timeout
+   explicitly. A reviewer applying this rule must not reject the first shape
+   for failing the second's standard — an earlier draft of this rule read as a
+   flat prohibition and contradicted the permission.
 
    *Not mechanically enforced.* `scan_resources()` calls each driver
    synchronously and cannot interrupt a `urlopen` already in flight without
@@ -354,7 +367,14 @@ that never runs.
    it does not call `refresh_state()`, which saves state.
 3. Per resource, call `health()` then `metrics()`, each guarded independently:
    one being unsupported or raising does not skip the other.
-4. Return the scans and the elapsed wall-clock seconds. **Never writes state.**
+4. Return a `ScanResult`. **Never writes state.**
+
+`ScanResult` is a dataclass rather than a widening tuple because two of its
+four fields — `warnings` and `errors` — carry findings that have no
+`ResourceScan` to attach to (a file whose key is not in state; a metric family
+rejected across drivers). An earlier draft returned `(scans, elapsed)` and
+described those lists in the rendering sections without ever producing them,
+which left every renderer's signature unable to see them.
 
 ### What `paths` means
 
@@ -385,7 +405,7 @@ must not blank the dashboard. Concretely, for each of the paths that can fail:
 | Failure | `health` | `health_unsupported` | `samples` | `errors` |
 |---|---|---|---|---|
 | `health()` declines (`CapabilityNotSupported`) | `None` | the reason | `metrics()` still attempted | unchanged |
-| `health()` raises `ResourceNotFoundError` | `HealthReport(FAILING, "resource not found")` | `None` | `[]`, `metrics()` skipped | unchanged |
+| `health()` raises `ResourceNotFoundError` | `HealthReport(FAILING, "resource not found")` | `None` | `metrics()` still attempted | unchanged |
 | `health()` raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | `metrics()` still attempted | the exception text |
 | `metrics()` declines | untouched | untouched | `[]`, `samples_unsupported` set | unchanged |
 | `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | unchanged |
@@ -400,8 +420,19 @@ declining a capability is not an error anywhere in this spec.
 
 `ResourceNotFoundError` gets its own rows because "raises anything else" would
 otherwise classify it `UNKNOWN`, contradicting the `FAILING` mapping below. It
-is not an error in `errors` either: the resource being gone is the finding, and
-`health()` has already reported it.
+is not recorded in `errors`: the resource being gone is the finding, not a
+failure to observe.
+
+**`metrics()` is still attempted after `health()` reports the resource gone**,
+per step 3's "guarded independently" — an earlier draft skipped it, which both
+contradicted that step and created a hole. The hole is worth naming, because it
+is the one shape in which a vanished resource leaves the scrape silently: if
+`health()` *declines* the capability and `metrics()` then raises
+`ResourceNotFoundError`, the resource has no `up` series to go to zero and no
+error recorded, so it simply stops appearing. A driver that declines `health()`
+therefore cannot report its own disappearance at all — an argument for
+implementing `health()` even where the verdict is thin, and a limitation stated
+here rather than discovered from a dashboard that quietly lost a row.
 
 `UNKNOWN` is represented as a real `HealthReport`, not as `health=None`, so
 `render_prometheus()` can tell it from a decline and from a never-reached
@@ -462,6 +493,13 @@ An absent series is how Prometheus already expresses "no observation"; emitting
 `0` would assert a failure aiform did not observe, which is the
 `UNKNOWN`-vs-`FAILING` distinction thrown away at the last step.
 
+**No `up` series at all** when `health` is `None` — the capability was
+declined, the driver file was missing, or credentials would not resolve. Same
+reasoning as `UNKNOWN`: aiform has no observation to report, and `0` would
+assert one. An implementation emitting `0` on a credentials failure would page
+on an expired token rather than surfacing it as the configuration problem it
+is. The four `health=None` rows in the failure table above all land here.
+
 `DEGRADED` mapping to `1` is a deliberate loss: `up` is binary, and a degraded
 resource is still serving. The distinction survives in `text` and `json`
 output, and a driver that wants it alertable should emit its own gauge.
@@ -469,8 +507,10 @@ output, and a driver that wants it alertable should emit its own gauge.
 ### Validation before a line is written
 
 One malformed line makes the textfile collector discard the **whole file**, so
-the renderer is the last place to catch a driver's mistake, and it validates
-rather than trusting:
+a driver's mistake has to be caught before it is written. `scan_resources()`
+does the catching — see the note at the end of this section on why it is not
+the renderer — and these are the rules it applies. They are phrased against the
+rendered `aiform_<name>`, which the validator therefore computes:
 
 - **Metric name** — the rendered `aiform_<name>` must match
   `[a-zA-Z_:][a-zA-Z0-9_:]*`. A driver returning `cpu%` or `disk-free` is
@@ -490,6 +530,13 @@ rather than trusting:
 timestamp — it treats one as an error and **skips the entire file**
 (`prometheus/node_exporter#1284`). This is why `Sample` has no timestamp field
 rather than an optional one.
+
+**Where this runs: `scan_resources()`, not a renderer.** Specifying it under
+prometheus alone — as an earlier draft did — would let `cpu%` through
+unvalidated in JSON, reporting the same driver bug differently depending on a
+flag. Each `Sample` is validated once, on the way out of the sweep; all three
+renderers receive the same already-validated set, and every rejection lands in
+`ScanResult.errors`.
 
 ### `--output`
 
@@ -572,7 +619,7 @@ signal anyone sees, so it is specified rather than left to the implementer:
 | Code | When |
 |---|---|
 | 0 | the sweep ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
-| 2 | the sweep could not run: unreadable state, unwritable `--output`, an unknown `--format` |
+| 2 | the sweep could not run: malformed state, unwritable `--output`, an unknown `--format`, or a `FILE.aiform.md` argument that does not exist |
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —
@@ -620,12 +667,6 @@ lists; `render_prometheus` cannot, so it logs them at `WARNING` — an
 exposition file has no channel for prose, and inventing a
 `aiform_scan_errors` counter would be a metric nobody asked for.
 
-**Validation runs before rendering, not inside `render_prometheus()`.** An
-earlier draft specified it only under the prometheus section, which would have
-let `cpu%` through unvalidated in JSON — the same driver bug reported
-differently depending on a flag. `scan_resources()` validates every `Sample`
-and drops the bad ones once; all three renderers receive the same already-
-validated set.
 
 ## Out of scope
 

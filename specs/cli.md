@@ -734,9 +734,15 @@ a second top-level command needs its own explicit branch there, or it raises
 should be added with `parents=[global_parent, state_parent]`, matching every
 sibling — not because `args.verbose` would otherwise be missing (the root
 parser carries `global_parent` too, so it is always present) but so that
-`aiform scan -v` parses at all. Without it only the pre-subcommand spelling
-`aiform -v scan` works, and the post-subcommand one fails with argparse's
-bare "unrecognized arguments: -v".
+`aiform scan -v` parses at all. Without the parent, that spelling fails with
+argparse's bare "unrecognized arguments: -v".
+
+Adding it does **not** make both spellings work, and this spec's "Global flags"
+section above is wrong to say they do: the subparser's `store_true` default is
+applied after the root's value is parsed, so `aiform -v plan show` yields
+`verbose=False` today on every subcommand. Tracked as #134 — `scan` will
+inherit the same behavior, and should be fixed by that issue rather than
+working around it here.
 
 Behavior, output formats, the atomic `--output` write and the `.prom` suffix
 requirement are specified in `specs/driver_observability.md` — not restated
