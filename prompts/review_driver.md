@@ -125,12 +125,17 @@ Check specifically for:
       could not find out" and is set by `aiform scan` when the method
       raises. A driver catching its own timeout and returning `UNKNOWN`
       destroys the error text that says what went wrong.
-    - **A `MetricKind.COUNTER` that isn't one.** `COUNTER` is only for a
-      value the CSP documents as cumulative and monotonic over the
-      resource's lifetime, and its name must end in `_total`. A value
-      that resets on reboot, or one the driver computed by subtracting
-      two reads, is a `GAUGE`. Getting this wrong makes `rate()` produce
-      a plausible, silently false number — worse than no metric.
+    - **A `MetricKind.COUNTER` that isn't one.** Two checks, and only the
+      first is one you can make from the source alone — make that one,
+      and raise the second as a `concerns` entry rather than guessing:
+      (a) its name must end in `_total`, and it must not be computed by
+      subtracting or differencing two values the driver read — both
+      visible in the diff; (b) `COUNTER` is only correct for a value the
+      CSP *documents* as cumulative and monotonic over the resource's
+      lifetime, which you cannot verify without that documentation in
+      front of you. A value that resets on reboot is a `GAUGE`. Getting
+      this wrong makes `rate()` produce a plausible, silently false
+      number — worse than no metric.
     - **Setting an identity label.** `provider`, `resource_type`, `name`
       and `id` in `Sample.labels` are stamped by the renderer; a driver
       setting one collides and gets its samples dropped.

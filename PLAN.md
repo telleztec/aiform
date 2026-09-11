@@ -330,7 +330,7 @@ aiform/
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
-│   ├── cli.py                      # plan / apply / destroy / init / refresh / show / scan
+│   ├── cli.py                      # plan / apply / destroy / init / refresh / show (+ scan, not yet built)
 │   ├── config.py                   # env var + credentials-file resolution (§8)
 │   ├── parser.py                   # aiform.md -> ResourceSpec
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
@@ -1210,6 +1210,10 @@ aiform plan show [--state-file PATH]
 
 aiform scan [--format text|json|prometheus] [--output PATH]
             [--state-file PATH] [FILE.aiform.md ...]
+    NOT YET IMPLEMENTED -- specified in specs/driver_observability.md,
+    built in a later PR. Unlike the `aiform driver` commands below, this
+    one is being built; it is listed here rather than under that divider
+    because it has nothing to do with mechanism 2.
     Sweeps every tracked resource (or those matching the given files),
     calling driver.health() and driver.metrics() on each (§4). Reads
     state, NEVER writes it, and makes zero Anthropic API calls — it is
@@ -1221,9 +1225,9 @@ aiform scan [--format text|json|prometheus] [--output PATH]
     driver declines either capability reports "unsupported: <reason>";
     one whose driver raises reports UNKNOWN. Neither aborts the sweep —
     a single broken driver must not blank a dashboard. Top-level rather
-    than an `aiform plan` subcommand: it neither plans nor applies, and
-    every `plan` subcommand may write state, which this must not.
-    See specs/driver_observability.md.
+    than an `aiform plan` subcommand because it neither plans nor
+    applies -- not because every `plan` subcommand writes state, which
+    is untrue of `plan show`. See specs/driver_observability.md.
 
 --- Not yet implemented below, and not currently being built (§6,
     mechanism 2's target interactive shape — see "Driver curation").

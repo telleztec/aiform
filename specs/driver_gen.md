@@ -109,7 +109,9 @@ EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
     "delete": ["self", "id", "credentials"],
 }
 
-# specs/driver_observability.md. Checked ONLY when the method is present:
+# specs/driver_observability.md. NOT YET IMPLEMENTED -- neither this dict
+# nor check 5a exists in driver_gen.py yet; both land with the contract
+# change they validate. Checked ONLY when the method is present:
 # health()/metrics() are optional, and an entry in the dict above would
 # make them required, since a missing name there produces a "missing
 # method" reason.
@@ -226,7 +228,8 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      `Driver`, with positional parameter names exactly matching
      `EXPECTED_METHOD_PARAMS` (annotations/defaults/return types are not
      checked, only names, in order).
-  5a. If — and only if — `health` or `metrics` is present on `Driver`,
+  5a. *(Not yet implemented — see `OPTIONAL_METHOD_PARAMS` above.)* If —
+     and only if — `health` or `metrics` is present on `Driver`,
      its positional parameter names match `OPTIONAL_METHOD_PARAMS`. A
      driver omitting both is valid and complete: the base class
      implements them by raising `CapabilityNotSupported`

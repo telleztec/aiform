@@ -47,25 +47,54 @@ discharge the other.
 ## Why not `read()`
 
 `read()` already fetches live attributes for a tracked resource, so the
-cheapest-looking design is to poll it. That is wrong in three independent
-ways, and the reasons are the design constraints for everything below:
+cheapest-looking design is to poll it on the refresh path. Two reasons that
+does not work, and one that turns out **not** to be a reason at all — recorded
+because an earlier draft of this spec got it wrong, and the wrong version
+forbade the cheap implementation below.
 
-1. **`read()` writes state.** `orchestrator.refresh_resource()` persists its
-   output, and `PLAN.md` §3's refresh mechanism writes `.aiform/state.json`
-   immediately, even on a bare `plan`. A dashboard polling every 15s would
-   churn the state file and rewrite `last_refreshed_at`, changing what a later
-   `plan` means.
-2. **There is no locking** (`PLAN.md` §10). A poll racing a real `apply` can
-   corrupt state.
-3. **`read()`'s shape is constrained to be diffable** against the user's raw
-   `params`. Health is not an attribute anyone declares in `.aiform.md`, and a
-   CPU gauge that appeared in the attribute dict would be a permanent,
-   non-empty diff — which permanently defeats the zero-LLM-call short-circuit
-   for that resource, exactly the failure `specs/unordered_fields.md` exists to
-   fix.
+1. **`read()`'s projection deliberately drops the fields health needs.** A
+   driver's `read()` returns what is worth *storing*, and server-set status
+   fields are specifically excluded because they churn.
+   `drivers/digitalocean/firewall.py`'s `_project()` says so in as many words:
+   it is "a whitelist, not a blacklist: the server-set fields it thereby drops
+   — `status`, `created_at`, `pending_changes` — churn on every edit, so
+   storing them would rewrite `state.json` on every refresh."
 
-So these are separate methods with separate return types on a separate command
-that never writes state — not a second caller of `read()`.
+   Those two dropped fields are exactly what a firewall's health verdict is
+   made of. Widening `read()` to carry them would reintroduce the churn that
+   comment exists to prevent — a state write on every refresh, of values
+   nobody declared.
+2. **The refresh path writes state, and there is no locking** (`PLAN.md` §10).
+   Note the precision: `refresh_resource()` itself writes nothing, it returns
+   `(attributes, drifted_missing)`. The `state.save()` calls live in
+   `refresh_state()`, `build_create_plan()` and `apply_plan()`. But every
+   caller that refreshes does save, per `PLAN.md` §3 step 3, so a dashboard
+   polling `aiform plan refresh` every 15s would churn `state.json`, rewrite
+   `last_refreshed_at`, and can corrupt state by racing a real `apply`.
+3. **Not a reason: "an extra attribute would cause a permanent diff."** It
+   would not. `planner.diff_attributes()` iterates `desired.items()`, so a key
+   present only in `current` can never appear in the diff.
+   `drivers/digitalocean/compute.py`'s `read()` already returns `status` and
+   `ipv4_address` — neither a `PARAM_SCHEMA` key — with no diff, and
+   `firewall.py` carries `name` for the same reason with a comment saying
+   precisely this. An earlier draft of this spec claimed the opposite and used
+   it to rule out the design in the next paragraph.
+
+**So a driver's `health()` MAY call its own `read()`** and classify the result,
+whenever `read()` happens to return enough — `compute.py`'s does, since
+`status` and `ipv4_address` survive its projection. That is the cheapest
+correct implementation, it halves the per-resource request count the
+Scrape-cost section below is worried about, and nothing here discourages it.
+What a driver must not do is *widen* `read()` to make that possible.
+
+What survives as the reason for separate **methods** is narrower than "`read()`
+is unusable": `read()` returns an attribute dict with no room for a verdict,
+and deciding that `status == "active"` means healthy is per-resource knowledge
+that belongs in the driver rather than in a renderer. `metrics()` is separate
+on stronger grounds still — it calls endpoints `read()` never touches.
+
+The reason for a separate **command** is reason 2 alone: `aiform scan` must
+never write state, and every existing refresh caller does.
 
 ## Interface
 
@@ -148,7 +177,7 @@ class ResourceScan:
     resource_type: str
     name: str
     id: str
-    health: HealthReport | None  # None iff health_unsupported is set
+    health: HealthReport | None  # None when declined, or never reached
     health_unsupported: str | None  # the CapabilityNotSupported reason
     samples: list[Sample]
     samples_unsupported: str | None
@@ -175,9 +204,11 @@ aiform scan [--format text|json|prometheus] [--output PATH]
             [--state-file PATH] [FILE.aiform.md ...]
 ```
 
-`scan` is a **top-level** command, not an `aiform plan` subcommand. It neither
-plans nor applies anything, and `plan`'s subcommands all share `--state-file`
-semantics that include writing state — which this must never do.
+`scan` is a **top-level** command, not an `aiform plan` subcommand: it neither
+plans nor applies anything. Note the reason is only that — an earlier draft
+also argued "every `plan` subcommand may write state", which is false of
+`plan show` (`state.load()` plus print) and of `plan refresh` on its
+read-only path. The grouping is about what the verb means, not about state.
 
 ## Behavior
 
@@ -242,9 +273,18 @@ makes `rate()` produce a plausible, silently false number.
 
 ### Rules both methods must follow
 
-These are what make it safe to call them on a 15-second interval. They are
-checklist items in `prompts/review_driver.md`, which since #119 is the only
-review a driver's imports and call shapes ever get.
+These are what make it safe to call them on a 15-second interval.
+
+**Where they are actually enforced.** `PROCESS.md`'s PR-time `/code-review` —
+and nothing else, for every driver that exists today. `prompts/review_driver.md`
+is loaded only by `llm.review_driver()`, whose only caller is
+`driver_gen.py:generate_driver()`, which no code path calls; and #119 removed
+gate #1 from `plan`/`apply` entirely. `CLAUDE.md` states this plainly and an
+earlier draft of this spec asserted the opposite. Item 12 was still added to
+that prompt, so the rules are in place for the future `aiform driver create`
+flow — but a curated driver's only gate is the human-launched review at PR
+time, and a spec that implies otherwise invites someone to rely on a check
+that never runs.
 
 1. **Read-only.** `GET`/`HEAD` against the CSP control plane and nothing else.
    No `POST`/`PUT`/`PATCH`/`DELETE`. No side effect that creates or modifies
@@ -252,13 +292,31 @@ review a driver's imports and call shapes ever get.
 2. **Control plane only**, per the section above.
 3. **No state write.** Neither method may touch `.aiform/state.json` or its
    backup.
-4. **Zero LLM calls, always**, on both paths. `tests/conftest.py`'s
-   `forbid_llm_client` fixture asserts this mechanically.
-5. **Bounded.** The driver bounds its own HTTP calls; the contract's target is
-   ≤5s per resource. *This is not mechanically enforced* — aiform cannot bound
-   a synchronous `urllib` call without threads, so the requirement is stated
-   and `/code-review` checks it. Said plainly here rather than implied to be
-   guaranteed.
+4. **Zero LLM calls, always**, on both paths. `scan.py`'s tests must request
+   `tests/conftest.py`'s `forbid_llm_client` fixture explicitly — it is
+   **not** autouse (unlike the two credential/logger fixtures beside it), so a
+   test that forgets it asserts nothing. Note also what it does not cover: it
+   patches `llm.build_client`, so a driver constructing `anthropic.Anthropic()`
+   directly inside `metrics()` walks straight past it. That case is caught by
+   `/code-review` and by `driver_gen.py`'s `_imports_anthropic` AST check, not
+   by this fixture.
+5. **Bounded, and not by inheriting the driver's own timeout.** The target is
+   ≤5s per resource. Every existing driver already bounds each call —
+   `compute.py`, `domain.py` and `firewall.py` all set
+   `REQUEST_TIMEOUT_SECONDS = 30` and pass it to `urlopen` — so the hazard is
+   not an unbounded call, it is a **30-second** one: a `health()` that reuses
+   the driver's existing `_request()` helper silently gets a bound six times
+   the target, and ten such resources put a sequential sweep well past a
+   15-second scrape interval. A driver implementing these should pass a
+   shorter timeout on this path explicitly.
+
+   *Not mechanically enforced.* `scan_resources()` calls each driver
+   synchronously and cannot interrupt a `urlopen` already in flight without
+   threads, and there is no whole-sweep deadline. Nothing stops the next
+   `scan` starting before the last finished. Stated plainly rather than
+   implied to be guaranteed; a real bound belongs with `PLAN.md` §10's
+   "Timeout/retry/failover orchestration" entry, which owns this for every
+   driver call rather than just these two.
 6. **No identity labels.** A driver does not set `provider`, `resource_type`,
    `name` or `id` in `Sample.labels`; the renderer stamps those. A driver that
    sets one has its samples dropped for that resource (see Edge cases). This
@@ -267,51 +325,149 @@ review a driver's imports and call shapes ever get.
 
 ### `scan_resources()`
 
-1. Load state. Iterate `st.resources.values()`, filtered to the resources
-   matching `paths` when given — the same walk `orchestrator.refresh_state()`
-   and `build_destroy_plan()` already do over every tracked resource.
-2. Cache drivers by `(provider, resource_type)` and credentials by provider,
-   matching `refresh_state()`'s existing caching.
+1. Load state. With no `paths`, sweep every entry in `st.resources`.
+2. Cache drivers by `(provider, resource_type)` via
+   `orchestrator.load_driver()` — not a private copy of it, so `scan` and
+   `plan` can never disagree about which driver file they loaded — and
+   credentials by provider. This mirrors `refresh_state()`'s caching shape;
+   it does not call `refresh_state()`, which saves state.
 3. Per resource, call `health()` then `metrics()`, each guarded independently:
    one being unsupported or raising does not skip the other.
 4. Return the scans and the elapsed wall-clock seconds. **Never writes state.**
 
-**Partial failure never aborts the sweep.** Everything is caught per resource
-and per method. One driver raising means that resource reports `UNKNOWN` and
-the rest still render — a single broken driver must not blank the dashboard.
+### What `paths` means
+
+`build_destroy_plan()` resolves paths by reading each file, parsing its
+frontmatter and computing `resource_key()` — **not** by matching
+`StateEntry.aiform_md_path`. `scan` does the same, and the choice is not
+cosmetic: matching on the stored path silently yields an empty sweep (exit 0,
+blank dashboard) whenever a file was renamed or `scan` runs from another
+directory. `refresh_state()` is not the model here — it takes no `paths` at
+all.
+
+- A path that parses to a key **not in state** is reported as a warning, like
+  `build_create_plan()`'s uncovered-key warnings. Not an error: a resource that
+  was never applied has nothing to scan.
+- A **malformed `.aiform.md`** raises `ValueError` from the parser. Caught,
+  reported as that file's error, sweep continues — the file is an input to
+  resource selection, not a resource.
+
+### Partial failure never aborts the sweep
+
+Everything is caught per resource and per method. One driver raising means that
+resource reports `UNKNOWN` and the rest still render — a single broken driver
+must not blank the dashboard. Concretely, for each of the paths that can fail:
+
+| Failure | `health` | `health_unsupported` | Effect |
+|---|---|---|---|
+| Driver declines (`CapabilityNotSupported`) | `None` | the reason | no `up` series |
+| Driver raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | no `up` series |
+| Driver file missing (`PlanBlockedError`) | `None` | `None` | no `up` series, error recorded |
+| Credentials unresolvable | `None` | `None` | no `up` series, error recorded |
+
+`UNKNOWN` is represented as a real `HealthReport`, not as `health=None`, so
+`render_prometheus()` can tell it from a decline and from a never-reached
+driver without consulting `errors`. `health=None` therefore means only "the
+method was never called"; the `health_unsupported` field distinguishes a
+deliberate decline from a failure before the call. An earlier draft's
+`None iff health_unsupported is set` comment was wrong for the last two rows.
+
+**A missing credential is per-resource here, not fatal.** This is a deliberate
+divergence from `refresh_state()`, which lets `PlanBlockedError` abort the
+whole run. A sweep covering two providers must still report the one whose token
+is present — aborting everything because an unrelated provider's token expired
+is precisely the "one broken thing blanks the dashboard" failure above.
+
+`ResourceNotFoundError` is handled for **both** methods, not just `health()`:
+from `metrics()` it means the same thing, and the resource contributes no
+samples rather than an error, since `health()` has already reported `FAILING`
+for it.
 
 ### Rendering
 
-`render_prometheus()` emits, for each resource with a health verdict:
+**Group by metric family, not by resource.** The exposition format wants every
+sample of one metric name contiguous, with its `# TYPE` line once, immediately
+before the group. Iterating resources and emitting each one's samples inline
+scatters a family across the file; node_exporter's parser tolerates that, but
+`promtool check metrics` flags it, and a **second `# TYPE` line for the same
+name is a hard parse error**. So `render_prometheus()` collects all samples,
+buckets them by rendered name, and emits one group per name.
 
 ```
-# HELP aiform_resource_up Whether the CSP reports this resource as working.
 # TYPE aiform_resource_up gauge
 aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
+aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
+# TYPE aiform_memory_bytes gauge
 aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
-# HELP aiform_scan_duration_seconds Wall-clock seconds for the whole sweep.
 # TYPE aiform_scan_duration_seconds gauge
 aiform_scan_duration_seconds 0.83
 ```
 
-`aiform_resource_up` is `1` for `OK` and `DEGRADED`, `0` for `FAILING`, and
-**absent** for `UNKNOWN`. An absent series is how Prometheus already expresses
-"no observation"; emitting `0` would assert a failure aiform did not observe,
-which is the `UNKNOWN`-vs-`FAILING` distinction thrown away at the last step.
+`# TYPE` is emitted for every family, including driver-supplied ones — that is
+what `Sample.kind` is *for*, and an earlier draft's example omitted it on the
+driver metric while the prose required it.
+
+`# HELP` is emitted **only** for aiform's own two families, whose text this
+spec fixes (`aiform_resource_up`: "Whether the CSP reports this resource as
+working."; `aiform_scan_duration_seconds`: "Wall-clock seconds for the whole
+sweep."). `Sample` carries no help text, so driver metrics get `TYPE` and no
+`HELP`. That is legal, and it is the honest option: the alternative is a
+`help` field on `Sample` that every driver would fill with a restatement of
+the name.
+
+### `aiform_resource_up`
+
+`1` for `OK` and `DEGRADED`, `0` for `FAILING`, and **absent** for `UNKNOWN`.
+An absent series is how Prometheus already expresses "no observation"; emitting
+`0` would assert a failure aiform did not observe, which is the
+`UNKNOWN`-vs-`FAILING` distinction thrown away at the last step.
 
 `DEGRADED` mapping to `1` is a deliberate loss: `up` is binary, and a degraded
 resource is still serving. The distinction survives in `text` and `json`
 output, and a driver that wants it alertable should emit its own gauge.
 
-Label values are escaped per the exposition format (`\\`, `"`, `\n`). `HELP`/
-`TYPE` are emitted once per metric name, before its first sample — repeating
-them makes the file invalid, which matters because one malformed line makes the
-textfile collector discard the **whole file**.
+### Validation before a line is written
 
-`--output PATH` writes via a temporary file in the same directory plus
-`os.replace()`. The textfile collector reads the directory continuously and
-will happily parse a half-written file; atomicity is a requirement of that
-integration, not a nicety.
+One malformed line makes the textfile collector discard the **whole file**, so
+the renderer is the last place to catch a driver's mistake, and it validates
+rather than trusting:
+
+- **Metric name** — the rendered `aiform_<name>` must match
+  `[a-zA-Z_:][a-zA-Z0-9_:]*`. A driver returning `cpu%` or `disk-free` is
+  dropped with an error naming the driver, not written out to poison the file.
+- **Label names** — must match `[a-zA-Z_][a-zA-Z0-9_]*`. Label *values* are
+  arbitrary UTF-8, escaped for `\\`, `"` and `\n`.
+- **`COUNTER` whose name does not end in `_total`** — dropped with an error.
+- **Non-finite value** (`NaN`, `±Inf`) — dropped with an error. The format has
+  spellings for these, but a driver producing one has almost always divided by
+  an unchecked zero.
+- **Two drivers emitting the same bare name with different `MetricKind`** — one
+  `TYPE` line cannot carry both. The whole family is dropped with an error
+  naming both drivers, rather than silently picking one and mistyping the
+  other's samples.
+
+**No timestamps, ever.** node_exporter does not merely ignore an explicit
+timestamp — it treats one as an error and **skips the entire file**
+(`prometheus/node_exporter#1284`). This is why `Sample` has no timestamp field
+rather than an optional one.
+
+### `--output`
+
+Writes to a temporary file in the same directory, then `os.replace()`. Not
+optional and not format-specific: the collector reads the directory
+continuously and will parse a half-written file, and the JSON output is
+polled by its consumer too.
+
+Two details that decide whether the integration works at all:
+
+- **The destination must end in `.prom`** for the prometheus format. The
+  collector globs `*.prom` and nothing else, so `--output .../aiform.txt`
+  produces silence rather than an error. `scan` warns when `--format
+  prometheus` is written to a path with any other suffix.
+- **The temporary file must not match `*.prom`** — otherwise the collector
+  reads it mid-write, which is the entire failure atomicity exists to avoid.
+  Use node_exporter's own documented shape: `aiform.prom.<pid>` renamed onto
+  `aiform.prom`, never `aiform.tmp.prom`.
 
 ### Scrape cost
 
@@ -320,6 +476,15 @@ every I seconds costs roughly `N × calls × 3600 / I` requests/hour against a
 token whose DigitalOcean limit is 5000/hour — 10 resources making 2 calls each
 at a 15-second interval is 4800/hour, which is already most of the budget.
 
+Two calls per resource is the *optimistic* figure, and the arithmetic gets
+worse in three ways worth naming before someone picks an interval from it. A
+realistic droplet `metrics()` hits one `/v2/monitoring/metrics/droplet/*`
+endpoint **per metric**, not one for all of them. DigitalOcean also enforces a
+per-minute burst limit that a tight sweep can trip while staying inside the
+hourly one. And the budget is shared: `plan`/`apply` draw on the same token,
+and `compute.py`'s `_poll_until` does not survive a 429 (`PLAN.md` §10), so a
+scrape loop that exhausts the quota can fail an unrelated `apply` outright.
+
 The spec states the arithmetic; `--verbose` logs the sweep duration. There is
 deliberately **no per-driver cost-declaration attribute** — that is a knob for
 a fleet three drivers cannot yet produce, and `CLAUDE.md` is explicit about not
@@ -327,36 +492,71 @@ building for scenarios that can't happen yet.
 
 ## Edge cases / errors
 
-- **`CapabilityNotSupported`** from either method is caught per resource and
-  rendered as `unsupported: <reason>`. Never an error, never a non-zero exit.
-  In `prometheus` output the resource simply contributes no series for that
-  capability.
+Per-resource failures are tabulated under "Partial failure never aborts the
+sweep" above; per-sample validation under "Validation before a line is
+written." What remains:
+
 - **`ResourceNotFoundError`** from `health()` renders as `FAILING`, summary
   `"resource not found"`, `up 0`. It does **not** mark drift: `scan` cannot
   write state, and a vanished resource should page someone now. The next `plan`
   is what records it.
-- **Any other exception** from either method renders as `UNKNOWN` for health,
-  or drops that resource's samples, with the exception text appended to
-  `ResourceScan.errors` and logged at WARNING. The sweep continues.
-- **A driver-supplied label colliding** with an identity label drops that
-  resource's samples and appends an error. Deliberately not a silent overwrite,
-  which would hide a driver bug, and deliberately not fatal to the sweep, which
-  would let one bad driver blank every panel. `aiform_resource_up` is still
-  emitted from `health()`, which is unaffected.
-- **A `COUNTER` whose name does not end in `_total`** is an error for that
-  sample, dropped with a message naming the driver. The name is the only place
-  the type is expressed to Prometheus, so a mismatch here is a wrong dashboard,
-  not a cosmetic one.
-- **A non-finite `value`** (`NaN`, `±Inf`) is dropped with an error. The
-  exposition format has spellings for these, but a driver producing one almost
-  always means a division by a zero-valued denominator it did not check.
+- **A driver-supplied label colliding** with an identity label drops **that
+  sample**, not the resource's whole set — matching how every other validation
+  failure is scoped, and an earlier draft made this one inconsistent with no
+  stated reason. Deliberately not a silent overwrite, which would hide the
+  driver bug. `aiform_resource_up` comes from `health()` and is unaffected.
 - **No tracked resources at all** — `scan` prints an empty result and exits 0.
   A scrape of an empty formation is not an error.
-- **`--output` to an unwritable path** fails loudly and exits non-zero. Unlike
-  a per-resource failure, there is no partial result worth salvaging.
-- **A driver file missing** for a tracked resource raises `PlanBlockedError`
-  from `load_driver()`; caught, recorded as that resource's error, sweep
-  continues.
+- **`.aiform/state.json` missing or malformed** — exits 2, like any other
+  handled error. There is no partial result, and a scrape target that silently
+  reports zero resources because state failed to parse is worse than one that
+  fails.
+- **`--output` to an unwritable path** exits 2. Same reasoning.
+
+### Exit codes
+
+A scrape runs from cron or a systemd timer, where the exit code is the only
+signal anyone sees, so it is specified rather than left to the implementer:
+
+| Code | When |
+|---|---|
+| 0 | the sweep ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
+| 2 | the sweep could not run: unreadable state, unwritable `--output`, an unknown `--format` |
+
+**0 on `FAILING` is the important one.** The resource's health belongs in the
+metrics, where an alert rule evaluates it with history and a `for:` duration —
+not in the exit code, where a cron wrapper turns one bad scrape into a page.
+An implementation returning 1 on any `UNKNOWN` would page on exactly the
+transient blip the four-state design exists to absorb. There is no code 1.
+
+### `render_json` shape
+
+A consumer contract, so it is fixed here rather than left to the renderer:
+
+```json
+{
+  "elapsed_seconds": 0.83,
+  "resources": [
+    {
+      "resource_key": "digitalocean.compute.web-01",
+      "provider": "digitalocean", "resource_type": "compute",
+      "name": "web-01", "id": "123456789",
+      "health": {"status": "ok", "summary": "active, public v4 assigned",
+                 "observations": {"status": "active"}},
+      "health_unsupported": null,
+      "samples": [{"name": "memory_bytes", "kind": "gauge",
+                   "value": 2147483648.0, "labels": {}}],
+      "samples_unsupported": null,
+      "errors": []
+    }
+  ]
+}
+```
+
+Names are **bare** here, as the driver returned them — unlike the prometheus
+rendering, which prefixes and stamps identity labels. A JSON consumer already
+has the identity fields beside the samples, and duplicating them into every
+label map would be noise.
 
 ## Out of scope
 
@@ -399,19 +599,40 @@ building for scenarios that can't happen yet.
   extra method passes validation silently and an optional one needs its own
   `OPTIONAL_METHOD_PARAMS` check rather than an `EXPECTED_METHOD_PARAMS` entry
   (which would make it required)
-- that `refresh_state()` and `build_destroy_plan()` already contain the
-  walk-every-tracked-resource loop `scan_resources()` mirrors
+- that `refresh_state()` and `build_destroy_plan()` contain the
+  walk-every-tracked-resource loop `scan_resources()` mirrors, and that
+  `build_destroy_plan()` resolves `paths` by parsing each file to a key rather
+  than matching `StateEntry.aiform_md_path`
+- that `refresh_resource()` itself writes nothing — every `state.save()` is in
+  `refresh_state()`, `build_create_plan()` or `apply_plan()`
+- that `planner.diff_attributes()` iterates `desired.items()`, so an extra key
+  in `current` can never diff — and that `compute.py` and `firewall.py` both
+  already rely on this
+- that `firewall.py`'s `read()` projection deliberately drops `status` and
+  `pending_changes`, which is why its health verdict cannot come from `read()`
+- that every existing driver already bounds its calls at
+  `REQUEST_TIMEOUT_SECONDS = 30`, so the hazard is an inherited 30s bound, not
+  an unbounded call
+- that `forbid_llm_client` is opt-in rather than autouse, and covers only the
+  `llm.build_client` seam
 - that `cli.py`'s `_dispatch()` hardcodes `if args.command == "init"` and
-  otherwise reads `args.plan_command`, so a new top-level command needs an
-  explicit branch or it `AttributeError`s
-- that `prompts/review_driver.md` is the only review a driver gets, since #119
+  otherwise reads `args.plan_command`, and that `main()` reads `args.verbose`
+  before dispatching
+- that `prompts/review_driver.md` is reached by no code path, so `/code-review`
+  at PR time is the only gate these rules have
+
+*Verified against node_exporter's own documentation* — that the textfile
+collector globs `*.prom` only, that an explicit timestamp is an error which
+skips the whole file (`prometheus/node_exporter#1284`), and that temp-plus-
+rename is the documented write pattern.
 
 *Inferred, not verified* — that the three-state-to-binary `up` mapping is the
-right loss, that ≤5s is the right per-resource target, and that the
-`observations` dict stays small enough to render. All three need one real
-driver implementation and should be edited after it.
+right loss, that ≤5s is the right per-resource target, that per-resource
+credential failure (rather than `refresh_state()`'s abort-everything) is right,
+and that `observations` stays small enough to render. All four need one real
+driver implementation, and this spec should be edited after it.
 
-*Recalled, not verified* — the textfile collector's exact tolerance for
-malformed input and for explicit timestamps. Confirm against
-node_exporter's documentation before `render_prometheus()` is written, not
-after.
+*Recalled, not verified* — that a second `# TYPE` line for one metric name is a
+hard parse error rather than a tolerated duplicate. The renderer groups by
+family regardless, so nothing depends on the distinction; confirm it only if
+that grouping is ever relaxed.

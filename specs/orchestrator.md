@@ -1039,12 +1039,24 @@ decision of its own about it. See `specs/unordered_fields.md`.
 
 `specs/driver_observability.md` adds two optional methods to the driver
 contract. **`orchestrator.py` never calls either one.** They are swept by
-`aiform/scan.py`, which does its own state load, driver import and credential
-resolution rather than routing through `build_create_plan()`/`refresh_state()`.
+`aiform/scan.py`.
 
-That separation is deliberate, not duplication for its own sake: every path in
-this module either writes `.aiform/state.json` or exists to feed one that does,
-and a scrape running every few seconds must not. `scan_resources()` does mirror
-this module's walk-every-tracked-resource loop and its `(provider,
-resource_type)` driver caching — see `refresh_state()` and
-`build_destroy_plan()` for the shape it copies.
+What `scan.py` does **not** reuse is the refresh path: `refresh_state()`,
+`build_create_plan()` and `apply_plan()` all `state.save()`, and a scrape
+running every few seconds must not. It does its own state load and credential
+resolution for that reason.
+
+What it **does** reuse, and must: this module's `load_driver()`,
+`driver_path()`, `resource_key()` and `discover_files()` — none of which
+touches state. Reimplementing `load_driver()` would duplicate its synthetic
+module naming and its `FileNotFoundError` → `PlanBlockedError` translation,
+and would let `aiform scan` and `aiform plan` drift apart on which driver file
+they loaded for the same pair. (An earlier draft of this addendum claimed
+"every path in this module either writes state or exists to feed one that
+does" — untrue of exactly these four helpers, and it implied the opposite
+conclusion.)
+
+`scan_resources()` also mirrors this module's walk-every-tracked-resource loop
+and its `(provider, resource_type)` driver caching — see `refresh_state()`,
+and `build_destroy_plan()` for how a `paths` argument is resolved to state
+keys.

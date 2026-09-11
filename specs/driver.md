@@ -7,7 +7,10 @@ implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
 driver's internals, only the four methods below. Pure interface + one
 exception type — no file I/O, no LLM calls, no CSP API calls, no dynamic
-import logic.
+import logic. (Both addenda below describe growth to this contract that is
+specified but not yet implemented — "one exception type" and "the four methods
+below" describe `driver.py` as it stands today, which is what this file is
+supposed to do.)
 
 **Flagged discrepancy**: `PLAN.md` §1's repo-layout comment lists
 `DriverUpdateNotSupported` as living in `exceptions.py`, but §4's actual
@@ -260,10 +263,12 @@ mechanism per field would be a poor trade against simply rejecting the input.
 not done here, mirroring how `specs/resource_tagging.md` handled its own §4
 addendum.
 
-## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`)
+## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`, not yet implemented)
 
-`ResourceDriver` grows two **optional** methods and one exception, for the
-day-2 questions `read()` cannot answer:
+`ResourceDriver` **will grow** two optional methods and one exception, for the
+day-2 questions `read()` cannot answer. None of this is in `aiform/driver.py`
+yet — same "the contract is about to grow" framing as the marker-tag addendum
+above:
 
 ```python
 class CapabilityNotSupported(Exception):

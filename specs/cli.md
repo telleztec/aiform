@@ -727,10 +727,18 @@ aiform scan [--format text|json|prometheus] [--output PATH]
 **plain** dispatch set, not the LLM set: `scan` makes zero Anthropic API calls
 by contract, so it is never handed a `_CountingClient`.
 
-**Implementation note for whoever adds it**: `_dispatch()` currently reads
-`if args.command == "init"` and otherwise falls through to `args.plan_command`.
-A second top-level command needs its own explicit branch there, or it raises
-`AttributeError` on a `Namespace` that has no `plan_command`.
+**Two implementation notes for whoever adds it.** `_dispatch()` currently reads
+`if args.command == "init"` and otherwise falls through to `args.plan_command`;
+a second top-level command needs its own explicit branch there, or it raises
+`AttributeError` on a `Namespace` that has no `plan_command`. And the parser
+must be added with `parents=[global_parent, state_parent]` — `main()` reads
+`args.verbose` before `_dispatch()` is ever called, so omitting
+`global_parent` fails earlier and more confusingly than the missing branch.
 
-Behavior, output formats, exit codes and the atomic `--output` write are
-specified in `specs/driver_observability.md` — not restated here.
+Behavior, output formats, the atomic `--output` write and the `.prom` suffix
+requirement are specified in `specs/driver_observability.md` — not restated
+here. Exit codes are specified there too, and differ from this module's usual
+pattern in one way worth knowing before reading that file: `scan` exits **0**
+when resources report `FAILING` or `UNKNOWN`. That is a successful scrape of
+unhealthy infrastructure, and putting it in the exit code would make a cron
+wrapper page on a single transient blip. Only 0 and 2 are used.
