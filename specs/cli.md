@@ -57,7 +57,7 @@ both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
 value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform scan` at the end of this file has the reproduction.
+on `aiform scan` at the end of this file has the mechanism.
 `--state-file PATH` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
@@ -741,12 +741,12 @@ parser carries `global_parent` too, so it is always present) but so that
 `aiform scan -v` parses at all. Without the parent, that spelling fails with
 argparse's bare "unrecognized arguments: -v".
 
-Adding it does **not** make both spellings work, and this spec's "Global flags"
-section above is wrong to say they do: the subparser's `store_true` default is
-applied after the root's value is parsed, so `aiform -v plan show` yields
-`verbose=False` today on every subcommand. Tracked as #134 — `scan` will
-inherit the same behavior, and should be fixed by that issue rather than
-working around it here.
+Adding it does **not** make both spellings work — the mechanism behind the
+caveat already noted in "Global flags" above: the subparser's `store_true`
+default is applied after the root's value is parsed, so `aiform -v plan show`
+yields `verbose=False` today on every subcommand. Tracked as #134, which
+carries the reproduction; `scan` will inherit the behavior and should be fixed
+by that issue rather than worked around here.
 
 Behavior, output formats, the atomic `--output` write and the `.prom` suffix
 requirement are specified in `specs/driver_observability.md` — not restated

@@ -371,9 +371,10 @@ that never runs.
 
 `ScanResult` is a dataclass rather than a widening tuple because two of its
 four fields — `warnings` and `errors` — carry findings that have no
-`ResourceScan` to attach to (a file whose key is not in state; a metric family
-rejected across drivers). An earlier draft returned `(scans, elapsed)` and
-described those lists in the rendering sections without ever producing them,
+`ResourceScan` to attach to — a path whose key is not in state (a warning); a
+malformed `.aiform.md`, and a metric family rejected across drivers (errors).
+An earlier draft returned `(scans, elapsed)` and described those lists in the
+rendering sections without ever producing them,
 which left every renderer's signature unable to see them.
 
 ### What `paths` means
@@ -542,11 +543,13 @@ renderers receive the same already-validated set.
 rejection — a bad name, a mistyped counter, a non-finite value, a colliding
 label — goes in that resource's `ResourceScan.errors`, because there is a
 resource that produced it and an operator asking "why is `web-01` missing
-`memory_bytes`" looks there. Only the two findings with no resource to attach
-to go in `ScanResult.errors`: a file whose key is not in state, and a metric
-family rejected across drivers. That is the rule `ScanResult`'s own rationale
-states, and an earlier draft of this paragraph contradicted it by sending
-every rejection to the top level.
+`memory_bytes`" looks there. Only findings with no resource to attach to go to
+the top level, and they split by severity as well as by level: a malformed
+`.aiform.md` and a metric family rejected across drivers go in
+`ScanResult.errors`; a path whose key is not in state goes in
+`ScanResult.warnings`, because a resource that was never applied is not a
+failure. An earlier draft of this paragraph sent every rejection to the top
+level, and the draft correcting that named the warning as if it were an error.
 
 ### `--output`
 
@@ -670,10 +673,12 @@ label map would be noise.
 
 The top-level `warnings` and `errors` arrays carry only what has no
 `ResourceScan` to hang on: the two file-level outcomes under "What `paths`
-means", and any family-level rejection from validation. A per-sample rejection
-has a resource, so it appears in that resource's own `errors` — as above. Without them those findings would
-exist only in the log, and a JSON consumer would see a short `resources` list
-with no indication anything was dropped. `render_text` prints the same two
+means" — the not-in-state warning and the malformed-file error — plus any
+family-level rejection from validation. A per-sample rejection has a resource,
+so it appears in that resource's own `errors` instead. Without the two
+top-level arrays those findings would exist only in the log, and a JSON
+consumer would see a short `resources` list with no indication anything was
+dropped. `render_text` prints the same two
 lists; `render_prometheus` cannot, so it logs them at `WARNING` — an
 exposition file has no channel for prose, and inventing a
 `aiform_scan_errors` counter would be a metric nobody asked for.
