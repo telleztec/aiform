@@ -144,6 +144,15 @@ Check specifically for:
     unit suffix (`_bytes`, `_seconds`), an unbounded HTTP call (the
     contract targets ≤5s per resource but cannot enforce it), or an
     `observations` dict large enough to be unreadable.
+    **Also a `concerns` entry: a `health()` that returns a `DEGRADED` or
+    `FAILING` verdict with an empty `observations` map.** That map is
+    the only diagnostic `aiform resource check` prints beneath a bad
+    verdict, so a driver that leaves it empty gives an operator a
+    failure and nothing to act on. It is not blocking -- an empty map is
+    legal, and some resource kinds genuinely expose nothing beyond the
+    status field already in `summary` -- but a driver that read fields
+    it did not carry into `observations` is worth flagging. Keep it
+    flat, `str -> str`, and small enough to read on one screen.
 
 Respond with your structured verdict only. Use `blocking_issues` for
 anything from the list above that's actually violated — these block

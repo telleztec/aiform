@@ -311,21 +311,22 @@ def render_json(result: ScanResult) -> str: ...
 def render_prometheus(result: ScanResult) -> str: ...
 
 
-# The per-resource verbs render one ResourceScan, not a sweep, and print
-# for a human rather than a parser.
-def render_check(scan: ResourceScan) -> tuple[str, int]: ...  # text, exit code
-def render_metrics(scan: ResourceScan, fmt: str) -> str: ...
-def render_status(report: StatusReport) -> str: ...
+# The three verbs render a list -- one entry when <name> was given, every
+# tracked resource when it was not. render_check also returns the exit
+# code, since the aggregate rule that produces it lives in one place.
+def render_check(scans: list[ResourceScan], fmt: str) -> tuple[str, int]: ...
+def render_metrics(scans: list[ResourceScan], fmt: str) -> str: ...
+def render_status(reports: list[StatusReport], fmt: str) -> str: ...
 def write_atomically(text: str, path: Path) -> None: ...
 ```
 
 ### `aiform/cli.py`
 
 ```
-aiform resource check   [<name>] [--state-file <path>]
+aiform resource check   [<name>] [--format text|json] [--state-file <path>]
 aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
-aiform resource status  [<name>] [--state-file <path>]
+aiform resource status  [<name>] [--format text|json] [--state-file <path>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
@@ -364,6 +365,38 @@ scrape. `check` inverts that because it exists to be used as an assertion
 exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
 `health()` both exit non-zero too, for a named resource: neither is evidence
 that resource is fine.
+
+### What `check` returns besides its exit code
+
+`HealthReport` carries three fields and `check` renders all of them, but not
+all of the time:
+
+- `status` and `summary` — always, one line per resource.
+- `observations` — a flat `str -> str` map of what the driver actually saw:
+  `{"status": "off", "locked": "false", "last_action": "power_off"}`. In
+  `--format text` these print **indented under the line, and only when the
+  verdict is not `ok`**. In `--format json` they are always present.
+
+The conditional is deliberate. The gate use case (`check && ./smoke-test.sh`,
+or a fleet check in CI) wants one line per resource and silence when
+everything is fine; the diagnosis use case is by definition the one where the
+verdict is bad, which is exactly when the detail appears. No flag is needed to
+switch between them because the two cases never overlap.
+
+```
+$ aiform resource check db-01
+failing  digitalocean.compute.db-01  status is "off"
+    status        off
+    locked        false
+    last_action   power_off
+```
+
+**A driver is what decides whether this is useful.** `observations` is
+free-form by design — the contract cannot know which fields matter for a
+resource kind it has never seen — so a driver that returns an empty map
+produces a `check` with no diagnostics at all, and that is legal. The
+review checklist asks for it to be populated and bounded; nothing enforces
+either.
 
 **All three take an optional `<name>`**, and omitting it means every tracked
 resource. `check`'s aggregate rule is the only one that needed deciding, and
@@ -544,6 +577,11 @@ and it carried its own edge cases — a path that parses to an untracked key, a
 malformed `.aiform.md`, a path that does not exist — each needing its own
 warning-or-error rule. Removing it removes all three, and with them the
 `warnings` field of `ScanResult`, whose only producer it was.
+
+All three verbs take `--format text|json`; only `metrics` adds `prometheus`,
+since only metrics have an exposition format. `--output` stays on `metrics`
+alone: it exists for the textfile collector's atomicity requirement, not as a
+general write-to-file convenience, and shell redirection covers the rest.
 
 `render_check` returns its exit code alongside its text rather than having the
 CLI re-derive it from `HealthStatus`. The mapping is the one place in this

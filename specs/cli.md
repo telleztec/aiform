@@ -723,10 +723,10 @@ than `aiform plan`'s — none of these plans or applies anything, and none write
 state.
 
 ```
-aiform resource check   [<name>] [--state-file <path>]
+aiform resource check   [<name>] [--format text|json] [--state-file <path>]
 aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
-aiform resource status  [<name>] [--state-file <path>]
+aiform resource status  [<name>] [--format text|json] [--state-file <path>]
 ```
 
 **Notation.** `<lower-case>` in angle brackets is a placeholder you replace;
@@ -747,11 +747,21 @@ prints a one-line verdict per resource. Calls the driver's `health()`.
 checks every tracked resource, like its siblings.
 
 **Output:** one line per resource, plus a coverage line when checking the
-fleet.
+fleet. When a verdict is **not** `ok`, the driver's `observations` print
+indented beneath it — the detail you want exactly when something is wrong,
+with no flag to remember, because the gate case and the diagnosis case never
+overlap. `--format json` emits `status`, `summary` and `observations` for
+every resource unconditionally.
 
 ```
 $ aiform resource check web-01
 ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+
+$ aiform resource check db-01
+failing  digitalocean.compute.db-01  status is "off"
+    status        off
+    locked        false
+    last_action   power_off
 
 $ aiform resource check
 ok           digitalocean.compute.web-01   active, public v4 203.0.113.10

@@ -1220,7 +1220,7 @@ aiform plan show [--state-file <path>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check [<name>] [--state-file <path>]
+aiform resource check [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. driver.health() for one named resource, or for
     every tracked resource when <name> is omitted. An ASSERTION: this is
     the only command in the surface whose exit code carries the answer
@@ -1233,6 +1233,12 @@ aiform resource check [<name>] [--state-file <path>]
     no verdict was produced at all -- an unknown or ambiguous <name>,
     unreadable state, or (for the fleet form) not one tracked resource
     whose driver implements health().
+
+    Diagnostics: status and summary always print; the driver's
+    observations map prints indented beneath, in text format, only when
+    the verdict is not OK -- the gate case wants one line, the
+    diagnosis case is by definition the one where the verdict is bad.
+    --format json always includes it.
 
     A resource whose driver declines health() is LISTED but does not
     fail the aggregate; requiring every driver to implement health()
@@ -1269,7 +1275,7 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     whose driver raises reports UNKNOWN. Neither aborts the sweep: a
     single broken driver must not blank a dashboard.
 
-aiform resource status [<name>] [--state-file <path>]
+aiform resource status [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one named
     resource, or a row per resource when <name> is omitted:
     deployed (from state), live (a driver.read()), config (diff against
