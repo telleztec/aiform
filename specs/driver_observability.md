@@ -19,8 +19,72 @@ deliberately untouched by the PR that adds this file.
 
 Give a driver two optional, read-only methods for answering the day-2
 questions `read()` cannot: **is this resource working**, and **what are its
-counters and gauges**. Then sweep them across every tracked resource with
-`aiform scan`, in a format Prometheus or Grafana can consume.
+counters and gauges**. Then expose them through `aiform resource` — three
+verbs for an operator at a terminal (`check`, `metrics`, `status`) and one for
+a scraper (`scan`, in a format Prometheus or Grafana can consume).
+
+## Use cases
+
+The three an operator actually has, and what each one needs from the contract.
+They are the reason the surface is four verbs rather than one sweep.
+
+### 1. I just deployed this — is it up, and is it doing anything?
+
+```
+$ aiform resource check web-01
+ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+
+$ # ...apply some load...
+$ aiform resource metrics web-01
+gauge  memory_bytes      2.147e+09
+gauge  cpu_percent       41.2
+```
+
+Two things this demands that a fleet sweep does not. **`check` is an
+assertion, so its exit code carries the verdict** — `0` for `OK`, non-zero
+otherwise — because the natural next thing anyone writes is `aiform resource
+check web-01 && ./smoke-test.sh`. And **`metrics` is read twice, by eye,
+minutes apart**, to see a number move under load; its default format is
+therefore aligned text, not exposition format.
+
+### 2. Someone says it's down
+
+```
+$ aiform resource check web-01
+failing  digitalocean.compute.web-01  status is "off"
+
+$ aiform resource status web-01
+deployed    2026-09-10T14:02:11Z, id 123456789
+live        present
+config      in sync with examples/web.aiform.md
+health      failing — status is "off"
+```
+
+The diagnostic order matters: `check` answers *is it working*, `status`
+answers *is what I deployed still what is there*. They fail independently. A
+resource can be `failing` while perfectly in sync (someone powered it off), or
+`ok` while drifted (someone resized it by hand). Collapsing them into one
+verdict would lose exactly the distinction this case needs — and it is why
+`status` exists rather than being folded into `check`.
+
+`status` is also the only one of the three that works when the resource is
+**gone**: `check` reports `failing`, but `status` says whether aiform ever
+deployed it and when, which is what tells you this was a deletion rather than
+a crash.
+
+### 3. What is the deployment status of this resource?
+
+`aiform resource status <name>` again, and the answer has four independent
+parts — deployed, live, config, health — because any of them can be the
+surprising one. `aiform plan show` is the neighbouring command and is
+deliberately different: it prints **stored** state for everything with zero
+API calls, and cannot tell you whether the record is still true.
+
+**What `status` must not do: write state.** It reads live to answer "is the
+record still true", and the temptation is to save what it learned. It doesn't,
+for the same reason `scan` doesn't — an inspection command that mutates the
+record makes the next `plan` mean something different because you looked.
+`plan refresh` is the command that reconciles; `status` only reports.
 
 ## Relationship to `PLAN.md` §10's "Observability" entry
 
@@ -110,7 +174,7 @@ and deciding that `status == "active"` means healthy is per-resource knowledge
 that belongs in the driver rather than in a renderer. `metrics()` is separate
 on stronger grounds still — it calls endpoints `read()` never touches.
 
-The reason for a separate **command** is reason 2 alone: `aiform scan` must
+The reason for a separate **command** is reason 2 alone: `aiform resource scan` must
 never write state, and every existing refresh caller does.
 
 ## Interface
@@ -209,31 +273,95 @@ class ScanResult:
     errors: list[str]  # file- and family-level only; per-sample goes on the ResourceScan
 
 
-def scan_resources(paths=None, *, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
-    """Sweep every tracked resource. Reads state; never writes it.
-    Makes zero Anthropic API calls."""
+@dataclass
+class StatusReport:
+    """`aiform resource status`. Four independent answers; any one can be
+    the surprising one, so none is folded into another."""
+
+    deployed: str | None  # last_applied_at + id, or None if not in state
+    live: str  # "present" | "missing on the provider" | an error
+    config: str  # "in sync with <path>" | "<n> fields drifted" | "no source file found"
+    health: HealthReport | None
+    health_unsupported: str | None
+
+
+def resolve_name(name: str, st: State) -> str:
+    """A `name:` frontmatter value -> the one matching state key.
+
+    Raises ValueError naming what is tracked when nothing matches, and
+    listing the candidates when more than one does. Never guesses --
+    two matches can be a droplet and the firewall in front of it."""
+
+
+def scan_resources(paths=None, *, keys=None, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
+    """Sweep tracked resources: all of them, those matching `paths`, or
+    exactly those in `keys`. Reads state; never writes it. Makes zero
+    Anthropic API calls."""
+
+
+def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport:
+    """The four answers for one resource. Composes a state lookup, a live
+    read(), diff_attributes() against the discovered .aiform.md, and
+    health(). Adds no fifth driver method. Writes no state."""
 
 
 def render_text(result: ScanResult) -> str: ...
 def render_json(result: ScanResult) -> str: ...
 def render_prometheus(result: ScanResult) -> str: ...
+
+
+# The per-resource verbs render one ResourceScan, not a sweep, and print
+# for a human rather than a parser.
+def render_check(scan: ResourceScan) -> tuple[str, int]: ...  # text, exit code
+def render_metrics(scan: ResourceScan, fmt: str) -> str: ...
+def render_status(report: StatusReport) -> str: ...
 def write_atomically(text: str, path: Path) -> None: ...
 ```
 
 ### `aiform/cli.py`
 
 ```
-aiform scan [--format text|json|prometheus] [--output PATH]
-            [--state-file PATH] [FILE.aiform.md ...]
+aiform resource check <name> [--state-file PATH]
+aiform resource metrics <name> [--format text|json|prometheus] [--state-file PATH]
+aiform resource status <name> [--state-file PATH]
+aiform resource scan [--format text|json|prometheus] [--output PATH]
+                     [--state-file PATH] [FILE.aiform.md ...]
 ```
 
-`scan` is a **top-level** command, not an `aiform plan` subcommand: it neither
-plans nor applies anything. Note the reason is only that — an earlier draft
-also argued "every `plan` subcommand may write state", which is false of
-`plan show` (`state.load()` plus print). It is **true** of `plan refresh`,
-which calls `refresh_state()` and saves unconditionally; a correction to that
-draft over-extended to claim otherwise. The grouping is about what the verb
-means, not about state.
+**`resource` is a noun with its own verb lifecycle**, matching `aiform driver`
+— `PLAN.md` §10 states that shape explicitly for drivers ("deliberately a
+separate command surface from `plan`"), and the same reasoning applies: none
+of these plans or applies anything.
+
+An earlier draft of this spec put the sweep at top level as `aiform scan`, with
+no per-resource commands at all. That was worse in two ways. It did not match
+the repo's own convention, and — once the three use cases above were written
+down — it would have meant two parallel surfaces reaching the same two driver
+methods, one fleet-wide and one not. `scan` is now the fleet verb inside the
+same noun group.
+
+### The three verbs are not interchangeable
+
+| Verb | Question | Driver method | Exit code means |
+|---|---|---|---|
+| `check` | is it working *now*? | `health()` | **the verdict**: 0 iff `OK` |
+| `metrics` | what are its numbers? | `metrics()` | the command ran |
+| `status` | is what I deployed still there, and still what I declared? | `health()` + state + a live `read()` | the command ran |
+| `scan` | all of the above, for a scraper | both | the sweep ran |
+
+**`check`'s exit code is the one exception in this whole surface**, and it is
+deliberate. Everywhere else — `scan`, `metrics`, `status` — a non-zero exit
+means *aiform could not answer*, never *the answer was bad*; `scan` exits 0 on
+a `FAILING` resource precisely so a cron wrapper does not page on one bad
+scrape. `check` inverts that because it exists to be used as an assertion
+(`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
+exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
+`health()` both exit non-zero too: neither is evidence the resource is fine.
+
+`status` composes rather than adding a fifth driver method. Its four lines come
+from the state entry (deployed), a live `read()` (live), `diff_attributes()`
+against the discovered `.aiform.md` (config), and `health()` (health) — every
+one already specified elsewhere. It writes no state, per use case 3.
 
 ## Behavior
 
@@ -377,7 +505,22 @@ An earlier draft returned `(scans, elapsed)` and described those lists in the
 rendering sections without ever producing them,
 which left every renderer's signature unable to see them.
 
-### What `paths` means
+### What `paths` and `keys` mean
+
+`paths` is the file-oriented filter `scan` accepts; `keys` is what the
+per-resource verbs pass, already resolved through `resolve_name()`. They are
+separate parameters rather than one overloaded argument because they fail
+differently: an unresolvable *path* is a typo in a command the operator just
+typed (exit 2), while a path that resolves to an untracked key is a warning
+and the sweep continues. A `key` has already been validated against state by
+the time it arrives, so neither case applies to it.
+
+`render_check` returns its exit code alongside its text rather than having the
+CLI re-derive it from `HealthStatus`. The mapping is the one place in this
+surface where an exit code carries a verdict, and deriving it twice is how the
+two copies drift.
+
+#### Path resolution
 
 `build_destroy_plan()` resolves paths by reading each file, parsing its
 frontmatter and computing `resource_key()` — **not** by matching
@@ -624,21 +767,73 @@ written." What remains:
   for is worse than refusing. A file that exists but does not parse is a
   problem with the repository, which the sweep reports and works around.
 
+### The per-resource verbs
+
+`check`, `metrics` and `status` take a resource `NAME` — the `name:`
+frontmatter field, not the full `<provider>.<resource_type>.<name>` state key.
+The key is an implementation detail of state; the name is what the operator
+wrote in the file and what they will type.
+
+- **A `NAME` matching no state entry** — exit 2, naming the name and listing
+  what *is* tracked. Not exit 0 with "not deployed": for `check` that would
+  assert health on a resource aiform has never heard of, and a typo'd name is
+  overwhelmingly the likelier cause than a genuine question about something
+  undeployed. `status` is the exception in spirit but not in code — see below.
+- **A `NAME` matching more than one state entry** (the same name under two
+  providers or resource types) — exit 2, listing the full keys that matched
+  and asking for one. Never a guess: the two could be a droplet and the
+  firewall in front of it, and checking the wrong one answers confidently
+  about the thing you did not ask about.
+- **`status` on a resource whose `.aiform.md` cannot be found** — the
+  `config` line reports "no source file found", not "in sync". The other three
+  lines are still answered. Silence on a drift question reads as *no drift*,
+  which is the opposite of what is known.
+- **`status` on a resource that is gone** (`ResourceNotFoundError`) — `live`
+  reports "missing on the provider", `config` is skipped (there is nothing to
+  diff against), and `deployed` still reports when aiform last applied it.
+  That last line is the point of the command in this case: it distinguishes a
+  resource that was deleted from one that never existed.
+- **`check` where the driver does not implement `health()`** — exit 2 with the
+  decline reason. It is not a passing check; aiform has no verdict to give.
+
 ### Exit codes
 
 A scrape runs from cron or a systemd timer, where the exit code is the only
-signal anyone sees, so it is specified rather than left to the implementer:
+signal anyone sees, so it is specified rather than left to the implementer.
+
+**`check` is the exception** and is tabulated separately below, because its
+exit code answers the health question rather than reporting whether aiform
+could answer it.
+
+For `scan`, `metrics` and `status`:
 
 | Code | When |
 |---|---|
-| 0 | the sweep ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
+| 0 | the command ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
 | 2 | the sweep could not run: malformed state, unwritable `--output`, an unknown `--format`, or a `FILE.aiform.md` argument that does not exist |
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —
 not in the exit code, where a cron wrapper turns one bad scrape into a page.
 An implementation returning 1 on any `UNKNOWN` would page on exactly the
-transient blip the four-state design exists to absorb. There is no code 1.
+transient blip the four-state design exists to absorb. There is no code 1 for
+these three.
+
+For `check`:
+
+| Code | When |
+|---|---|
+| 0 | the verdict is `OK` |
+| 1 | the verdict is `DEGRADED`, `FAILING` or `UNKNOWN` |
+| 2 | no verdict: name not found, name ambiguous, `health()` declined, unreadable state |
+
+`DEGRADED` exiting 1 while `aiform_resource_up` renders it as `1` is not an
+inconsistency. The gauge answers "is it serving" for an alert rule with
+history behind it; `check` answers "is this fully healthy" for a script that
+is about to do something next, and a half-attached firewall is not a green
+light for the deploy step after it. `UNKNOWN` exits 1 for the opposite reason
+to the gauge omitting it: a scrape can afford to say nothing and let the next
+one answer, a script gating on it cannot.
 
 ### `render_json` shape
 
@@ -690,7 +885,7 @@ exposition file has no channel for prose, and inventing a
   `health()` may look at": it makes the verdict a property of aiform's network
   location rather than of the resource. Reopening this needs a design pass that
   answers where the check runs from, not just a new method.
-- **A long-running `/metrics` exporter.** `aiform scan` is a one-shot command.
+- **A long-running `/metrics` exporter.** `aiform resource scan` is a one-shot command.
   A daemon Prometheus scrapes directly would be this repo's first inbound
   socket and first server dependency, with auth, TLS and lifecycle all
   undesigned. It belongs with `PLAN.md` §10's "Centralized server support",

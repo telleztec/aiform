@@ -57,7 +57,7 @@ both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
 value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform scan` at the end of this file has the mechanism.
+on `aiform resource scan` at the end of this file has the mechanism.
 `--state-file PATH` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
@@ -716,42 +716,51 @@ than papering over it with a generic `except Exception`.
   file, no locking" limitation is orchestrator/state-level and applies
   unchanged here; this module adds no locking of its own.
 
-## Addendum: `aiform scan` (`specs/driver_observability.md`, not yet implemented)
+## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
 
-A new **top-level** command — not an `aiform plan` subcommand, since it neither
-plans nor applies and must never write state:
+A new **noun group** with four verbs, matching `aiform driver`'s shape rather
+than `aiform plan`'s — none of these plans or applies anything, and none
+writes state:
 
 ```
-aiform scan [--format text|json|prometheus] [--output PATH]
-            [--state-file PATH] [FILE.aiform.md ...]
+aiform resource check   NAME [--state-file PATH]
+aiform resource metrics NAME [--format text|json|prometheus] [--state-file PATH]
+aiform resource status  NAME [--state-file PATH]
+aiform resource scan         [--format text|json|prometheus] [--output PATH]
+                             [--state-file PATH] [FILE.aiform.md ...]
 ```
 
-`_cmd_scan` is a thin wrapper over `aiform/scan.py`, matching how
-`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. It belongs to the
-**plain** dispatch set, not the LLM set: `scan` makes zero Anthropic API calls
-by contract, so it is never handed a `_CountingClient`.
+Each handler is a thin wrapper over `aiform/scan.py`, matching how
+`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All four belong to
+the **plain** dispatch set, not the LLM set: they make zero Anthropic API calls
+by contract, so none is ever handed a `_CountingClient`.
 
-**Two implementation notes for whoever adds it.** `_dispatch()` currently reads
-`if args.command == "init"` and otherwise falls through to `args.plan_command`;
-a second top-level command needs its own explicit branch there, or it raises
-`AttributeError` on a `Namespace` that has no `plan_command`. And the parser
-should be added with `parents=[global_parent, state_parent]`, matching every
-sibling — not because `args.verbose` would otherwise be missing (the root
-parser carries `global_parent` too, so it is always present) but so that
-`aiform scan -v` parses at all. Without the parent, that spelling fails with
-argparse's bare "unrecognized arguments: -v".
+**Three implementation notes for whoever adds it.** `_dispatch()` currently
+reads `if args.command == "init"` and otherwise falls through to
+`args.plan_command`; a second noun group needs its own explicit branch there,
+or it raises `AttributeError` on a `Namespace` that has no `plan_command`. The
+sub-subparser needs `dest="resource_command", required=True`, mirroring
+`plan_sub`. And every parser should be added with `parents=[global_parent,
+state_parent]`, matching every sibling — not because `args.verbose` would
+otherwise be missing (the root parser carries `global_parent` too, so it is
+always present) but so that `aiform resource scan -v` parses at all. Without
+the parent, that spelling fails with argparse's bare "unrecognized arguments:
+-v".
 
 Adding it does **not** make both spellings work — the mechanism behind the
 caveat already noted in "Global flags" above: the subparser's `store_true`
 default is applied after the root's value is parsed, so `aiform -v plan show`
 yields `verbose=False` today on every subcommand. Tracked as #134, which
-carries the reproduction; `scan` will inherit the behavior and should be fixed
-by that issue rather than worked around here.
+carries the reproduction; all four verbs will inherit the behavior and it
+should be fixed by that issue rather than worked around here.
 
 Behavior, output formats, the atomic `--output` write and the `.prom` suffix
 requirement are specified in `specs/driver_observability.md` — not restated
 here. Exit codes are specified there too, and differ from this module's usual
-pattern in one way worth knowing before reading that file: `scan` exits **0**
-when resources report `FAILING` or `UNKNOWN`. That is a successful scrape of
-unhealthy infrastructure, and putting it in the exit code would make a cron
-wrapper page on a single transient blip. Only 0 and 2 are used.
+pattern in two ways worth knowing before reading that file. `scan`, `metrics`
+and `status` exit **0** when a resource reports `FAILING` or `UNKNOWN` — that
+is a successful scrape of unhealthy infrastructure, and putting it in the exit
+code would make a cron wrapper page on a single transient blip; only 0 and 2
+are used. **`check` is the deliberate exception**: it is an assertion meant to
+be written as `aiform resource check web-01 && ./smoke-test.sh`, so 0 means
+the verdict was `OK`, 1 means it was not, and 2 means there was no verdict.

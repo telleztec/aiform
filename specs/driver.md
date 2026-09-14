@@ -310,7 +310,7 @@ optional, they are checked via a separate `OPTIONAL_METHOD_PARAMS` dict applied
 only when the method is present; adding them to `EXPECTED_METHOD_PARAMS` would
 make them required (`specs/driver_gen.md`).
 
-Neither method is reachable from `plan`/`apply`. `aiform scan` is their only
+Neither method is reachable from `plan`/`apply`. `aiform resource scan` is their only
 caller, and it never writes state. Full rules — control plane only, read-only,
 zero LLM calls, counter honesty — are in `specs/driver_observability.md`; not
 restated here, to avoid the drift this file already documents twice. One point

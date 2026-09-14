@@ -122,7 +122,7 @@ Check specifically for:
       the same healthy resource reads `failing` from behind a firewall.
     - **Writing state.** Touching `.aiform/state.json` or its backup.
     - **Returning `HealthStatus.UNKNOWN`.** That state means "aiform
-      could not find out" and is set by `aiform scan` when the method
+      could not find out" and is set by `aiform resource scan` when the method
       raises. A driver catching its own timeout and returning `UNKNOWN`
       destroys the error text that says what went wrong.
     - **A `MetricKind.COUNTER` that isn't one.** Two checks, and only the

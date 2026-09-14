@@ -185,7 +185,7 @@ to make something easier to build.
   stable.
 - Four of the contract's methods are required (`create`/`read`/`update`/
   `delete`); `health()`/`metrics()` are **optional** and reached only from
-  `aiform scan`, never from `plan`/`apply`. **Specified but NOT YET
+  `aiform resource scan`, never from `plan`/`apply`. **Specified but NOT YET
   BUILT** — `specs/driver_observability.md` is the design;
   `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
   `Sample`, the two base methods, `aiform/scan.py` and the `scan` command

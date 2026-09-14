@@ -338,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
-│   ├── scan.py                     # `aiform scan`: sweep health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
+│   ├── scan.py                     # `aiform resource scan`: sweep health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -612,7 +612,7 @@ class CapabilityNotSupported(Exception):
     question for this resource kind. Lives here rather than in
     exceptions.py because the base class itself raises it, so it is part
     of the contract — same reasoning as DriverUpdateNotSupported above.
-    `aiform scan` catches it per-resource and reports "unsupported:
+    `aiform resource scan` catches it per-resource and reports "unsupported:
     <reason>"; it is never an error."""
 
     def __init__(self, capability: str, reason: str):
@@ -742,7 +742,7 @@ class ResourceDriver(ABC):
     # instantiation time and force a resource that cannot answer to write
     # a stub anyway. A driver opts in by overriding, exactly as it does
     # with _tags_for_create/_tags_for_attributes above. Neither is ever
-    # reached from plan/apply — `aiform scan` (§7) is their only caller.
+    # reached from plan/apply — `aiform resource scan` (§7) is their only caller.
     # Full rules: specs/driver_observability.md.
 
     def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
@@ -761,7 +761,7 @@ class ResourceDriver(ABC):
 
         Returns: HealthReport with status OK / DEGRADED / FAILING. Do NOT
             return UNKNOWN — that state means "aiform could not find
-            out", and `aiform scan` sets it when this method raises. A
+            out", and `aiform resource scan` sets it when this method raises. A
             driver catching its own timeout and returning UNKNOWN
             destroys the error text that says what went wrong.
         Raises: ResourceNotFoundError if the resource is gone (scan
@@ -782,7 +782,7 @@ class ResourceDriver(ABC):
 
         Returns: list[Sample], each with a BARE snake_case name carrying
             its base unit (`memory_bytes`, not `aiform_memory_bytes`) —
-            `aiform scan` adds the prefix and the provider/resource_type/
+            `aiform resource scan` adds the prefix and the provider/resource_type/
             name/id labels, so this driver must not set those itself.
 
         COUNTER is only for a value the CSP documents as cumulative and
@@ -1209,12 +1209,42 @@ aiform plan show [--state-file PATH]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform scan [--format text|json|prometheus] [--output PATH]
+aiform resource check NAME [--state-file PATH]
+    NOT YET IMPLEMENTED. driver.health() for one resource, printed for a
+    human. An ASSERTION: exit 0 iff the verdict is OK, non-zero for
+    DEGRADED/FAILING/UNKNOWN and for a driver that does not implement
+    health(). This is the only command in the surface whose exit code
+    carries the answer rather than whether it could answer -- it exists
+    to be written as `aiform resource check web-01 && ./smoke-test.sh`.
+
+aiform resource metrics NAME [--format text|json|prometheus] [--state-file PATH]
+    NOT YET IMPLEMENTED. driver.metrics() for one resource. Default
+    format is aligned text, because the use case is reading it twice by
+    eye under load to watch a number move.
+
+aiform resource status NAME [--state-file PATH]
+    NOT YET IMPLEMENTED. Four independent answers for one resource:
+    deployed (from state), live (a driver.read()), config (diff against
+    the discovered .aiform.md), health (driver.health()). Adds no fifth
+    driver method -- it composes what §4 already defines. Writes no
+    state: `plan refresh` is the command that reconciles the record,
+    this one only reports on it. Distinct from `plan show`, which prints
+    STORED state for everything and makes no API call, so it cannot say
+    whether the record is still true.
+
+aiform resource scan [--format text|json|prometheus] [--output PATH]
             [--state-file PATH] [FILE.aiform.md ...]
     NOT YET IMPLEMENTED -- specified in specs/driver_observability.md,
-    to be built in a later PR. Listed here rather than under the divider
-    below because that divider is specifically about mechanism 2's
-    driver-generation commands, which this has nothing to do with.
+    to be built in a later PR. The fleet verb: sweeps every tracked
+    resource for a scraper. Listed here, with its three siblings above,
+    rather than under the divider below -- that divider is specifically
+    about mechanism 2's driver-generation commands, which these have
+    nothing to do with.
+
+    Unlike `check`, a non-zero exit from `scan`/`metrics`/`status` means
+    aiform could not answer, never that the answer was bad: a scrape of
+    a FAILING resource is a successful scrape, and putting that in the
+    exit code would make a cron wrapper page on one transient blip.
     Sweeps every tracked resource (or those matching the given files),
     calling driver.health() and driver.metrics() on each (§4). Reads
     state, NEVER writes it, and makes zero Anthropic API calls — it is
@@ -1485,7 +1515,7 @@ entry's own note below.
   centralized multi-source server described there.
   **Extended, not superseded, by `specs/driver_observability.md`**
   (#131), which adds per-resource runtime health and metrics to the
-  driver contract (§4) and an `aiform scan` command (§7). The two are
+  driver contract (§4) and an `aiform resource scan` command (§7). The two are
   related in spirit and unrelated in mechanism, and neither discharges
   the other — recorded here explicitly so a reader doesn't mistake one
   for the other, and so a future pass doesn't close this entry on the
