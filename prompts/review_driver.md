@@ -108,7 +108,8 @@ Check specifically for:
     those, not a separate lesser one.
 12. **`health()`/`metrics()`, if present, are safe to call on a loop.**
     These are optional and never reached from `plan`/`apply` — `aiform
-    scan` calls them, potentially every few seconds, indefinitely. Each
+    resource` commands call them, and `metrics --all` may run every few
+    seconds on a scrape interval, indefinitely. Each
     of the following is a blocking issue:
     - **Not read-only.** Anything other than `GET`/`HEAD` against the
       CSP, or any side effect that creates or modifies something — a
@@ -122,7 +123,7 @@ Check specifically for:
       the same healthy resource reads `failing` from behind a firewall.
     - **Writing state.** Touching `.aiform/state.json` or its backup.
     - **Returning `HealthStatus.UNKNOWN`.** That state means "aiform
-      could not find out" and is set by `aiform resource scan` when the method
+      could not find out" and is set by the command when the method
       raises. A driver catching its own timeout and returning `UNKNOWN`
       destroys the error text that says what went wrong.
     - **A `MetricKind.COUNTER` that isn't one.** Two checks, and only the

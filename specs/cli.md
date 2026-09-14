@@ -57,7 +57,7 @@ both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
 value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform resource scan` at the end of this file has the mechanism.
+on `aiform resource ...` at the end of this file has the mechanism.
 `--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
@@ -718,15 +718,15 @@ than papering over it with a generic `except Exception`.
 
 ## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
 
-A new **noun group**, matching `aiform driver`'s shape rather than `aiform
-plan`'s — none of these plans or applies anything, and none writes state.
+A new **noun group** with three verbs, matching `aiform driver`'s shape rather
+than `aiform plan`'s — none of these plans or applies anything, and none writes
+state.
 
 ```
 aiform resource check   <name> [--state-file <path>]
-aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
+aiform resource metrics (<name> | --all) [--format text|json|prometheus]
+                        [--output <path>] [--state-file <path>]
 aiform resource status  <name> [--state-file <path>]
-aiform resource scan           [--format text|json|prometheus] [--output <path>]
-                               [--state-file <path>] [<file>.aiform.md ...]
 ```
 
 **Notation.** `<lower-case>` in angle brackets is a placeholder you replace;
@@ -759,27 +759,59 @@ to be used as a gate: `aiform resource check web-01 && ./smoke-test.sh`.
 
 ---
 
-### `aiform resource metrics <name>`
+### `aiform resource metrics <name>` / `aiform resource metrics --all`
 
-**Does:** prints the counters and gauges for one resource. Calls the driver's
-`metrics()`. Does **not** call `health()`.
+**Does:** prints counters and gauges — for one named resource, or for every
+tracked resource with `--all`. Calls the driver's `metrics()` **and**
+`health()`.
 
-**Arguments:** `<name>` as above. `--format` selects the rendering; default
-`text`.
+Why `health()` too, in a command called `metrics`: `aiform_resource_up` is
+itself a metric, and it is the series an alert rule fires on. Emitting it from
+the same pass also means `up` and the gauges carry one scrape timestamp rather
+than two that can disagree.
+
+**Arguments:** exactly one of `<name>` — the resource's `name:` from its
+`.aiform.md`, e.g. `web-01`, not the full `digitalocean.compute.web-01` state
+key — or `--all`. A bare `metrics` with neither is an error, not a silent
+fleet-wide sweep.
+
+`--format` selects the rendering, default `text`. `--output <path>` writes to
+a file instead of stdout, atomically (temp file plus rename); with `--format
+prometheus` the path must end in `.prom`, because node_exporter's textfile
+collector globs `*.prom` and ignores everything else.
 
 **Output**, `--format text` — aligned columns, meant to be read by eye and run
 again a minute later to watch a number move:
 
 ```
+up             1
 gauge  memory_bytes   2.147e+09
 gauge  cpu_percent    41.2
 ```
 
-`--format json` emits the same samples as structured data; `--format
-prometheus` emits exposition format for this one resource.
+**Output**, `--format prometheus --all` — exposition format, grouped by metric
+family:
+
+```
+# TYPE aiform_resource_up gauge
+aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
+aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
+# TYPE aiform_memory_bytes gauge
+aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
+```
+
+`--format json` emits the same data as structured records.
 
 **Exit code:** `0` if the command ran, `2` if it could not (name not found or
-ambiguous, unreadable state). A resource with no metrics is not an error.
+ambiguous, neither `<name>` nor `--all` given, unwritable `--output`,
+unreadable state). A `failing` resource exits `0` — it is an answer, and
+putting it in the exit code would make a cron wrapper page on one transient
+blip.
+
+**`--all` is the scrape mode.** It makes zero Anthropic API calls, writes no
+state, and never aborts because one resource is sick: a driver that declines a
+capability reports `unsupported`, one that raises reports `unknown`, and the
+rest still render. A single broken driver must not blank a dashboard.
 
 ---
 
@@ -806,70 +838,10 @@ missing or drifted is an *answer*, not a failure of the command.
 
 ---
 
-### `aiform resource scan`
-
-**Does:** the same two driver calls as `check` and `metrics`, but across
-**every tracked resource at once**, rendered for a machine rather than a
-person. This is the command a Prometheus or Grafana collector runs on a timer.
-
-**Arguments:** no `<name>` — it sweeps everything by default, or only the
-resources matching the `.aiform.md` files you list. `--output <path>` writes
-to a file atomically instead of stdout, which node_exporter's textfile
-collector requires; that path must end in `.prom`.
-
-**Output**, `--format prometheus`:
-
-```
-# TYPE aiform_resource_up gauge
-aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
-aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
-# TYPE aiform_memory_bytes gauge
-aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
-```
-
-**Exit code:** `0` if the sweep ran, `2` if it could not. A `failing` resource
-exits `0` — putting it in the exit code would make a cron wrapper page on one
-transient blip.
-
----
-
-### `scan` vs `metrics` — and whether `scan` should exist here at all
-
-They overlap, and the overlap is worth stating plainly rather than defending:
-
-| | `metrics <name>` | `scan` |
-|---|---|---|
-| Scope | one resource you name | every tracked resource |
-| Calls | `metrics()` only | `health()` **and** `metrics()` |
-| Audience | a person at a terminal | a collector on a timer |
-| Default format | aligned text | still `text`, but `prometheus` is the point |
-
-**Where `scan` came from.** You asked for three commands — `check`, `metrics`,
-`status`. `scan` is not a fourth idea: it is the pre-existing `aiform scan`
-from earlier in this PR, moved under the `resource` noun so there are not two
-separate surfaces reaching the same two driver methods.
-
-**The honest case against keeping it.** `aiform resource metrics <name>
---format prometheus` already emits exposition format for one resource, and
-`scan` is close to "the same thing, for all of them, plus health". If the
-per-resource commands grew a way to say *all*, `scan` would be redundant.
-
-**The case for.** A collector needs one command that cannot fail because a
-single resource is sick, that emits `health` and `metrics` in one pass so the
-`up` series and the gauges share a timestamp, and that writes atomically to a
-`.prom` file. Those are scrape concerns, not operator concerns, and folding
-them into `metrics` would mean one command with two audiences and two exit-code
-rules.
-
-**Open for your decision.** If you want three commands, `scan` folds into
-`metrics` with an `--all` flag and `metrics` inherits the scrape behavior above.
-Nothing else in the spec changes.
-
----
-
 ### Implementation notes
 
-Each handler is a thin wrapper over `aiform/scan.py`, matching how
+Each handler is a thin wrapper over `aiform/scan.py` — named for the sweep
+it performs, not for a command, since no command is called `scan` — matching how
 `_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All belong to the
 **plain** dispatch set, not the LLM set: they make zero Anthropic API calls by
 contract, so none is ever handed a `_CountingClient`.
@@ -884,7 +856,7 @@ Three things that will bite whoever wires up the parser:
    `plan_sub`.
 3. Every parser needs `parents=[global_parent, state_parent]` like its
    siblings — not because `args.verbose` would otherwise be missing (the root
-   parser carries `global_parent` too), but so `aiform resource scan -v`
+   parser carries `global_parent` too), but so `aiform resource metrics -v`
    parses at all. See the `-v` caveat under "Global flags" and #134.
 
 The rendering rules, the atomic `--output` write, the `.prom` suffix

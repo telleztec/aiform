@@ -330,7 +330,7 @@ aiform/
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
-│   ├── cli.py                      # plan / apply / destroy / init / refresh / show (+ scan, not yet built)
+│   ├── cli.py                      # plan / apply / destroy / init / refresh / show (+ resource check/metrics/status, not yet built)
 │   ├── config.py                   # env var + credentials-file resolution (§8)
 │   ├── parser.py                   # aiform.md -> ResourceSpec
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
@@ -338,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
-│   ├── scan.py                     # `aiform resource scan`: sweep health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
+│   ├── scan.py                     # the sweep behind `aiform resource check/metrics/status`: health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -612,7 +612,7 @@ class CapabilityNotSupported(Exception):
     question for this resource kind. Lives here rather than in
     exceptions.py because the base class itself raises it, so it is part
     of the contract — same reasoning as DriverUpdateNotSupported above.
-    `aiform resource scan` catches it per-resource and reports "unsupported:
+    `aiform resource metrics` catches it per-resource and reports "unsupported:
     <reason>"; it is never an error."""
 
     def __init__(self, capability: str, reason: str):
@@ -742,7 +742,7 @@ class ResourceDriver(ABC):
     # instantiation time and force a resource that cannot answer to write
     # a stub anyway. A driver opts in by overriding, exactly as it does
     # with _tags_for_create/_tags_for_attributes above. Neither is ever
-    # reached from plan/apply — `aiform resource scan` (§7) is their only caller.
+    # reached from plan/apply — the `aiform resource` commands (§7) are
     # Full rules: specs/driver_observability.md.
 
     def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
@@ -761,10 +761,10 @@ class ResourceDriver(ABC):
 
         Returns: HealthReport with status OK / DEGRADED / FAILING. Do NOT
             return UNKNOWN — that state means "aiform could not find
-            out", and `aiform resource scan` sets it when this method raises. A
+            out", and `aiform resource check` sets it when this method raises. A
             driver catching its own timeout and returning UNKNOWN
             destroys the error text that says what went wrong.
-        Raises: ResourceNotFoundError if the resource is gone (scan
+        Raises: ResourceNotFoundError if the resource is gone (the
             renders it FAILING, and does not mark drift — it cannot write
             state). CapabilityNotSupported, with a resource-specific
             reason, if this driver deliberately cannot answer.
@@ -782,13 +782,13 @@ class ResourceDriver(ABC):
 
         Returns: list[Sample], each with a BARE snake_case name carrying
             its base unit (`memory_bytes`, not `aiform_memory_bytes`) —
-            `aiform resource scan` adds the prefix and the provider/resource_type/
+            `aiform resource metrics` adds the prefix and the provider/resource_type/
             name/id labels, so this driver must not set those itself.
 
         COUNTER is only for a value the CSP documents as cumulative and
         monotonic over the resource's lifetime, and its name must end in
         `_total`. aiform never derives a counter by differencing two
-        reads — `scan` is stateless by construction and holds no history
+        reads — these commands are stateless by construction and hold no history
         to difference against. When in doubt, GAUGE: a wrong gauge reads
         as noise, a wrong counter makes rate() produce a plausible,
         silently false number.
@@ -1228,48 +1228,49 @@ aiform resource check <name> [--state-file <path>]
     carries the answer rather than whether it could answer -- it exists
     to be written as `aiform resource check web-01 && ./smoke-test.sh`.
 
-aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.metrics() for one resource. Default
-    format is aligned text, because the use case is reading it twice by
-    eye under load to watch a number move.
+aiform resource metrics (<name> | --all) [--format text|json|prometheus]
+                        [--output <path>] [--state-file <path>]
+    NOT YET IMPLEMENTED. driver.metrics() plus driver.health(), for one
+    named resource or -- with --all -- for every tracked resource.
+    Exactly one of <name> or --all is required: a bare `metrics` that
+    swept the whole fleet would be a surprising default.
+
+    health() is called in both modes because aiform_resource_up is
+    itself a metric, and it is the series an alert rule fires on. One
+    pass also means up and the gauges carry the same scrape timestamp.
+
+    Default format is aligned text, for reading twice by eye under load
+    to watch a number move. --format json feeds Grafana's Infinity
+    datasource. --format prometheus emits exposition format for
+    node_exporter's textfile collector, and --output then writes
+    atomically (tmp + rename) to a path that must end in .prom, since
+    that collector globs *.prom and will happily parse a half-written
+    file.
+
+    --all makes zero Anthropic API calls and never writes state -- it is
+    meant to run repeatedly on a scrape interval. A resource whose
+    driver declines a capability reports "unsupported: <reason>"; one
+    whose driver raises reports UNKNOWN. Neither aborts the sweep: a
+    single broken driver must not blank a dashboard.
 
 aiform resource status <name> [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one resource:
     deployed (from state), live (a driver.read()), config (diff against
-    the discovered .aiform.md), health (driver.health()). Adds no fifth
+    the discovered .aiform.md), health (driver.health()). Adds no fourth
     driver method -- it composes what §4 already defines. Writes no
     state: `plan refresh` is the command that reconciles the record,
     this one only reports on it. Distinct from `plan show`, which prints
     STORED state for everything and makes no API call, so it cannot say
     whether the record is still true.
 
-aiform resource scan [--format text|json|prometheus] [--output <path>]
-            [--state-file <path>] [<file>.aiform.md ...]
-    NOT YET IMPLEMENTED -- specified in specs/driver_observability.md,
-    to be built in a later PR. The fleet verb: sweeps every tracked
-    resource for a scraper. Listed here, with its three siblings above,
-    rather than under the divider below -- that divider is specifically
-    about mechanism 2's driver-generation commands, which these have
-    nothing to do with.
-
-    Unlike `check`, a non-zero exit from `scan`/`metrics`/`status` means
-    aiform could not answer, never that the answer was bad: a scrape of
-    a FAILING resource is a successful scrape, and putting that in the
-    exit code would make a cron wrapper page on one transient blip.
-    Sweeps every tracked resource (or those matching the given files),
-    calling driver.health() and driver.metrics() on each (§4). Reads
-    state, NEVER writes it, and makes zero Anthropic API calls — it is
-    meant to be run repeatedly on a scrape interval. --format text is
-    human-readable; json feeds Grafana's Infinity datasource; prometheus
-    emits exposition format for node_exporter's textfile collector, in
-    which case --output writes atomically (tmp + rename) since that
-    collector will happily parse a half-written file. A resource whose
-    driver declines either capability reports "unsupported: <reason>";
-    one whose driver raises reports UNKNOWN. Neither aborts the sweep —
-    a single broken driver must not blank a dashboard. Top-level rather
-    than an `aiform plan` subcommand because it neither plans nor
-    applies -- not because every `plan` subcommand writes state, which
-    is untrue of `plan show`. See specs/driver_observability.md.
+    Exit codes. `metrics` and `status` exit 0 when they ran and 2 when
+    they could not; a FAILING resource is an answer, not a command
+    failure, and putting it in the exit code would make a cron wrapper
+    page on one transient blip. `check` above is the deliberate
+    exception. These three are listed here rather than under the divider
+    below -- that divider is specifically about mechanism 2's driver-
+    generation commands, which these have nothing to do with.
+    See specs/driver_observability.md.
 
 --- Not yet implemented below, and not currently being built (§6,
     mechanism 2's target interactive shape — see "Driver curation").
@@ -1526,7 +1527,7 @@ entry's own note below.
   centralized multi-source server described there.
   **Extended, not superseded, by `specs/driver_observability.md`**
   (#131), which adds per-resource runtime health and metrics to the
-  driver contract (§4) and an `aiform resource scan` command (§7). The two are
+  driver contract (§4) and the `aiform resource` commands (§7). The two are
   related in spirit and unrelated in mechanism, and neither discharges
   the other — recorded here explicitly so a reader doesn't mistake one
   for the other, and so a future pass doesn't close this entry on the

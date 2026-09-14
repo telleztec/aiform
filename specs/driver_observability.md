@@ -20,13 +20,14 @@ deliberately untouched by the PR that adds this file.
 Give a driver two optional, read-only methods for answering the day-2
 questions `read()` cannot: **is this resource working**, and **what are its
 counters and gauges**. Then expose them through `aiform resource` — three
-verbs for an operator at a terminal (`check`, `metrics`, `status`) and one for
-a scraper (`scan`, in a format Prometheus or Grafana can consume).
+verbs (`check`, `metrics`, `status`) for an operator at a terminal, with
+`metrics --all --format prometheus` doubling as the scrape a Prometheus or
+Grafana pipeline consumes.
 
 ## Use cases
 
 The three an operator actually has, and what each one needs from the contract.
-They are the reason the surface is four verbs rather than one sweep.
+They are the reason the surface is three verbs rather than one sweep.
 
 ### 1. I just deployed this — is it up, and is it doing anything?
 
@@ -36,6 +37,7 @@ ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ # ...apply some load...
 $ aiform resource metrics web-01
+up                       1
 gauge  memory_bytes      2.147e+09
 gauge  cpu_percent       41.2
 ```
@@ -82,7 +84,7 @@ API calls, and cannot tell you whether the record is still true.
 
 **What `status` must not do: write state.** It reads live to answer "is the
 record still true", and the temptation is to save what it learned. It doesn't,
-for the same reason `scan` doesn't — an inspection command that mutates the
+for the same reason `metrics` doesn't — an inspection command that mutates the
 record makes the next `plan` mean something different because you looked.
 `plan refresh` is the command that reconciles; `status` only reports.
 
@@ -174,8 +176,8 @@ and deciding that `status == "active"` means healthy is per-resource knowledge
 that belongs in the driver rather than in a renderer. `metrics()` is separate
 on stronger grounds still — it calls endpoints `read()` never touches.
 
-The reason for a separate **command** is reason 2 alone: `aiform resource scan` must
-never write state, and every existing refresh caller does.
+The reason these live outside `plan` is reason 2 alone: they must never write
+state, and every existing refresh caller does.
 
 ## Interface
 
@@ -269,8 +271,7 @@ class ResourceScan:
 class ScanResult:
     scans: list[ResourceScan]
     elapsed_seconds: float
-    warnings: list[str]  # file-level: a path whose key is not in state
-    errors: list[str]  # file- and family-level only; per-sample goes on the ResourceScan
+    errors: list[str]  # family-level only; per-sample goes on the ResourceScan
 
 
 @dataclass
@@ -293,9 +294,9 @@ def resolve_name(name: str, st: State) -> str:
     two matches can be a droplet and the firewall in front of it."""
 
 
-def scan_resources(paths=None, *, keys=None, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
-    """Sweep tracked resources: all of them, those matching `paths`, or
-    exactly those in `keys`. Reads state; never writes it. Makes zero
+def scan_resources(*, keys=None, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
+    """Sweep tracked resources: exactly those in `keys`, or every one when
+    `keys` is None (`--all`). Reads state; never writes it. Makes zero
     Anthropic API calls."""
 
 
@@ -324,8 +325,8 @@ def write_atomically(text: str, path: Path) -> None: ...
 aiform resource check <name> [--state-file <path>]
 aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
 aiform resource status <name> [--state-file <path>]
-aiform resource scan [--format text|json|prometheus] [--output <path>]
-                     [--state-file <path>] [<file>.aiform.md ...]
+aiform resource metrics --all [--format text|json|prometheus] [--output <path>]
+                              [--state-file <path>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
@@ -336,12 +337,10 @@ everything else is typed literally.
 separate command surface from `plan`"), and the same reasoning applies: none
 of these plans or applies anything.
 
-An earlier draft of this spec put the sweep at top level as `aiform scan`, with
-no per-resource commands at all. That was worse in two ways. It did not match
-the repo's own convention, and — once the three use cases above were written
-down — it would have meant two parallel surfaces reaching the same two driver
-methods, one fleet-wide and one not. `scan` is now the fleet verb inside the
-same noun group.
+Earlier drafts had a fourth verb, `scan`, for the fleet-wide sweep. It is
+folded into `metrics --all`: `metrics <name> --format prometheus` already
+emitted exposition format for one resource, so a separate command was the same
+operation at a different scope. One verb, one scope flag.
 
 ### The three verbs are not interchangeable
 
@@ -350,18 +349,22 @@ same noun group.
 | `check` | is it working *now*? | `health()` | **the verdict**: 0 iff `OK` |
 | `metrics` | what are its numbers? | `metrics()` | the command ran |
 | `status` | is what I deployed still there, and still what I declared? | `health()` + state + a live `read()` | the command ran |
-| `scan` | all of the above, for a scraper | both | the sweep ran |
+
+`metrics` calls `health()` as well as `metrics()`, in both scopes:
+`aiform_resource_up` is itself a metric and is the series an alert rule fires
+on, and emitting it from the same pass keeps `up` and the gauges on one
+timestamp.
 
 **`check`'s exit code is the one exception in this whole surface**, and it is
-deliberate. Everywhere else — `scan`, `metrics`, `status` — a non-zero exit
-means *aiform could not answer*, never *the answer was bad*; `scan` exits 0 on
+deliberate. Everywhere else — `metrics`, `status` — a non-zero exit means
+*aiform could not answer*, never *the answer was bad*; `metrics --all` exits 0 on
 a `FAILING` resource precisely so a cron wrapper does not page on one bad
 scrape. `check` inverts that because it exists to be used as an assertion
 (`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
 exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
 `health()` both exit non-zero too: neither is evidence the resource is fine.
 
-`status` composes rather than adding a fifth driver method. Its four lines come
+`status` composes rather than adding a fourth driver method. Its four lines come
 from the state entry (deployed), a live `read()` (live), `diff_attributes()`
 against the discovered `.aiform.md` (config), and `health()` (health) — every
 one already specified elsewhere. It writes no state, per use case 3.
@@ -422,7 +425,7 @@ renderer adds the `aiform_` prefix and the identity labels.
 
 **Counter honesty.** `COUNTER` is only for a value the CSP itself documents as
 cumulative and monotonic over the resource's lifetime. aiform never derives a
-counter by differencing two reads — `scan` is stateless and holds no history to
+counter by differencing two reads — these commands are stateless and hold no history to
 difference against, by construction. A value the CSP resets on reboot is not a
 counter. When in doubt, `GAUGE`: a wrong gauge reads as noise, a wrong counter
 makes `rate()` produce a plausible, silently false number.
@@ -478,7 +481,7 @@ that never runs.
    *Not mechanically enforced.* `scan_resources()` calls each driver
    synchronously and cannot interrupt a `urlopen` already in flight without
    threads, and there is no whole-sweep deadline. Nothing stops the next
-   `scan` starting before the last finished. Stated plainly rather than
+   `metrics --all` starting before the last finished. Stated plainly rather than
    implied to be guaranteed; a real bound belongs with `PLAN.md` §10's
    "Timeout/retry/failover orchestration" entry, which owns this for every
    driver call rather than just these two.
@@ -490,9 +493,10 @@ that never runs.
 
 ### `scan_resources()`
 
-1. Load state. With no `paths`, sweep every entry in `st.resources`.
+1. Load state. Sweep the entries named by `keys`, or every entry in
+   `st.resources` when `keys` is `None`.
 2. Cache drivers by `(provider, resource_type)` via
-   `orchestrator.load_driver()` — not a private copy of it, so `scan` and
+   `orchestrator.load_driver()` — not a private copy of it, so these commands and
    `plan` can never disagree about which driver file they loaded — and
    credentials by provider. This mirrors `refresh_state()`'s caching shape;
    it does not call `refresh_state()`, which saves state.
@@ -500,54 +504,40 @@ that never runs.
    one being unsupported or raising does not skip the other.
 4. Return a `ScanResult`. **Never writes state.**
 
-`ScanResult` is a dataclass rather than a widening tuple because two of its
-four fields — `warnings` and `errors` — carry findings that have no
-`ResourceScan` to attach to — a path whose key is not in state (a warning); a
-malformed `.aiform.md`, and a metric family rejected across drivers (errors).
-An earlier draft returned `(scans, elapsed)` and described those lists in the
-rendering sections without ever producing them,
-which left every renderer's signature unable to see them.
+`ScanResult` is a dataclass rather than a widening tuple because `errors`
+carries findings that have no `ResourceScan` to attach to: a metric family
+rejected because two drivers gave the same name different `MetricKind`s
+belongs to neither driver alone. An earlier draft returned `(scans, elapsed)`
+and described such a list in the rendering sections without ever producing it,
+leaving every renderer's signature unable to see it.
 
-### What `paths` and `keys` mean
+It also had a `warnings` field. That is gone with the file-path selector, which
+was its only producer.
 
-`paths` is the file-oriented filter `scan` accepts; `keys` is what the
-per-resource verbs pass, already resolved through `resolve_name()`. They are
-separate parameters rather than one overloaded argument because they fail
-differently: an unresolvable *path* is a typo in a command the operator just
-typed (exit 2), while a path that resolves to an untracked key is a warning
-and the sweep continues. A `key` has already been validated against state by
-the time it arrives, so neither case applies to it.
+### Scope: `<name>` or `--all`, and nothing else
+
+`scan_resources()` takes `keys` — a list of state keys, or `None` meaning every
+tracked resource. `<name>` resolves to one key through `resolve_name()`;
+`--all` passes `None`.
+
+**The file-path selector is deliberately gone.** Earlier drafts let the sweep
+take `[<file>.aiform.md ...]`, inherited from when it was a separate `scan`
+command. It was a third way of saying what `<name>` and `--all` already say,
+and it carried its own edge cases — a path that parses to an untracked key, a
+malformed `.aiform.md`, a path that does not exist — each needing its own
+warning-or-error rule. Removing it removes all three, and with them the
+`warnings` field of `ScanResult`, whose only producer it was.
 
 `render_check` returns its exit code alongside its text rather than having the
 CLI re-derive it from `HealthStatus`. The mapping is the one place in this
 surface where an exit code carries a verdict, and deriving it twice is how the
 two copies drift.
 
-#### Path resolution
-
-`build_destroy_plan()` resolves paths by reading each file, parsing its
-frontmatter and computing `resource_key()` — **not** by matching
-`StateEntry.aiform_md_path`. `scan` does the same, and the choice is not
-cosmetic: matching on the stored path silently yields an empty sweep (exit 0,
-blank dashboard) whenever a file was renamed or `scan` runs from another
-directory. `refresh_state()` is not the model here — it takes no `paths` at
-all.
-
-- A path that parses to a key **not in state** is reported as a warning. Not
-  an error: a resource that was never applied has nothing to scan. This is a
-  new behavior, not a copied one — `build_destroy_plan()` plans a destroy for
-  such a file rather than warning, and `build_create_plan()`'s warnings are the
-  inverse case (a state key with no file this run). Only the mechanism, a
-  returned `warnings` list, is borrowed.
-- A **malformed `.aiform.md`** raises `ValueError` from the parser. Caught,
-  reported as that file's error, sweep continues — the file is an input to
-  resource selection, not a resource.
-
 ### Partial failure never aborts the sweep
 
 Everything is caught per resource and per method. One driver raising means that
 resource reports `UNKNOWN` and the rest still render — a single broken driver
-must not blank the dashboard. Concretely, for each of the paths that can fail:
+must not blank the dashboard. Concretely, for each way a resource can fail:
 
 | Failure | `health` | `health_unsupported` | `samples` | `errors` |
 |---|---|---|---|---|
@@ -689,13 +679,10 @@ renderers receive the same already-validated set.
 rejection — a bad name, a mistyped counter, a non-finite value, a colliding
 label — goes in that resource's `ResourceScan.errors`, because there is a
 resource that produced it and an operator asking "why is `web-01` missing
-`memory_bytes`" looks there. Only findings with no resource to attach to go to
-the top level, and they split by severity as well as by level: a malformed
-`.aiform.md` and a metric family rejected across drivers go in
-`ScanResult.errors`; a path whose key is not in state goes in
-`ScanResult.warnings`, because a resource that was never applied is not a
-failure. An earlier draft of this paragraph sent every rejection to the top
-level, and the draft correcting that named the warning as if it were an error.
+`memory_bytes`" looks there. Only a finding with no resource to attach to goes
+to the top level, and since the file-path selector was removed there is exactly
+one: a metric family rejected because two drivers gave the same name different
+`MetricKind`s, which belongs to neither driver alone.
 
 ### `--output`
 
@@ -708,12 +695,53 @@ Two details that decide whether the integration works at all:
 
 - **The destination must end in `.prom`** for the prometheus format. The
   collector globs `*.prom` and nothing else, so `--output .../aiform.txt`
-  produces silence rather than an error. `scan` warns when `--format
+  produces silence rather than an error. `metrics` warns when `--format
   prometheus` is written to a path with any other suffix.
 - **The temporary file must not match `*.prom`** — otherwise the collector
   reads it mid-write, which is the entire failure atomicity exists to avoid.
   Use node_exporter's own documented shape: `aiform.prom.<pid>` renamed onto
   `aiform.prom`, never `aiform.tmp.prom`.
+
+### Wiring it to Grafana
+
+The whole path, and it works with no server on aiform's side:
+
+```
+cron / systemd timer
+  └─ aiform resource metrics --all --format prometheus \
+       --output /var/lib/node_exporter/aiform.prom
+        └─ node_exporter textfile collector  (globs *.prom)
+             └─ Prometheus scrapes node_exporter
+                  └─ Grafana queries Prometheus
+```
+
+The identity labels are what make it chartable: `provider`, `resource_type`,
+`name` and `id` become Grafana template variables and legend fields, so one
+panel covers a fleet with `aiform_memory_bytes{resource_type="compute"}` and a
+`$name` selector. `aiform_resource_up` is the alerting series.
+
+Four honest limits, none of them fatal, all of them surprising if unstated:
+
+1. **The timestamp is scrape time, not observation time.** aiform reads the
+   provider at T; Prometheus scrapes node_exporter at T+Δ and stamps *that*.
+   With a 60s timer and a 15s scrape, the same values are re-reported four
+   times, so a graph shows a staircase rather than a smooth line. Match the
+   timer to the resolution you actually want.
+2. **A dead timer looks healthy.** The `.prom` file keeps being served after
+   the command stops running, so Prometheus reports the last values as
+   current — indefinitely. This is the trap: a broken collection pipeline
+   renders as a flat, green dashboard. node_exporter publishes
+   `node_textfile_mtime_seconds` for exactly this; alert on it being older
+   than a few timer intervals, or the freshness of everything above is
+   unmonitored.
+3. **Provider metrics are already delayed.** DigitalOcean's monitoring
+   endpoints return a *time series*, and a driver takes the most recent point.
+   That point is minutes old and pre-averaged by the provider, so sub-minute
+   resolution is not available no matter how often the timer runs.
+4. **No histograms or summaries.** `MetricKind` is `COUNTER|GAUGE` only, so
+   there are no native percentiles — no `histogram_quantile()` over a latency
+   bucket. Adding them means a new `MetricKind` and a driver that can produce
+   bucket boundaries; nothing here forecloses it, but nothing here provides it.
 
 ### Scrape cost
 
@@ -743,7 +771,7 @@ sweep" above; per-sample validation under "Validation before a line is
 written." What remains:
 
 - **`ResourceNotFoundError`** from `health()` renders as `FAILING`, summary
-  `"resource not found"`, `up 0`. It does **not** mark drift: `scan` cannot
+  `"resource not found"`, `up 0`. It does **not** mark drift: these commands cannot
   write state, and a vanished resource should page someone now. The next `plan`
   is what records it.
 - **A driver-supplied label colliding** with an identity label drops **that
@@ -751,10 +779,10 @@ written." What remains:
   failure is scoped, and an earlier draft made this one inconsistent with no
   stated reason. Deliberately not a silent overwrite, which would hide the
   driver bug. `aiform_resource_up` comes from `health()` and is unaffected.
-- **No tracked resources at all** — `scan` prints an empty result and exits 0.
+- **No tracked resources at all** — `metrics --all` prints an empty result and exits 0.
   A scrape of an empty formation is not an error.
 - **`.aiform/state.json` missing** — empty result, exit 0. Not an error, and
-  `scan` adds no `exists()` check of its own: `state.load()` already returns an
+  `metrics --all` adds no `exists()` check of its own: `state.load()` already returns an
   empty `State()` for a missing path, no other command treats that as a
   failure, and a fresh project's cron scrape should report nothing rather than
   fail until the first `apply`. An earlier draft said exit 2 on the strength of
@@ -763,12 +791,6 @@ written." What remains:
   (`json.loads`, or Pydantic validation), and a scrape reporting zero resources
   because state failed to parse is worse than one that fails loudly.
 - **`--output` to an unwritable path** exits 2. Same reasoning.
-- **A `<file>.aiform.md` argument that does not exist** exits 2, unlike the
-  malformed-file case above which continues the sweep. The distinction is
-  whose mistake it is: a file that cannot be found is a typo in the command
-  the operator just typed, and silently sweeping a subset of what they asked
-  for is worse than refusing. A file that exists but does not parse is a
-  problem with the repository, which the sweep reports and works around.
 
 ### The per-resource verbs
 
@@ -808,12 +830,12 @@ signal anyone sees, so it is specified rather than left to the implementer.
 exit code answers the health question rather than reporting whether aiform
 could answer it.
 
-For `scan`, `metrics` and `status`:
+For `metrics` and `status`:
 
 | Code | When |
 |---|---|
 | 0 | the command ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
-| 2 | the sweep could not run: malformed state, unwritable `--output`, an unknown `--format`, or a `FILE.aiform.md` argument that does not exist |
+| 2 | the command could not run: malformed state, unwritable `--output`, an unknown `--format`, a `<name>` that is unknown or ambiguous, or neither `<name>` nor `--all` given |
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —
@@ -845,8 +867,7 @@ A consumer contract, so it is fixed here rather than left to the renderer:
 ```json
 {
   "elapsed_seconds": 0.83,
-  "warnings": ["examples/old.aiform.md parses to digitalocean.compute.gone, not in state"],
-  "errors": ["examples/broken.aiform.md: frontmatter is not a mapping"],
+  "errors": ["dropped family 'queue_depth': compute says gauge, firewall says counter"],
   "resources": [
     {
       "resource_key": "digitalocean.compute.web-01",
@@ -869,17 +890,20 @@ rendering, which prefixes and stamps identity labels. A JSON consumer already
 has the identity fields beside the samples, and duplicating them into every
 label map would be noise.
 
-The top-level `warnings` and `errors` arrays carry only what has no
-`ResourceScan` to hang on: the two file-level outcomes under "What `paths`
-means" — the not-in-state warning and the malformed-file error — plus any
-family-level rejection from validation. A per-sample rejection has a resource,
-so it appears in that resource's own `errors` instead. Without the two
-top-level arrays those findings would exist only in the log, and a JSON
-consumer would see a short `resources` list with no indication anything was
-dropped. `render_text` prints the same two
-lists; `render_prometheus` cannot, so it logs them at `WARNING` — an
-exposition file has no channel for prose, and inventing a
-`aiform_scan_errors` counter would be a metric nobody asked for.
+The top-level `errors` array carries only what has no `ResourceScan` to hang
+on — today just a family-level rejection from validation. A per-sample
+rejection has a resource, so it appears in that resource's own `errors`
+instead. Without the top-level array a family rejection would exist only in
+the log, and a JSON consumer would see a short `resources` list with no
+indication anything was dropped. `render_text` prints the same list;
+`render_prometheus` cannot, so it logs it at `WARNING` — an exposition file
+has no channel for prose, and inventing an `aiform_scan_errors` counter would
+be a metric nobody asked for.
+
+**The `.prom` suffix warning is not one of these.** `--output foo.txt` with
+`--format prometheus` is known to be wrong before the sweep runs, from the
+arguments alone, so `cli.py` warns on stderr and never reaches `ScanResult`.
+An earlier draft left where that warning went unspecified.
 
 ## Out of scope
 
@@ -888,12 +912,12 @@ exposition file has no channel for prose, and inventing a
   `health()` may look at": it makes the verdict a property of aiform's network
   location rather than of the resource. Reopening this needs a design pass that
   answers where the check runs from, not just a new method.
-- **A long-running `/metrics` exporter.** `aiform resource scan` is a one-shot command.
+- **A long-running `/metrics` exporter.** `aiform resource metrics` is one-shot.
   A daemon Prometheus scrapes directly would be this repo's first inbound
   socket and first server dependency, with auth, TLS and lifecycle all
   undesigned. It belongs with `PLAN.md` §10's "Centralized server support",
   which names the direction without committing to an architecture.
-- **Historical storage.** aiform holds no time series. `scan` is stateless; the
+- **Historical storage.** aiform holds no time series. These commands are stateless; the
   scrape target stores history. This is also why a driver may not derive a
   counter by differencing.
 - **Alerting rules, dashboards, or Grafana provisioning.** aiform emits;
@@ -923,9 +947,7 @@ exposition file has no channel for prose, and inventing a
   `OPTIONAL_METHOD_PARAMS` check rather than an `EXPECTED_METHOD_PARAMS` entry
   (which would make it required)
 - that `refresh_state()` and `build_destroy_plan()` contain the
-  walk-every-tracked-resource loop `scan_resources()` mirrors, and that
-  `build_destroy_plan()` resolves `paths` by parsing each file to a key rather
-  than matching `StateEntry.aiform_md_path`
+  walk-every-tracked-resource loop `scan_resources()` mirrors
 - that `refresh_resource()` itself writes nothing — every `state.save()` is in
   `refresh_state()`, `build_create_plan()` or `apply_plan()`
 - that `planner.diff_attributes()` iterates `desired.items()`, so an extra key

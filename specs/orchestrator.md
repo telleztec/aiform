@@ -1050,7 +1050,7 @@ What it **does** reuse, and must: this module's `load_driver()`,
 `driver_path()`, `resource_key()` and `discover_files()` — none of which
 touches state. Reimplementing `load_driver()` would duplicate its synthetic
 module naming and its `FileNotFoundError` → `PlanBlockedError` translation,
-and would let `aiform resource scan` and `aiform plan` drift apart on which driver file
+and would let the `aiform resource` commands and `aiform plan` drift apart on which driver file
 they loaded for the same pair. (An earlier draft of this addendum claimed
 "every path in this module either writes state or exists to feed one that
 does" — untrue of exactly these four helpers, and it implied the opposite
