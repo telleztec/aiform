@@ -1228,12 +1228,16 @@ aiform resource check <name> [--state-file <path>]
     carries the answer rather than whether it could answer -- it exists
     to be written as `aiform resource check web-01 && ./smoke-test.sh`.
 
-aiform resource metrics (<name> | --all) [--format text|json|prometheus]
+aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
     NOT YET IMPLEMENTED. driver.metrics() plus driver.health(), for one
-    named resource or -- with --all -- for every tracked resource.
-    Exactly one of <name> or --all is required: a bare `metrics` that
-    swept the whole fleet would be a surprising default.
+    named resource, or for EVERY tracked resource when <name> is
+    omitted. No-argument-means-everything is this CLI's existing
+    convention -- `plan refresh`, `plan show` and `plan create` all work
+    that way -- and there is no --all flag, since omitting <name>
+    already says it and two spellings of one meaning is what
+    specs/driver.md's "one writable spelling per value" rule warns
+    against.
 
     health() is called in both modes because aiform_resource_up is
     itself a metric, and it is the series an alert rule fires on. One
@@ -1247,8 +1251,8 @@ aiform resource metrics (<name> | --all) [--format text|json|prometheus]
     that collector globs *.prom and will happily parse a half-written
     file.
 
-    --all makes zero Anthropic API calls and never writes state -- it is
-    meant to run repeatedly on a scrape interval. A resource whose
+    The no-argument form makes zero Anthropic API calls and never
+    writes state -- it is meant to run repeatedly on a scrape interval. A resource whose
     driver declines a capability reports "unsupported: <reason>"; one
     whose driver raises reports UNKNOWN. Neither aborts the sweep: a
     single broken driver must not blank a dashboard.

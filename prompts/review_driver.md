@@ -108,7 +108,7 @@ Check specifically for:
     those, not a separate lesser one.
 12. **`health()`/`metrics()`, if present, are safe to call on a loop.**
     These are optional and never reached from `plan`/`apply` — `aiform
-    resource` commands call them, and `metrics --all` may run every few
+    resource` commands call them, and `metrics` may run every few
     seconds on a scrape interval, indefinitely. Each
     of the following is a blocking issue:
     - **Not read-only.** Anything other than `GET`/`HEAD` against the

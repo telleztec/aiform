@@ -724,7 +724,7 @@ state.
 
 ```
 aiform resource check   <name> [--state-file <path>]
-aiform resource metrics (<name> | --all) [--format text|json|prometheus]
+aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
 aiform resource status  <name> [--state-file <path>]
 ```
@@ -759,11 +759,11 @@ to be used as a gate: `aiform resource check web-01 && ./smoke-test.sh`.
 
 ---
 
-### `aiform resource metrics <name>` / `aiform resource metrics --all`
+### `aiform resource metrics [<name>]`
 
 **Does:** prints counters and gauges — for one named resource, or for every
-tracked resource with `--all`. Calls the driver's `metrics()` **and**
-`health()`.
+tracked resource when `<name>` is omitted. Calls the driver's `metrics()`
+**and** `health()`.
 
 Why `health()` too, in a command called `metrics`: `aiform_resource_up` is
 itself a metric, and it is the series an alert rule fires on. Emitting it from
@@ -772,8 +772,11 @@ than two that can disagree.
 
 **Arguments:** exactly one of `<name>` — the resource's `name:` from its
 `.aiform.md`, e.g. `web-01`, not the full `digitalocean.compute.web-01` state
-key — or `--all`. A bare `metrics` with neither is an error, not a silent
-fleet-wide sweep.
+key. **Omitting it means every tracked resource**, matching `plan refresh`,
+`plan show` and `plan create`, which all operate on everything when given no
+arguments. There is no `--all` flag: omitting `<name>` already says it, and a
+second spelling of one meaning is what `specs/driver.md`'s "one writable
+spelling per value" rule warns against.
 
 `--format` selects the rendering, default `text`. `--output <path>` writes to
 a file instead of stdout, atomically (temp file plus rename); with `--format
@@ -789,7 +792,7 @@ gauge  memory_bytes   2.147e+09
 gauge  cpu_percent    41.2
 ```
 
-**Output**, `--format prometheus --all` — exposition format, grouped by metric
+**Output**, no `<name>` and `--format prometheus` — exposition format, grouped by metric
 family:
 
 ```
@@ -803,12 +806,11 @@ aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01
 `--format json` emits the same data as structured records.
 
 **Exit code:** `0` if the command ran, `2` if it could not (name not found or
-ambiguous, neither `<name>` nor `--all` given, unwritable `--output`,
-unreadable state). A `failing` resource exits `0` — it is an answer, and
+ambiguous, unwritable `--output`, unreadable state). A `failing` resource exits `0` — it is an answer, and
 putting it in the exit code would make a cron wrapper page on one transient
 blip.
 
-**`--all` is the scrape mode.** It makes zero Anthropic API calls, writes no
+**The no-argument form is the scrape mode.** It makes zero Anthropic API calls, writes no
 state, and never aborts because one resource is sick: a driver that declines a
 capability reports `unsupported`, one that raises reports `unknown`, and the
 rest still render. A single broken driver must not blank a dashboard.

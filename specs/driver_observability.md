@@ -21,8 +21,8 @@ Give a driver two optional, read-only methods for answering the day-2
 questions `read()` cannot: **is this resource working**, and **what are its
 counters and gauges**. Then expose them through `aiform resource` — three
 verbs (`check`, `metrics`, `status`) for an operator at a terminal, with
-`metrics --all --format prometheus` doubling as the scrape a Prometheus or
-Grafana pipeline consumes.
+`metrics --format prometheus` over the whole fleet doubling as the scrape a
+Prometheus or Grafana pipeline consumes.
 
 ## Use cases
 
@@ -296,7 +296,7 @@ def resolve_name(name: str, st: State) -> str:
 
 def scan_resources(*, keys=None, state_path=state.DEFAULT_STATE_PATH) -> ScanResult:
     """Sweep tracked resources: exactly those in `keys`, or every one when
-    `keys` is None (`--all`). Reads state; never writes it. Makes zero
+    `keys` is None (no `<name>` given). Reads state; never writes it. Makes zero
     Anthropic API calls."""
 
 
@@ -325,8 +325,8 @@ def write_atomically(text: str, path: Path) -> None: ...
 aiform resource check <name> [--state-file <path>]
 aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
 aiform resource status <name> [--state-file <path>]
-aiform resource metrics --all [--format text|json|prometheus] [--output <path>]
-                              [--state-file <path>]
+aiform resource metrics [<name>] [--format text|json|prometheus]
+                        [--output <path>] [--state-file <path>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
@@ -338,9 +338,10 @@ separate command surface from `plan`"), and the same reasoning applies: none
 of these plans or applies anything.
 
 Earlier drafts had a fourth verb, `scan`, for the fleet-wide sweep. It is
-folded into `metrics --all`: `metrics <name> --format prometheus` already
-emitted exposition format for one resource, so a separate command was the same
-operation at a different scope. One verb, one scope flag.
+folded into `metrics`: `metrics <name> --format prometheus` already emitted
+exposition format for one resource, so a separate command was the same
+operation at a different scope. One verb, and scope is whether you named a
+resource.
 
 ### The three verbs are not interchangeable
 
@@ -357,7 +358,7 @@ timestamp.
 
 **`check`'s exit code is the one exception in this whole surface**, and it is
 deliberate. Everywhere else — `metrics`, `status` — a non-zero exit means
-*aiform could not answer*, never *the answer was bad*; `metrics --all` exits 0 on
+*aiform could not answer*, never *the answer was bad*; `metrics` exits 0 on
 a `FAILING` resource precisely so a cron wrapper does not page on one bad
 scrape. `check` inverts that because it exists to be used as an assertion
 (`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
@@ -481,7 +482,7 @@ that never runs.
    *Not mechanically enforced.* `scan_resources()` calls each driver
    synchronously and cannot interrupt a `urlopen` already in flight without
    threads, and there is no whole-sweep deadline. Nothing stops the next
-   `metrics --all` starting before the last finished. Stated plainly rather than
+   the next sweep starting before the last finished. Stated plainly rather than
    implied to be guaranteed; a real bound belongs with `PLAN.md` §10's
    "Timeout/retry/failover orchestration" entry, which owns this for every
    driver call rather than just these two.
@@ -514,15 +515,24 @@ leaving every renderer's signature unable to see it.
 It also had a `warnings` field. That is gone with the file-path selector, which
 was its only producer.
 
-### Scope: `<name>` or `--all`, and nothing else
+### Scope: name it, or don't
 
 `scan_resources()` takes `keys` — a list of state keys, or `None` meaning every
 tracked resource. `<name>` resolves to one key through `resolve_name()`;
-`--all` passes `None`.
+omitting it passes `None`.
+
+**There is no `--all` flag.** Omitting `<name>` already means everything, which
+is what `plan refresh`, `plan show` and `plan create` do with no arguments, so
+a flag saying the same thing would be a second spelling of one meaning — the
+thing `specs/driver.md`'s "one writable spelling per value" addendum warns
+against for driver fields, applied to the CLI. An earlier draft required
+exactly one of `<name>` or `--all`, on the reasoning that a bare `metrics`
+sweeping the fleet is surprising. It is not surprising in a tool where the
+destructive `plan destroy` already defaults to every tracked resource.
 
 **The file-path selector is deliberately gone.** Earlier drafts let the sweep
 take `[<file>.aiform.md ...]`, inherited from when it was a separate `scan`
-command. It was a third way of saying what `<name>` and `--all` already say,
+command. It was a third way of saying what naming a resource, or not, already says,
 and it carried its own edge cases — a path that parses to an untracked key, a
 malformed `.aiform.md`, a path that does not exist — each needing its own
 warning-or-error rule. Removing it removes all three, and with them the
@@ -708,7 +718,7 @@ The whole path, and it works with no server on aiform's side:
 
 ```
 cron / systemd timer
-  └─ aiform resource metrics --all --format prometheus \
+  └─ aiform resource metrics --format prometheus \
        --output /var/lib/node_exporter/aiform.prom
         └─ node_exporter textfile collector  (globs *.prom)
              └─ Prometheus scrapes node_exporter
@@ -779,10 +789,10 @@ written." What remains:
   failure is scoped, and an earlier draft made this one inconsistent with no
   stated reason. Deliberately not a silent overwrite, which would hide the
   driver bug. `aiform_resource_up` comes from `health()` and is unaffected.
-- **No tracked resources at all** — `metrics --all` prints an empty result and exits 0.
+- **No tracked resources at all** — `metrics` prints an empty result and exits 0.
   A scrape of an empty formation is not an error.
 - **`.aiform/state.json` missing** — empty result, exit 0. Not an error, and
-  `metrics --all` adds no `exists()` check of its own: `state.load()` already returns an
+  `metrics` adds no `exists()` check of its own: `state.load()` already returns an
   empty `State()` for a missing path, no other command treats that as a
   failure, and a fresh project's cron scrape should report nothing rather than
   fail until the first `apply`. An earlier draft said exit 2 on the strength of
@@ -835,7 +845,7 @@ For `metrics` and `status`:
 | Code | When |
 |---|---|
 | 0 | the command ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
-| 2 | the command could not run: malformed state, unwritable `--output`, an unknown `--format`, a `<name>` that is unknown or ambiguous, or neither `<name>` nor `--all` given |
+| 2 | the command could not run: malformed state, unwritable `--output`, an unknown `--format`, or a `<name>` that is unknown or ambiguous |
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —
