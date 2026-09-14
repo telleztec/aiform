@@ -1220,13 +1220,25 @@ aiform plan show [--state-file <path>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check <name> [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.health() for one resource, printed for a
-    human. An ASSERTION: exit 0 iff the verdict is OK, non-zero for
-    DEGRADED/FAILING/UNKNOWN and for a driver that does not implement
-    health(). This is the only command in the surface whose exit code
-    carries the answer rather than whether it could answer -- it exists
-    to be written as `aiform resource check web-01 && ./smoke-test.sh`.
+aiform resource check [<name>] [--state-file <path>]
+    NOT YET IMPLEMENTED. driver.health() for one named resource, or for
+    every tracked resource when <name> is omitted. An ASSERTION: this is
+    the only command in the surface whose exit code carries the answer
+    rather than whether it could answer, so it can be written as
+    `aiform resource check web-01 && ./smoke-test.sh` -- or, with no
+    name, as a fleet gate in CI.
+
+    Exit 0 iff at least one verdict was produced and every verdict is
+    OK. Exit 1 if any verdict is DEGRADED, FAILING or UNKNOWN. Exit 2 if
+    no verdict was produced at all -- an unknown or ambiguous <name>,
+    unreadable state, or (for the fleet form) not one tracked resource
+    whose driver implements health().
+
+    A resource whose driver declines health() is LISTED but does not
+    fail the aggregate; requiring every driver to implement health()
+    before the gate is usable would make it unusable today. It prints a
+    coverage line ("3 of 5 resources report health; 2 unsupported") so
+    the gap is visible rather than silently passing.
 
 aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
@@ -1257,8 +1269,9 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     whose driver raises reports UNKNOWN. Neither aborts the sweep: a
     single broken driver must not blank a dashboard.
 
-aiform resource status <name> [--state-file <path>]
-    NOT YET IMPLEMENTED. Four independent answers for one resource:
+aiform resource status [<name>] [--state-file <path>]
+    NOT YET IMPLEMENTED. Four independent answers for one named
+    resource, or a row per resource when <name> is omitted:
     deployed (from state), live (a driver.read()), config (diff against
     the discovered .aiform.md), health (driver.health()). Adds no fourth
     driver method -- it composes what §4 already defines. Writes no
@@ -1266,6 +1279,9 @@ aiform resource status <name> [--state-file <path>]
     this one only reports on it. Distinct from `plan show`, which prints
     STORED state for everything and makes no API call, so it cannot say
     whether the record is still true.
+
+    status is the most expensive of the three: a live read() AND a
+    health() per resource, so the fleet form costs 2N provider calls.
 
     Exit codes. `metrics` and `status` exit 0 when they ran and 2 when
     they could not; a FAILING resource is an answer, not a command

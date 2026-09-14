@@ -723,10 +723,10 @@ than `aiform plan`'s — none of these plans or applies anything, and none write
 state.
 
 ```
-aiform resource check   <name> [--state-file <path>]
+aiform resource check   [<name>] [--state-file <path>]
 aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
-aiform resource status  <name> [--state-file <path>]
+aiform resource status  [<name>] [--state-file <path>]
 ```
 
 **Notation.** `<lower-case>` in angle brackets is a placeholder you replace;
@@ -737,25 +737,45 @@ apart. `PLAN.md` §7 uses the same notation throughout.
 
 ---
 
-### `aiform resource check <name>`
+### `aiform resource check [<name>]`
 
-**Does:** asks the provider whether one resource is working right now, and
-prints a one-line verdict. Calls the driver's `health()`.
+**Does:** asks the provider whether a resource is working right now, and
+prints a one-line verdict per resource. Calls the driver's `health()`.
 
 **Arguments:** `<name>` — the resource's `name:` from its `.aiform.md`, e.g.
-`web-01`. Not the full `digitalocean.compute.web-01` state key.
+`web-01`, not the full `digitalocean.compute.web-01` state key. Omitting it
+checks every tracked resource, like its siblings.
 
-**Output:** one line — status, resource key, and a short summary.
+**Output:** one line per resource, plus a coverage line when checking the
+fleet.
 
 ```
+$ aiform resource check web-01
 ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+
+$ aiform resource check
+ok           digitalocean.compute.web-01   active, public v4 203.0.113.10
+failing      digitalocean.compute.db-01    status is "off"
+unsupported  digitalocean.domain.example   no per-domain health signal
+2 of 3 resources report health; 1 unsupported
 ```
 
 **Exit code — this is the only command whose exit code carries the answer:**
-`0` when the verdict is `ok`, `1` when it is `degraded`/`failing`/`unknown`,
-`2` when there is no verdict at all (name not found, name ambiguous, the
-driver does not implement `health()`, unreadable state). It is built this way
-to be used as a gate: `aiform resource check web-01 && ./smoke-test.sh`.
+
+| Code | When |
+|---|---|
+| 0 | at least one verdict was produced, and every verdict is `ok` |
+| 1 | any verdict is `degraded`, `failing` or `unknown` |
+| 2 | no verdict at all: unknown or ambiguous `<name>`, unreadable state, or — checking the fleet — not one driver implements `health()` |
+
+It is built this way to be a gate: `aiform resource check web-01 &&
+./smoke-test.sh` for one resource, or a bare `aiform resource check` in CI.
+
+**A resource whose driver declines `health()` is listed but does not fail the
+aggregate.** Requiring every driver to implement `health()` before the fleet
+gate is usable would make it unusable today, when none do. The coverage line
+exists so that leniency is visible: a gate passing because it checked nothing
+is the failure mode to avoid, and that case is exit 2, not exit 0.
 
 ---
 
@@ -817,14 +837,17 @@ rest still render. A single broken driver must not blank a dashboard.
 
 ---
 
-### `aiform resource status <name>`
+### `aiform resource status [<name>]`
 
-**Does:** answers four independent questions about one resource — has aiform
+**Does:** answers four independent questions about a resource — has aiform
 deployed it, is it still there, does it still match what you declared, and is
 it healthy. Composes a state lookup, a live `read()`, a config diff, and
 `health()`; adds no new driver method.
 
-**Arguments:** `<name>` as above.
+**Arguments:** `<name>` as above; omitting it reports a row per tracked
+resource. This is the most expensive of the three commands — a live `read()`
+**and** a `health()` per resource, so the fleet form costs 2N provider calls
+against a rate limit shared with `plan`/`apply`.
 
 **Output:** four labelled lines, any of which can be the surprising one:
 

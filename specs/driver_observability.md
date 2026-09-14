@@ -322,11 +322,10 @@ def write_atomically(text: str, path: Path) -> None: ...
 ### `aiform/cli.py`
 
 ```
-aiform resource check <name> [--state-file <path>]
-aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
-aiform resource status <name> [--state-file <path>]
+aiform resource check   [<name>] [--state-file <path>]
 aiform resource metrics [<name>] [--format text|json|prometheus]
                         [--output <path>] [--state-file <path>]
+aiform resource status  [<name>] [--state-file <path>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
@@ -347,7 +346,7 @@ resource.
 
 | Verb | Question | Driver method | Exit code means |
 |---|---|---|---|
-| `check` | is it working *now*? | `health()` | **the verdict**: 0 iff `OK` |
+| `check` | is it working *now*? | `health()` | **the verdict**: 0 iff every verdict is `OK` |
 | `metrics` | what are its numbers? | `metrics()` | the command ran |
 | `status` | is what I deployed still there, and still what I declared? | `health()` + state + a live `read()` | the command ran |
 
@@ -363,7 +362,14 @@ a `FAILING` resource precisely so a cron wrapper does not page on one bad
 scrape. `check` inverts that because it exists to be used as an assertion
 (`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
 exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
-`health()` both exit non-zero too: neither is evidence the resource is fine.
+`health()` both exit non-zero too, for a named resource: neither is evidence
+that resource is fine.
+
+**All three take an optional `<name>`**, and omitting it means every tracked
+resource. `check`'s aggregate rule is the only one that needed deciding, and
+it is specified under Exit codes below. The short version: a gate that passes
+because it checked nothing is the failure mode worth designing against, so
+that case is exit 2, not exit 0.
 
 `status` composes rather than adding a fourth driver method. Its four lines come
 from the state entry (deployed), a live `read()` (live), `diff_attributes()`
@@ -519,7 +525,8 @@ was its only producer.
 
 `scan_resources()` takes `keys` — a list of state keys, or `None` meaning every
 tracked resource. `<name>` resolves to one key through `resolve_name()`;
-omitting it passes `None`.
+omitting it passes `None`. All three verbs share this, so scope behaves
+identically across the noun group.
 
 **There is no `--all` flag.** Omitting `<name>` already means everything, which
 is what `plan refresh`, `plan show` and `plan create` do with no arguments, so
@@ -804,13 +811,15 @@ written." What remains:
 
 ### The per-resource verbs
 
-`check`, `metrics` and `status` take a resource `<name>` — the `name:`
-frontmatter field, not the full `<provider>.<resource_type>.<name>` state key.
-The key is an implementation detail of state; the name is what the operator
-wrote in the file and what they will type.
+`check`, `metrics` and `status` all take an **optional** resource `<name>` —
+the `name:` frontmatter field, not the full `<provider>.<resource_type>.<name>`
+state key. The key is an implementation detail of state; the name is what the
+operator wrote in the file and what they will type. Omitting it means every
+tracked resource, matching `plan refresh`/`show`/`create`.
 
 - **A `<name>` matching no state entry** — exit 2, naming the name and listing
-  what *is* tracked. Not exit 0 with "not deployed": for `check` that would
+  what *is* tracked. Only reachable when a name was given; omitting it cannot
+  fail this way. Not exit 0 with "not deployed": for `check` that would
   assert health on a resource aiform has never heard of, and a typo'd name is
   overwhelmingly the likelier cause than a genuine question about something
   undeployed. `status` is the exception in spirit but not in code — see below.
@@ -828,8 +837,12 @@ wrote in the file and what they will type.
   diff against), and `deployed` still reports when aiform last applied it.
   That last line is the point of the command in this case: it distinguishes a
   resource that was deleted from one that never existed.
-- **`check` where the driver does not implement `health()`** — exit 2 with the
-  decline reason. It is not a passing check; aiform has no verdict to give.
+- **`check <name>` where that driver does not implement `health()`** — exit 2
+  with the decline reason. It is not a passing check; aiform has no verdict to
+  give. In the fleet form that resource is listed as `unsupported` and does not
+  fail the aggregate — the question there is "is anything I can assess
+  unhealthy", and one unassessable resource does not invalidate the others'
+  verdicts. Exit 2 returns only when *no* resource produced a verdict.
 
 ### Exit codes
 
@@ -854,13 +867,35 @@ An implementation returning 1 on any `UNKNOWN` would page on exactly the
 transient blip the four-state design exists to absorb. There is no code 1 for
 these three.
 
-For `check`:
+For `check` — the only command whose exit code answers the question rather
+than reporting whether it could answer:
 
-| Code | When |
-|---|---|
-| 0 | the verdict is `OK` |
-| 1 | the verdict is `DEGRADED`, `FAILING` or `UNKNOWN` |
-| 2 | no verdict: name not found, name ambiguous, `health()` declined, unreadable state |
+| Code | Named `<name>` | No name (every resource) |
+|---|---|---|
+| 0 | the verdict is `OK` | at least one verdict was produced **and** every verdict is `OK` |
+| 1 | the verdict is `DEGRADED`, `FAILING` or `UNKNOWN` | any verdict is `DEGRADED`, `FAILING` or `UNKNOWN` |
+| 2 | no verdict: name unknown or ambiguous, `health()` declined, unreadable state | no verdict from **any** resource: nothing tracked, or not one driver implements `health()` |
+
+Three things this rule decides, each of which could reasonably have gone the
+other way:
+
+- **A declining driver does not fail the aggregate.** It is listed as
+  `unsupported` and skipped. The alternative — any decline fails the gate —
+  makes the fleet form unusable today, when no driver implements `health()` at
+  all, and would keep it unusable until every driver did.
+- **But "nothing answered" is exit 2, not exit 0.** This is the important half
+  of the previous point. Leniency about *some* resources declining must not
+  become a gate that passes because it assessed nothing, which is exactly what
+  `0` would mean on a fleet where every driver declines. A coverage line
+  (`2 of 3 resources report health; 1 unsupported`) prints either way, so
+  partial assessment is visible rather than inferred from an exit code that
+  cannot express it.
+- **`UNKNOWN` fails.** A resource aiform could not reach is not a resource
+  known to be healthy. This is the opposite of what the prometheus rendering
+  does with `UNKNOWN` — there it emits no `up` series at all, letting the next
+  scrape answer — and the asymmetry is deliberate: a scrape can afford to say
+  nothing and try again in fifteen seconds, a script about to run the next
+  deploy step cannot.
 
 `DEGRADED` exiting 1 while `aiform_resource_up` renders it as `1` is not an
 inconsistency. The gauge answers "is it serving" for an alert rule with
