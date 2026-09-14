@@ -303,19 +303,17 @@ raises it, so it is part of the contract, not a general-purpose error. Putting
 it in `exceptions.py` would re-create the §1 discrepancy this file has been
 flagging at the top since it was written.
 
-**Parameter lists are `["self", "id", "credentials"]`** — identical to `read()`
-and `delete()`, and binding: `driver_gen.py`'s validator does exact list
-equality, so a driver renaming `id` fails validation. Because these are
-optional, they are checked via a separate `OPTIONAL_METHOD_PARAMS` dict applied
-only when the method is present; adding them to `EXPECTED_METHOD_PARAMS` would
-make them required (`specs/driver_gen.md`).
+**Parameters.** Both methods take exactly `(self, id, credentials)`:
 
-Neither method is reachable from `plan`/`apply`. `aiform resource scan` is their only
-caller, and it never writes state. Full rules — control plane only, read-only,
-zero LLM calls, counter honesty — are in `specs/driver_observability.md`; not
-restated here, to avoid the drift this file already documents twice. One point
-worth carrying, since it is the opposite of what an earlier draft said: a
-driver's `health()` **may** delegate to its own `read()` when that returns
-enough to classify (`compute.py`'s does; `firewall.py`'s does not, having
-projected `status` away). What it may not do is widen `read()` to make that
-work.
+- `id` — the CSP's identifier for this resource, the opaque string the driver
+  returned as `"id"` when it created the resource.
+- `credentials` — e.g. `{"DIGITALOCEAN_TOKEN": "..."}`. Never logged, never
+  passed through any Anthropic API call.
+
+The parameter *names* are binding, not just their order: a driver spelling the
+first one `resource_id` is rejected at validation.
+
+Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
+are their only caller, and none of those writes state. Full rules — control
+plane only, read-only, zero LLM calls, counter honesty, and whether `health()`
+may delegate to `read()` — are in `specs/driver_observability.md`.

@@ -209,7 +209,7 @@ note on this.
 
 ### Mechanism A — `aiform plan destroy`
 
-The existing command (§7): `aiform plan destroy [FILE.aiform.md ...] [--yes]`.
+The existing command (§7): `aiform plan destroy [<file>.aiform.md ...] [--yes]`.
 Plans and applies a destroy for every resource named by the given
 file(s) (or every resource currently tracked in state, if none are
 given), 100% subject to gate #2 (review-orchestration-model) by
@@ -1170,6 +1170,17 @@ review at all). See "Driver curation" for how the pieces relate.
 
 ## 7. CLI command surface
 
+**Synopsis notation.** `<lower-case>` inside angle brackets is a placeholder
+the user replaces; everything else -- command words, flag names, and literal
+values like `digitalocean` or `text|json|prometheus` -- is typed exactly as
+shown. `[x]` is optional, `|` separates alternatives, `...` may repeat.
+
+This is docopt's angle-bracket convention. man(7) marks replaceable arguments
+with italics, which a fenced code block cannot render; the alternative
+upper-case spelling (`NAME`) is also valid docopt, but was rejected here
+because `NAME` collides with `aiform.md`'s literal `name:` field and a reader
+cannot tell a placeholder from a keyword.
+
 ```
 aiform init [--provider digitalocean]
     Scaffolds .aiform/, .gitignore entries, an examples/*.aiform.md
@@ -1177,7 +1188,7 @@ aiform init [--provider digitalocean]
     prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN. 
     Verifies that the credentials work. 
 
-aiform plan create [FILE.aiform.md ...] [--state-file PATH] [--json]
+aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]
     Parse, refresh, verify the curated driver is present (fail with a
     clear error if not; record its hash as provenance either way), diff,
     print plan.
@@ -1186,30 +1197,30 @@ aiform plan create [FILE.aiform.md ...] [--state-file PATH] [--json]
     prefixed `AIFORM-DELETE-` as destroy requests (see "Resource
     deletion") — shown in the plan, not yet executed.
 
-aiform plan apply [FILE.aiform.md ...] [--yes] [--state-file PATH]
+aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>]
     Re-plans, runs gate #2 (review-orchestration-model) for any destructive 
     step, executes.
     --yes skips the interactive confirmation only — never a `block` flag.
     On a successful destroy (either "Resource deletion" mechanism), moves
     the resource's source .aiform.md file into `.aiform/trash/`.
 
-aiform plan destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]
+aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]
     Plans a destroy of every resource matching the given file(s) (or
     all tracked resources if none given), then applies it. 100% subject
     to gate #2 (review-orchestration-model) by definition. On success, moves each destroyed
     resource's .aiform.md file into `.aiform/trash/` — see "Resource
     deletion".
 
-aiform plan refresh [--state-file PATH]
+aiform plan refresh [--state-file <path>]
     driver.read() for every tracked resource, updates state to match
     live reality. No aiform.md parsing, no plan, no LLM calls at all —
     purely mechanical drift detection.
 
-aiform plan show [--state-file PATH]
+aiform plan show [--state-file <path>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check NAME [--state-file PATH]
+aiform resource check <name> [--state-file <path>]
     NOT YET IMPLEMENTED. driver.health() for one resource, printed for a
     human. An ASSERTION: exit 0 iff the verdict is OK, non-zero for
     DEGRADED/FAILING/UNKNOWN and for a driver that does not implement
@@ -1217,12 +1228,12 @@ aiform resource check NAME [--state-file PATH]
     carries the answer rather than whether it could answer -- it exists
     to be written as `aiform resource check web-01 && ./smoke-test.sh`.
 
-aiform resource metrics NAME [--format text|json|prometheus] [--state-file PATH]
+aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
     NOT YET IMPLEMENTED. driver.metrics() for one resource. Default
     format is aligned text, because the use case is reading it twice by
     eye under load to watch a number move.
 
-aiform resource status NAME [--state-file PATH]
+aiform resource status <name> [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one resource:
     deployed (from state), live (a driver.read()), config (diff against
     the discovered .aiform.md), health (driver.health()). Adds no fifth
@@ -1232,8 +1243,8 @@ aiform resource status NAME [--state-file PATH]
     STORED state for everything and makes no API call, so it cannot say
     whether the record is still true.
 
-aiform resource scan [--format text|json|prometheus] [--output PATH]
-            [--state-file PATH] [FILE.aiform.md ...]
+aiform resource scan [--format text|json|prometheus] [--output <path>]
+            [--state-file <path>] [<file>.aiform.md ...]
     NOT YET IMPLEMENTED -- specified in specs/driver_observability.md,
     to be built in a later PR. The fleet verb: sweeps every tracked
     resource for a scraper. Listed here, with its three siblings above,
@@ -1267,24 +1278,24 @@ aiform resource scan [--format text|json|prometheus] [--output PATH]
     These are the ONLY way driver generation is ever reached — `plan`
     and `apply` never generate a driver. ---
 
-aiform driver create [--reference-page URL | --reference-file PATH-YML]
+aiform driver create [--reference-page <url> | --reference-file <path-yml>]
     Starts an AI coding session with the user, prompting the user if there are
     ambiguities, and requesting permission at it major step. 
     
-aiform driver refresh [--reference-page URL | --reference-file PATH-YML]
+aiform driver refresh [--reference-page <url> | --reference-file <path-yml>]
     Starts an AI coding session with the user, to refresh the driver implementation. 
 
-aiform driver show [--CSP CSP --resource-type TYPE]
+aiform driver show [--CSP <csp> --resource-type <type>]
     Searches the local repository of drivers for all matching drivers. 
 
-aiform driver delete [--CSP CSP --resource-type TYPE]
+aiform driver delete [--CSP <csp> --resource-type <type>]
     Removes a matching driver from the local repository of drivers.
     Existing state entries that trust the deleted driver's hash are left
     untouched; a future `aiform plan create` against a `(provider,
     resource)` pair that resolves to the deleted driver fails per §5's
     "Driver file missing" case.
 
-aiform driver publish [--CSP CSP --resource-type TYPE]
+aiform driver publish [--CSP <csp> --resource-type <type>]
     Publishes a local driver to the global repository. There will be a server-side 
     methodology for approving or rejecting a driver.  A user of aiform can use the 
     driver from their local repository without performing this step. 

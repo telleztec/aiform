@@ -58,7 +58,7 @@ both work) via a shared argparse parent parser attached at every level.
 subparser's `store_true` default overwrites the root parser's parsed
 value, so only the post-subcommand spelling takes effect. The addendum
 on `aiform resource scan` at the end of this file has the mechanism.
-`--state-file PATH` (default `state.DEFAULT_STATE_PATH`, i.e.
+`--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
 which never reads or writes state.
@@ -352,7 +352,7 @@ which never reads or writes state.
 - Exit 0 on a successful scaffold (regardless of the credential
   check's ✓/✗ outcome); exit 2 on an unsupported `--provider`.
 
-### `aiform plan create [FILE.aiform.md ...] [--state-file PATH] [--json]`
+### `aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]`
 
 - `files` (positional, `nargs="*"`) → `None` when empty, so
   `orchestrator.build_create_plan` falls through to its own
@@ -381,7 +381,7 @@ which never reads or writes state.
   `FileNotFoundError` (an explicitly-named file that doesn't exist) —
   `main()`'s shared error formatting, see below.
 
-### `aiform plan apply [FILE.aiform.md ...] [--yes] [--state-file PATH]`
+### `aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>]`
 
 Re-plans in full immediately before executing — `specs/orchestrator.md`'s
 "Out of scope" names this as `cli.py`'s job (`apply_plan()` only ever
@@ -412,7 +412,7 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]`
+### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
@@ -430,7 +430,7 @@ pass, unconditionally subject to gate #2 by construction (every entry
 4. Same `ApplyResult` printing as `plan apply`.
 - Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error).
 
-### `aiform plan refresh [--state-file PATH]`
+### `aiform plan refresh [--state-file <path>]`
 
 - `orchestrator.refresh_state(state_path=...)` — no `client` argument
   passed or accepted here (`refresh_state` takes none; `PLAN.md` §7:
@@ -442,7 +442,7 @@ pass, unconditionally subject to gate #2 by construction (every entry
 - Exit 0 on success, 2 on `PlanBlockedError`/`DriverExecutionError`
   (a missing driver or bad credential for a tracked resource).
 
-### `aiform plan show [--state-file PATH]`
+### `aiform plan show [--state-file <path>]`
 
 - `state.load(args.state_file)` directly — no orchestrator
   involvement at all (`specs/orchestrator.md`'s "Out of scope": "`plan
@@ -718,49 +718,175 @@ than papering over it with a generic `except Exception`.
 
 ## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
 
-A new **noun group** with four verbs, matching `aiform driver`'s shape rather
-than `aiform plan`'s — none of these plans or applies anything, and none
-writes state:
+A new **noun group**, matching `aiform driver`'s shape rather than `aiform
+plan`'s — none of these plans or applies anything, and none writes state.
 
 ```
-aiform resource check   NAME [--state-file PATH]
-aiform resource metrics NAME [--format text|json|prometheus] [--state-file PATH]
-aiform resource status  NAME [--state-file PATH]
-aiform resource scan         [--format text|json|prometheus] [--output PATH]
-                             [--state-file PATH] [FILE.aiform.md ...]
+aiform resource check   <name> [--state-file <path>]
+aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
+aiform resource status  <name> [--state-file <path>]
+aiform resource scan           [--format text|json|prometheus] [--output <path>]
+                               [--state-file <path>] [<file>.aiform.md ...]
 ```
+
+**Notation.** `<lower-case>` in angle brackets is a placeholder you replace;
+everything else is typed literally. This follows docopt's angle-bracket
+convention rather than the upper-case one, because upper-case `NAME` collides
+with `aiform.md`'s literal `name:` field and a reader cannot tell the two
+apart. `PLAN.md` §7 uses the same notation throughout.
+
+---
+
+### `aiform resource check <name>`
+
+**Does:** asks the provider whether one resource is working right now, and
+prints a one-line verdict. Calls the driver's `health()`.
+
+**Arguments:** `<name>` — the resource's `name:` from its `.aiform.md`, e.g.
+`web-01`. Not the full `digitalocean.compute.web-01` state key.
+
+**Output:** one line — status, resource key, and a short summary.
+
+```
+ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+```
+
+**Exit code — this is the only command whose exit code carries the answer:**
+`0` when the verdict is `ok`, `1` when it is `degraded`/`failing`/`unknown`,
+`2` when there is no verdict at all (name not found, name ambiguous, the
+driver does not implement `health()`, unreadable state). It is built this way
+to be used as a gate: `aiform resource check web-01 && ./smoke-test.sh`.
+
+---
+
+### `aiform resource metrics <name>`
+
+**Does:** prints the counters and gauges for one resource. Calls the driver's
+`metrics()`. Does **not** call `health()`.
+
+**Arguments:** `<name>` as above. `--format` selects the rendering; default
+`text`.
+
+**Output**, `--format text` — aligned columns, meant to be read by eye and run
+again a minute later to watch a number move:
+
+```
+gauge  memory_bytes   2.147e+09
+gauge  cpu_percent    41.2
+```
+
+`--format json` emits the same samples as structured data; `--format
+prometheus` emits exposition format for this one resource.
+
+**Exit code:** `0` if the command ran, `2` if it could not (name not found or
+ambiguous, unreadable state). A resource with no metrics is not an error.
+
+---
+
+### `aiform resource status <name>`
+
+**Does:** answers four independent questions about one resource — has aiform
+deployed it, is it still there, does it still match what you declared, and is
+it healthy. Composes a state lookup, a live `read()`, a config diff, and
+`health()`; adds no new driver method.
+
+**Arguments:** `<name>` as above.
+
+**Output:** four labelled lines, any of which can be the surprising one:
+
+```
+deployed    2026-09-10T14:02:11Z, id 123456789
+live        present
+config      in sync with examples/web.aiform.md
+health      failing — status is "off"
+```
+
+**Exit code:** `0` if the command ran, `2` if it could not. A resource that is
+missing or drifted is an *answer*, not a failure of the command.
+
+---
+
+### `aiform resource scan`
+
+**Does:** the same two driver calls as `check` and `metrics`, but across
+**every tracked resource at once**, rendered for a machine rather than a
+person. This is the command a Prometheus or Grafana collector runs on a timer.
+
+**Arguments:** no `<name>` — it sweeps everything by default, or only the
+resources matching the `.aiform.md` files you list. `--output <path>` writes
+to a file atomically instead of stdout, which node_exporter's textfile
+collector requires; that path must end in `.prom`.
+
+**Output**, `--format prometheus`:
+
+```
+# TYPE aiform_resource_up gauge
+aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
+aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
+# TYPE aiform_memory_bytes gauge
+aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
+```
+
+**Exit code:** `0` if the sweep ran, `2` if it could not. A `failing` resource
+exits `0` — putting it in the exit code would make a cron wrapper page on one
+transient blip.
+
+---
+
+### `scan` vs `metrics` — and whether `scan` should exist here at all
+
+They overlap, and the overlap is worth stating plainly rather than defending:
+
+| | `metrics <name>` | `scan` |
+|---|---|---|
+| Scope | one resource you name | every tracked resource |
+| Calls | `metrics()` only | `health()` **and** `metrics()` |
+| Audience | a person at a terminal | a collector on a timer |
+| Default format | aligned text | still `text`, but `prometheus` is the point |
+
+**Where `scan` came from.** You asked for three commands — `check`, `metrics`,
+`status`. `scan` is not a fourth idea: it is the pre-existing `aiform scan`
+from earlier in this PR, moved under the `resource` noun so there are not two
+separate surfaces reaching the same two driver methods.
+
+**The honest case against keeping it.** `aiform resource metrics <name>
+--format prometheus` already emits exposition format for one resource, and
+`scan` is close to "the same thing, for all of them, plus health". If the
+per-resource commands grew a way to say *all*, `scan` would be redundant.
+
+**The case for.** A collector needs one command that cannot fail because a
+single resource is sick, that emits `health` and `metrics` in one pass so the
+`up` series and the gauges share a timestamp, and that writes atomically to a
+`.prom` file. Those are scrape concerns, not operator concerns, and folding
+them into `metrics` would mean one command with two audiences and two exit-code
+rules.
+
+**Open for your decision.** If you want three commands, `scan` folds into
+`metrics` with an `--all` flag and `metrics` inherits the scrape behavior above.
+Nothing else in the spec changes.
+
+---
+
+### Implementation notes
 
 Each handler is a thin wrapper over `aiform/scan.py`, matching how
-`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All four belong to
-the **plain** dispatch set, not the LLM set: they make zero Anthropic API calls
-by contract, so none is ever handed a `_CountingClient`.
+`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All belong to the
+**plain** dispatch set, not the LLM set: they make zero Anthropic API calls by
+contract, so none is ever handed a `_CountingClient`.
 
-**Three implementation notes for whoever adds it.** `_dispatch()` currently
-reads `if args.command == "init"` and otherwise falls through to
-`args.plan_command`; a second noun group needs its own explicit branch there,
-or it raises `AttributeError` on a `Namespace` that has no `plan_command`. The
-sub-subparser needs `dest="resource_command", required=True`, mirroring
-`plan_sub`. And every parser should be added with `parents=[global_parent,
-state_parent]`, matching every sibling — not because `args.verbose` would
-otherwise be missing (the root parser carries `global_parent` too, so it is
-always present) but so that `aiform resource scan -v` parses at all. Without
-the parent, that spelling fails with argparse's bare "unrecognized arguments:
--v".
+Three things that will bite whoever wires up the parser:
 
-Adding it does **not** make both spellings work — the mechanism behind the
-caveat already noted in "Global flags" above: the subparser's `store_true`
-default is applied after the root's value is parsed, so `aiform -v plan show`
-yields `verbose=False` today on every subcommand. Tracked as #134, which
-carries the reproduction; all four verbs will inherit the behavior and it
-should be fixed by that issue rather than worked around here.
+1. `_dispatch()` currently reads `if args.command == "init"` and otherwise
+   falls through to `args.plan_command`. A second noun group needs its own
+   explicit branch, or it raises `AttributeError` on a `Namespace` that has no
+   `plan_command`.
+2. The sub-subparser needs `dest="resource_command", required=True`, mirroring
+   `plan_sub`.
+3. Every parser needs `parents=[global_parent, state_parent]` like its
+   siblings — not because `args.verbose` would otherwise be missing (the root
+   parser carries `global_parent` too), but so `aiform resource scan -v`
+   parses at all. See the `-v` caveat under "Global flags" and #134.
 
-Behavior, output formats, the atomic `--output` write and the `.prom` suffix
-requirement are specified in `specs/driver_observability.md` — not restated
-here. Exit codes are specified there too, and differ from this module's usual
-pattern in two ways worth knowing before reading that file. `scan`, `metrics`
-and `status` exit **0** when a resource reports `FAILING` or `UNKNOWN` — that
-is a successful scrape of unhealthy infrastructure, and putting it in the exit
-code would make a cron wrapper page on a single transient blip; only 0 and 2
-are used. **`check` is the deliberate exception**: it is an assertion meant to
-be written as `aiform resource check web-01 && ./smoke-test.sh`, so 0 means
-the verdict was `OK`, 1 means it was not, and 2 means there was no verdict.
+The rendering rules, the atomic `--output` write, the `.prom` suffix
+requirement, and the per-resource name-resolution errors are specified in
+`specs/driver_observability.md` and not restated here.

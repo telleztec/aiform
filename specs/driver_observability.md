@@ -321,12 +321,15 @@ def write_atomically(text: str, path: Path) -> None: ...
 ### `aiform/cli.py`
 
 ```
-aiform resource check <name> [--state-file PATH]
-aiform resource metrics <name> [--format text|json|prometheus] [--state-file PATH]
-aiform resource status <name> [--state-file PATH]
-aiform resource scan [--format text|json|prometheus] [--output PATH]
-                     [--state-file PATH] [FILE.aiform.md ...]
+aiform resource check <name> [--state-file <path>]
+aiform resource metrics <name> [--format text|json|prometheus] [--state-file <path>]
+aiform resource status <name> [--state-file <path>]
+aiform resource scan [--format text|json|prometheus] [--output <path>]
+                     [--state-file <path>] [<file>.aiform.md ...]
 ```
+
+Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
+everything else is typed literally.
 
 **`resource` is a noun with its own verb lifecycle**, matching `aiform driver`
 — `PLAN.md` §10 states that shape explicitly for drivers ("deliberately a
@@ -760,7 +763,7 @@ written." What remains:
   (`json.loads`, or Pydantic validation), and a scrape reporting zero resources
   because state failed to parse is worse than one that fails loudly.
 - **`--output` to an unwritable path** exits 2. Same reasoning.
-- **A `FILE.aiform.md` argument that does not exist** exits 2, unlike the
+- **A `<file>.aiform.md` argument that does not exist** exits 2, unlike the
   malformed-file case above which continues the sweep. The distinction is
   whose mistake it is: a file that cannot be found is a typo in the command
   the operator just typed, and silently sweeping a subset of what they asked
@@ -769,17 +772,17 @@ written." What remains:
 
 ### The per-resource verbs
 
-`check`, `metrics` and `status` take a resource `NAME` — the `name:`
+`check`, `metrics` and `status` take a resource `<name>` — the `name:`
 frontmatter field, not the full `<provider>.<resource_type>.<name>` state key.
 The key is an implementation detail of state; the name is what the operator
 wrote in the file and what they will type.
 
-- **A `NAME` matching no state entry** — exit 2, naming the name and listing
+- **A `<name>` matching no state entry** — exit 2, naming the name and listing
   what *is* tracked. Not exit 0 with "not deployed": for `check` that would
   assert health on a resource aiform has never heard of, and a typo'd name is
   overwhelmingly the likelier cause than a genuine question about something
   undeployed. `status` is the exception in spirit but not in code — see below.
-- **A `NAME` matching more than one state entry** (the same name under two
+- **A `<name>` matching more than one state entry** (the same name under two
   providers or resource types) — exit 2, listing the full keys that matched
   and asking for one. Never a guess: the two could be a droplet and the
   firewall in front of it, and checking the wrong one answers confidently
