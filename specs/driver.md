@@ -10,9 +10,10 @@ driver's internals, only the four abstract methods below. Pure interface
 import logic. `driver.py` today holds **two** exception types
 (`DriverUpdateNotSupported` and `CapabilityNotSupported`) and **six**
 methods: the four abstract ones the orchestrator calls, plus the two
-optional concrete ones the `aiform resource` commands call. Of the two
-addenda below, the `health()`/`metrics()` one is built; the marker-tag
-one is still a description of growth to come.
+optional concrete ones the `aiform resource` commands call. Four addenda
+follow. `UNORDERED_FIELDS`, "one writable spelling per value" and
+`health()`/`metrics()` are built and in force; the marker-tag helpers
+alone are still a description of growth to come.
 
 **Flagged discrepancy**: `PLAN.md` §1's repo-layout comment lists
 `DriverUpdateNotSupported` as living in `exceptions.py`, but §4's actual

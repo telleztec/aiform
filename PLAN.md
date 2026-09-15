@@ -583,17 +583,19 @@ plane only, read-only, no state write, counter honesty). Note a driver's
 `health()` MAY delegate to its own `read()` where that returns enough --
 what it must not do is widen `read()` to make that possible.
 
-**Two deliberate divergences in the file's copy of the block below**,
-recorded here rather than left for a reader to discover as apparent
-drift. First, the comment above the two methods drops this block's
-reference to `_tags_for_create`/`_tags_for_attributes`, which are still
-unbuilt — a comment naming a method that file does not define reads as a
-missing implementation rather than an unbuilt spec. Second,
-`CapabilityNotSupported`'s docstring there carries an extra paragraph
-this block does not: that it is caught directly by its caller and never
-through `orchestrator._call_driver()`, whose blanket
-`except Exception -> DriverExecutionError` would turn a deliberate
-decline into an `UNKNOWN` verdict.
+**One deliberate divergence, in the observability portion of the block
+below**: the comment above the two methods drops this block's reference
+to `_tags_for_create`/`_tags_for_attributes`, which are still unbuilt —
+a comment naming a method that file does not define reads as a missing
+implementation rather than an unbuilt spec. Everything else in that
+portion, `CapabilityNotSupported`'s docstring included, is byte-identical
+to `aiform/driver.py`. An earlier version of this paragraph claimed two
+divergences and was itself wrong about the count, which is why the
+docstring was brought back into sync rather than the tally corrected: a
+count is a thing to maintain, and this one had already gone stale once.
+(The rest of the block — the SPDX header, `AIFORM_MANAGED_TAG`, the tag
+helpers — differs for the ordinary reason that those pieces are
+unbuilt.)
 
 ```python
 # aiform/driver.py — hand-written, not generated
@@ -627,7 +629,17 @@ class CapabilityNotSupported(Exception):
     of the contract — same reasoning as DriverUpdateNotSupported above.
     The `aiform resource` commands catch it per-resource and report
     "unsupported: <reason>". That is not an error for `metrics` or
-    `status`; `check <name>` exits 2, having no verdict to give."""
+    `status`; `check <name>` exits 2, having no verdict to give.
+
+    A driver that deliberately cannot implement one overrides it to raise
+    this with a resource-specific reason, so the decision is recorded
+    where a reviewer reads it instead of being indistinguishable from a
+    forgotten method.
+
+    Caught directly by its caller, never through
+    orchestrator._call_driver(): that helper converts every exception
+    into DriverExecutionError, which would turn a deliberate decline into
+    an UNKNOWN verdict and a failed `check`."""
 
     def __init__(self, capability: str, reason: str):
         self.capability = capability
