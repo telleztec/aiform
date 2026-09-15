@@ -7,7 +7,10 @@ implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
 driver's internals, only the four methods below. Pure interface + one
 exception type — no file I/O, no LLM calls, no CSP API calls, no dynamic
-import logic.
+import logic. (Both addenda below describe growth to this contract that is
+specified but not yet implemented — "one exception type" and "the four methods
+below" describe `driver.py` as it stands today, which is what this file is
+supposed to do.)
 
 **Flagged discrepancy**: `PLAN.md` §1's repo-layout comment lists
 `DriverUpdateNotSupported` as living in `exceptions.py`, but §4's actual
@@ -259,3 +262,59 @@ mechanism per field would be a poor trade against simply rejecting the input.
 **`PLAN.md` §4's contract should carry this too** — noted as a prerequisite,
 not done here, mirroring how `specs/resource_tagging.md` handled its own §4
 addendum.
+
+## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`, not yet implemented)
+
+`ResourceDriver` **will grow** two optional methods and one exception, for the
+day-2 questions `read()` cannot answer. None of this is in `aiform/driver.py`
+yet — same "the contract is about to grow" framing as the marker-tag addendum
+above:
+
+```python
+class CapabilityNotSupported(Exception):
+    def __init__(self, capability: str, reason: str):
+        self.capability = capability
+        self.reason = reason
+        super().__init__(f"{capability}: {reason}")
+
+
+class ResourceDriver(ABC):
+    ...
+
+    def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
+        raise CapabilityNotSupported("health", "this driver does not implement health()")
+
+    def metrics(self, id: str, credentials: dict[str, str]) -> list[Sample]:
+        raise CapabilityNotSupported("metrics", "this driver does not implement metrics()")
+```
+
+**Concrete, not abstract** — the same reasoning as the marker-tag helpers
+above, and for an additional reason of its own: making either
+`@abstractmethod` would break every existing driver at instantiation time and
+force a resource that genuinely cannot answer to write a stub. A driver opts in
+by overriding; one that deliberately cannot implement one overrides it to raise
+`CapabilityNotSupported` with a resource-specific reason, so the decision is
+recorded where a reviewer reads it rather than being indistinguishable from a
+forgotten method (which is what a `hasattr` check would give).
+
+`CapabilityNotSupported` lives here in `driver.py`, alongside
+`DriverUpdateNotSupported` and for the same reason — the base class itself
+raises it, so it is part of the contract, not a general-purpose error. Putting
+it in `exceptions.py` would re-create the §1 discrepancy this file has been
+flagging at the top since it was written.
+
+**Parameters.** Both methods take exactly `(self, id, credentials)`:
+
+- `id` — the CSP's identifier for this resource, the opaque string the driver
+  returned as `"id"` when it created the resource.
+- `credentials` — e.g. `{"DIGITALOCEAN_TOKEN": "..."}`. Never logged, never
+  passed through any Anthropic API call.
+
+The parameter *names* are binding, not just their order: a driver spelling
+`id` as `resource_id` would be rejected — by the `OPTIONAL_METHOD_PARAMS`
+check in `specs/driver_gen.md`, which is specified and not yet implemented.
+
+Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
+are their only caller, and none of those writes state. Full rules — control
+plane only, read-only, zero LLM calls, counter honesty, and whether `health()`
+may delegate to `read()` — are in `specs/driver_observability.md`.

@@ -54,7 +54,12 @@ nothing calls back into it. Tests exercise it exclusively through
 `-v`/`--verbose`, `--no-color` are accepted both before and after the
 subcommand token (`aiform -v plan create` and `aiform plan create -v`
 both work) via a shared argparse parent parser attached at every level.
-`--state-file PATH` (default `state.DEFAULT_STATE_PATH`, i.e.
+**This is the intent, and it is currently false — see #134**: the
+subparser's `store_true` default overwrites the root parser's parsed
+value, so only the post-subcommand spelling takes effect. The addendum
+on `aiform resource ...` at the end of this file notes that the new commands
+inherit it.
+`--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
 which never reads or writes state.
@@ -348,7 +353,7 @@ which never reads or writes state.
 - Exit 0 on a successful scaffold (regardless of the credential
   check's ✓/✗ outcome); exit 2 on an unsupported `--provider`.
 
-### `aiform plan create [FILE.aiform.md ...] [--state-file PATH] [--json]`
+### `aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]`
 
 - `files` (positional, `nargs="*"`) → `None` when empty, so
   `orchestrator.build_create_plan` falls through to its own
@@ -377,7 +382,7 @@ which never reads or writes state.
   `FileNotFoundError` (an explicitly-named file that doesn't exist) —
   `main()`'s shared error formatting, see below.
 
-### `aiform plan apply [FILE.aiform.md ...] [--yes] [--state-file PATH]`
+### `aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>]`
 
 Re-plans in full immediately before executing — `specs/orchestrator.md`'s
 "Out of scope" names this as `cli.py`'s job (`apply_plan()` only ever
@@ -408,7 +413,7 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [FILE.aiform.md ...] [--yes] [--state-file PATH]`
+### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
@@ -426,7 +431,7 @@ pass, unconditionally subject to gate #2 by construction (every entry
 4. Same `ApplyResult` printing as `plan apply`.
 - Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error).
 
-### `aiform plan refresh [--state-file PATH]`
+### `aiform plan refresh [--state-file <path>]`
 
 - `orchestrator.refresh_state(state_path=...)` — no `client` argument
   passed or accepted here (`refresh_state` takes none; `PLAN.md` §7:
@@ -438,7 +443,7 @@ pass, unconditionally subject to gate #2 by construction (every entry
 - Exit 0 on success, 2 on `PlanBlockedError`/`DriverExecutionError`
   (a missing driver or bad credential for a tracked resource).
 
-### `aiform plan show [--state-file PATH]`
+### `aiform plan show [--state-file <path>]`
 
 - `state.load(args.state_file)` directly — no orchestrator
   involvement at all (`specs/orchestrator.md`'s "Out of scope": "`plan
@@ -711,3 +716,187 @@ than papering over it with a generic `except Exception`.
 - **Concurrent-invocation safety** — `PLAN.md` §10's "Single local state
   file, no locking" limitation is orchestrator/state-level and applies
   unchanged here; this module adds no locking of its own.
+
+## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
+
+A new **noun group** with three verbs, matching `aiform driver`'s shape rather
+than `aiform plan`'s — none of these plans or applies anything, and none writes
+state.
+
+```
+aiform resource check   [<name>] [--format text|json] [--state-file <path>]
+aiform resource metrics [<name>] [--format text|json]
+                        [--output <path>] [--state-file <path>]
+aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+```
+
+**Notation.** `<lower-case>` in angle brackets is a placeholder you replace;
+everything else is typed literally. This follows docopt's angle-bracket
+convention rather than the upper-case one, because upper-case `NAME` collides
+with `aiform.md`'s literal `name:` field and a reader cannot tell the two
+apart. `PLAN.md` §7 uses the same notation throughout.
+
+---
+
+### `aiform resource check [<name>]`
+
+**Does:** asks the provider whether a resource is working right now, and
+prints a one-line verdict per resource. Calls the driver's `health()`.
+
+**Arguments:** `<name>` — the resource's `name:` from its `.aiform.md`, e.g.
+`web-01`, not the full `digitalocean.compute.web-01` state key. Omitting it
+checks every tracked resource, like its siblings.
+
+**Output:** one line per resource, plus a coverage line when checking the
+fleet — the coverage line is part of the report, so it goes to stdout in text
+form and is a field of the document in `--format json`, never a stray line
+that would make the JSON unparseable. **Beware piping `check`**: a pipeline
+exits with the last command's status, so `aiform resource check | tee log`
+discards the verdict this command exists to produce. Use `set -o pipefail` or
+`${PIPESTATUS[0]}`.
+
+When a verdict is **not** `ok`, the driver's `observations` print
+indented beneath it — the detail you want exactly when something is wrong,
+with no flag to remember, because the gate case and the diagnosis case never
+overlap. `--format json` emits `status`, `summary` and `observations` for
+every resource unconditionally.
+
+```
+$ aiform resource check web-01
+ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+
+$ aiform resource check db-01
+failing  digitalocean.compute.db-01  status is "off"
+    status       off
+    locked       false
+    last_action  power_off
+
+$ aiform resource check
+ok           digitalocean.compute.web-01  active, public v4 203.0.113.10
+failing      digitalocean.compute.db-01   status is "off"
+unsupported  digitalocean.domain.example  no per-domain health signal
+2 of 3 resources report health; 1 unsupported
+```
+
+**Exit code — this is the only command whose exit code carries the answer:**
+
+| Code | When |
+|---|---|
+| 0 | at least one verdict was produced, and every verdict is `ok` |
+| 1 | any verdict is `degraded`, `failing` or `unknown` |
+| 2 | no verdict at all: unknown or ambiguous `<name>`, unreadable state, or — checking the fleet — not one driver implements `health()` |
+
+It is built this way to be a gate: `aiform resource check web-01 &&
+./smoke-test.sh` for one resource, or a bare `aiform resource check` in CI.
+
+**A resource whose driver declines `health()` is listed but does not fail the
+aggregate.** Requiring every driver to implement `health()` before the fleet
+gate is usable would make it unusable today, when none do. The coverage line
+exists so that leniency is visible: a gate passing because it checked nothing
+is the failure mode to avoid, and that case is exit 2, not exit 0.
+
+---
+
+### `aiform resource metrics [<name>]`
+
+**Does:** prints counters and gauges — for one named resource, or for every
+tracked resource when `<name>` is omitted. Calls the driver's `metrics()`, and
+only that: `check` is the verb that asks `health()`.
+
+**Arguments:** `<name>` — the resource's `name:` from its
+`.aiform.md`, e.g. `web-01`, not the full `digitalocean.compute.web-01` state
+key. **Omitting it means every tracked resource**, matching `plan refresh`,
+`plan show` and `plan create`, which all operate on everything when given no
+arguments. There is no `--all` flag: omitting `<name>` already says it, and a
+second spelling of one meaning is what `specs/driver.md`'s "one writable
+spelling per value" rule warns against.
+
+`--format` selects the rendering, default `text`. `--output <path>` **appends**
+to a file instead of writing stdout. No temp file, no rename, no
+suffix rule, no rotation — aiform never deletes or truncates it; a run adds to
+the end and the operator removes the file when done.
+
+Without `--output` every format goes to **stdout, which is a clean stream** —
+the report and nothing else. Logs and error
+messages all go to stderr, so `aiform resource metrics --format json | jq ...`
+works. A closed pipe (`| head -20`) is a successful run, not a
+`BrokenPipeError` traceback.
+
+Each run is preceded by a delimiter line carrying a UTC timestamp and the
+invocation, so an accumulating file can be split back into runs. aiform never
+reads the file back, never rotates it and never deletes it; a missing parent
+directory or unwritable path is an ordinary error.
+
+**Output**, `--format text` — aligned columns, meant to be read by eye and run
+again a minute later to watch a number move:
+
+```
+gauge  memory_bytes  2147483648
+gauge  cpu_percent   41.2
+```
+
+`--format json` emits the same data as structured records. There is no
+exposition format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
+integration" gives it one.
+
+**Exit code:** `0` if the command ran, `2` if it could not (name not found or
+ambiguous, unwritable `--output`, unreadable state). `metrics` reports no
+health verdict at all, so there is nothing for its exit code to carry.
+
+**Both forms** make zero Anthropic API calls and write no state, and neither
+aborts because one resource is sick: a driver that declines reports
+`unsupported`, one that raises has the error recorded against that resource,
+and the rest still render. A single broken driver must not blank a dashboard.
+
+---
+
+### `aiform resource status [<name>]`
+
+**Does:** answers four independent questions about a resource — has aiform
+deployed it, is it still there, does it still match what you declared, and is
+it healthy. Composes a state lookup, a live `read()`, a config diff, and
+`health()`; adds no new driver method.
+
+**Arguments:** `<name>` as above; omitting it reports every tracked resource,
+each under a header line naming it. This is the most expensive of the three commands — a live `read()`
+**and** a `health()` per resource, so the fleet form costs 2N provider calls
+against a rate limit shared with `plan`/`apply`.
+
+**Output:** four labelled lines, any of which can be the surprising one:
+
+```
+deployed  2026-09-10T14:02:11Z, id 123456789
+live      present
+config    in sync with examples/web.aiform.md
+health    failing — status is "off"
+```
+
+**Exit code:** `0` if the command ran, `2` if it could not. A resource that is
+missing or drifted is an *answer*, not a failure of the command.
+
+---
+
+### Implementation notes
+
+Each handler is a thin wrapper over `aiform/observability.py` — named for the sweep
+it performs, not for a command, since no command is called `scan` — matching how
+`_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All belong to the
+**plain** dispatch set, not the LLM set: they make zero Anthropic API calls by
+contract, so none is ever handed a `_CountingClient`.
+
+Three things that will bite whoever wires up the parser:
+
+1. `_dispatch()` currently reads `if args.command == "init"` and otherwise
+   falls through to `args.plan_command`. A second noun group needs its own
+   explicit branch, or it raises `AttributeError` on a `Namespace` that has no
+   `plan_command`.
+2. The sub-subparser needs `dest="resource_command", required=True`, mirroring
+   `plan_sub`.
+3. Every parser needs `parents=[global_parent, state_parent]` like its
+   siblings — not because `args.verbose` would otherwise be missing (the root
+   parser carries `global_parent` too), but so `aiform resource metrics -v`
+   parses at all. See the `-v` caveat under "Global flags" and #134.
+
+The rendering rules, `--output`'s append behaviour, and the per-resource
+name-resolution errors are specified in
+`specs/driver_observability.md` and not restated here.

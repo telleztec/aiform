@@ -84,9 +84,21 @@ Requirements, all non-negotiable:
    as an unhandled exception.
 
 Nothing outside `create`/`read`/`update`/`delete`/`PARAM_SCHEMA`/
-`LIKELY_REPLACE_FIELDS` is expected. Don't add a constructor that takes
-arguments, don't add module-level side effects, don't add anything that
-runs at import time beyond the class definition and its imports.
+`LIKELY_REPLACE_FIELDS`/`NON_DIFFABLE_FIELDS`/`UNORDERED_FIELDS` is
+expected. Don't add a constructor that takes arguments, don't add
+module-level side effects, don't add anything that runs at import time
+beyond the class definition and its imports.
+
+The contract also carries two **optional** methods, `health()` and
+`metrics()` (`specs/driver_observability.md`). **Never write either
+one.** Nothing in this request can ask you to — it carries only the
+provider, resource, params and acceptance spec — so there is no case in
+which writing them is correct here. The base class implements both by
+raising `CapabilityNotSupported`, which makes omitting them complete
+rather than unfinished. They are never reached from `plan`/`apply`, and
+they call endpoints that need their own live probe session before
+anyone can say what the CSP actually returns; guessing produces a driver
+that looks more capable than it is.
 
 If a previous draft was rejected, the user message will include the
 specific reasons — address every one of them in the redraft; don't

@@ -176,9 +176,24 @@ to make something easier to build.
   multi-cloud graph engine. `PLAN.md` §10 already names what's deferred and
   why; don't quietly start building toward it early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
-  names, argument order, exception type and its two fields (`reason`,
-  `unsupported_fields`), the two schema class attributes. Every future
-  driver depends on this contract being stable.
+  names, argument order, both exception types and their fields
+  (`DriverUpdateNotSupported`'s `reason`/`unsupported_fields`, and, once
+  built, `CapabilityNotSupported`'s `capability`/`reason`), and the four
+  declarative class attributes (`PARAM_SCHEMA`, `LIKELY_REPLACE_FIELDS`,
+  `NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS` — the last of which §4 still
+  omits, see #133). Every future driver depends on this contract being
+  stable.
+- Four of the contract's methods are required (`create`/`read`/`update`/
+  `delete`); `health()`/`metrics()` are **optional** and reached only from
+  the `aiform resource` commands, never from `plan`/`apply`. **Specified but NOT YET
+  BUILT** — `specs/driver_observability.md` is the design;
+  `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
+  `Sample`, the two base methods, `aiform/observability.py` and the `aiform resource`
+  commands do not exist in the code yet, so don't import them.
+  Once they do: a driver omitting both is complete, not unfinished,
+  because the base class implements them by raising. Don't add them to a
+  driver speculatively — they call CSP endpoints that need their own
+  probe session first (`specs/driver_creation.md`).
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
   the full layout, including `tests/drivers/test_digitalocean_compute.py`

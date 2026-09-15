@@ -103,10 +103,21 @@ as a class attribute (not its shape/content — that stays unvalidated, per
 
 ```python
 EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
-    "create": ["self", "params", "credentials"],
+    "create": ["self", "name", "params", "credentials"],
     "read": ["self", "id", "credentials"],
     "update": ["self", "id", "current", "desired", "credentials"],
     "delete": ["self", "id", "credentials"],
+}
+
+# specs/driver_observability.md. NOT YET IMPLEMENTED -- neither this dict
+# nor check 5a exists in driver_gen.py yet; both land with the contract
+# change they validate. Checked ONLY when the method is present:
+# health()/metrics() are optional, and an entry in the dict above would
+# make them required, since a missing name there produces a "missing
+# method" reason.
+OPTIONAL_METHOD_PARAMS: dict[str, list[str]] = {
+    "health": ["self", "id", "credentials"],
+    "metrics": ["self", "id", "credentials"],
 }
 
 MAX_DRAFT_ATTEMPTS = 2
@@ -217,6 +228,15 @@ unacceptable after `MAX_DRAFT_ATTEMPTS`.
      `Driver`, with positional parameter names exactly matching
      `EXPECTED_METHOD_PARAMS` (annotations/defaults/return types are not
      checked, only names, in order).
+  5a. *(Not yet implemented — see `OPTIONAL_METHOD_PARAMS` above.)* If —
+     and only if — `health` or `metrics` is present on `Driver`,
+     its positional parameter names match `OPTIONAL_METHOD_PARAMS`. A
+     driver omitting both is valid and complete: the base class
+     implements them by raising `CapabilityNotSupported`
+     (`specs/driver_observability.md`). This is the one check whose
+     absence is not a reason — the validator is otherwise a whitelist of
+     required things, which is also why an extra method it knows nothing
+     about passes silently.
   6. No `import anthropic` / `from anthropic import ...` anywhere in the
      module (any nesting depth).
   7. No string literal anywhere in the module contains the substring
