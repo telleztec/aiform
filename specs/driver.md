@@ -263,12 +263,12 @@ mechanism per field would be a poor trade against simply rejecting the input.
 not done here, mirroring how `specs/resource_tagging.md` handled its own §4
 addendum.
 
-## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`, not yet implemented)
+## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`)
 
-`ResourceDriver` **will grow** two optional methods and one exception, for the
-day-2 questions `read()` cannot answer. None of this is in `aiform/driver.py`
-yet — same "the contract is about to grow" framing as the marker-tag addendum
-above:
+`ResourceDriver` has two optional methods and one exception, for the day-2
+questions `read()` cannot answer. Built — unlike the marker-tag addendum
+above, which is still a description of a contract about to grow. No driver
+overrides either method yet, so every driver in the repo declines both:
 
 ```python
 class CapabilityNotSupported(Exception):
@@ -313,6 +313,9 @@ flagging at the top since it was written.
 The parameter *names* are binding, not just their order: a driver spelling
 `id` as `resource_id` would be rejected — by the `OPTIONAL_METHOD_PARAMS`
 check in `specs/driver_gen.md`, which is specified and not yet implemented.
+Until it is, nothing mechanical enforces the names; `PROCESS.md`'s PR-time
+`/code-review` is the only gate, as it is for every other rule these two
+methods carry.
 
 Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
 are their only caller, and none of those writes state. Full rules — control

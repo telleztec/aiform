@@ -337,7 +337,7 @@ aiform/
 │   ├── planner.py                  # diff desired vs actual -> Plan
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
-│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
+│   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported + CapabilityNotSupported and health()/metrics()
 │   ├── observability.py            # health()/metrics() over tracked resources for `aiform resource check/metrics/status` (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
@@ -569,11 +569,14 @@ this contract per `CLAUDE.md`'s "follow the `ResourceDriver` interface
 in `PLAN.md` §4 exactly" — see `specs/driver.md` and
 `specs/resource_tagging.md` for their full behavior.
 
-**Addendum (`specs/driver_observability.md`, not yet reflected in the
-actual `aiform/driver.py` file on disk as of this writing):**
+**Addendum (`specs/driver_observability.md`, now reflected in the actual
+`aiform/driver.py` file on disk, unlike the tagging addendum above):**
 `CapabilityNotSupported` and two further concrete (non-abstract)
 methods, `health()`/`metrics()`, included below on the same footing and
-for the same reason. They are the day-2 half of the contract — is this
+for the same reason. The file's copy of the comment above them drops
+this block's reference to `_tags_for_create`/`_tags_for_attributes`,
+which are still unbuilt — a comment naming a method that file does not
+define reads as a missing implementation rather than an unbuilt spec. They are the day-2 half of the contract — is this
 resource working, and what are its counters — and they are **optional**:
 the base implementations raise, and a driver either overrides with a
 real implementation or overrides to raise with a resource-specific

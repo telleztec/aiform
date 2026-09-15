@@ -9,9 +9,12 @@ from pydantic import ValidationError
 from aiform.models import (
     DriverInfo,
     DriverReview,
+    HealthReport,
+    HealthStatus,
     LLMConfig,
     LLMRoleConfig,
     LoggingConfig,
+    MetricKind,
     ModelSource,
     ParsedResource,
     PlanAction,
@@ -20,6 +23,7 @@ from aiform.models import (
     PlanReviewFlag,
     PlanReviewSeverity,
     ResourceSpec,
+    Sample,
     StateEntry,
 )
 
@@ -427,3 +431,117 @@ class TestParsedResource:
     def test_rejects_missing_spec(self):
         with pytest.raises(ValidationError):
             ParsedResource(intent_notes=[], aiform_md_sha256="abc123")
+
+
+class TestHealthStatus:
+    def test_the_four_states_and_their_values(self):
+        assert HealthStatus.OK.value == "ok"
+        assert HealthStatus.DEGRADED.value == "degraded"
+        assert HealthStatus.FAILING.value == "failing"
+        assert HealthStatus.UNKNOWN.value == "unknown"
+
+    def test_is_a_str_enum_so_it_serializes_as_its_value(self):
+        assert HealthStatus.FAILING == "failing"
+
+    def test_rejects_an_unknown_state(self):
+        with pytest.raises(ValueError):
+            HealthStatus("broken")
+
+
+class TestHealthReport:
+    def test_accepts_status_and_summary(self):
+        report = HealthReport(status=HealthStatus.OK, summary="active, public v4 203.0.113.10")
+        assert report.status is HealthStatus.OK
+        assert report.summary == "active, public v4 203.0.113.10"
+
+    def test_observations_defaults_to_an_empty_dict(self):
+        report = HealthReport(status=HealthStatus.OK, summary="fine")
+        assert report.observations == {}
+
+    def test_observations_default_is_not_shared_between_instances(self):
+        first = HealthReport(status=HealthStatus.OK, summary="fine")
+        first.observations["status"] = "active"
+        second = HealthReport(status=HealthStatus.OK, summary="fine")
+        assert second.observations == {}
+
+    def test_accepts_observations(self):
+        report = HealthReport(
+            status=HealthStatus.FAILING,
+            summary='status is "off"',
+            observations={"status": "off", "locked": "false"},
+        )
+        assert report.observations == {"status": "off", "locked": "false"}
+
+    def test_observations_values_must_be_strings(self):
+        # A flat str -> str map: the renderers pad it into columns, and a
+        # nested value has no column width.
+        with pytest.raises(ValidationError):
+            HealthReport(status=HealthStatus.OK, summary="fine", observations={"nested": {"a": 1}})
+
+    def test_status_accepts_its_string_spelling(self):
+        report = HealthReport(status="degraded", summary="pending changes")
+        assert report.status is HealthStatus.DEGRADED
+
+    def test_rejects_an_unknown_status(self):
+        with pytest.raises(ValidationError):
+            HealthReport(status="broken", summary="?")
+
+    def test_summary_is_required(self):
+        with pytest.raises(ValidationError):
+            HealthReport(status=HealthStatus.OK)
+
+
+class TestMetricKind:
+    def test_is_counter_or_gauge_and_nothing_else(self):
+        assert MetricKind.COUNTER.value == "counter"
+        assert MetricKind.GAUGE.value == "gauge"
+        assert {kind.value for kind in MetricKind} == {"counter", "gauge"}
+
+    def test_rejects_histogram(self):
+        # No native percentiles: adding one means a new MetricKind and a
+        # driver that can produce bucket boundaries.
+        with pytest.raises(ValueError):
+            MetricKind("histogram")
+
+
+class TestSample:
+    def test_accepts_name_kind_and_value(self):
+        sample = Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=2147483648.0)
+        assert sample.name == "memory_bytes"
+        assert sample.kind is MetricKind.GAUGE
+        assert sample.value == 2147483648.0
+
+    def test_labels_defaults_to_an_empty_dict(self):
+        sample = Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=1.0)
+        assert sample.labels == {}
+
+    def test_labels_default_is_not_shared_between_instances(self):
+        first = Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=1.0)
+        first.labels["mount"] = "/"
+        second = Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=1.0)
+        assert second.labels == {}
+
+    def test_accepts_labels(self):
+        sample = Sample(
+            name="filesystem_free_bytes",
+            kind=MetricKind.GAUGE,
+            value=1024.0,
+            labels={"mount": "/"},
+        )
+        assert sample.labels == {"mount": "/"}
+
+    def test_an_int_value_is_coerced_to_float(self):
+        sample = Sample(name="rule_count", kind=MetricKind.GAUGE, value=4)
+        assert isinstance(sample.value, float)
+        assert sample.value == 4.0
+
+    def test_rejects_a_non_numeric_value(self):
+        with pytest.raises(ValidationError):
+            Sample(name="memory_bytes", kind=MetricKind.GAUGE, value="lots")
+
+    def test_has_no_unit_or_timestamp_field(self):
+        # The unit lives in the name, per Prometheus convention; the
+        # reading happens when the command runs. Both are deliberate
+        # omissions rather than oversights, so they are asserted.
+        fields = set(Sample.model_fields)
+        assert fields == {"name", "kind", "value", "labels"}
