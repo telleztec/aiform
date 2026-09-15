@@ -133,7 +133,8 @@ two path lists must never disagree.
    the status sits on, and two-dot still compares the two trees rather
    than searching for a merge base that no longer means anything. A
    ten-minute billable suite should not re-run for a typo fix.
-3. **Otherwise** — run it, from a checkout of the head SHA:
+3. **Otherwise** — run it, from the root of a checkout of the head SHA
+   (`LOG_DIR` is relative to the working directory):
 
 ```sh
 .venv/bin/python scripts/run_system_tests.py   # must exit 0
@@ -144,6 +145,12 @@ description. Be clear-eyed about how much that buys: the directory is
 gitignored, rotates after ten runs, and the log records no commit SHA, so
 it is local evidence for whoever ran it rather than a durable audit
 trail. Only the status's SHA pinning ties the run to content.
+
+   **Read the log, do not trust a shell's exit status.** The first real
+   use of this gate nearly recorded a false green: the runner was invoked
+   in a compound command whose trailing `tail` supplied the exit code, so
+   a suite that failed two tests reported success. Run the script as the
+   last command, or capture `$?` immediately.
 
 ```sh
 gh api repos/{owner}/{repo}/statuses/<head-sha> \
