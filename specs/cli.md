@@ -56,13 +56,16 @@ subcommand token (`aiform -v plan create` and `aiform plan create -v`
 both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
-value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform resource ...` at the end of this file notes that the new commands
-inherit it.
+value, so only the post-subcommand spelling takes effect. The
+`aiform resource` commands inherit the bug unchanged — they attach the
+same parent parser, so `aiform resource check -v` works and
+`aiform -v resource check` silently does not. Not fixed here: #134 is
+one fix across every subcommand, not three more instances of it.
 `--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
-state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
-which never reads or writes state.
+state — `plan create`/`apply`/`destroy`/`refresh`/`show` and
+`resource check`/`metrics`/`status` — but not on `init`, which never
+reads or writes state.
 
 ### `aiform init [--provider digitalocean]`
 
@@ -613,17 +616,22 @@ does (or doesn't) log in between:
   env-var-only, per `CLAUDE.md`'s Credentials rules), so nothing
   sensitive can appear in argv.
 - Exit: `logger.log(level, "", extra={"exit_code": <n>, "outcome":
-  "success" | "error"})`, where `<n>` is exactly the value `main()`
-  returns to its caller, `outcome` is a bare derived convenience
-  (`"success"` iff `exit_code == 0`), and `level` is `logging.INFO` on
-  success or `logging.ERROR` otherwise — the same outcome-driven
+  "success" | "unhealthy" | "error"})`, where `<n>` is exactly the value
+  `main()` returns to its caller. `"success"` iff `exit_code == 0`;
+  `"unhealthy"` **only** for `aiform resource check` exiting 1, which is
+  a verdict about a resource rather than a failed command; `"error"` for
+  everything else. `level` is `logging.INFO` for the first two and
+  `logging.ERROR` for the third — the same outcome-driven
   severity `aiform/orchestrator.py`'s `_log_driver_outcome()`
   (`specs/orchestrator.md`) already uses, so a `grep ERROR
   .aiform/logs/` sweep for "any failure" also catches a failed
   invocation's own top-level exit line, not just the driver-level ones.
-  Caught by `/code-review`: the first version of this line always
-  logged at INFO regardless of outcome, inconsistent with that
-  convention.
+  Caught by `/code-review` twice: the first version always logged at
+  INFO regardless of outcome, and a later one derived the outcome from
+  the bare exit code, which quietly reclassified a *declined*
+  `plan apply` (also exit 1, via `ApplyResult.aborted`) as `unhealthy`
+  at INFO — dropping it out of the very sweep this bullet promises. The
+  `unhealthy` case is therefore keyed on the command, not the integer.
 
 This guarantees every `.aiform/logs/<...>.log` file traces back to a
 specific command line and a specific result even when the invoked
@@ -717,7 +725,7 @@ than papering over it with a generic `except Exception`.
   file, no locking" limitation is orchestrator/state-level and applies
   unchanged here; this module adds no locking of its own.
 
-## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
+## Addendum: `aiform resource ...` (`specs/driver_observability.md`)
 
 A new **noun group** with three verbs, matching `aiform driver`'s shape rather
 than `aiform plan`'s — none of these plans or applies anything, and none writes
