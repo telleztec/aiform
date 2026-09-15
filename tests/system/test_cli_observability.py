@@ -144,8 +144,15 @@ class TestResourceVerbsAgainstALiveDroplet:
         assert lines[0] == f'failing  {key}  status is "off"', out
         # observations appear exactly when the verdict is bad, which is
         # the whole conditional -- no flag, because the gate case and the
-        # diagnosis case never overlap.
-        assert "    status       off" in lines, out
+        # diagnosis case never overlap. Asserted by content, not by exact
+        # padding: the column is padded to the widest key across the
+        # block, so hardcoding it here just re-guesses what
+        # tests/test_observability.py already pins character-for-character
+        # -- and guessing it wrong is what this assertion first did.
+        observations = dict(line.split() for line in lines[1:])
+        assert observations["status"] == "off", out
+        assert observations["locked"] == "false", out
+        assert all(line.startswith("    ") for line in lines[1:]), out
 
         code = cli.main(["resource", "status", name, "--state-file", str(state_path)])
         out = capsys.readouterr().out
