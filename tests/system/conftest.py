@@ -307,11 +307,14 @@ def teardown_tracked_resources(project_dir: Path):
 def verbose_call_count(captured) -> int:
     """The number in `[verbose] N Anthropic API call(s) made`.
 
-    Shared rather than per-suite: three spellings of this existed across
-    the three live suites -- a raw substring, a local helper, and an
-    inline split -- and the substring form is what let #125 sit unnoticed,
-    since `"... 0 ..."` and `"... 1 ..."` differ only in a character
-    nobody reads carefully in a 700-line file."""
+    Shared rather than per-suite: `test_cli_digitalocean.py` and
+    `test_cli_domain.py` use it for every count that isn't a fixed literal
+    already visible in a nearby assertion (`f"+ {key}: create"` etc.);
+    `test_cli_firewall.py` still asserts the raw `"[verbose] N ..."`
+    string directly throughout, since its assertions are dense enough
+    (seven distinct counts across one lifecycle) that this helper would
+    trade an inline, greppable number for an indirection with no
+    corresponding gain there."""
     assert "[verbose]" in captured.err, f"no [verbose] line in stderr:\n{captured.err}"
     return int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
 

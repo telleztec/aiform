@@ -888,7 +888,14 @@ class Driver(ResourceDriver):
      `aiform_md_sha256` in state matches the file's current hash — no
      reason to re-extract intent from unchanged prose. Also skipped
      unconditionally for an `AIFORM-DELETE-` file, regardless of hash
-     — a destroy needs no interpretive guidance.
+     — a destroy needs no interpretive guidance. **Also skipped for a
+     brand-new resource** (no state entry exists for it yet, so there is
+     no tracked hash to compare against): `intent_notes` are consumed
+     only by the categorization call in step 6, which — per that step's
+     own "two more cases skip it" — a resource with no state entry never
+     reaches (see §9 and `specs/orchestrator.md`). Flagged and added by
+     #140, which found the original two-condition list left this call
+     running, uselessly, on every first `plan create`.
 3. **Ensure a driver is usable** for `(provider, resource)`:
    - **Driver file missing** → `aiform plan create` fails immediately with a
      clear, actionable error (raises

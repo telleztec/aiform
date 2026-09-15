@@ -36,7 +36,16 @@ model, if any (see its Interface section) — this spec is that follow-up.
    or `None` for a resource never before applied) and skips the intent
    `intent-orchestration-model` call whenever it equals the freshly
    computed hash of the current file — `PLAN.md` §5 step 2's "no reason
-   to re-extract intent from unchanged prose."
+   to re-extract intent from unchanged prose." **Narrowed by #140**: that
+   is still true for every case where `parse_file()` runs at all. But a
+   brand-new resource (`previous_aiform_md_sha256=None`) never has a
+   matching hash to short-circuit on, so the call always fired for it —
+   and its `intent_notes` are consumed only by `plan_resource()`, which
+   an untracked resource never reaches (`specs/orchestrator.md`). For
+   that one case the decision *did* move up into `orchestrator.py`: it
+   skips calling `parse_file()` at all rather than relying on a
+   short-circuit that could never trigger there. `parse_file()`'s own
+   hash check is unchanged and still governs every call it does receive.
 3. **Known limitation of judgment call 2, accepted as-is**: a hash match
    only proves the *file* — frontmatter and prose both — is byte-identical
    to what was last applied; it says nothing about whether the *live*

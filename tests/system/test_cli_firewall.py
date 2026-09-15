@@ -110,12 +110,10 @@ class TestFirewallLifecycle:
 
         # Zero again. `plan create` does not write the tracked sha256 --
         # only a completed apply does -- so this still takes the
-        # untracked branch, which no longer buys an intent parse; before
-        # #140 that made it one, not zero. Kept because
-        # apply re-parses a file it still considers new. A CREATE action
-        # never triggers gate #2 (apply_plan()'s needs_review covers
-        # DESTROY and likely-replace UPDATE only), so the intent parse is
-        # the whole cost.
+        # untracked branch, which no longer buys an intent parse (#140);
+        # it costs nothing else either, since a CREATE action never
+        # triggers gate #2 (apply_plan()'s needs_review covers DESTROY
+        # and likely-replace UPDATE only).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply")

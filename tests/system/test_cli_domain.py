@@ -220,16 +220,7 @@ class TestDomainLifecycleSequence:
 
         write_domain_aiform_md(project_dir, name=zone, records=BASE_RECORDS)
 
-        # Case 2: first `plan create` on an untracked resource -- exactly
-        # ONE Anthropic call. #118 skips categorization for an untracked
-        # resource and #119 removed gate #1 from this path, which is what
-        # the previous version of this comment reasoned about -- but both
-        # overlook aiform/parser.py: parse_file() calls
-        # extract_intent_notes() whenever the .aiform.md sha256 differs
-        # from the tracked one, and on a first plan there is no tracked
-        # sha at all. A non-empty `## Intent` section therefore costs one
-        # intent parse, and the fixture always writes one. The floor for a
-        # brand-new resource is one, not zero (#125).
+        # Case 2: first `plan create` on an untracked resource.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")

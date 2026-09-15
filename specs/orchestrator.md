@@ -514,16 +514,27 @@ next time `plan create` runs against that resource, not here.
   1. `content = path.read_text(encoding="utf-8-sig")`, `spec =
      parser.parse_frontmatter(content)` — a first, frontmatter-only pass
      purely to compute `key = resource_key(...)` before the hash lookup
-     below; `parser.parse_file()` (step 3) re-reads and re-parses the
-     same content internally (`specs/parser.md`'s own "independent,
-     idempotent functions" design) — a deliberate small redundancy, not
-     a bug, since `parse_file()`'s fixed interface requires the previous
-     hash as an *input*, and that hash can't be looked up without
-     already knowing which state entry (if any) this file addresses.
+     below.
   2. `state_entry = state.resources.get(key)`,
      `previous_hash = state_entry.aiform_md_sha256 if state_entry else None`.
-  3. `parsed = parser.parse_file(path, previous_aiform_md_sha256=previous_hash,
-     client=client, llm_config=llm_config)`.
+  3. **`state_entry is None`** (brand-new resource): build a
+     `ParsedResource` directly from the content and frontmatter already
+     read in step 1 — `intent_notes=[]`,
+     `aiform_md_sha256=parser.compute_sha256(content)` — and skip
+     `parser.parse_file()` entirely (#140). **Otherwise**: `parsed =
+     parser.parse_file(path, previous_aiform_md_sha256=previous_hash,
+     client=client, llm_config=llm_config)`. `parse_file()` re-reads and
+     re-parses the same content internally
+     (`specs/parser.md`'s own "independent, idempotent functions"
+     design) — a deliberate small redundancy on the tracked branch, not
+     a bug, since `parse_file()`'s fixed interface requires the previous
+     hash as an *input*, and that hash can't be looked up without
+     already knowing which state entry this file addresses. This branch
+     also covers a drifted-missing resource (state tracked, but gone
+     from the CSP): `state_entry` is not `None` there, so `parse_file()`
+     still runs and still spends an `intent_orchestration_call` when the
+     hash moved — the `intent_notes` it produces just go unread, same as
+     they always have for that case (see step 7's caveat below).
   4. Driver resolution, **cached per `(provider, resource_type)` for the
      lifetime of this call** (judgment call 5): `driver =
      load_driver(spec.provider, spec.resource)`; `driver_info =
@@ -561,12 +572,19 @@ next time `plan create` runs against that resource, not here.
      `plan create` makes zero Anthropic calls" false (#125).
 
      Decided and removed (#140): when `state_entry is None` this loop
-     does not call `parse_file()` at all. It builds a `ParsedResource`
-     from the content it has already read and the frontmatter it has
-     already parsed, which drops a redundant second read of the same
-     file along with the call. `parse_file()` remains the tracked
-     branch's path, where the notes are genuinely consumed. So the claim
-     is now the plain one: **no model call at all** on this branch.
+     does not call `parse_file()` at all (step 3 above). It builds a
+     `ParsedResource` from the content it has already read and the
+     frontmatter it has already parsed, which drops a redundant second
+     read of the same file along with the call. `parse_file()` remains
+     the tracked branch's path, where the notes are genuinely consumed.
+     So the claim is now the plain one for a brand-new resource: **no
+     model call at all** when `state_entry is None`. The drifted-missing
+     half of this branch is not the same claim: there `state_entry` is
+     not `None`, so step 3 still takes the `parse_file()` path and still
+     spends the call when the hash moved, discarding `intent_notes` the
+     same way it always has — a pre-existing cost #140 did not touch,
+     because a drifted-missing resource is rare enough that removing it
+     is its own decision, not a side effect of this one.
 
      **Otherwise**: `entry = planner.plan_resource(key,
      current_attributes, spec.params, intent_notes=parsed.intent_notes,
