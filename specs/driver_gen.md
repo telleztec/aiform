@@ -110,8 +110,12 @@ EXPECTED_METHOD_PARAMS: dict[str, list[str]] = {
 }
 
 # specs/driver_observability.md. NOT YET IMPLEMENTED -- neither this dict
-# nor check 5a exists in driver_gen.py yet; both land with the contract
-# change they validate. Checked ONLY when the method is present:
+# nor check 5a exists in driver_gen.py yet. They did NOT land with the
+# contract change they validate, which has now shipped: health()/metrics()
+# are on ResourceDriver and nothing checks a driver's spelling of their
+# parameters. tests/test_driver.py's signature assertion holds the names
+# against the base class, and PROCESS.md's PR-time /code-review is the
+# only gate on a driver's copy of them. Checked ONLY when the method is present:
 # health()/metrics() are optional, and an entry in the dict above would
 # make them required, since a missing name there produces a "missing
 # method" reason.

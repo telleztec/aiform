@@ -573,17 +573,27 @@ in `PLAN.md` §4 exactly" — see `specs/driver.md` and
 `aiform/driver.py` file on disk, unlike the tagging addendum above):**
 `CapabilityNotSupported` and two further concrete (non-abstract)
 methods, `health()`/`metrics()`, included below on the same footing and
-for the same reason. The file's copy of the comment above them drops
-this block's reference to `_tags_for_create`/`_tags_for_attributes`,
-which are still unbuilt — a comment naming a method that file does not
-define reads as a missing implementation rather than an unbuilt spec. They are the day-2 half of the contract — is this
-resource working, and what are its counters — and they are **optional**:
+for the same reason. `health()` and `metrics()` are the day-2 half of the
+contract — is this resource working, and what are its counters — and they
+are **optional**:
 the base implementations raise, and a driver either overrides with a
 real implementation or overrides to raise with a resource-specific
 reason. See `specs/driver_observability.md` for the full rules (control
 plane only, read-only, no state write, counter honesty). Note a driver's
 `health()` MAY delegate to its own `read()` where that returns enough --
 what it must not do is widen `read()` to make that possible.
+
+**Two deliberate divergences in the file's copy of the block below**,
+recorded here rather than left for a reader to discover as apparent
+drift. First, the comment above the two methods drops this block's
+reference to `_tags_for_create`/`_tags_for_attributes`, which are still
+unbuilt — a comment naming a method that file does not define reads as a
+missing implementation rather than an unbuilt spec. Second,
+`CapabilityNotSupported`'s docstring there carries an extra paragraph
+this block does not: that it is caught directly by its caller and never
+through `orchestrator._call_driver()`, whose blanket
+`except Exception -> DriverExecutionError` would turn a deliberate
+decline into an `UNKNOWN` verdict.
 
 ```python
 # aiform/driver.py — hand-written, not generated

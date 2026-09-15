@@ -5,12 +5,14 @@
 The hand-written contract every `(provider, resource)` driver
 implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
-driver's internals, only the four methods below. Pure interface + one
-exception type — no file I/O, no LLM calls, no CSP API calls, no dynamic
-import logic. (Both addenda below describe growth to this contract that is
-specified but not yet implemented — "one exception type" and "the four methods
-below" describe `driver.py` as it stands today, which is what this file is
-supposed to do.)
+driver's internals, only the four abstract methods below. Pure interface
++ exceptions — no file I/O, no LLM calls, no CSP API calls, no dynamic
+import logic. `driver.py` today holds **two** exception types
+(`DriverUpdateNotSupported` and `CapabilityNotSupported`) and **six**
+methods: the four abstract ones the orchestrator calls, plus the two
+optional concrete ones the `aiform resource` commands call. Of the two
+addenda below, the `health()`/`metrics()` one is built; the marker-tag
+one is still a description of growth to come.
 
 **Flagged discrepancy**: `PLAN.md` §1's repo-layout comment lists
 `DriverUpdateNotSupported` as living in `exceptions.py`, but §4's actual
