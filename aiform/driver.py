@@ -4,6 +4,8 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from aiform.models import HealthReport, Sample
+
 
 class DriverUpdateNotSupported(Exception):
     """Raised by update() when this SPECIFIC diff cannot be applied
@@ -17,6 +19,31 @@ class DriverUpdateNotSupported(Exception):
         self.reason = reason
         self.unsupported_fields = unsupported_fields or []
         super().__init__(reason)
+
+
+class CapabilityNotSupported(Exception):
+    """Raised by health()/metrics() when this driver cannot answer that
+    question for this resource kind. Lives here rather than in
+    exceptions.py because the base class itself raises it, so it is part
+    of the contract — same reasoning as DriverUpdateNotSupported above.
+    The `aiform resource` commands catch it per-resource and report
+    "unsupported: <reason>". That is not an error for `metrics` or
+    `status`; `check <name>` exits 2, having no verdict to give.
+
+    A driver that deliberately cannot implement one overrides it to raise
+    this with a resource-specific reason, so the decision is recorded
+    where a reviewer reads it instead of being indistinguishable from a
+    forgotten method.
+
+    Caught directly by its caller, never through
+    orchestrator._call_driver(): that helper converts every exception
+    into DriverExecutionError, which would turn a deliberate decline into
+    an UNKNOWN verdict and a failed `check`."""
+
+    def __init__(self, capability: str, reason: str):
+        self.capability = capability
+        self.reason = reason
+        super().__init__(f"{capability}: {reason}")
 
 
 class ResourceDriver(ABC):
@@ -175,3 +202,66 @@ class ResourceDriver(ABC):
         Destroy the resource. MUST be idempotent: a 404 from the CSP
         (resource already gone) is treated as success, not an error.
         """
+
+    # The two below are OPTIONAL and therefore concrete, not abstract:
+    # making either @abstractmethod would break every existing driver at
+    # instantiation time and force a resource that cannot answer to write
+    # a stub anyway. A driver opts in by overriding, exactly as it does
+    # with the class attributes above. Neither is ever reached from
+    # plan/apply — the `aiform resource` commands (§7) are their only
+    # caller. Full rules: specs/driver_observability.md.
+
+    def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
+        """
+        A shallow, cheap verdict on whether the resource is functional.
+
+        CONTROL PLANE ONLY. Ask the CSP what it believes about the
+        resource; never originate traffic toward the resource itself (no
+        TCP connect, no DNS resolution against a record this driver
+        manages). A data-plane check would make the verdict a property of
+        where aiform happens to be running rather than of the resource —
+        the same droplet would read `failing` from a laptop behind a
+        firewall and `ok` from inside the VPC. The honest cost of that
+        choice: this cannot tell you sshd is up, only that the CSP has
+        not noticed anything wrong.
+
+        Returns: HealthReport with status OK / DEGRADED / FAILING. Do NOT
+            return UNKNOWN — that state means "aiform could not find
+            out", and the caller sets it when this method raises. A
+            driver catching its own timeout and returning UNKNOWN
+            destroys the error text that says what went wrong.
+        Raises: ResourceNotFoundError if the resource is gone; the
+            caller renders it FAILING and does not mark drift, since
+            these commands never write state. CapabilityNotSupported, with a resource-specific
+            reason, if this driver deliberately cannot answer.
+
+        MUST be read-only (GET/HEAD only), MUST NOT write state, and MUST
+        make zero Anthropic API calls — it may be called every few
+        seconds by a script, indefinitely.
+        """
+        raise CapabilityNotSupported("health", "this driver does not implement health()")
+
+    def metrics(self, id: str, credentials: dict[str, str]) -> list[Sample]:
+        """
+        Counters and gauges for this resource.
+
+        Returns: list[Sample], each with a BARE snake_case name carrying
+            its base unit (`memory_bytes`, not `aiform_memory_bytes`) —
+            a future exporter adds any prefix and the provider/resource_type/
+            name/id labels, so this driver must not set those itself.
+
+        COUNTER is only for a value the CSP documents as cumulative and
+        monotonic over the resource's lifetime, and its name must end in
+        `_total`. aiform never derives a counter by differencing two
+        reads — these commands are stateless by construction and hold no history
+        to difference against. When in doubt, GAUGE: a wrong gauge reads
+        as noise, a wrong counter makes rate() produce a plausible,
+        silently false number.
+
+        Raises: CapabilityNotSupported, with a resource-specific reason,
+            when the CSP exposes nothing worth reporting for this kind.
+
+        Same read-only / no-state-write / zero-LLM-call requirements as
+        health() above.
+        """
+        raise CapabilityNotSupported("metrics", "this driver does not implement metrics()")

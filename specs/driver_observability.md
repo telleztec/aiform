@@ -10,10 +10,21 @@ from any of them, with each cross-referencing it.
 
 Closes #131.
 
-**Build status.** Nothing here is built. This spec defines the contract; the
-implementation lands in later PRs, per-module, and this file is the acceptance
-criteria they are written against. `aiform/driver.py` and every driver are
-deliberately untouched by the PR that adds this file.
+**Build status.** Partly built, landing per-module. This file is the
+acceptance criteria each PR is written against.
+
+| Piece | State |
+|---|---|
+| `models.py`'s four types | built |
+| `driver.py`'s `CapabilityNotSupported` + the two concrete methods | built |
+| `aiform/observability.py` | not built |
+| `cli.py`'s `aiform resource` verbs | not built |
+| `health()`/`metrics()` on any driver | not built |
+| `driver_gen.py`'s `OPTIONAL_METHOD_PARAMS` check | not built |
+
+Until a driver overrides one, every driver declines both — which is the
+state the fleet-form exit-code rules under "Exit codes" were written for,
+not a temporary anomaly they do not cover.
 
 ## Purpose
 

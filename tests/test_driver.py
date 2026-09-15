@@ -3,7 +3,8 @@
 
 import pytest
 
-from aiform.driver import DriverUpdateNotSupported, ResourceDriver
+from aiform.driver import CapabilityNotSupported, DriverUpdateNotSupported, ResourceDriver
+from aiform.models import HealthReport, HealthStatus, MetricKind, Sample
 
 
 class FullDriver(ResourceDriver):
@@ -156,3 +157,95 @@ class TestDriverUpdateNotSupported:
     def test_is_plain_exception_subclass(self):
         assert issubclass(DriverUpdateNotSupported, Exception)
         assert not issubclass(DriverUpdateNotSupported, ResourceDriver)
+
+
+class HealthyDriver(FullDriver):
+    def health(self, id, credentials):
+        return HealthReport(status=HealthStatus.OK, summary=f"{id} is fine")
+
+
+class MeasuredDriver(FullDriver):
+    def metrics(self, id, credentials):
+        return [Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=2147483648.0)]
+
+
+class DeliberatelyOpaqueDriver(FullDriver):
+    def health(self, id, credentials):
+        raise CapabilityNotSupported("health", "DNS records have no status the API reports")
+
+
+class TestCapabilityNotSupported:
+    def test_capability_and_reason_are_stored(self):
+        exc = CapabilityNotSupported("health", "this driver does not implement health()")
+        assert exc.capability == "health"
+        assert exc.reason == "this driver does not implement health()"
+
+    def test_str_joins_capability_and_reason(self):
+        exc = CapabilityNotSupported("metrics", "no monitoring endpoint")
+        assert str(exc) == "metrics: no monitoring endpoint"
+
+    def test_is_a_plain_exception_and_not_a_driver_update_not_supported(self):
+        assert issubclass(CapabilityNotSupported, Exception)
+        assert not issubclass(CapabilityNotSupported, DriverUpdateNotSupported)
+
+
+class TestOptionalHealth:
+    def test_a_driver_that_does_not_override_it_is_still_instantiable(self):
+        # Concrete, not @abstractmethod: making it abstract would break
+        # every existing driver at instantiation time.
+        assert isinstance(FullDriver(), ResourceDriver)
+
+    def test_the_default_declines_with_capability_not_supported(self):
+        with pytest.raises(CapabilityNotSupported) as excinfo:
+            FullDriver().health("123", {"TOKEN": "x"})
+        assert excinfo.value.capability == "health"
+        assert "does not implement health()" in excinfo.value.reason
+
+    def test_a_driver_can_override_it(self):
+        report = HealthyDriver().health("123", {"TOKEN": "x"})
+        assert report.status is HealthStatus.OK
+        assert report.summary == "123 is fine"
+
+    def test_a_driver_can_decline_with_its_own_reason(self):
+        with pytest.raises(CapabilityNotSupported) as excinfo:
+            DeliberatelyOpaqueDriver().health("123", {"TOKEN": "x"})
+        assert excinfo.value.reason == "DNS records have no status the API reports"
+
+    def test_overriding_health_leaves_metrics_declining(self):
+        with pytest.raises(CapabilityNotSupported):
+            HealthyDriver().metrics("123", {"TOKEN": "x"})
+
+
+class TestOptionalMetrics:
+    def test_the_default_declines_with_capability_not_supported(self):
+        with pytest.raises(CapabilityNotSupported) as excinfo:
+            FullDriver().metrics("123", {"TOKEN": "x"})
+        assert excinfo.value.capability == "metrics"
+        assert "does not implement metrics()" in excinfo.value.reason
+
+    def test_a_driver_can_override_it(self):
+        samples = MeasuredDriver().metrics("123", {"TOKEN": "x"})
+        assert [(s.name, s.kind, s.value) for s in samples] == [
+            ("memory_bytes", MetricKind.GAUGE, 2147483648.0)
+        ]
+
+    def test_overriding_metrics_leaves_health_declining(self):
+        with pytest.raises(CapabilityNotSupported):
+            MeasuredDriver().health("123", {"TOKEN": "x"})
+
+
+class TestOptionalMethodSignatures:
+    # Contract, not style: specs/driver_gen.md specifies an
+    # OPTIONAL_METHOD_PARAMS check that does exact list equality on these
+    # names. That check is NOT built -- EXPECTED_METHOD_PARAMS covers
+    # only create/read/update/delete, and validate_driver_source()
+    # returns None for a driver spelling `id` as `resource_id`. Until it
+    # is built this assertion is the only thing holding the names, which
+    # is why it asserts against the base class rather than trusting the
+    # validator to.
+    def test_both_take_exactly_self_id_credentials(self):
+        import inspect
+
+        for method in (ResourceDriver.health, ResourceDriver.metrics):
+            params = list(inspect.signature(method).parameters)
+            assert params == ["self", "id", "credentials"]
