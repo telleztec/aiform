@@ -224,23 +224,31 @@ class TestDomainLifecycleSequence:
 
         write_domain_aiform_md(project_dir, name=zone, records=BASE_RECORDS)
 
-        # Case 2: first `plan create` on an untracked resource -- zero
-        # Anthropic calls. #118 already skips categorization for an
-        # untracked resource, and #119 removed gate #1 (the driver review)
-        # from this path entirely, so nothing is left to call.
+        # Case 2: first `plan create` on an untracked resource -- exactly
+        # ONE Anthropic call. #118 skips categorization for an untracked
+        # resource and #119 removed gate #1 from this path, which is what
+        # the previous version of this comment reasoned about -- but both
+        # overlook aiform/parser.py: parse_file() calls
+        # extract_intent_notes() whenever the .aiform.md sha256 differs
+        # from the tracked one, and on a first plan there is no tracked
+        # sha at all. A non-empty `## Intent` section therefore costs one
+        # intent parse, and the fixture always writes one. The floor for a
+        # brand-new resource is one, not zero (#125).
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
 
-        # Case 3: `plan apply --yes` -- a CREATE action never triggers gate
-        # #2 either (apply_plan()'s needs_review only covers DESTROY and a
-        # likely-replace UPDATE), so this is zero calls too.
+        # Case 3: first `plan apply --yes` -- one call again. A CREATE
+        # action never triggers gate #2 (apply_plan()'s needs_review
+        # covers only DESTROY and a likely-replace UPDATE), but `plan
+        # create` does not write the tracked sha256 -- only a completed
+        # apply does -- so this re-parses the same intent prose (#125).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
 
         st = state.load(state_path)
         assert key in st.resources
