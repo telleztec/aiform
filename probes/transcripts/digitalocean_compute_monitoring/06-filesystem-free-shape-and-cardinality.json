@@ -1,0 +1,64 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 266,
+ "note": "filesystem_free shape and cardinality",
+ "prediction": {
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:33.649331+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/filesystem_free?host_id=589098829&start=1789482571&end=1789483171"
+ },
+ "response": {
+  "body": {
+   "data": {
+    "result": [
+     {
+      "metric": {
+       "device": "/dev/vda1",
+       "fstype": "ext4",
+       "host_id": "589098829",
+       "mountpoint": "/"
+      },
+      "values": [
+       [
+        1789482480,
+        "46207229952"
+       ],
+       [
+        1789482600,
+        "46207201280"
+       ],
+       [
+        1789482720,
+        "46207148032"
+       ],
+       [
+        1789482840,
+        "46207131648"
+       ],
+       [
+        1789482960,
+        "46207119360"
+       ],
+       [
+        1789483080,
+        "46207086592"
+       ]
+      ]
+     }
+    ],
+    "resultType": "matrix"
+   },
+   "status": "success"
+  },
+  "status": 200
+ },
+ "seq": 6
+}

@@ -160,6 +160,10 @@ class FakeUrlopen:
                 "body": body,
                 "authorization": request.get_header("Authorization"),
                 "content_type": request.get_header("Content-type"),
+                # health()/metrics() must pass a shorter bound than the
+                # driver's 30s default, and the only way to assert that
+                # is to record what urlopen was actually given.
+                "timeout": kwargs.get("timeout", args[0] if args else None),
             }
         )
 
