@@ -583,10 +583,12 @@ next time `plan create` runs against that resource, not here.
      model call at all** when `state_entry is None`. The drifted-missing
      half of this branch is not the same claim: there `state_entry` is
      not `None`, so step 3 still takes the `parse_file()` path and still
-     spends the call when the hash moved, discarding `intent_notes` the
-     same way it always has — a pre-existing cost #140 did not touch,
-     because a drifted-missing resource is rare enough that removing it
-     is its own decision, not a side effect of this one.
+     spends the call when the hash moved *and* the Intent section is
+     non-empty (judgment call 4, `specs/parser.md`), discarding
+     `intent_notes` the same way it always has — a pre-existing cost
+     #140 did not touch, because a drifted-missing resource is rare
+     enough that removing it is its own decision, not a side effect of
+     this one.
 
      **Otherwise**: `entry = planner.plan_resource(key,
      current_attributes, spec.params, intent_notes=parsed.intent_notes,

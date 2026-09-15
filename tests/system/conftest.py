@@ -307,13 +307,11 @@ def teardown_tracked_resources(project_dir: Path):
 def verbose_call_count(captured) -> int:
     """The number in `[verbose] N Anthropic API call(s) made`.
 
-    Shared rather than per-suite: `test_cli_digitalocean.py` and
-    `test_cli_domain.py` use it for every call count they assert.
-    `test_cli_firewall.py` still asserts the raw `"[verbose] N ..."`
-    string directly throughout, since its assertions are dense enough
-    (seven distinct counts across one lifecycle) that this helper would
-    trade an inline, greppable number for an indirection with no
-    corresponding gain there."""
+    Shared rather than per-suite, for whichever assertion in whichever
+    suite wants a numeric comparison (`== 0`, `>= 1`, ...) instead of
+    matching the whole line as a literal string. Which sites use it and
+    which don't is not this docstring's to track — it drifted out of
+    date twice already; check the call sites directly."""
     assert "[verbose]" in captured.err, f"no [verbose] line in stderr:\n{captured.err}"
     return int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
 
