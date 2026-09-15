@@ -594,7 +594,7 @@ recorded against the resource. Concretely, for each way a resource can fail:
 | `metrics()` returns a non-`list[Sample]` | untouched | untouched | `[]` | `... metrics() did not return list[Sample]` |
 | `metrics()` declines | untouched | untouched | `[]`, `samples_unsupported` set | unchanged |
 | `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | `"resource not found"` |
-| `metrics()` raises anything else | untouched | untouched | `[]` | the exception text |
+| `metrics()` raises anything else | untouched | untouched | `[]` | `<provider>.<type> metrics() failed: <exception text>` |
 | Driver file missing (`PlanBlockedError`) | `None` | `None` | `[]` | the error |
 | Credentials unresolvable | `None` | `None` | `[]` | the error |
 | A returned `Sample` fails validation | untouched | untouched | the surviving samples | one entry per rejected sample |
@@ -1107,9 +1107,16 @@ findings, each now carrying a regression test:
   matches before a trailing newline: `"cpu_percent\n"` validated, then
   rendered as one sample split across two lines with every other row
   padded to the inflated width. `fullmatch` now.
-- A driver's multi-line exception text broke `check`'s one-line-per-
-  resource rule, a continuation line at column zero reading as another
-  resource's row. Collapsed, as `log.py` does.
+- Multi-line text broke `check`'s one-line-per-resource rule, a
+  continuation line at column zero reading as another resource's row.
+  Not only *exception* text, which was the first fix and was half of it:
+  a driver's own `HealthReport.summary`, its `CapabilityNotSupported`
+  reason, and its `observations` keys and values are all free-form too,
+  and a newline in an observation key inflates the column width every
+  other row is padded against. Every whitespace run is collapsed at the
+  render sites now -- stricter than `log.py`, which only replaces
+  newlines -- and `--format json` still carries the raw text, since
+  nothing there is column-aligned.
 - A driver that *returns* `UNKNOWN` — which `driver.py`'s docstring
   forbids — passed straight through. The verdict stands, but the driver
   bug is now recorded.

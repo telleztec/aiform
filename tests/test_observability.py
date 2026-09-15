@@ -1708,7 +1708,7 @@ class TestReviewRound2Regressions:
         )
         assert len(text.splitlines()) == 1
 
-    def test_a_multi_line_observation_does_not_inflate_the_column_width(self):
+    def test_a_multi_line_observation_value_does_not_inflate_the_column_width(self):
         report = HealthReport(
             status=HealthStatus.FAILING,
             summary="down",
@@ -1717,6 +1717,21 @@ class TestReviewRound2Regressions:
         text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
         assert len(text.splitlines()) == 3
         assert all(line == line.rstrip() for line in text.splitlines())
+
+    def test_a_multi_line_observation_key_does_not_inflate_the_column_width(self):
+        # The case the code comment describes, which the value-only test
+        # above does not reach: an uncollapsed key sets `width` for every
+        # other row.
+        report = HealthReport(
+            status=HealthStatus.FAILING,
+            summary="down",
+            observations={"status": "off", "last\naction": "power_off"},
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert text.splitlines()[1:] == [
+            "    status       off",
+            "    last action  power_off",
+        ]
 
     def test_a_multi_line_metrics_decline_stays_one_line(self):
         text = observability.render_metrics(

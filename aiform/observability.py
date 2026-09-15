@@ -633,8 +633,6 @@ def _observation_lines(reading: ResourceReading) -> list[str]:
     if not observations:
         return []
     observations = {_oneline(k): _oneline(v) for k, v in observations.items()}
-    if not observations:
-        return []
     # A newline in a key would also inflate this width and pad every
     # other row against a value nothing in the output is that wide.
     width = max(len(key) for key in observations)
