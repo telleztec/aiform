@@ -338,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
-│   ├── observability.py                   # the sweep behind `aiform resource check/metrics/status`: health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
+│   ├── observability.py            # health()/metrics() over tracked resources for `aiform resource check/metrics/status` (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -612,8 +612,9 @@ class CapabilityNotSupported(Exception):
     question for this resource kind. Lives here rather than in
     exceptions.py because the base class itself raises it, so it is part
     of the contract — same reasoning as DriverUpdateNotSupported above.
-    `aiform resource metrics` catches it per-resource and reports "unsupported:
-    <reason>"; it is never an error."""
+    The `aiform resource` commands catch it per-resource and report
+    "unsupported: <reason>". That is not an error for `metrics` or
+    `status`; `check <name>` exits 2, having no verdict to give."""
 
     def __init__(self, capability: str, reason: str):
         self.capability = capability
@@ -743,7 +744,7 @@ class ResourceDriver(ABC):
     # a stub anyway. A driver opts in by overriding, exactly as it does
     # with _tags_for_create/_tags_for_attributes above. Neither is ever
     # reached from plan/apply — the `aiform resource` commands (§7) are
-    # Full rules: specs/driver_observability.md.
+    # their only caller. Full rules: specs/driver_observability.md.
 
     def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
         """
@@ -761,28 +762,27 @@ class ResourceDriver(ABC):
 
         Returns: HealthReport with status OK / DEGRADED / FAILING. Do NOT
             return UNKNOWN — that state means "aiform could not find
-            out", and `aiform resource check` sets it when this method raises. A
+            out", and the caller sets it when this method raises. A
             driver catching its own timeout and returning UNKNOWN
             destroys the error text that says what went wrong.
-        Raises: ResourceNotFoundError if the resource is gone (the
-            renders it FAILING, and does not mark drift — it cannot write
-            state). CapabilityNotSupported, with a resource-specific
+        Raises: ResourceNotFoundError if the resource is gone; the
+            caller renders it FAILING and does not mark drift, since
+            these commands never write state. CapabilityNotSupported, with a resource-specific
             reason, if this driver deliberately cannot answer.
 
         MUST be read-only (GET/HEAD only), MUST NOT write state, and MUST
         make zero Anthropic API calls — it may be called every few
-        seconds by a scrape, indefinitely.
+        seconds by a script, indefinitely.
         """
         raise CapabilityNotSupported("health", "this driver does not implement health()")
 
     def metrics(self, id: str, credentials: dict[str, str]) -> list[Sample]:
         """
-        Counters and gauges for this resource, for a Prometheus/Grafana
-        scrape.
+        Counters and gauges for this resource.
 
         Returns: list[Sample], each with a BARE snake_case name carrying
             its base unit (`memory_bytes`, not `aiform_memory_bytes`) —
-            `aiform resource metrics` adds the prefix and the provider/resource_type/
+            a future exporter adds any prefix and the provider/resource_type/
             name/id labels, so this driver must not set those itself.
 
         COUNTER is only for a value the CSP documents as cumulative and
@@ -1172,7 +1172,7 @@ review at all). See "Driver curation" for how the pieces relate.
 
 **Synopsis notation.** `<lower-case>` inside angle brackets is a placeholder
 the user replaces; everything else -- command words, flag names, and literal
-values like `digitalocean` or `text|json|prometheus` -- is typed exactly as
+values like `digitalocean` or `text|json` -- is typed exactly as
 shown. `[x]` is optional, `|` separates alternatives, `...` may repeat.
 
 This is docopt's angle-bracket convention. man(7) marks replaceable arguments
@@ -1220,7 +1220,7 @@ aiform plan show [--state-file <path>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check [<name>] [--format text|json] [--state-file <path>]
+aiform resource check   [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. driver.health() for one named resource, or for
     every tracked resource when <name> is omitted. An ASSERTION: this is
     the only command in the surface whose exit code carries the answer
@@ -1246,20 +1246,16 @@ aiform resource check [<name>] [--format text|json] [--state-file <path>]
     coverage line ("3 of 5 resources report health; 2 unsupported") so
     the gap is visible rather than silently passing.
 
-aiform resource metrics [<name>] [--format text|json|prometheus]
+aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.metrics() plus driver.health(), for one
-    named resource, or for EVERY tracked resource when <name> is
-    omitted. No-argument-means-everything is this CLI's existing
+    NOT YET IMPLEMENTED. driver.metrics() for one named resource, or
+    for EVERY tracked resource when <name> is omitted. Only metrics():
+    check is the verb that asks health(). No-argument-means-everything is this CLI's existing
     convention -- `plan refresh`, `plan show` and `plan create` all work
     that way -- and there is no --all flag, since omitting <name>
     already says it and two spellings of one meaning is what
     specs/driver.md's "one writable spelling per value" rule warns
     against.
-
-    health() is called in both modes because aiform_resource_up is
-    itself a metric, and it is the series an alert rule fires on. One
-    pass also means up and the gauges carry the same scrape timestamp.
 
     Default format is aligned text, for reading twice by eye under
     load to watch a number move. --format json is the same data
@@ -1278,13 +1274,13 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     and the operator removes the file when done. A missing parent
     directory or an unwritable path is an ordinary error, exit 2.
 
-    The no-argument form makes zero Anthropic API calls and never writes
-    state. A resource whose driver declines a capability reports
+    Both forms make zero Anthropic API calls and never write state. A
+    resource whose driver declines a capability reports
     "unsupported: <reason>"; one whose driver raises reports UNKNOWN.
     Neither aborts the sweep: a single broken driver must not blank a
     dashboard.
 
-aiform resource status [<name>] [--format text|json] [--state-file <path>]
+aiform resource status  [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one named
     resource, or a row per resource when <name> is omitted:
     deployed (from state), live (a driver.read()), config (diff against

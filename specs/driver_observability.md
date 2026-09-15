@@ -38,9 +38,8 @@ ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ # ...apply some load...
 $ aiform resource metrics web-01
-up                       1
-gauge  memory_bytes      2.147e+09
-gauge  cpu_percent       41.2
+gauge  memory_bytes  2.147e+09
+gauge  cpu_percent   41.2
 ```
 
 Two things this demands that a fleet sweep does not. **`check` is an
@@ -224,9 +223,11 @@ class StatusReport:
     """`aiform resource status`. Four independent answers; any one can be
     the surprising one, so none is folded into another."""
 
+    resource_key: str  # the fleet form prints a row per resource and must label it
+    name: str
     deployed: str | None  # last_applied_at + id, or None if not in state
     live: str  # "present" | "missing on the provider" | an error
-    config: str  # "in sync with <path>" | "<n> fields drifted" | "no source file found"
+    config: str  # "in sync with <path>" | "<n> fields drifted: a, b" | "no source file found" | "not applicable: resource is gone"
     health: HealthReport | None
     health_unsupported: str | None
 
@@ -239,10 +240,15 @@ def resolve_name(name: str, st: State) -> str:
     two matches can be a droplet and the firewall in front of it."""
 
 
-def collect(*, keys=None, state_path=state.DEFAULT_STATE_PATH) -> Collection:
-    """Read health and metrics for tracked resources: exactly those in `keys`, or every one when
-    `keys` is None (no `<name>` given). Reads state; never writes it. Makes zero
-    Anthropic API calls."""
+def collect(
+    *, keys=None, want_health=True, want_metrics=True, state_path=state.DEFAULT_STATE_PATH
+) -> Collection:
+    """Read tracked resources: exactly those in `keys`, or every one when
+    `keys` is None. The two flags say which driver methods to call --
+    `check` wants health only, `metrics` wants metrics only, `status`
+    wants health. An unwanted method is never called, so no verb pays for
+    a provider request it does not use. Reads state; never writes it.
+    Makes zero Anthropic API calls."""
 
 
 def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport:
@@ -287,16 +293,17 @@ Decisions, "Three verbs, not four".
 | `metrics` | what are its numbers? | `metrics()` | the command ran |
 | `status` | is what I deployed still there, and still what I declared? | `health()` + state + a live `read()` | the command ran |
 
-`metrics` calls `health()` as well as `metrics()`, in both scopes:
-`aiform_resource_up` is itself a metric and is the series an alert rule fires
-on, and emitting it from the same pass keeps `up` and the gauges on one
-timestamp.
+Each verb calls exactly what its question needs: `check` calls `health()`,
+`metrics` calls `metrics()`, `status` composes both with a state lookup and a
+live `read()`. An earlier draft had `metrics` call `health()` too, so its
+output could carry a `up`-style series; that series belongs to the deferred
+exporter (`PLAN.md` §10), and without it the extra call bought nothing.
 
 **`check`'s exit code is the one exception in this whole surface**, and it is
 deliberate. Everywhere else — `metrics`, `status` — a non-zero exit means
 *aiform could not answer*, never *the answer was bad*; `metrics` exits 0 on
 a `FAILING` resource precisely so a cron wrapper does not page on one bad
-scrape. `check` inverts that because it exists to be used as an assertion
+reading. `check` inverts that because it exists to be used as an assertion
 (`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
 exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
 `health()` both exit non-zero too, for a named resource: neither is evidence
@@ -358,7 +365,7 @@ The reason is that a data-plane check makes the verdict a property of *where
 aiform happens to be running*, not of the resource. A correctly-configured
 firewall between the operator's laptop and the droplet would report `failing`,
 and the same resource would report `ok` from inside the VPC. A dashboard whose
-red/green depends on which machine ran the scrape is worse than no dashboard.
+red/green depends on which machine ran the command is worse than none.
 
 Be honest about the cost of this choice: a control-plane `health()` cannot tell
 you `sshd` is up, or that the application is serving. It tells you the CSP has
@@ -386,9 +393,11 @@ returns `UNKNOWN` is hiding the error text that would say what went wrong.
 
 ### What `metrics()` returns
 
-A flat list of `Sample`. The driver supplies a **bare** name — `memory_bytes`,
-not `aiform_memory_bytes` and not `digitalocean_droplet_memory_bytes`. The
-renderer adds the `aiform_` prefix and the identity labels.
+A flat list of `Sample`. The driver supplies a **bare** name — `memory_bytes`, not
+`aiform_memory_bytes` and not `digitalocean_droplet_memory_bytes`. Nothing
+prefixes it today; both renderers print what the driver returned, beside the
+resource's identity. A future exporter is where a prefix and identity labels
+get applied, and it needs the name unqualified to do that.
 
 **`MetricKind` is `COUNTER|GAUGE` and nothing else**, so there are no native
 percentiles — no `histogram_quantile()` over a latency bucket. Adding
@@ -472,10 +481,12 @@ that never runs.
    "Timeout/retry/failover orchestration" entry, which owns this for every
    driver call rather than just these two.
 6. **No identity labels.** A driver does not set `provider`, `resource_type`,
-   `name` or `id` in `Sample.labels`; the renderer stamps those. A driver that
-   sets one has **that sample** dropped (see Edge cases). This
-   means a driver cannot misspell or omit an identity label, and cannot smuggle
-   a credential into one.
+   `name` or `id` in `Sample.labels`. The output already carries the
+   resource's identity beside its samples, so repeating it in every label map
+   is redundant — and a future exporter, which must stamp those labels to make
+   the series addressable, cannot do so safely if a driver has already put its
+   own values there. A driver that sets one has **that sample** dropped (see
+   Edge cases).
 
 ### `collect()`
 
@@ -547,7 +558,7 @@ failure to observe.
 
 **`metrics()` is still attempted after `health()` reports the resource gone**,
 per step 3's "guarded independently". One hole is worth naming, because it
-is the one shape in which a vanished resource leaves the scrape silently: if
+is the one shape in which a vanished resource goes unreported: if
 `health()` *declines* the capability and `metrics()` then raises
 `ResourceNotFoundError`, the resource has no `up` series to go to zero and no
 error recorded, so it simply stops appearing. A driver that declines `health()`
@@ -574,15 +585,34 @@ for it.
 
 ### Rendering
 
-`--format text` is aligned columns for reading; `--format json` is the same
-data structured, per "`render_json` shape" below. There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
+`--format json` is the structured form, per the shapes below. `--format text`
+is aligned columns, and the layout is a rule rather than an example, since a
+test has to assert exact output:
+
+- **One resource per block.** A block opens with a header line naming the
+  resource — `digitalocean.compute.web-01` — and its rows are indented two
+  spaces beneath it. In the single-resource form the header is still printed,
+  so the two forms differ only in how many blocks follow.
+- **Columns are padded to the widest value in that block**, two spaces
+  between columns, no trailing whitespace. `check`'s row is
+  `<status>  <summary>`; `metrics`' rows are `<kind>  <name>  <value>`;
+  `status`' rows are `<label>  <value>` over the four labels.
+- **Numbers**: a float that is integral within 1e-6 prints without a decimal
+  part; anything else prints with `repr()`'s shortest round-trip form. No
+  thousands separators, no unit scaling — `2147483648`, not `2.1 GiB`. The
+  name carries the unit, and a reader comparing two runs needs the digits to
+  line up rather than be re-scaled between them.
+- **An empty block** — a resource with no samples, or a declined capability —
+  prints its header and one indented line: `unsupported: <reason>`, or
+  `no samples`.
+
+`check`'s coverage line is printed last, unindented, only in the fleet form. There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
 integration" gives it one, and appending (see `--output`) would produce an
 invalid document anyway.
 
-`aiform_resource_up` as a rendered series belongs to that project too. What
-survives here is the underlying rule — `health()` produces a verdict,
-`metrics()` produces samples, and a command shows both — with the mapping
-from verdict to a numeric series deferred with the rest.
+A numeric `up`-style series derived from the health verdict belongs to that
+project too. Here a verdict is a verdict: `check` prints it as a word and
+returns it as an exit code, and nothing maps it to a number.
 
 ### Validation before a line is written
 
@@ -592,29 +622,27 @@ they exist so a `Sample` is already valid wherever it is later sent, including
 by the deferred integration project, which has no chance to renegotiate with
 the driver:
 
-- **Metric name** — the rendered `aiform_<name>` must match
-  `[a-zA-Z_:][a-zA-Z0-9_:]*`. A driver returning `cpu%` or `disk-free` is
-  dropped with an error naming the driver, not written out to poison the file.
+- **Metric name** — must match `[a-zA-Z_:][a-zA-Z0-9_:]*`, the character set
+  a metrics system will require of it later. A driver returning `cpu%` or
+  `disk-free` is dropped with an error naming the driver.
 - **Label names** — must match `[a-zA-Z_][a-zA-Z0-9_]*`. Label *values* are
-  arbitrary UTF-8, escaped for `\\`, `"` and `\n`.
+  arbitrary UTF-8; each renderer escapes them its own way.
 - **`COUNTER` whose name does not end in `_total`** — dropped with an error.
 - **Non-finite value** (`NaN`, `±Inf`) — dropped with an error. The format has
   spellings for these, but a driver producing one has almost always divided by
   an unchecked zero.
-- **Two drivers emitting the same bare name with different `MetricKind`** — one
-  `TYPE` line cannot carry both. The whole family is dropped with an error
-  naming both drivers, rather than silently picking one and mistyping the
-  other's samples.
+- **Two drivers emitting the same bare name with different `MetricKind`** —
+  the whole family is dropped with an error naming both drivers. A consumer
+  that types a series by name, as Prometheus does, cannot hold both, and
+  silently picking one would mistype the other's samples.
 
-**No timestamps.** `Sample` carries none: the reading happens when the
-command runs, and a consumer that needs a timestamp has its own. Collectors
-that reject explicit timestamps outright exist, so the field would be a
-liability rather than an option.
+**No timestamps.** `Sample` carries none: the reading happens when the command
+runs, and a consumer that needs one has its own clock.
 
 **Where this runs: `collect()`, not a renderer.** Specifying it under
 one renderer alone would let `cpu%` through unvalidated in the other,
 reporting the same driver bug differently depending on a flag. Each `Sample` is validated once, on the way out of the sweep; all three
-renderers receive the same already-validated set.
+both renderers receive the same already-validated set.
 
 **Where a rejection is recorded follows what it belongs to.** A per-sample
 rejection — a bad name, a mistyped counter, a non-finite value, a colliding
@@ -640,7 +668,20 @@ system continuously is a separate project (`PLAN.md` §10, "Metrics pipeline
 integration"), and the atomicity, suffix and lifecycle rules that use needs
 belong to it.
 
-Two consequences of appending, stated because they are surprising otherwise:
+**Each run is preceded by a delimiter line**, because an accumulating record
+nobody can split is not a record:
+
+```
+=== 2026-09-15T05:41:02Z  aiform resource metrics web-01
+```
+
+UTC, ISO-8601, then the invocation. `--format json` uses the same line — the
+file is a stream of runs, not one document, and a consumer splits on the
+delimiter before parsing each block. Without it an operator cannot tell which
+block came from which run, which is the whole point of appending.
+
+Two further consequences of appending, stated because they are surprising
+otherwise:
 
 - **The file is not a valid exposition document**, and is not meant to be.
   Repeated runs repeat metric families, which a Prometheus parser rejects.
@@ -691,30 +732,26 @@ sweep" above; per-sample validation under "Validation before a line is
 written." What remains:
 
 - **`ResourceNotFoundError`** from `health()` renders as `FAILING`, summary
-  `"resource not found"`, `up 0`. It does **not** mark drift: these commands cannot
-  write state, and a vanished resource should page someone now. The next `plan`
-  is what records it.
+  `"resource not found"`. It does **not** mark drift: these commands never
+  write state. The next `plan` is what records it.
 - **A driver-supplied label colliding** with an identity label drops **that
   sample**, not the resource's whole set — matching how every other validation
   failure is scoped. Deliberately not a silent overwrite, which would hide the
-  driver bug. `aiform_resource_up` comes from `health()` and is unaffected.
-- **No tracked resources at all** — `metrics` prints an empty result and exits 0.
-  A scrape of an empty formation is not an error.
+  driver bug. `check`'s verdict comes from `health()` and is unaffected.
+- **No tracked resources at all** — `metrics` prints an empty result and exits
+  0. A reading of an empty formation is not an error.
 - **`.aiform/state.json` missing** — empty result, exit 0. Not an error, and
   `metrics` adds no `exists()` check of its own: `state.load()` already returns an
   empty `State()` for a missing path, no other command treats that as a
-  failure, and a fresh project's cron scrape should report nothing rather than
-  fail until the first `apply`.
+  failure, and a fresh project should report nothing rather than fail until
+  the first `apply`.
 - **`.aiform/state.json` malformed** — exits 2. This one genuinely raises
-  (`json.loads`, or Pydantic validation), and a scrape reporting zero resources
+  (`json.loads`, or Pydantic validation), and a command reporting zero resources
   because state failed to parse is worse than one that fails loudly.
 - **`--output` to an unwritable path, or one whose parent directory does not
   exist** exits 2, naming the directory. aiform does not create it: a `mkdir
   -p` here writes metrics into a directory nothing reads, which fails silently
   rather than loudly.
-- **`--output` where a previous run left a temporary file** — overwritten
-  without comment. The temp name carries the writing process's pid, so a
-  stale one belongs to a dead process and is not evidence of a live writer.
 
 ### The per-resource verbs
 
@@ -753,8 +790,8 @@ tracked resource, matching `plan refresh`/`show`/`create`.
 
 ### Exit codes
 
-A scrape runs from cron or a systemd timer, where the exit code is the only
-signal anyone sees, so it is specified rather than left to the implementer.
+These commands get wrapped in scripts, where the exit code is the only signal
+anyone sees, so it is specified rather than left to the implementer.
 
 **`check` is the exception** and is tabulated separately below, because its
 exit code answers the health question rather than reporting whether aiform
@@ -769,10 +806,10 @@ For `metrics` and `status`:
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —
-not in the exit code, where a cron wrapper turns one bad scrape into a page.
-An implementation returning 1 on any `UNKNOWN` would page on exactly the
+not in the exit code, where a wrapper turns one bad reading into a failure.
+An implementation returning 1 on any `UNKNOWN` would fail on exactly the
 transient blip the four-state design exists to absorb. There is no code 1 for
-these three.
+these two.
 
 For `check` — the only command whose exit code answers the question rather
 than reporting whether it could answer:
@@ -802,15 +839,54 @@ other way:
   `UNKNOWN` and let the next reading answer; a script about to run the next
   deploy step cannot afford that, which is why the gate fails.
 
-`DEGRADED` exiting 1 while `aiform_resource_up` renders it as `1` is not an
-inconsistency. The gauge answers "is it serving" for an alert rule with
-history behind it; `check` answers "is this fully healthy" for a script that
-is about to do something next, and a half-attached firewall is not a green
-light for the deploy step after it. `UNKNOWN` exits 1 for the opposite reason
-to the gauge omitting it: a scrape can afford to say nothing and let the next
-one answer, a script gating on it cannot.
+`DEGRADED` exits 1 because `check` answers "is this fully healthy" for a
+script about to do something next, and a half-attached firewall is not a green
+light for the deploy step after it. `UNKNOWN` exits 1 for the same reason: a
+resource aiform could not reach is not a resource known to be healthy, and a
+script gating on it cannot afford to wait for a better answer.
 
-### `render_json` shape
+### `render_json` shapes
+
+All three verbs emit a single JSON object with a `resources` array. The
+per-verb differences are only in what each resource carries.
+
+`check`:
+
+```json
+{
+  "resources": [
+    {"resource_key": "digitalocean.compute.web-01", "name": "web-01",
+     "status": "failing", "summary": "status is \"off\"",
+     "observations": {"status": "off", "locked": "false"}}
+  ],
+  "coverage": {"reporting": 2, "total": 3, "unsupported": 1},
+  "verdict": "failing"
+}
+```
+
+`coverage` is the field the text form prints as its coverage line, so the
+information is never a stray line that would make the document unparseable.
+`verdict` is the aggregate the exit code is derived from — `ok`, `failing`,
+or `no-verdict` — stated once so a consumer does not have to re-derive the
+aggregate rule.
+
+`status`:
+
+```json
+{
+  "resources": [
+    {"resource_key": "digitalocean.compute.web-01", "name": "web-01",
+     "deployed": "2026-09-10T14:02:11Z, id 123456789",
+     "live": "present",
+     "config": "in sync with examples/web.aiform.md",
+     "health": {"status": "failing", "summary": "status is \"off\"",
+                "observations": {}},
+     "health_unsupported": null}
+  ]
+}
+```
+
+### `metrics`' `render_json` shape
 
 A consumer contract, so it is fixed here rather than left to the renderer:
 
@@ -863,7 +939,7 @@ same list.
   human-facing way to read it.
 
 - **Historical storage.** aiform holds no time series. These commands are stateless; the
-  scrape target stores history. This is also why a driver may not derive a
+  consumer stores history. This is also why a driver may not derive a
   counter by differencing.
 - **Alerting rules, dashboards, or Grafana provisioning.** aiform emits;
   configuring what reads it is the operator's.
@@ -994,8 +1070,8 @@ until every driver implements `health()`. But *nothing* answering is exit 2,
 not 0, so leniency never becomes a gate that passes having assessed nothing.
 
 `UNKNOWN` fails the gate while being *absent* from the `up` gauge. Not an
-inconsistency: a scrape can afford to say nothing and let the next one answer;
-a script about to run the next deploy step cannot.
+inconsistency: a series can afford a gap and let the next reading answer; a
+script about to run the next deploy step cannot.
 
 ### The pipeline is a separate project
 

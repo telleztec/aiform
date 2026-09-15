@@ -610,7 +610,7 @@ candidates until Gate #3.
   anything, remain `PLAN.md` §10's "Self-service driver creation" item.
 - **Runtime observability.** `PLAN.md` §10's "Observability" entry is a
   status URL for a live formation, and `specs/driver_observability.md`'s
-  `health()`/`metrics()` are a per-resource scrape. The audit log here is
+  `health()`/`metrics()` are a per-resource reading. The audit log here is
   *build-time* observability for how a driver came to exist — related in
   spirit to both, unrelated in mechanism to either.
 

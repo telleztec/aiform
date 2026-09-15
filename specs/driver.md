@@ -310,8 +310,9 @@ flagging at the top since it was written.
 - `credentials` — e.g. `{"DIGITALOCEAN_TOKEN": "..."}`. Never logged, never
   passed through any Anthropic API call.
 
-The parameter *names* are binding, not just their order: a driver spelling the
-first one `resource_id` is rejected at validation.
+The parameter *names* are binding, not just their order: a driver spelling
+`id` as `resource_id` would be rejected — by the `OPTIONAL_METHOD_PARAMS`
+check in `specs/driver_gen.md`, which is specified and not yet implemented.
 
 Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
 are their only caller, and none of those writes state. Full rules — control

@@ -57,7 +57,8 @@ both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
 value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform resource ...` at the end of this file has the mechanism.
+on `aiform resource ...` at the end of this file notes that the new commands
+inherit it.
 `--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
@@ -724,7 +725,7 @@ state.
 
 ```
 aiform resource check   [<name>] [--format text|json] [--state-file <path>]
-aiform resource metrics [<name>] [--format text|json|prometheus]
+aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
 ```
@@ -799,15 +800,10 @@ is the failure mode to avoid, and that case is exit 2, not exit 0.
 ### `aiform resource metrics [<name>]`
 
 **Does:** prints counters and gauges — for one named resource, or for every
-tracked resource when `<name>` is omitted. Calls the driver's `metrics()`
-**and** `health()`.
+tracked resource when `<name>` is omitted. Calls the driver's `metrics()`, and
+only that: `check` is the verb that asks `health()`.
 
-Why `health()` too, in a command called `metrics`: `aiform_resource_up` is
-itself a metric, and it is the series an alert rule fires on. Emitting it from
-the same pass also means `up` and the gauges carry one scrape timestamp rather
-than two that can disagree.
-
-**Arguments:** exactly one of `<name>` — the resource's `name:` from its
+**Arguments:** `<name>` — the resource's `name:` from its
 `.aiform.md`, e.g. `web-01`, not the full `digitalocean.compute.web-01` state
 key. **Omitting it means every tracked resource**, matching `plan refresh`,
 `plan show` and `plan create`, which all operate on everything when given no
@@ -815,8 +811,8 @@ arguments. There is no `--all` flag: omitting `<name>` already says it, and a
 second spelling of one meaning is what `specs/driver.md`'s "one writable
 spelling per value" rule warns against.
 
-`--format` selects the rendering, default `text`. `--output <path>` writes to
-**appends** to a file instead of writing stdout. No temp file, no rename, no
+`--format` selects the rendering, default `text`. `--output <path>` **appends**
+to a file instead of writing stdout. No temp file, no rename, no
 suffix rule, no rotation — aiform never deletes or truncates it; a run adds to
 the end and the operator removes the file when done.
 
@@ -826,21 +822,17 @@ messages all go to stderr, so `aiform resource metrics --format json | jq ...`
 works. A closed pipe (`| head -20`) is a successful run, not a
 `BrokenPipeError` traceback.
 
-There is no default `--output` path and aiform never guesses one — the
-collector's directory varies by deployment, and a wrong guess writes a file
-nothing reads with no error raised. A missing parent directory is an error
-rather than something to create, for the same reason. The file is an **export,
-not state**: aiform writes it and never reads it back, nothing backs it up,
-deleting it costs nothing but a rerun, and aiform never rotates or cleans it.
-`specs/driver_observability.md` has the full lifecycle.
+Each run is preceded by a delimiter line carrying a UTC timestamp and the
+invocation, so an accumulating file can be split back into runs. aiform never
+reads the file back, never rotates it and never deletes it; a missing parent
+directory or unwritable path is an ordinary error.
 
 **Output**, `--format text` — aligned columns, meant to be read by eye and run
 again a minute later to watch a number move:
 
 ```
-up             1
-gauge  memory_bytes   2.147e+09
-gauge  cpu_percent    41.2
+gauge  memory_bytes  2.147e+09
+gauge  cpu_percent   41.2
 ```
 
 `--format json` emits the same data as structured records. There is no
@@ -852,7 +844,7 @@ ambiguous, unwritable `--output`, unreadable state). A `failing` resource exits 
 putting it in the exit code would make a cron wrapper page on one transient
 blip.
 
-**The no-argument form sweeps everything.** It makes zero Anthropic API calls, writes no
+**Both forms** make zero Anthropic API calls and write no
 state, and never aborts because one resource is sick: a driver that declines a
 capability reports `unsupported`, one that raises reports `unknown`, and the
 rest still render. A single broken driver must not blank a dashboard.

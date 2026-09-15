@@ -108,12 +108,12 @@ Check specifically for:
     those, not a separate lesser one.
 12. **`health()`/`metrics()`, if present, are safe to call on a loop.**
     These are optional and never reached from `plan`/`apply` — `aiform
-    resource` commands call them, and `metrics` may run every few
-    seconds on a scrape interval, indefinitely. Each
+    resource` commands call them, and a human or a script may run them
+    repeatedly. Each
     of the following is a blocking issue:
     - **Not read-only.** Anything other than `GET`/`HEAD` against the
       CSP, or any side effect that creates or modifies something — a
-      tag, an alert subscription, a temporary resource. A scrape must
+      tag, an alert subscription, a temporary resource. Observing must
       not mutate the infrastructure it observes.
     - **Data-plane traffic.** Originating a connection toward the
       resource itself — a TCP connect to a droplet's port, a DNS
