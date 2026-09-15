@@ -1261,43 +1261,28 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     itself a metric, and it is the series an alert rule fires on. One
     pass also means up and the gauges carry the same scrape timestamp.
 
-    Default format is aligned text, for reading twice by eye under load
-    to watch a number move. --format json is for a consumer that parses
-    structured data. --format prometheus emits text exposition format,
-    the payload for
-    a transport that reads files, and --output then writes
-    atomically (tmp + rename) to a path that must end in .prom, since
-    that collector globs *.prom and will happily parse a half-written
-    file.
+    Default format is aligned text, for reading twice by eye under
+    load to watch a number move. --format json is the same data
+    structured. There is no exposition format: it has no consumer until
+    section 10's "Metrics pipeline integration" gives it one.
 
     Without --output every format goes to stdout, which is a clean
-    stream carrying the report and nothing else -- logs, warnings and
-    errors all go to stderr, so these commands pipe. A closed pipe is a
-    successful run, not a traceback. Note a pipeline exits with the LAST
-    command's status, so piping `check` discards the verdict it exists
-    to produce.
+    stream carrying the report and nothing else -- logs and errors go to
+    stderr, so these commands pipe. A closed pipe is a successful run,
+    not a traceback. Note a pipeline exits with the LAST command's
+    status, so piping `check` discards the verdict it exists to produce.
 
-    The filename is never derived from <name>: one invocation writes one
-    file containing whatever it covered. Prefer a single aiform.prom
-    written with no <name> -- per-resource files are legal but aiform
-    never deletes them, so a destroyed resource leaves one behind
-    serving stale series.
+    --output APPENDS to the given path and does nothing else: no
+    temporary file, no atomic rename, no suffix rule, no rotation, no
+    cleanup. aiform never deletes or truncates it; a run adds to the end
+    and the operator removes the file when done. A missing parent
+    directory or an unwritable path is an ordinary error, exit 2.
 
-    There is no default --output path and aiform never guesses one: the
-    collector's directory is a deployment decision, and a wrong guess
-    writes a file nothing reads without raising anything. A missing
-    parent directory is an error, not something to mkdir -p, for the
-    same reason. The file is an EXPORT, not state -- written and never
-    read back, not backed up the way state.json is, safe for anyone to
-    delete at any time, and never rotated or cleaned up by aiform.
-    See specs/driver_observability.md for the full lifecycle.
-
-    The no-argument form makes zero Anthropic API calls and never
-    writes state, so it is safe to run as often as a deployment needs.
-    A resource whose
-    driver declines a capability reports "unsupported: <reason>"; one
-    whose driver raises reports UNKNOWN. Neither aborts the sweep: a
-    single broken driver must not blank a dashboard.
+    The no-argument form makes zero Anthropic API calls and never writes
+    state. A resource whose driver declines a capability reports
+    "unsupported: <reason>"; one whose driver raises reports UNKNOWN.
+    Neither aborts the sweep: a single broken driver must not blank a
+    dashboard.
 
 aiform resource status [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one named
@@ -1587,14 +1572,11 @@ entry's own note below.
   |---|---|---|
   | Subject | a *formation* — one plan/apply run | a *resource* — one live thing |
   | Question | what's planned/applying/succeeded/failed, when | is it functional, what are its counters |
-  | Shape | a status URL, CI-run-status-page-like | a stateless CLI sweep, scrape-shaped |
-  | Lifetime | spans one run | runs indefinitely, on an interval |
+  | Shape | a status URL, CI-run-status-page-like | a command a human runs |
+  | Lifetime | spans one run | answers about right now |
 
-  A long-running `/metrics` exporter — the shape that would let
-  Prometheus scrape aiform directly instead of through a textfile
-  collector — is deliberately **not** part of that spec either: it would
-  be this repo's first inbound socket, and it belongs with "Centralized
-  server support" below.
+  Feeding a monitoring system continuously is neither of these — see
+  "Metrics pipeline integration" below.
 - ~~**Logging.**~~ **Built.** `aiform/log.py` (`specs/log.md`) closes this
   item: one predictable `key=value` log-line format across
   `plan`/`apply`/`destroy`/`refresh`, covering both the mechanical driver
@@ -1692,6 +1674,27 @@ entry's own note below.
   shared reference implementation for gate #1's `code-review-model` to
   check against) has to independently reinvent the same distinction to
   avoid the identical bug recurring.
+- **Metrics pipeline integration.** `aiform resource metrics` today is a
+  human-facing verification tool: run it, read it, confirm the resource is
+  doing what `plan apply` claimed. Feeding a monitoring system continuously
+  is a separate, larger project this commits to and does not design here.
+  What it will need, none of it built: an endpoint Prometheus can scrape
+  (exposition format, the right `Content-Type`, OpenMetrics' `# EOF`), or a
+  push/agent equivalent; a way to advertise its own scrape target, most
+  usefully through `http_sd_configs` so the target list stays live rather
+  than being pasted into `prometheus.yml` once; and the process lifecycle
+  that implies — this repo's first inbound socket, with auth, TLS and
+  restart semantics all undesigned. Related to "Centralized server support"
+  below, and to "Observability" above, without being either.
+
+  One constraint is already known and worth not rediscovering: **a process
+  cannot read its own reachable address off its socket.** Binding
+  `0.0.0.0:<port>` says nothing about whether Prometheus reaches it by LAN
+  address, DNS name, or through a NAT, so aiform can only ever advertise a
+  host it was told to advertise. It owns the rest — port, path, labels,
+  format — which is the error-prone part and the reason the feature earns
+  its place.
+
 - **Integrity / locking.** A locking mechanism so that concurrent `aiform
   apply` runs against the same state can coexist safely — enabling real
   parallelism in building infrastructure — instead of today's "two

@@ -816,12 +816,12 @@ second spelling of one meaning is what `specs/driver.md`'s "one writable
 spelling per value" rule warns against.
 
 `--format` selects the rendering, default `text`. `--output <path>` writes to
-a file instead of stdout, atomically (temp file plus rename); with `--format
-prometheus` the path must end in `.prom`, because node_exporter's textfile
-collector globs `*.prom` and ignores everything else.
+**appends** to a file instead of writing stdout. No temp file, no rename, no
+suffix rule, no rotation — aiform never deletes or truncates it; a run adds to
+the end and the operator removes the file when done.
 
 Without `--output` every format goes to **stdout, which is a clean stream** —
-the report and nothing else. Logs, the `.prom` suffix warning and error
+the report and nothing else. Logs and error
 messages all go to stderr, so `aiform resource metrics --format json | jq ...`
 works. A closed pipe (`| head -20`) is a successful run, not a
 `BrokenPipeError` traceback.
@@ -843,25 +843,16 @@ gauge  memory_bytes   2.147e+09
 gauge  cpu_percent    41.2
 ```
 
-**Output**, no `<name>` and `--format prometheus` — exposition format, grouped by metric
-family:
-
-```
-# TYPE aiform_resource_up gauge
-aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
-aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
-# TYPE aiform_memory_bytes gauge
-aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
-```
-
-`--format json` emits the same data as structured records.
+`--format json` emits the same data as structured records. There is no
+exposition format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
+integration" gives it one.
 
 **Exit code:** `0` if the command ran, `2` if it could not (name not found or
 ambiguous, unwritable `--output`, unreadable state). A `failing` resource exits `0` — it is an answer, and
 putting it in the exit code would make a cron wrapper page on one transient
 blip.
 
-**The no-argument form is the scrape mode.** It makes zero Anthropic API calls, writes no
+**The no-argument form sweeps everything.** It makes zero Anthropic API calls, writes no
 state, and never aborts because one resource is sick: a driver that declines a
 capability reports `unsupported`, one that raises reports `unknown`, and the
 rest still render. A single broken driver must not blank a dashboard.
@@ -915,6 +906,6 @@ Three things that will bite whoever wires up the parser:
    parser carries `global_parent` too), but so `aiform resource metrics -v`
    parses at all. See the `-v` caveat under "Global flags" and #134.
 
-The rendering rules, the atomic `--output` write, the `.prom` suffix
-requirement, and the per-resource name-resolution errors are specified in
+The rendering rules, `--output`'s append behaviour, and the per-resource
+name-resolution errors are specified in
 `specs/driver_observability.md` and not restated here.

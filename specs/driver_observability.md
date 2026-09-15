@@ -21,8 +21,9 @@ Give a driver two optional, read-only methods for answering the day-2
 questions `read()` cannot: **is this resource working**, and **what are its
 counters and gauges**. Then expose them through `aiform resource` — three
 verbs (`check`, `metrics`, `status`) for an operator at a terminal, with
-`metrics --format prometheus` over the whole fleet doubling as the scrape a
-Prometheus or Grafana pipeline consumes.
+`metrics` over the whole fleet when you omit the name. Feeding a monitoring
+system continuously is a separate project — `PLAN.md` §10, "Metrics pipeline
+integration".
 
 ## Use cases
 
@@ -47,7 +48,7 @@ assertion, so its exit code carries the verdict** — `0` for `OK`, non-zero
 otherwise — because the natural next thing anyone writes is `aiform resource
 check web-01 && ./smoke-test.sh`. And **`metrics` is read twice, by eye,
 minutes apart**, to see a number move under load; its default format is
-therefore aligned text, not exposition format.
+therefore aligned text.
 
 ### 2. Someone says it's down
 
@@ -102,8 +103,8 @@ been edited to say so:
 |---|---|---|
 | Subject | a *formation* — one plan/apply run | a *resource* — one live thing |
 | Question | what's planned/applying/succeeded/failed, when | is it functional, what are its counters |
-| Shape | a status URL, CI-run-status-page-like | a stateless CLI sweep, scrape-shaped |
-| Lifetime | spans one run | runs indefinitely, on an interval |
+| Shape | a status URL, CI-run-status-page-like | a command a human runs |
+| Lifetime | spans one run | answers about right now |
 
 `specs/driver_creation.md`'s "Out of scope" draws the same line for its own
 build-time audit log — "related in spirit, unrelated in mechanism." Neither
@@ -256,14 +257,13 @@ def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport
 def render_check(readings: list[ResourceReading], fmt: str) -> tuple[str, int]: ...
 def render_metrics(readings: list[ResourceReading], fmt: str) -> str: ...
 def render_status(reports: list[StatusReport], fmt: str) -> str: ...
-def write_atomically(text: str, path: Path) -> None: ...
 ```
 
 ### `aiform/cli.py`
 
 ```
 aiform resource check   [<name>] [--format text|json] [--state-file <path>]
-aiform resource metrics [<name>] [--format text|json|prometheus]
+aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
 ```
@@ -402,8 +402,8 @@ because "why can I not chart p99" is the first question this answers.
   `_seconds`), and a `COUNTER`'s name must end in `_total`. A separate `unit`
   field would be a second source of truth the two renderers could disagree
   about.
-- The scrape time is the right timestamp, and node_exporter's textfile
-  collector rejects explicit ones.
+- The reading happens when the command runs; a consumer that needs a
+  timestamp has its own.
 
 **Provider values may already be stale and pre-averaged.** DigitalOcean's
 monitoring endpoints return a *time series*, not an instantaneous reading, so
@@ -509,10 +509,8 @@ thing `specs/driver.md`'s "one writable spelling per value" addendum warns
 against for driver fields, applied to the CLI. See Decisions, "No `--all`
 flag".
 
-All three verbs take `--format text|json`; only `metrics` adds `prometheus`,
-since only metrics have an exposition format. `--output` stays on `metrics`
-alone: it exists for the textfile collector's atomicity requirement, not as a
-general write-to-file convenience, and shell redirection covers the rest.
+All three verbs take `--format text|json`. `--output` stays on `metrics`
+alone, since it is the one whose output an operator accumulates across runs.
 
 `render_check` returns its exit code alongside its text rather than having the
 CLI re-derive it from `HealthStatus`. The mapping is the one place in this
@@ -558,8 +556,8 @@ implementing `health()` even where the verdict is thin, and a limitation stated
 here rather than discovered from a dashboard that quietly lost a row.
 
 `UNKNOWN` is represented as a real `HealthReport`, not as `health=None`, so
-`render_prometheus()` can tell it from a decline and from a never-reached
-driver without consulting `errors`. `health=None` therefore means only "the
+a renderer can tell it from a decline and from a never-reached driver
+without consulting `errors`. `health=None` therefore means only "the
 method was never called"; the `health_unsupported` field distinguishes a
 deliberate decline from a failure before the call.
 
@@ -576,62 +574,23 @@ for it.
 
 ### Rendering
 
-**Group by metric family, not by resource.** The exposition format wants every
-sample of one metric name contiguous, with its `# TYPE` line once, immediately
-before the group. Iterating resources and emitting each one's samples inline
-scatters a family across the file; node_exporter's parser tolerates that, but
-`promtool check metrics` flags it, and a **second `# TYPE` line for the same
-name is a hard parse error**. So `render_prometheus()` collects all samples,
-buckets them by rendered name, and emits one group per name.
+`--format text` is aligned columns for reading; `--format json` is the same
+data structured, per "`render_json` shape" below. There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
+integration" gives it one, and appending (see `--output`) would produce an
+invalid document anyway.
 
-```
-# HELP aiform_resource_up Whether the CSP reports this resource as working.
-# TYPE aiform_resource_up gauge
-aiform_resource_up{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 1
-aiform_resource_up{provider="digitalocean",resource_type="firewall",name="web-fw",id="aaa-bbb"} 1
-# TYPE aiform_memory_bytes gauge
-aiform_memory_bytes{provider="digitalocean",resource_type="compute",name="web-01",id="123456789"} 2.147483648e+09
-# HELP aiform_scan_duration_seconds Wall-clock seconds for the whole sweep.
-# TYPE aiform_scan_duration_seconds gauge
-aiform_scan_duration_seconds 0.83
-```
-
-`# TYPE` is emitted for every family, including driver-supplied ones — that is
-what `Sample.kind` is *for*.
-
-`# HELP` is emitted **only** for aiform's own two families, whose text this
-spec fixes (`aiform_resource_up`: "Whether the CSP reports this resource as
-working."; `aiform_scan_duration_seconds`: "Wall-clock seconds for the whole
-sweep."). `Sample` carries no help text, so driver metrics get `TYPE` and no
-`HELP`. That is legal, and it is the honest option: the alternative is a
-`help` field on `Sample` that every driver would fill with a restatement of
-the name.
-
-### `aiform_resource_up`
-
-`1` for `OK` and `DEGRADED`, `0` for `FAILING`, and **absent** for `UNKNOWN`.
-An absent series is how Prometheus already expresses "no observation"; emitting
-`0` would assert a failure aiform did not observe, which is the
-`UNKNOWN`-vs-`FAILING` distinction thrown away at the last step.
-
-**No `up` series at all** when `health` is `None` — the capability was
-declined, the driver file was missing, or credentials would not resolve. Same
-reasoning as `UNKNOWN`: aiform has no observation to report, and `0` would
-assert one. An implementation emitting `0` on a credentials failure would page
-on an expired token rather than surfacing it as the configuration problem it
-is. All three `health=None` rows in the failure table above land here.
-
-`DEGRADED` mapping to `1` is a deliberate loss: `up` is binary, and a degraded
-resource is still serving. The distinction survives in `text` and `json`
-output, and a driver that wants it alertable should emit its own gauge.
+`aiform_resource_up` as a rendered series belongs to that project too. What
+survives here is the underlying rule — `health()` produces a verdict,
+`metrics()` produces samples, and a command shows both — with the mapping
+from verdict to a numeric series deferred with the rest.
 
 ### Validation before a line is written
 
-One malformed line makes the textfile collector discard the **whole file**, so
-a driver's mistake has to be caught before it is written. `collect()`
-does the catching — see the note at the end of this section on why it is not
-the renderer — and these are the rules it applies. They are phrased against the
-rendered `aiform_<name>`, which the validator therefore computes:
+A driver's mistake is caught in `collect()`, before any renderer sees it.
+These rules constrain what a driver may return, not what a file may contain —
+they exist so a `Sample` is already valid wherever it is later sent, including
+by the deferred integration project, which has no chance to renegotiate with
+the driver:
 
 - **Metric name** — the rendered `aiform_<name>` must match
   `[a-zA-Z_:][a-zA-Z0-9_:]*`. A driver returning `cpu%` or `disk-free` is
@@ -647,14 +606,14 @@ rendered `aiform_<name>`, which the validator therefore computes:
   naming both drivers, rather than silently picking one and mistyping the
   other's samples.
 
-**No timestamps, ever.** node_exporter does not merely ignore an explicit
-timestamp — it treats one as an error and **skips the entire file**
-(`prometheus/node_exporter#1284`). This is why `Sample` has no timestamp field
-rather than an optional one.
+**No timestamps.** `Sample` carries none: the reading happens when the
+command runs, and a consumer that needs a timestamp has its own. Collectors
+that reject explicit timestamps outright exist, so the field would be a
+liability rather than an option.
 
 **Where this runs: `collect()`, not a renderer.** Specifying it under
-prometheus alone would let `cpu%` through unvalidated in JSON, reporting the
-same driver bug differently depending on a flag. Each `Sample` is validated once, on the way out of the sweep; all three
+one renderer alone would let `cpu%` through unvalidated in the other,
+reporting the same driver bug differently depending on a flag. Each `Sample` is validated once, on the way out of the sweep; all three
 renderers receive the same already-validated set.
 
 **Where a rejection is recorded follows what it belongs to.** A per-sample
@@ -666,86 +625,29 @@ to the top level, and since the file-path selector was removed there is exactly
 one: a metric family rejected because two drivers gave the same name different
 `MetricKind`s, which belongs to neither driver alone.
 
-### `--output`: where the file goes, and who owns it
+### `--output`
 
-**The filename is never derived from `<name>`.** `aiform resource metrics
-web-01 --output /var/lib/node_exporter/web-01.prom` writes that path because
-you typed it, not because the resource is called `web-01`. One invocation
-produces one file, containing whatever that invocation covered.
+**Appends the rendered report to the path, and does nothing else.** No
+temporary file, no atomic rename, no suffix rule, no rotation, no pruning,
+no cleanup — aiform never deletes or truncates it. A run adds to the end; the
+operator removes the file when they are done with it.
 
-That matters because the tempting deployment — one `.prom` per resource,
-named after it — is a trap under this design. aiform never deletes the file
-it wrote, so destroying a resource leaves its file behind, serving stale
-series until a human notices. The whole-fleet form has no such problem: a
-destroyed resource simply stops appearing in the next write of the one file.
-**Prefer a single `aiform.prom` written by `aiform resource metrics --output
-...` with no `<name>`.** Per-resource files are legal, and their cleanup is
-then yours.
+This is deliberately the least machinery that serves the use cases. Those are
+a human confirming that `plan apply` did what it claimed, and a script a human
+wrote that runs the command a few times — for which an accumulating record is
+the useful shape, and file management is the operator's. Feeding a monitoring
+system continuously is a separate project (`PLAN.md` §10, "Metrics pipeline
+integration"), and the atomicity, suffix and lifecycle rules that use needs
+belong to it.
 
-**There is no default path, and aiform never invents one.** The collector's
-directory is a deployment decision — `/var/lib/node_exporter/`,
-`/var/lib/prometheus/node-exporter/`, something else entirely — and guessing
-wrong fails in the worst way available: the write succeeds, nothing reads the
-file, and the dashboard stays empty with no error anywhere. Without
-`--output`, output goes to stdout; with it, the operator has stated the path.
+Two consequences of appending, stated because they are surprising otherwise:
 
-**The file is an export, not state.** This is the distinction that answers
-most of the lifecycle questions at once:
-
-| | `.aiform/state.json` | the `--output` file |
-|---|---|---|
-| Is it a record? | yes — losing it loses track of real resources | no — a projection of a moment |
-| Does aiform read it back? | every run | never |
-| Durability required | backed up before every overwrite | **none** |
-| Who may delete it | nobody, casually | anyone, any time |
-| Cost of losing it | severe | nothing; rerun the command |
-
-So: **no durability requirement at all.** Delete it and the next run recreates
-it. It is not backed up (unlike state, which gets `.backup` before every
-overwrite), not versioned, and never read back — aiform is write-only here.
-A reader that wants history is Prometheus, which already has it.
-
-**A stale file is served as current, indefinitely.** Whatever reads the file
-has no way to know the command stopped running, so a broken collection
-pipeline renders as a flat, healthy dashboard rather than as an outage. This
-is a hazard of handing metrics to a transport through a file at all, not of
-any particular transport: the file's mtime is the only freshness signal, and
-something has to watch it. node_exporter publishes
-`node_textfile_mtime_seconds` for this; other transports expose an equivalent.
-Stated here rather than left to be discovered, because the failure is silent
-and the symptom is a dashboard that looks fine.
-
-**aiform does not manage the file beyond writing it.** It never deletes it,
-never rotates it, never prunes stale ones, and never cleans up after a
-resource is destroyed. One consequence worth stating because it is the one
-that bites: after `plan destroy`, the resource simply stops appearing in the
-next write — its series go stale in Prometheus and age out by that system's
-retention. But if the *command itself* stops running, the last file persists
-and is served as current forever, which is the failure mode described under
-"Wiring it to Grafana". Neither is aiform's to fix; both are the operator's to
-monitor.
-
-**A missing parent directory is an error, not something to create.**
-`--output /var/lib/nod-exporter/aiform.prom` (note the typo) exits 2 naming
-the directory. `mkdir -p` here would write metrics into a directory nothing
-reads, which is the silent-failure case above wearing a different hat.
-
-**Permissions are the umask's business, and the content is not secret but is
-inventory.** aiform does not `chmod` the file. What lands there — resource
-names, provider IDs, metric values — is readable by anyone who can read the
-collector's directory, which is typically world-readable. No credential is in
-it, and none may be: `observations` and labels come from drivers bound by the
-same never-log-a-credential rule as everything else. But a reader of that
-directory learns the shape of the infrastructure, which is worth knowing
-before pointing `--output` somewhere broadly readable.
-
-**Concurrent writers: last one wins, silently.** `os.replace()` is atomic, so
-a reader never sees a partial file, but two `aiform resource metrics` runs
-writing one path means one run's data is discarded with no error. There is no
-locking — the same position `PLAN.md` §10 takes for `state.json`, and for the
-same reason. A cron job and a human running it by hand at the same moment is
-the realistic case, and it is harmless precisely because the file has no
-durability requirement.
+- **The file is not a valid exposition document**, and is not meant to be.
+  Repeated runs repeat metric families, which a Prometheus parser rejects.
+  That is why `--format` offers `text` and `json` only; exposition format
+  arrives with the integration project that has somewhere to send it.
+- **A missing parent directory or an unwritable path is an ordinary error** —
+  exit 2, naming the path. aiform does not create the directory.
 
 ### stdout, and using these commands in a pipe
 
@@ -757,7 +659,7 @@ work.
 | Channel | Carries |
 |---|---|
 | stdout | the rendered report, and nothing else |
-| stderr | log lines (`log.py`'s `--verbose`-gated echo), the `.prom` suffix warning, and error messages |
+| stderr | log lines (`log.py`'s `--verbose`-gated echo) and error messages |
 | `.aiform/logs/aiform-<ts>.log` | the always-on file sink, unaffected |
 
 Three consequences worth pinning, because each is a way a pipeable command
@@ -770,7 +672,7 @@ usually goes wrong:
   would make the output unparseable. A warning is not part of the report and
   goes to stderr in both.
 - **`BrokenPipeError` must be handled, not raised.** `aiform resource metrics
-  --format prometheus | head -20` closes the pipe early, and the default
+  --format json | head -20` closes the pipe early, and the default
   Python behavior is a traceback on stderr plus a non-zero exit — for a
   command whose whole point is to be piped. Treat a closed stdout as a
   successful, complete run.
@@ -781,68 +683,6 @@ usually goes wrong:
   `check` is specifically built to be used in `&&` chains, and a reader who
   pipes it for logging would lose exactly the thing they were relying on.
   `set -o pipefail`, or `${PIPESTATUS[0]}`, or do not pipe the gate.
-
-### Atomic write mechanics
-
-`write_atomically(text, path)` creates a temporary file **in the destination
-directory** — not `/tmp`, since `os.replace()` is only atomic within one
-filesystem — writes, flushes, and replaces.
-
-Two details that decide whether the integration works at all:
-
-- **The destination must end in `.prom`** for the prometheus format. The
-  collector globs `*.prom` and nothing else, so `--output .../aiform.txt`
-  produces silence rather than an error. `metrics` warns when `--format
-  prometheus` is written to a path with any other suffix.
-- **The temporary file must not match `*.prom`**, or the collector reads it
-  mid-write — the entire failure atomicity exists to avoid. Use
-  node_exporter's own documented shape: `aiform.prom.<pid>` renamed onto
-  `aiform.prom`, never `aiform.tmp.prom`. The `<pid>` is not decoration:
-  two concurrent runs sharing one temp name corrupt each other's write
-  before either rename happens.
-- **A failed write removes its temporary file.** An exception between create
-  and replace otherwise leaves `aiform.prom.31415` in the collector's
-  directory forever — invisible to the collector, since it does not match the
-  glob, and therefore never noticed.
-
-`--output` is accepted with every `--format`, not just `prometheus`: the
-JSON output is polled by its consumer too, and a half-written JSON file is
-just as unparseable.
-
-### What Prometheus requires, and what aiform does not decide
-
-**aiform produces a payload; it does not decide how that payload reaches
-Prometheus.** Prometheus pulls over HTTP, and aiform serves no HTTP endpoint,
-so something between the two always carries it. What that something is — a
-node_exporter textfile collector reading `--output`, a Pushgateway, a
-collector agent, an aiform exporter that does not exist yet, a bastion host
-running the command on a schedule — is a deployment decision this spec
-deliberately does not make. Different answers suit different networks, and
-committing to one here would bake an architecture into a driver contract.
-
-What the spec *does* fix is the payload, so that any of those transports has
-something correct to carry:
-
-- `--format prometheus` emits text exposition format: `# TYPE` per family,
-  `aiform_`-prefixed names, base units in the name, `_total` on counters,
-  **no timestamps**, samples grouped by family.
-- `aiform_resource_up` is the alerting series — `1` for `ok`/`degraded`, `0`
-  for `failing`, absent for `unknown`.
-- The identity labels are what make it chartable: `provider`,
-  `resource_type`, `name` and `id` become Grafana template variables and
-  legend fields, so one panel covers a fleet with
-  `aiform_memory_bytes{resource_type="compute"}` and a `$name` selector.
-
-An endpoint Prometheus scrapes directly must additionally answer `200` with
-`Content-Type: text/plain; version=0.0.4; charset=utf-8` (or negotiate
-OpenMetrics, which requires a trailing `# EOF`). Nothing in aiform emits those
-headers, because nothing in aiform serves HTTP — that belongs to the exporter
-in Out of scope.
-
-**`aiform resource metrics` is a verification tool and a payload source, not
-the scrape target.** Running it by hand is how an operator confirms a driver
-reports what they expect before wiring anything; `--output` is how a transport
-that reads files gets the same bytes.
 
 ## Edge cases / errors
 
@@ -958,11 +798,9 @@ other way:
   partial assessment is visible rather than inferred from an exit code that
   cannot express it.
 - **`UNKNOWN` fails.** A resource aiform could not reach is not a resource
-  known to be healthy. This is the opposite of what the prometheus rendering
-  does with `UNKNOWN` — there it emits no `up` series at all, letting the next
-  scrape answer — and the asymmetry is deliberate: a scrape can afford to say
-  nothing and try again in fifteen seconds, a script about to run the next
-  deploy step cannot.
+  known to be healthy. A future exported series may choose to say nothing for
+  `UNKNOWN` and let the next reading answer; a script about to run the next
+  deploy step cannot afford that, which is why the gate fails.
 
 `DEGRADED` exiting 1 while `aiform_resource_up` renders it as `1` is not an
 inconsistency. The gauge answers "is it serving" for an alert rule with
@@ -997,10 +835,10 @@ A consumer contract, so it is fixed here rather than left to the renderer:
 }
 ```
 
-Names are **bare** here, as the driver returned them — unlike the prometheus
-rendering, which prefixes and stamps identity labels. A JSON consumer already
-has the identity fields beside the samples, and duplicating them into every
-label map would be noise.
+Names are **bare** here, as the driver returned them. A JSON consumer already
+has the identity fields beside the samples, so duplicating them into every
+label map would be noise; a future exporter is where prefixing and identity
+labels get applied.
 
 The top-level `errors` array carries only what has no `ResourceReading` to hang
 on — today just a family-level rejection from validation. A per-sample
@@ -1008,13 +846,7 @@ rejection has a resource, so it appears in that resource's own `errors`
 instead. Without the top-level array a family rejection would exist only in
 the log, and a JSON consumer would see a short `resources` list with no
 indication anything was dropped. `render_metrics` in `text` form prints the
-same list; in `prometheus` form it cannot, so it logs it at `WARNING` — an exposition file
-has no channel for prose, and inventing an `aiform_scan_errors` counter would
-be a metric nobody asked for.
-
-**The `.prom` suffix warning is not one of these.** `--output foo.txt` with
-`--format prometheus` is known to be wrong before the sweep runs, from the
-arguments alone, so `cli.py` warns on stderr and never reaches `Collection`.
+same list.
 
 ## Out of scope
 
@@ -1023,50 +855,13 @@ arguments alone, so `cli.py` warns on stderr and never reaches `Collection`.
   `health()` may look at": it makes the verdict a property of aiform's network
   location rather than of the resource. Reopening this needs a design pass that
   answers where the check runs from, not just a new method.
-- **A long-running `/metrics` exporter.** `aiform resource metrics` is one-shot.
-  A daemon Prometheus scrapes directly would be this repo's first inbound
-  socket and first server dependency, with auth, TLS and lifecycle all
-  undesigned. It belongs with `PLAN.md` §10's "Centralized server support",
-  which names the direction without committing to an architecture.
+- **Feeding a monitoring system.** An endpoint Prometheus scrapes, exposition
+  format, advertising a scrape target, service discovery, the process
+  lifecycle any of that implies — all of it is `PLAN.md` §10's "Metrics
+  pipeline integration", which this spec deliberately does not design. What
+  lives here is the driver contract those things will export, and a
+  human-facing way to read it.
 
-  **Advertising a scrape target belongs there too, and cannot exist before
-  it** — but the shape it must take is settled here, so the exporter is built
-  against a contract rather than inventing one.
-
-  Today aiform serves no endpoint, so it has no address to advertise: what
-  Prometheus would hit belongs to whichever transport carries the payload —
-  node_exporter, a Pushgateway, an agent — which aiform neither chooses nor
-  knows. A flag printing a guess is worse than no flag, because a wrong URL
-  in `prometheus.yml` becomes a target that is permanently `up 0`, which
-  reads as an outage of the infrastructure rather than as a typo.
-
-  **Even once aiform serves, it still cannot know its own reachable
-  address.** It binds `0.0.0.0:<port>`; whether Prometheus reaches that
-  through a LAN address, a DNS name, or a NAT is deployment knowledge no
-  process can read off its own socket. So the division is: the operator
-  supplies the host, and aiform owns everything else — the port it bound, the
-  path it serves, the labels, and the format. That is most of what is
-  error-prone, which is what makes the feature worth having.
-
-  **Prefer HTTP service discovery over emitting a URL to paste.** Prometheus
-  can fetch its target list from an endpoint on a refresh interval
-  (`http_sd_configs`, default 60s), so nothing writes `prometheus.yml` at
-  all — an exporter that also serves SD keeps the target list live as
-  resources come and go, which a pasted URL cannot. The contract is exact:
-  HTTP 200, `Content-Type: application/json`, UTF-8, and the whole list every
-  time (no incremental updates):
-
-  ```json
-  [{"targets": ["aiform-host:9840"],
-    "labels": {"job": "aiform", "__metrics_path__": "/metrics"}}]
-  ```
-
-  An empty list is `200` with `[]`, never a 404. `file_sd_configs` takes the
-  same structure through a watched file and does not rescue the no-exporter
-  case: it tells Prometheus what to scrape, and what it would scrape is the
-  transport's endpoint, which aiform still does not know.
-- **Prescribing a transport** — how the payload reaches Prometheus is a
-  deployment decision. See Decisions, "aiform does not prescribe a transport".
 - **Historical storage.** aiform holds no time series. These commands are stateless; the
   scrape target stores history. This is also why a driver may not derive a
   counter by differencing.
@@ -1115,11 +910,6 @@ arguments alone, so `cli.py` warns on stderr and never reaches `Collection`.
   before dispatching
 - that `prompts/review_driver.md` is reached by no code path, so `/code-review`
   at PR time is the only gate these rules have
-
-*Verified against node_exporter's own documentation* — that the textfile
-collector globs `*.prom` only, that an explicit timestamp is an error which
-skips the whole file (`prometheus/node_exporter#1284`), and that temp-plus-
-rename is the documented write pattern.
 
 *Inferred, not verified* — that the three-state-to-binary `up` mapping is the
 right loss, that ≤5s is the right per-resource target, that per-resource
@@ -1172,9 +962,7 @@ which is now explicitly allowed.
 **Decision.** `check`, `metrics`, `status`. An earlier draft had a fourth,
 `scan`, for the fleet sweep.
 
-**Reasoning.** `metrics <name> --format prometheus` already emitted exposition
-format for one resource, so `scan` was the same operation at a different
-scope. Folding it into `metrics` with no name meaning *all* removed a
+**Reasoning.** `scan` was `metrics` at a different scope and nothing more. Folding it into `metrics` with no name meaning *all* removed a
 surface, and removed the file-path selector with it — a third way of saying
 what naming a resource, or not, already said.
 
@@ -1209,34 +997,22 @@ not 0, so leniency never becomes a gate that passes having assessed nothing.
 inconsistency: a scrape can afford to say nothing and let the next one answer;
 a script about to run the next deploy step cannot.
 
-### Emitting a scrape target: possible, but only for what aiform owns
+### The pipeline is a separate project
 
-**Decision.** No flag or command prints a scrape URL today. The shape one must
-take is recorded in Out of scope, against the deferred exporter.
+**Decision.** This spec defines the driver contract and three human-facing
+commands. Everything about feeding a monitoring system — exposition format,
+an endpoint, advertising a scrape target, service discovery — is `PLAN.md`
+§10's "Metrics pipeline integration" and is not designed here.
 
-**Reasoning.** The proposal — call aiform, get the URL, write it into
-Prometheus's config — is sound, and Prometheus supports something better than
-the pasted-URL version of it: `http_sd_configs` polls an endpoint for the
-target list, so the config never has to be rewritten and the list stays live.
-Both forms require aiform to serve HTTP, which it does not.
+**Reasoning.** Earlier drafts carried the pipeline's machinery inline:
+atomic writes, a `.prom` suffix rule, a file lifecycle, a scrape-cost model,
+and one prescribed transport. All of it assumed an architecture the project
+has not chosen, and most of it was unreachable from anything the commands
+actually do today. Separating them leaves a small feature that works — verify
+that `plan apply` did what it claimed — and a named future project that can
+be designed against real requirements rather than guessed ones.
 
-The constraint that survives into the exporter: **a process cannot read its
-own reachable address off its socket.** Binding `0.0.0.0:9840` says nothing
-about whether Prometheus reaches it by LAN address, DNS name, or through a
-NAT. So aiform can only ever advertise a host it was told to advertise —
-and owns the rest, which is the error-prone part. An earlier answer in this
-spec said aiform "has no URL to name" as though that were permanent; it is
-contingent on not serving, and this entry replaces that framing.
-
-### aiform does not prescribe a transport
-
-**Decision.** The spec fixes the payload and says nothing about how it reaches
-Prometheus.
-
-**Reasoning.** Prometheus pulls over HTTP and aiform serves none, so something
-always carries it — a textfile collector, a Pushgateway, an agent, a bastion
-host on a timer, an exporter that does not exist yet. An earlier draft wrote
-one of those into the spec as *the* path. It was a legitimate deployment, but
-committing to it baked an architecture into a driver contract, and two of the
-four caveats it carried were consequences of that assumption rather than
-properties of this design.
+**Consequence.** `--output` appends and aiform manages nothing; `--format`
+offers `text` and `json`; `Sample` still constrains names, kinds and units,
+because those are properties of what a driver returns and the exporter will
+have no chance to renegotiate them.
