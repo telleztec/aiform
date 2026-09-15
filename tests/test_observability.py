@@ -1674,3 +1674,85 @@ params:
         assert report.config == "not applicable: the resource could not be read"
         assert report.health is None
         assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+
+
+class TestReviewRound2Regressions:
+    def _reading(self, **kwargs):
+        defaults = dict(
+            resource_key="digitalocean.compute.web-01",
+            provider="digitalocean",
+            resource_type="compute",
+            name="web-01",
+            id="1",
+            health=None,
+            health_unsupported=None,
+            samples=[],
+            samples_unsupported=None,
+            errors=[],
+        )
+        defaults.update(kwargs)
+        return observability.ResourceReading(**defaults)
+
+    def test_a_multi_line_driver_summary_stays_one_line(self):
+        # The first fix collapsed exception text but not the driver's own
+        # summary, which is just as free-form.
+        report = HealthReport(
+            status=HealthStatus.FAILING, summary='status is "off"\nlast_action power_off'
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_decline_reason_stays_one_line(self):
+        text, _ = observability.render_check(
+            [self._reading(health_unsupported="no signal\nand none coming")], "text", fleet=False
+        )
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_observation_does_not_inflate_the_column_width(self):
+        report = HealthReport(
+            status=HealthStatus.FAILING,
+            summary="down",
+            observations={"status": "off", "detail": "line one\nline two"},
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert len(text.splitlines()) == 3
+        assert all(line == line.rstrip() for line in text.splitlines())
+
+    def test_a_multi_line_metrics_decline_stays_one_line(self):
+        text = observability.render_metrics(
+            [self._reading(samples_unsupported="no endpoint\nfor this kind")], "text", fleet=False
+        )
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_status_health_line_stays_one_line(self):
+        report = observability.StatusReport(
+            resource_key="digitalocean.compute.web-01",
+            name="web-01",
+            deployed="2026-09-10T14:02:11Z, id 1",
+            live="present",
+            config="in sync with web.aiform.md",
+            health=HealthReport(status=HealthStatus.FAILING, summary="a\nb"),
+            health_unsupported=None,
+        )
+        text = observability.render_status([report], "text", fleet=False)
+        assert len(text.splitlines()) == 4
+
+    def test_the_family_error_names_the_counter_first(self, tmp_path, stub_environment):
+        # The claims are sorted by MetricKind, and "counter" < "gauge" --
+        # the spec's example had the order backwards.
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            metrics_result=[Sample(name="q_total", kind=MetricKind.GAUGE, value=1.0)]
+        )
+        stub_environment["drivers"][("digitalocean", "firewall")] = StubDriver(
+            metrics_result=[Sample(name="q_total", kind=MetricKind.COUNTER, value=2.0)]
+        )
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(name="web-01"),
+            make_state_entry(name="fw", resource_type="firewall", id="f1"),
+        )
+        result = observability.collect(state_path=path, want_health=False)
+        assert result.errors == [
+            "dropped family 'q_total': digitalocean.firewall says counter, "
+            "digitalocean.compute says gauge"
+        ]

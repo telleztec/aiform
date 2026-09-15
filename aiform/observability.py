@@ -128,9 +128,12 @@ def resolve_name(name: str, st: State) -> str:
 
 
 def _oneline(text: str) -> str:
-    """Collapse whitespace, as log.py does. A driver's exception text can
-    be multi-line, and `check` renders one line per resource -- a
-    continuation line at column zero reads as another resource's row."""
+    """Collapse every whitespace run to one space. `check` renders one
+    line per resource, and a continuation line at column zero reads as
+    another resource's row -- so any free-form text that reaches a
+    rendered line goes through here, whether it came from an exception or
+    from the driver itself. Stricter than log.py, which only replaces
+    newlines."""
     return " ".join(text.split())
 
 
@@ -606,10 +609,14 @@ def _check_label(reading: ResourceReading) -> str:
 
 
 def _check_summary(reading: ResourceReading) -> str:
+    # Collapsed here, not only for exception text: a driver's own
+    # summary and its decline reason are free-form strings too, and a
+    # newline in either breaks check's one-line-per-resource rule
+    # identically.
     if reading.health is not None:
-        return reading.health.summary
+        return _oneline(reading.health.summary)
     if reading.health_unsupported is not None:
-        return reading.health_unsupported
+        return _oneline(reading.health_unsupported)
     # No verdict and no decline: the driver file or the credentials
     # failed, and the reason is the only thing worth printing here.
     return _oneline("; ".join(reading.errors)) or "no verdict"
@@ -625,6 +632,11 @@ def _observation_lines(reading: ResourceReading) -> list[str]:
     observations = reading.health.observations
     if not observations:
         return []
+    observations = {_oneline(k): _oneline(v) for k, v in observations.items()}
+    if not observations:
+        return []
+    # A newline in a key would also inflate this width and pad every
+    # other row against a value nothing in the output is that wide.
     width = max(len(key) for key in observations)
     # Four spaces rather than two so an observation cannot be mistaken
     # for a second resource's row in the fleet form.
@@ -690,7 +702,7 @@ def render_metrics(
 
 def _placeholder(reading: ResourceReading) -> str:
     if reading.samples_unsupported is not None:
-        return f"unsupported: {reading.samples_unsupported}"
+        return _oneline(f"unsupported: {reading.samples_unsupported}")
     return "no samples"
 
 
@@ -744,9 +756,9 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
 def _status_value(report: StatusReport, label: str) -> str:
     if label == "health":
         if report.health is not None:
-            return f"{report.health.status.value} — {report.health.summary}"
+            return _oneline(f"{report.health.status.value} — {report.health.summary}")
         if report.health_unsupported is not None:
-            return f"unsupported: {report.health_unsupported}"
+            return _oneline(f"unsupported: {report.health_unsupported}")
         return "no verdict"
     return getattr(report, label)
 

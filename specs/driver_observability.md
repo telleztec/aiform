@@ -241,7 +241,11 @@ class StatusReport:
     deployed: str  # last_applied_at + id. NOT `str | None`: status_for()
     # raises for an untracked key, so nothing produces None
     live: str  # "present" | "missing on the provider" | an error
-    config: str  # "in sync with <path>" | "<n> fields drifted: a, b" | "no source file found" | "not applicable: resource is gone"
+    config: str  # "in sync with <path>" | "<n> fields drifted: a, b"
+    # | "no source file found" | "source file is malformed: <why>"
+    # | "<path> now declares <other key>, not this resource"
+    # | "not applicable: resource is gone"
+    # | "not applicable: the resource could not be read"
     health: HealthReport | None
     health_unsupported: str | None
 
@@ -584,7 +588,10 @@ recorded against the resource. Concretely, for each way a resource can fail:
 |---|---|---|---|---|
 | `health()` declines (`CapabilityNotSupported`) | `None` | the reason | `metrics()` still attempted | unchanged |
 | `health()` raises `ResourceNotFoundError` | `HealthReport(FAILING, "resource not found")` | `None` | `metrics()` still attempted | unchanged |
-| `health()` raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | `metrics()` still attempted | the exception text |
+| `health()` raises anything else | `HealthReport(UNKNOWN, summary=<the same text recorded in `errors`>)` | `None` | `metrics()` still attempted | `<provider>.<type> health() failed: <exception text>` |
+| `health()` returns a non-`HealthReport` | `HealthReport(UNKNOWN, summary=<the same text>)` | `None` | `metrics()` still attempted | `... health() returned <type>, not HealthReport` |
+| `health()` returns `UNKNOWN` itself | the driver's report, unchanged | `None` | `metrics()` still attempted | a driver-bug note: only `collect()` may decide `UNKNOWN` |
+| `metrics()` returns a non-`list[Sample]` | untouched | untouched | `[]` | `... metrics() did not return list[Sample]` |
 | `metrics()` declines | untouched | untouched | `[]`, `samples_unsupported` set | unchanged |
 | `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | `"resource not found"` |
 | `metrics()` raises anything else | untouched | untouched | `[]` | the exception text |
@@ -983,7 +990,7 @@ A consumer contract, so it is fixed here rather than left to the renderer:
 ```json
 {
   "elapsed_seconds": 0.83,
-  "errors": ["dropped family 'queue_depth_total': digitalocean.compute says gauge, digitalocean.firewall says counter"],
+  "errors": ["dropped family 'queue_depth_total': digitalocean.firewall says counter, digitalocean.compute says gauge"],
   "resources": [
     {
       "resource_key": "digitalocean.compute.web-01",
