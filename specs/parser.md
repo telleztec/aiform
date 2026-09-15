@@ -39,8 +39,10 @@ model, if any (see its Interface section) — this spec is that follow-up.
    to re-extract intent from unchanged prose." **Narrowed by #140**: that
    is still true for every case where `parse_file()` runs at all. But a
    brand-new resource (`previous_aiform_md_sha256=None`) never has a
-   matching hash to short-circuit on, so the call always fired for it —
-   and its `intent_notes` are consumed only by `plan_resource()`, which
+   matching hash to short-circuit on, so the call fired for it whenever
+   the Intent section was non-empty (judgment call 4 below) — which for
+   the system-test fixtures is always, since they write one — and its
+   `intent_notes` are consumed only by `plan_resource()`, which
    an untracked resource never reaches (`specs/orchestrator.md`). For
    that one case the decision *did* move up into `orchestrator.py`: it
    skips calling `parse_file()` at all rather than relying on a

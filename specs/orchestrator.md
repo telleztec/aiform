@@ -532,9 +532,11 @@ next time `plan create` runs against that resource, not here.
      already knowing which state entry this file addresses. This branch
      also covers a drifted-missing resource (state tracked, but gone
      from the CSP): `state_entry` is not `None` there, so `parse_file()`
-     still runs and still spends an `intent_orchestration_call` when the
-     hash moved — the `intent_notes` it produces just go unread, same as
-     they always have for that case (see step 7's caveat below).
+     still runs, and still spends an `intent_orchestration_call` when
+     the hash moved *and* the Intent section is non-empty (judgment
+     call 4, `specs/parser.md`) — the `intent_notes` it produces just go
+     unread, same as they always have for that case (see step 7's
+     caveat below).
   4. Driver resolution, **cached per `(provider, resource_type)` for the
      lifetime of this call** (judgment call 5): `driver =
      load_driver(spec.provider, spec.resource)`; `driver_info =

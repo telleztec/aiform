@@ -308,8 +308,7 @@ def verbose_call_count(captured) -> int:
     """The number in `[verbose] N Anthropic API call(s) made`.
 
     Shared rather than per-suite: `test_cli_digitalocean.py` and
-    `test_cli_domain.py` use it for every count that isn't a fixed literal
-    already visible in a nearby assertion (`f"+ {key}: create"` etc.);
+    `test_cli_domain.py` use it for every call count they assert.
     `test_cli_firewall.py` still asserts the raw `"[verbose] N ..."`
     string directly throughout, since its assertions are dense enough
     (seven distinct counts across one lifecycle) that this helper would

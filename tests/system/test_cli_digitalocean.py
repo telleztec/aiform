@@ -192,8 +192,7 @@ class TestFullLifecycleSequence:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 7: forced-replace plan apply")
-        replace_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert replace_call_count >= 1
+        assert verbose_call_count(captured) >= 1
 
         # Old droplet gone. Polled, not checked once: DO's delete is async
         # (see conftest.wait_until_droplet_gone).
@@ -208,8 +207,7 @@ class TestFullLifecycleSequence:
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 8: plan destroy --yes")
-        destroy_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert destroy_call_count >= 1
+        assert verbose_call_count(captured) >= 1
 
         destroyed = wait_until_droplet_gone(token, replaced_id)
         assert destroyed is None, f"destroyed droplet {replaced_id} still live: {destroyed}"
