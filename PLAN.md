@@ -1269,6 +1269,15 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     that collector globs *.prom and will happily parse a half-written
     file.
 
+    There is no default --output path and aiform never guesses one: the
+    collector's directory is a deployment decision, and a wrong guess
+    writes a file nothing reads without raising anything. A missing
+    parent directory is an error, not something to mkdir -p, for the
+    same reason. The file is an EXPORT, not state -- written and never
+    read back, not backed up the way state.json is, safe for anyone to
+    delete at any time, and never rotated or cleaned up by aiform.
+    See specs/driver_observability.md for the full lifecycle.
+
     The no-argument form makes zero Anthropic API calls and never
     writes state -- it is meant to run repeatedly on a scrape interval. A resource whose
     driver declines a capability reports "unsupported: <reason>"; one

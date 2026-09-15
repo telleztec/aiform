@@ -739,12 +739,68 @@ to the top level, and since the file-path selector was removed there is exactly
 one: a metric family rejected because two drivers gave the same name different
 `MetricKind`s, which belongs to neither driver alone.
 
-### `--output`
+### `--output`: where the file goes, and who owns it
 
-Writes to a temporary file in the same directory, then `os.replace()`. Not
-optional and not format-specific: the collector reads the directory
-continuously and will parse a half-written file, and the JSON output is
-polled by its consumer too.
+**There is no default path, and aiform never invents one.** The collector's
+directory is a deployment decision — `/var/lib/node_exporter/`,
+`/var/lib/prometheus/node-exporter/`, something else entirely — and guessing
+wrong fails in the worst way available: the write succeeds, nothing reads the
+file, and the dashboard stays empty with no error anywhere. Without
+`--output`, output goes to stdout; with it, the operator has stated the path.
+
+**The file is an export, not state.** This is the distinction that answers
+most of the lifecycle questions at once:
+
+| | `.aiform/state.json` | the `--output` file |
+|---|---|---|
+| Is it a record? | yes — losing it loses track of real resources | no — a projection of a moment |
+| Does aiform read it back? | every run | never |
+| Durability required | backed up before every overwrite | **none** |
+| Who may delete it | nobody, casually | anyone, any time |
+| Cost of losing it | severe | one scrape interval |
+
+So: **no durability requirement at all.** Delete it and the next run recreates
+it. It is not backed up (unlike state, which gets `.backup` before every
+overwrite), not versioned, and never read back — aiform is write-only here.
+A reader that wants history is Prometheus, which already has it.
+
+**aiform does not manage the file beyond writing it.** It never deletes it,
+never rotates it, never prunes stale ones, and never cleans up after a
+resource is destroyed. One consequence worth stating because it is the one
+that bites: after `plan destroy`, the resource simply stops appearing in the
+next write — its series go stale in Prometheus and age out by that system's
+retention. But if the *command itself* stops running, the last file persists
+and is served as current forever, which is the failure mode described under
+"Wiring it to Grafana". Neither is aiform's to fix; both are the operator's to
+monitor.
+
+**A missing parent directory is an error, not something to create.**
+`--output /var/lib/nod-exporter/aiform.prom` (note the typo) exits 2 naming
+the directory. `mkdir -p` here would write metrics into a directory nothing
+reads, which is the silent-failure case above wearing a different hat.
+
+**Permissions are the umask's business, and the content is not secret but is
+inventory.** aiform does not `chmod` the file. What lands there — resource
+names, provider IDs, metric values — is readable by anyone who can read the
+collector's directory, which is typically world-readable. No credential is in
+it, and none may be: `observations` and labels come from drivers bound by the
+same never-log-a-credential rule as everything else. But a reader of that
+directory learns the shape of the infrastructure, which is worth knowing
+before pointing `--output` somewhere broadly readable.
+
+**Concurrent writers: last one wins, silently.** `os.replace()` is atomic, so
+a reader never sees a partial file, but two `aiform resource metrics` runs
+writing one path means one run's data is discarded with no error. There is no
+locking — the same position `PLAN.md` §10 takes for `state.json`, and for the
+same reason. A cron job and a human running it by hand at the same moment is
+the realistic case, and it is harmless precisely because the file has no
+durability requirement.
+
+### Atomic write mechanics
+
+`write_atomically(text, path)` creates a temporary file **in the destination
+directory** — not `/tmp`, since `os.replace()` is only atomic within one
+filesystem — writes, flushes, and replaces.
 
 Two details that decide whether the integration works at all:
 
@@ -752,10 +808,20 @@ Two details that decide whether the integration works at all:
   collector globs `*.prom` and nothing else, so `--output .../aiform.txt`
   produces silence rather than an error. `metrics` warns when `--format
   prometheus` is written to a path with any other suffix.
-- **The temporary file must not match `*.prom`** — otherwise the collector
-  reads it mid-write, which is the entire failure atomicity exists to avoid.
-  Use node_exporter's own documented shape: `aiform.prom.<pid>` renamed onto
-  `aiform.prom`, never `aiform.tmp.prom`.
+- **The temporary file must not match `*.prom`**, or the collector reads it
+  mid-write — the entire failure atomicity exists to avoid. Use
+  node_exporter's own documented shape: `aiform.prom.<pid>` renamed onto
+  `aiform.prom`, never `aiform.tmp.prom`. The `<pid>` is not decoration:
+  two concurrent runs sharing one temp name corrupt each other's write
+  before either rename happens.
+- **A failed write removes its temporary file.** An exception between create
+  and replace otherwise leaves `aiform.prom.31415` in the collector's
+  directory forever — invisible to the collector, since it does not match the
+  glob, and therefore never noticed.
+
+`--output` is accepted with every `--format`, not just `prometheus`: the
+JSON output is polled by its consumer too, and a half-written JSON file is
+just as unparseable.
 
 ### Wiring it to Grafana
 
@@ -845,7 +911,13 @@ written." What remains:
 - **`.aiform/state.json` malformed** — exits 2. This one genuinely raises
   (`json.loads`, or Pydantic validation), and a scrape reporting zero resources
   because state failed to parse is worse than one that fails loudly.
-- **`--output` to an unwritable path** exits 2. Same reasoning.
+- **`--output` to an unwritable path, or one whose parent directory does not
+  exist** exits 2, naming the directory. aiform does not create it: a `mkdir
+  -p` here writes metrics into a directory nothing reads, which fails silently
+  rather than loudly.
+- **`--output` where a previous run left a temporary file** — overwritten
+  without comment. The temp name carries the writing process's pid, so a
+  stale one belongs to a dead process and is not evidence of a live writer.
 
 ### The per-resource verbs
 
@@ -896,7 +968,7 @@ For `metrics` and `status`:
 | Code | When |
 |---|---|
 | 0 | the command ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
-| 2 | the command could not run: malformed state, unwritable `--output`, an unknown `--format`, or a `<name>` that is unknown or ambiguous |
+| 2 | the command could not run: malformed state, an unwritable `--output` or one whose parent directory is missing, an unknown `--format`, or a `<name>` that is unknown or ambiguous |
 
 **0 on `FAILING` is the important one.** The resource's health belongs in the
 metrics, where an alert rule evaluates it with history and a `for:` duration —

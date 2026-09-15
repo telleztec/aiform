@@ -813,6 +813,14 @@ a file instead of stdout, atomically (temp file plus rename); with `--format
 prometheus` the path must end in `.prom`, because node_exporter's textfile
 collector globs `*.prom` and ignores everything else.
 
+There is no default `--output` path and aiform never guesses one — the
+collector's directory varies by deployment, and a wrong guess writes a file
+nothing reads with no error raised. A missing parent directory is an error
+rather than something to create, for the same reason. The file is an **export,
+not state**: aiform writes it and never reads it back, nothing backs it up,
+deleting it costs one scrape interval, and aiform never rotates or cleans it.
+`specs/driver_observability.md` has the full lifecycle.
+
 **Output**, `--format text` — aligned columns, meant to be read by eye and run
 again a minute later to watch a number move:
 
