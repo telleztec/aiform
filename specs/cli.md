@@ -747,7 +747,14 @@ prints a one-line verdict per resource. Calls the driver's `health()`.
 checks every tracked resource, like its siblings.
 
 **Output:** one line per resource, plus a coverage line when checking the
-fleet. When a verdict is **not** `ok`, the driver's `observations` print
+fleet — the coverage line is part of the report, so it goes to stdout in text
+form and is a field of the document in `--format json`, never a stray line
+that would make the JSON unparseable. **Beware piping `check`**: a pipeline
+exits with the last command's status, so `aiform resource check | tee log`
+discards the verdict this command exists to produce. Use `set -o pipefail` or
+`${PIPESTATUS[0]}`.
+
+When a verdict is **not** `ok`, the driver's `observations` print
 indented beneath it — the detail you want exactly when something is wrong,
 with no flag to remember, because the gate case and the diagnosis case never
 overlap. `--format json` emits `status`, `summary` and `observations` for
@@ -812,6 +819,12 @@ spelling per value" rule warns against.
 a file instead of stdout, atomically (temp file plus rename); with `--format
 prometheus` the path must end in `.prom`, because node_exporter's textfile
 collector globs `*.prom` and ignores everything else.
+
+Without `--output` every format goes to **stdout, which is a clean stream** —
+the report and nothing else. Logs, the `.prom` suffix warning and error
+messages all go to stderr, so `aiform resource metrics --format json | jq ...`
+works. A closed pipe (`| head -20`) is a successful run, not a
+`BrokenPipeError` traceback.
 
 There is no default `--output` path and aiform never guesses one — the
 collector's directory varies by deployment, and a wrong guess writes a file

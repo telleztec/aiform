@@ -1269,6 +1269,19 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     that collector globs *.prom and will happily parse a half-written
     file.
 
+    Without --output every format goes to stdout, which is a clean
+    stream carrying the report and nothing else -- logs, warnings and
+    errors all go to stderr, so these commands pipe. A closed pipe is a
+    successful run, not a traceback. Note a pipeline exits with the LAST
+    command's status, so piping `check` discards the verdict it exists
+    to produce.
+
+    The filename is never derived from <name>: one invocation writes one
+    file containing whatever it covered. Prefer a single aiform.prom
+    written with no <name> -- per-resource files are legal but aiform
+    never deletes them, so a destroyed resource leaves one behind
+    serving stale series.
+
     There is no default --output path and aiform never guesses one: the
     collector's directory is a deployment decision, and a wrong guess
     writes a file nothing reads without raising anything. A missing

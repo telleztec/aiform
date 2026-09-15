@@ -741,6 +741,20 @@ one: a metric family rejected because two drivers gave the same name different
 
 ### `--output`: where the file goes, and who owns it
 
+**The filename is never derived from `<name>`.** `aiform resource metrics
+web-01 --output /var/lib/node_exporter/web-01.prom` writes that path because
+you typed it, not because the resource is called `web-01`. One invocation
+produces one file, containing whatever that invocation covered.
+
+That matters because the tempting deployment — one `.prom` per resource,
+named after it — is a trap under this design. aiform never deletes the file
+it wrote, so destroying a resource leaves its file behind, serving stale
+series until a human notices. The whole-fleet form has no such problem: a
+destroyed resource simply stops appearing in the next write of the one file.
+**Prefer a single `aiform.prom` written by `aiform resource metrics --output
+...` with no `<name>`.** Per-resource files are legal, and their cleanup is
+then yours.
+
 **There is no default path, and aiform never invents one.** The collector's
 directory is a deployment decision — `/var/lib/node_exporter/`,
 `/var/lib/prometheus/node-exporter/`, something else entirely — and guessing
@@ -795,6 +809,41 @@ locking — the same position `PLAN.md` §10 takes for `state.json`, and for the
 same reason. A cron job and a human running it by hand at the same moment is
 the realistic case, and it is harmless precisely because the file has no
 durability requirement.
+
+### stdout, and using these commands in a pipe
+
+**Without `--output`, every format goes to stdout, and stdout is a clean
+stream.** That is a contract, not an accident: it is what makes
+`aiform resource metrics --format json | jq '.resources[].health.status'`
+work.
+
+| Channel | Carries |
+|---|---|
+| stdout | the rendered report, and nothing else |
+| stderr | log lines (`log.py`'s `--verbose`-gated echo), the `.prom` suffix warning, and error messages |
+| `.aiform/logs/aiform-<ts>.log` | the always-on file sink, unaffected |
+
+Three consequences worth pinning, because each is a way a pipeable command
+usually goes wrong:
+
+- **Nothing diagnostic is ever interleaved into stdout.** `check`'s coverage
+  line (`2 of 3 resources report health; 1 unsupported`) is part of the
+  *report*, so in `--format text` it goes to stdout with the rest; in
+  `--format json` it is a field in the document, never a stray line that
+  would make the output unparseable. A warning is not part of the report and
+  goes to stderr in both.
+- **`BrokenPipeError` must be handled, not raised.** `aiform resource metrics
+  --format prometheus | head -20` closes the pipe early, and the default
+  Python behavior is a traceback on stderr plus a non-zero exit — for a
+  command whose whole point is to be piped. Treat a closed stdout as a
+  successful, complete run.
+- **A pipe discards `check`'s exit code**, which is the one place in this
+  surface where the exit code is the answer. `aiform resource check | tee
+  log` exits with `tee`'s status, so the gate silently always passes. This is
+  shell semantics, not something aiform can fix; the spec records it because
+  `check` is specifically built to be used in `&&` chains, and a reader who
+  pipes it for logging would lose exactly the thing they were relying on.
+  `set -o pipefail`, or `${PIPESTATUS[0]}`, or do not pipe the gate.
 
 ### Atomic write mechanics
 
