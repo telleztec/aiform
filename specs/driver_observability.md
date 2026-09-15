@@ -449,6 +449,12 @@ A flat list of `Sample`. The driver supplies a **bare** name — `memory_bytes`,
 not `aiform_memory_bytes` and not `digitalocean_droplet_memory_bytes`. The
 renderer adds the `aiform_` prefix and the identity labels.
 
+**`MetricKind` is `COUNTER|GAUGE` and nothing else**, so there are no native
+percentiles — no `histogram_quantile()` over a latency bucket. Adding
+histograms means a new `MetricKind` and a driver that can produce bucket
+boundaries; nothing here forecloses that and nothing here provides it. Named
+because "why can I not chart p99" is the first question this answers.
+
 `Sample` has deliberately **no `unit` field and no timestamp**:
 
 - The unit lives in the name, per Prometheus convention (`_bytes`,
@@ -457,6 +463,14 @@ renderer adds the `aiform_` prefix and the identity labels.
   about.
 - The scrape time is the right timestamp, and node_exporter's textfile
   collector rejects explicit ones.
+
+**Provider values may already be stale and pre-averaged.** DigitalOcean's
+monitoring endpoints return a *time series*, not an instantaneous reading, so
+a driver takes its most recent point — which is minutes old and already
+averaged by the provider. Sub-minute resolution is therefore not available for
+such a metric no matter how often the command runs, and that is a property of
+the provider's API, not of how the output is transported. A driver should not
+paper over it by resampling.
 
 **Counter honesty.** `COUNTER` is only for a value the CSP itself documents as
 cumulative and monotonic over the resource's lifetime. aiform never derives a
@@ -773,6 +787,16 @@ it. It is not backed up (unlike state, which gets `.backup` before every
 overwrite), not versioned, and never read back — aiform is write-only here.
 A reader that wants history is Prometheus, which already has it.
 
+**A stale file is served as current, indefinitely.** Whatever reads the file
+has no way to know the command stopped running, so a broken collection
+pipeline renders as a flat, healthy dashboard rather than as an outage. This
+is a hazard of handing metrics to a transport through a file at all, not of
+any particular transport: the file's mtime is the only freshness signal, and
+something has to watch it. node_exporter publishes
+`node_textfile_mtime_seconds` for this; other transports expose an equivalent.
+Stated here rather than left to be discovered, because the failure is silent
+and the symptom is a dashboard that looks fine.
+
 **aiform does not manage the file beyond writing it.** It never deletes it,
 never rotates it, never prunes stale ones, and never cleans up after a
 resource is destroyed. One consequence worth stating because it is the one
@@ -867,46 +891,40 @@ Two details that decide whether the integration works at all:
 JSON output is polled by its consumer too, and a half-written JSON file is
 just as unparseable.
 
-### Wiring it to Grafana
+### What Prometheus requires, and what aiform does not decide
 
-The whole path, and it works with no server on aiform's side:
+**aiform produces a payload; it does not decide how that payload reaches
+Prometheus.** Prometheus pulls over HTTP, and aiform serves no HTTP endpoint,
+so something between the two always carries it. What that something is — a
+node_exporter textfile collector reading `--output`, a Pushgateway, a
+collector agent, an aiform exporter that does not exist yet, a bastion host
+running the command on a schedule — is a deployment decision this spec
+deliberately does not make. Different answers suit different networks, and
+committing to one here would bake an architecture into a driver contract.
 
-```
-cron / systemd timer
-  └─ aiform resource metrics --format prometheus \
-       --output /var/lib/node_exporter/aiform.prom
-        └─ node_exporter textfile collector  (globs *.prom)
-             └─ Prometheus scrapes node_exporter
-                  └─ Grafana queries Prometheus
-```
+What the spec *does* fix is the payload, so that any of those transports has
+something correct to carry:
 
-The identity labels are what make it chartable: `provider`, `resource_type`,
-`name` and `id` become Grafana template variables and legend fields, so one
-panel covers a fleet with `aiform_memory_bytes{resource_type="compute"}` and a
-`$name` selector. `aiform_resource_up` is the alerting series.
+- `--format prometheus` emits text exposition format: `# TYPE` per family,
+  `aiform_`-prefixed names, base units in the name, `_total` on counters,
+  **no timestamps**, samples grouped by family.
+- `aiform_resource_up` is the alerting series — `1` for `ok`/`degraded`, `0`
+  for `failing`, absent for `unknown`.
+- The identity labels are what make it chartable: `provider`,
+  `resource_type`, `name` and `id` become Grafana template variables and
+  legend fields, so one panel covers a fleet with
+  `aiform_memory_bytes{resource_type="compute"}` and a `$name` selector.
 
-Four honest limits, none of them fatal, all of them surprising if unstated:
+An endpoint Prometheus scrapes directly must additionally answer `200` with
+`Content-Type: text/plain; version=0.0.4; charset=utf-8` (or negotiate
+OpenMetrics, which requires a trailing `# EOF`). Nothing in aiform emits those
+headers, because nothing in aiform serves HTTP — that belongs to the exporter
+in Out of scope.
 
-1. **The timestamp is scrape time, not observation time.** aiform reads the
-   provider at T; Prometheus scrapes node_exporter at T+Δ and stamps *that*.
-   With a 60s timer and a 15s scrape, the same values are re-reported four
-   times, so a graph shows a staircase rather than a smooth line. Match the
-   timer to the resolution you actually want.
-2. **A dead timer looks healthy.** The `.prom` file keeps being served after
-   the command stops running, so Prometheus reports the last values as
-   current — indefinitely. This is the trap: a broken collection pipeline
-   renders as a flat, green dashboard. node_exporter publishes
-   `node_textfile_mtime_seconds` for exactly this; alert on it being older
-   than a few timer intervals, or the freshness of everything above is
-   unmonitored.
-3. **Provider metrics are already delayed.** DigitalOcean's monitoring
-   endpoints return a *time series*, and a driver takes the most recent point.
-   That point is minutes old and pre-averaged by the provider, so sub-minute
-   resolution is not available no matter how often the timer runs.
-4. **No histograms or summaries.** `MetricKind` is `COUNTER|GAUGE` only, so
-   there are no native percentiles — no `histogram_quantile()` over a latency
-   bucket. Adding them means a new `MetricKind` and a driver that can produce
-   bucket boundaries; nothing here forecloses it, but nothing here provides it.
+**`aiform resource metrics` is a verification tool and a payload source, not
+the scrape target.** Running it by hand is how an operator confirms a driver
+reports what they expect before wiring anything; `--output` is how a transport
+that reads files gets the same bytes.
 
 ### Scrape cost
 
@@ -1116,6 +1134,23 @@ An earlier draft left where that warning went unspecified.
   socket and first server dependency, with auth, TLS and lifecycle all
   undesigned. It belongs with `PLAN.md` §10's "Centralized server support",
   which names the direction without committing to an architecture.
+
+  **A flag that prints the URL Prometheus should scrape belongs there too,
+  and cannot exist before it.** aiform serves no endpoint, so it has no URL
+  to name: the address Prometheus hits belongs to whatever transport carries
+  the payload — node_exporter, a Pushgateway, an agent — and aiform neither
+  chooses nor knows it. A flag printing a guess would be worse than none. Once
+  the exporter exists it owns an address, and printing that is a reasonable
+  feature *of the exporter*.
+- **Prescribing a transport.** An earlier draft of this spec contained a
+  "Wiring it to Grafana" section that laid out cron → node_exporter textfile
+  collector → Prometheus → Grafana as *the* path. That is a legitimate
+  deployment — the textfile collector exists precisely for batch jobs that
+  cannot serve HTTP — but it is one of several, and writing it into a driver
+  contract assumed an architecture the project has not chosen. Two of that
+  section's four caveats were consequences of the assumed transport rather
+  than of this design, and went with it; the two that were properties of the
+  contract (provider staleness, no histograms) moved to where they belong.
 - **Historical storage.** aiform holds no time series. These commands are stateless; the
   scrape target stores history. This is also why a driver may not derive a
   counter by differencing.

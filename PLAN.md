@@ -1262,9 +1262,10 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     pass also means up and the gauges carry the same scrape timestamp.
 
     Default format is aligned text, for reading twice by eye under load
-    to watch a number move. --format json feeds Grafana's Infinity
-    datasource. --format prometheus emits exposition format for
-    node_exporter's textfile collector, and --output then writes
+    to watch a number move. --format json is for a consumer that parses
+    structured data. --format prometheus emits text exposition format,
+    the payload for
+    a transport that reads files, and --output then writes
     atomically (tmp + rename) to a path that must end in .prom, since
     that collector globs *.prom and will happily parse a half-written
     file.
