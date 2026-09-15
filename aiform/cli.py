@@ -5,16 +5,18 @@ import argparse
 import http.client
 import json
 import logging
+import os
 import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import anthropic
 
-from aiform import config, llm, log, orchestrator, state
+from aiform import config, llm, log, observability, orchestrator, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
 from aiform.models import KeyCheck, KeyState, PlanAction
 
@@ -643,6 +645,116 @@ _PLAIN_PLAN_DISPATCH = {
 }
 
 
+def _print_stream(text: str) -> None:
+    """stdout carries the report and nothing else, so `--format json |
+    jq` stays valid."""
+    if not text:
+        # An empty formation reports nothing; print() would emit a blank
+        # line, which is not a stream `jq` accepts.
+        return
+    try:
+        print(text)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # `aiform resource metrics --format json | head -20` closes the
+        # pipe early. Python's default is a traceback plus a non-zero
+        # exit, for a command whose whole point is to be piped. Reopening
+        # the fd on devnull stops the interpreter's shutdown flush from
+        # raising it again after this function returns.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+
+def _append_report(path: Path, text: str, invocation: str) -> None:
+    """Appends, and does nothing else -- no temp file, no rename, no
+    rotation. A run adds to the end; the operator removes the file."""
+    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            # Without a delimiter an operator cannot tell which block
+            # came from which run, which is the whole point of appending.
+            handle.write(f"=== {stamp}  {invocation}\n{text}\n")
+    except OSError as exc:
+        # aiform does not create the directory: a mkdir -p here writes
+        # metrics into a directory nothing reads, failing silently rather
+        # than loudly.
+        raise RuntimeError(
+            f"cannot append to {path}: {exc} -- aiform does not create {path.parent}"
+        ) from exc
+
+
+def _emit(text: str, args: argparse.Namespace) -> None:
+    output = getattr(args, "output", None)
+    if output is None:
+        _print_stream(text)
+        return
+    _append_report(Path(output), text, args.invocation)
+
+
+def _resource_keys(args: argparse.Namespace, st: state.State) -> list[str] | None:
+    # None means every tracked resource, matching what plan
+    # refresh/show/create do with no arguments. There is no --all: a
+    # second spelling of one meaning is what specs/driver.md's addendum
+    # warns against.
+    if args.name is None:
+        return None
+    return [observability.resolve_name(args.name, st)]
+
+
+def _cmd_resource_check(args: argparse.Namespace) -> int:
+    # State is read here to resolve <name>, and again inside collect().
+    # A second read of a small local file, against N provider calls --
+    # cheaper than a second parameter on collect() meaning the same thing
+    # as the path it already takes.
+    keys = _resource_keys(args, state.load(args.state_file))
+    result = observability.collect(
+        keys=keys, want_health=True, want_metrics=False, state_path=args.state_file
+    )
+    text, code = observability.render_check(result.readings, args.format, fleet=args.name is None)
+    _emit(text, args)
+    return code
+
+
+def _cmd_resource_metrics(args: argparse.Namespace) -> int:
+    keys = _resource_keys(args, state.load(args.state_file))
+    result = observability.collect(
+        keys=keys, want_health=False, want_metrics=True, state_path=args.state_file
+    )
+    _emit(
+        observability.render_metrics(
+            result.readings,
+            args.format,
+            fleet=args.name is None,
+            elapsed_seconds=result.elapsed_seconds,
+            errors=result.errors,
+        ),
+        args,
+    )
+    return 0
+
+
+def _cmd_resource_status(args: argparse.Namespace) -> int:
+    st = state.load(args.state_file)
+    keys = _resource_keys(args, st)
+    if keys is None:
+        keys = list(st.resources)
+    reports = [observability.status_for(key, state_path=args.state_file) for key in keys]
+    _emit(
+        observability.render_status(reports, args.format, fleet=args.name is None),
+        args,
+    )
+    return 0
+
+
+# All three belong to the plain dispatch set: they make zero Anthropic
+# calls by contract, so none is ever handed a _CountingClient -- the same
+# reasoning that keeps plan refresh/show out of _LLM_PLAN_DISPATCH.
+_RESOURCE_DISPATCH = {
+    "check": _cmd_resource_check,
+    "metrics": _cmd_resource_metrics,
+    "status": _cmd_resource_status,
+}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     global_parent = argparse.ArgumentParser(add_help=False)
     global_parent.add_argument("-v", "--verbose", action="store_true")
@@ -675,6 +787,24 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_sub.add_parser("refresh", parents=[global_parent, state_parent])
     plan_sub.add_parser("show", parents=[global_parent, state_parent])
 
+    # A noun with its own verb lifecycle, matching `aiform driver` rather
+    # than `aiform plan`: none of these plans or applies anything, and
+    # none writes state.
+    resource_parser = subparsers.add_parser("resource", parents=[global_parent])
+    resource_sub = resource_parser.add_subparsers(dest="resource_command", required=True)
+    for verb in ("check", "metrics", "status"):
+        verb_parser = resource_sub.add_parser(verb, parents=[global_parent, state_parent])
+        verb_parser.add_argument("name", nargs="?")
+        verb_parser.add_argument("--format", choices=["text", "json"], default="text")
+        if verb == "metrics":
+            # --output stays on metrics alone: it is the one whose output
+            # an operator accumulates across runs.
+            verb_parser.add_argument("--output")
+
+    # Never absent, so a handler reached directly (a test, a future
+    # caller) still has something to write into --output's delimiter.
+    parser.set_defaults(invocation="aiform")
+
     return parser
 
 
@@ -682,6 +812,11 @@ def _dispatch(args: argparse.Namespace) -> int:
     try:
         if args.command == "init":
             return _cmd_init(args)
+        if args.command == "resource":
+            # Its own branch, not a fall-through: args.plan_command does
+            # not exist on this Namespace and reading it would raise
+            # AttributeError.
+            return _RESOURCE_DISPATCH[args.resource_command](args)
         if args.plan_command in _LLM_PLAN_DISPATCH:
             client = _CountingClient()
             try:
@@ -707,6 +842,8 @@ def _dispatch(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    invoked = argv if argv is not None else sys.argv[1:]
+    args.invocation = " ".join(["aiform", *invoked])
     try:
         logging_config = config.resolve_logging_config()
     except _HANDLED_EXCEPTIONS as exc:
@@ -719,9 +856,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {message}", file=sys.stderr)
         return 2
     log.configure(verbose=args.verbose, logging_config=logging_config)
-    logger.info("invoked: %s", " ".join(argv if argv is not None else sys.argv[1:]))
+    logger.info("invoked: %s", " ".join(invoked))
 
     code = _dispatch(args)
-    level = logging.INFO if code == 0 else logging.ERROR
-    logger.log(level, "", extra={"exit_code": code, "outcome": "success" if code == 0 else "error"})
+    # Exit 1 is `aiform resource check`'s unhealthy verdict -- the one
+    # code in this CLI that answers the question rather than reporting
+    # whether aiform could answer it. Logging it as an error would make
+    # every powered-off droplet read as an aiform failure in the log.
+    outcome = {0: "success", 1: "unhealthy"}.get(code, "error")
+    level = logging.ERROR if outcome == "error" else logging.INFO
+    logger.log(level, "", extra={"exit_code": code, "outcome": outcome})
     return code

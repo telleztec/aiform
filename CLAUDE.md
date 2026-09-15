@@ -27,7 +27,8 @@ Current status: **MVP walkthrough end to end.** `pyproject.toml`,
 `exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,
 `orchestrator.py`, `observability.py`, `cli.py`, `__main__.py`, and
 `drivers/digitalocean/compute.py` are all written, and `python -m aiform`
-exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
+exposes `init`, `plan create`/`apply`/`destroy`/`refresh`/`show`, and
+`resource check`/`metrics`/`status`.
 The "Suggested implementation order" below is now a record of how it was
 built, not a list of what's left.
 
@@ -193,13 +194,13 @@ to make something easier to build.
   per-piece **build-status table** — read that rather than this
   paragraph, which is the copy that goes stale. Built:
   `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
-  `Sample`, the two base methods, and `aiform/observability.py`. Not
-  built: the `aiform resource` commands, so don't reach for them yet. A
-  driver omitting both methods is complete, not unfinished, because the
-  base class implements them by raising — every shipped driver does
-  exactly that today. Don't add them to a driver speculatively: they call
-  CSP endpoints that need their own probe session first
-  (`specs/driver_creation.md`).
+  `Sample`, the two base methods, `aiform/observability.py`, and
+  `aiform resource check`/`metrics`/`status`. Not built: `health()`/
+  `metrics()` on any driver, so every shipped driver declines both. A
+  driver omitting them is complete, not unfinished, because the base
+  class implements them by raising. Don't add them to a driver
+  speculatively: they call CSP endpoints that need their own probe
+  session first (`specs/driver_creation.md`).
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
   the full layout, including `tests/drivers/test_digitalocean_compute.py`
