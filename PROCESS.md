@@ -266,7 +266,7 @@ git diff --name-only <since-sha> <pr-head-sha> | awk '
     $0=="pyproject.toml"'
 ```
 
-Three of those are not obvious and were missed by the first version of
+Four of those are not obvious and were missed by the first version of
 this rule:
 
 - **`prompts/**`** — `aiform/llm.py` `read_text()`s these on every

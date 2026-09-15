@@ -85,7 +85,12 @@ anything that can change what the tool does against a provider, or what
 the live suite proves about it — `aiform/**.py`, `drivers/**.py`,
 `prompts/**` (read at runtime by `llm.py` on every model call),
 `tests/system/**` and `scripts/run_system_tests.py` (a changed suite or
-runner changes what a green gate proves), and `pyproject.toml`:
+runner changes what a green gate proves), any `conftest.py` and
+`tests/__init__.py` (`tests/conftest.py` is loaded for a `tests/system/`
+run too — `pytest tests/system --fixtures` lists `forbid_llm_client` from
+it, so an autouse fixture there could patch `urlopen` or drop a
+credential-scan assert with no `tests/system/` diff at all), and
+`pyproject.toml`:
 
 ```sh
 # Empty output means no runtime path changed between the two SHAs.
@@ -109,16 +114,24 @@ run" only costs ten minutes. `prompts/**` in particular is markdown that
 executes — the cosmetic carry-forward below already says so, and these
 two path lists must never disagree.
 
-1. **Empty against the PR's base**, compared as `origin/main...<head>`
-   (**three** dots — against the merge base, so it lists only what this
-   PR touched; two dots on a branch behind `main` also lists what `main`
-   changed, a false "must run") — nothing to run:
+1. **Empty against the PR's base**, using `git fetch origin` then
+   `origin/<base>...<head>` (**three** dots — against the merge base, so
+   it lists only what this PR touched; two dots on a branch behind its
+   base also lists what the base changed, a false "must run"; a stale
+   `origin` does the same, hence the fetch). Use the PR's **own** base,
+   not `main` — `gh pr view <n> --json baseRefName`. A stacked PR whose
+   base is another branch gets the whole stack's files against `main`,
+   which is only ever a false "must run", never a false n/a, but it
+   wastes a ten-minute suite — nothing to run:
    `-f description="n/a: no runtime path in this diff"`.
 2. **Empty against an earlier SHA on this branch that already has a green
    `system-test`** — carry it forward, naming that SHA in the description
-   so it is auditable rather than asserted. Use a **two**-dot diff here,
-   deliberately: three-dot would hide a runtime change merged in from
-   another branch, which is precisely what must re-trigger the suite. A
+   so it is auditable rather than asserted. Use a **two**-dot diff here —
+   not because three-dot would hide anything (while that SHA is an
+   ancestor of head the two forms are identical, since
+   `merge-base(X, head) == X`) but because a rebase can orphan the SHA
+   the status sits on, and two-dot still compares the two trees rather
+   than searching for a merge base that no longer means anything. A
    ten-minute billable suite should not re-run for a typo fix.
 3. **Otherwise** — run it, from a checkout of the head SHA:
 
