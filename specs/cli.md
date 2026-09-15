@@ -56,9 +56,11 @@ subcommand token (`aiform -v plan create` and `aiform plan create -v`
 both work) via a shared argparse parent parser attached at every level.
 **This is the intent, and it is currently false — see #134**: the
 subparser's `store_true` default overwrites the root parser's parsed
-value, so only the post-subcommand spelling takes effect. The addendum
-on `aiform resource ...` at the end of this file notes that the new commands
-inherit it.
+value, so only the post-subcommand spelling takes effect. The
+`aiform resource` commands inherit the bug unchanged — they attach the
+same parent parser, so `aiform resource check -v` works and
+`aiform -v resource check` silently does not. Not fixed here: #134 is
+one fix across every subcommand, not three more instances of it.
 `--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state (`create`/`apply`/`destroy`/`refresh`/`show`) — not on `init`,
@@ -717,7 +719,7 @@ than papering over it with a generic `except Exception`.
   file, no locking" limitation is orchestrator/state-level and applies
   unchanged here; this module adds no locking of its own.
 
-## Addendum: `aiform resource ...` (`specs/driver_observability.md`, not yet implemented)
+## Addendum: `aiform resource ...` (`specs/driver_observability.md`)
 
 A new **noun group** with three verbs, matching `aiform driver`'s shape rather
 than `aiform plan`'s — none of these plans or applies anything, and none writes

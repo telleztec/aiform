@@ -27,7 +27,8 @@ Current status: **MVP walkthrough end to end.** `pyproject.toml`,
 `exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,
 `orchestrator.py`, `cli.py`, `__main__.py`, and
 `drivers/digitalocean/compute.py` are all written, and `python -m aiform`
-exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
+exposes `init`, `plan create`/`apply`/`destroy`/`refresh`/`show`, and
+`resource check`/`metrics`/`status`.
 The "Suggested implementation order" below is now a record of how it was
 built, not a list of what's left.
 
@@ -188,9 +189,10 @@ to make something easier to build.
   the `aiform resource` commands, never from `plan`/`apply`.
   `specs/driver_observability.md` is the design, and it carries a
   per-piece build-status table — consult that rather than this line, which
-  is the one that goes stale. Built so far: `CapabilityNotSupported`,
-  `HealthStatus`/`HealthReport`/`MetricKind`/`Sample`, the two base
-  methods, and `aiform/observability.py`. A driver omitting both methods
+  is the one that goes stale. Everything except a driver's own
+  `health()`/`metrics()` is built: the exception, the four models, the two
+  base methods, `aiform/observability.py`, and `aiform resource
+  check`/`metrics`/`status`. A driver omitting both methods
   is complete, not unfinished, because the base class implements them by
   raising — every shipped driver does exactly that today. Don't add them
   to a driver speculatively: they call CSP endpoints that need their own
