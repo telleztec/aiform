@@ -177,6 +177,11 @@ def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
     directory = tmp_path / "prompts"
     directory.mkdir()
     (directory / "diff_plan.md").write_text("Categorize the diff into a plan action.\n")
+    # parse_intent.md too, even though only one test reaches it: without
+    # it, a test asserting "no intent parse happens" fails with a missing
+    # prompt file instead of with its own assertion, which proves the
+    # fixture is thin rather than the code correct.
+    (directory / "parse_intent.md").write_text("Extract intent notes from the prose.\n")
     (directory / "review_driver.md").write_text("Review the driver source for correctness.\n")
     (directory / "review_plan.md").write_text("Review the plan for safety.\n")
     monkeypatch.setattr(llm, "PROMPTS_DIR", directory)
@@ -212,12 +217,20 @@ def write_aiform_md(
     resource: str = "compute",
     name: str = "telleztec-app-01",
     params: dict | None = None,
+    intent: str | None = None,
 ) -> str:
     if params is None:
         params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
     lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}", "params:"]
     lines += [f"  {key}: {json.dumps(value)}" for key, value in params.items()]
     lines.append("---")
+    # Off by default, because most callers here do not care -- but every
+    # zero-LLM-call assertion in this file used to pass *because* of that
+    # default rather than because of the code under test, which is how
+    # #125 went unnoticed. A test that means to pin the call count must
+    # pass `intent`.
+    if intent:
+        lines += ["", "## Intent", "", intent]
     content = "\n".join(lines) + "\n"
     path.write_text(content)
     return content
@@ -962,6 +975,35 @@ class TestBuildCreatePlan:
         # No LLM call should run at all on this path any more (#119's
         # resolution removed the driver review too). If the categorization
         # request went out anyway, that is the regression this guards.
+        assert len(client.messages.calls) == 0
+
+    def test_untracked_resource_with_a_real_intent_section_still_makes_no_llm_call(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, forbid_llm_client
+    ):
+        """The guard the two above only appear to provide.
+
+        They pass because write_aiform_md() writes no `## Intent`, so
+        parse_file() short-circuits before extract_intent_notes() -- not
+        because the orchestrator declines to call it. That is exactly how
+        #125 survived: the live suites DID write an Intent section, paid
+        one intent parse, and asserted zero. This writes one and asserts
+        zero, so the property is pinned in the suite CI actually runs
+        rather than only in a billable live run.
+        """
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(aiform_md, intent="Prefer a resize over a replace.")
+        assert "## Intent" in content
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.CREATE
         assert len(client.messages.calls) == 0
 
     def test_untracked_resource_plans_create_even_with_no_scripted_categorization(

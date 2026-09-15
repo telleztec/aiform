@@ -53,12 +53,13 @@ and the session-scoped `_sweep_leaked_system_test_firewalls`.
 ### Anthropic call counts, measured
 
 Not derived from reasoning about which gates fire — reasoning about it
-is what made the domain suite wrong. Measured by running the sequence:
+is what made the domain suite wrong. Measured by running the sequence,
+and re-measured after #140 changed the first two rows:
 
 | Step | Calls | Why |
 |---|---|---|
-| first `plan create` | 1 | intent parse: the `.aiform.md` sha256 is new |
-| first `plan apply` | 1 | intent parse again — `plan create` does not write the tracked sha, only a completed apply does |
+| first `plan create` | **0** | untracked: no categorization (#118), no gate #1 (#119), and since #140 no intent parse either — its notes were never read on this branch |
+| first `plan apply` | **0** | still untracked at plan time, so the same branch. Was 1 until #140: `plan create` does not write the tracked sha, only a completed apply does |
 | **re-plan, unchanged** | **0** | sha matches, diff empty |
 | `plan create` after an edit | 2 | intent parse + `categorize_diff` |
 | `plan apply` of that update | 2 | the same pair |
@@ -68,15 +69,20 @@ is what made the domain suite wrong. Measured by running the sequence:
 All seven rows are asserted by the suite, not merely tabulated: every
 step runs under `--verbose`, which is what makes the counts observable.
 
-The two zeros are the point. Zero is only reachable if `read()`
+The zeros are the point. Zero is only reachable if `read()`
 round-trips exactly against the params the user wrote, which is what
 every rejection in `_validate_rule()` exists to guarantee.
 
-**`tests/system/test_cli_domain.py` asserts zero on its first
-`plan create` and is red on `main` for this reason** — its comment
-reasons about categorization (#118) and gate #1 (#119) and overlooks
-intent parsing entirely. Not fixed here: it is a pre-existing defect in
-another suite, and `PROCESS.md` says to file rather than fold in.
+**Resolved (#125, fixed by #140).** This paragraph used to record that
+`tests/system/test_cli_domain.py` asserted zero on its first
+`plan create` and was red on `main` for it, its comment reasoning about
+categorization (#118) and gate #1 (#119) while overlooking intent
+parsing. The outcome was the other way round from what that framing
+expected: rather than raising the expectation to one, #140 removed the
+intent parse from the untracked branch, where its notes were bought and
+discarded. So zero is correct on a first `plan create` for every suite,
+including this one — whose own first-create row moved from one to zero
+in that change.
 
 ### Cleanup
 
