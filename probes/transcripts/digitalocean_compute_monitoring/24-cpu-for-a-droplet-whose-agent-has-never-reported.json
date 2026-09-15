@@ -1,0 +1,30 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 336,
+ "note": "cpu for a droplet whose agent has never reported",
+ "prediction": {
+  "series": 0,
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:42.111079+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/cpu?host_id=600696493&start=1789482581&end=1789483181"
+ },
+ "response": {
+  "body": {
+   "data": {
+    "result": [],
+    "resultType": "matrix"
+   },
+   "status": "success"
+  },
+  "status": 200
+ },
+ "seq": 24
+}

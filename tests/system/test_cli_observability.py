@@ -8,17 +8,21 @@ run explicitly with:
 
     pytest -m system tests/system/
 
-What this can and cannot prove today. No driver implements `health()` or
-`metrics()` yet, so `check` and `metrics` are exercised only on their
-decline paths -- which is still worth a live run, because it is the real
-dynamic import of `drivers/digitalocean/compute.py` producing the real
-base-class decline, not a stub. `status` is the verb that genuinely
-exercises new code against the live API: its `live` and `config` lines
-come from a real `read()` against DigitalOcean, and the gone-resource
-case is asserted by destroying the droplet and asking again.
+The compute driver now implements both methods, so all three verbs are
+exercised end to end against a real droplet: a real health verdict from
+DigitalOcean's droplet object, real samples from its monitoring
+endpoints, and `status`' `live`/`config` lines from a real `read()`.
 
-Extend the decline assertions into real verdict assertions when the
-compute driver implements the two methods.
+Two things this suite is the only place that can catch, because both are
+properties of the live API rather than of the code:
+
+  - a freshly created droplet's agent has not reported yet, so `metrics`
+    legitimately returns nothing for a minute or two after `apply`. The
+    suite asserts the empty case rather than waiting for data, because
+    waiting would make a slow run look like a broken one.
+  - `check` on a droplet that was powered off really does report
+    FAILING, and its exit code really is 1 -- the assertion the whole
+    verb exists for.
 """
 
 import json
@@ -66,20 +70,34 @@ class TestResourceVerbsAgainstALiveDroplet:
         before = state_path.read_bytes()
         backup_before = state_path.with_name(state_path.name + ".backup").read_bytes()
 
-        # --- check: declines, because no driver implements health() yet.
-        # Exit 2, not 0: aiform has no verdict to give, and a gate that
-        # passes having assessed nothing is the failure mode to avoid.
+        # --- check: a real verdict from the live droplet object. It was
+        # created moments ago and is active with a public v4, so OK, and
+        # the exit code is the verdict.
         code = cli.main(["resource", "check", name, "--state-file", str(state_path)])
         out = capsys.readouterr().out
-        assert code == 2, out
-        assert out == f"unsupported  {key}  this driver does not implement health()\n"
+        assert code == 0, out
+        assert out.startswith(f"ok  {key}  active, public v4 "), out
+        # observations are hidden on an ok verdict -- one line, no block.
+        assert len(out.splitlines()) == 1, out
 
-        # --- metrics: also declines, but exit 0 -- it reports no verdict,
-        # so there is nothing for its exit code to carry.
+        # --- metrics: real samples, or legitimately none. The droplet is
+        # under a minute old, and DigitalOcean's agent has not pushed a
+        # first point yet (probe 23) -- 200 with an empty series, not an
+        # error. Asserting "either real rows or the no-samples line"
+        # rather than sleeping for the agent: a wait here would turn a
+        # slow provider into a failed build.
         code = cli.main(["resource", "metrics", name, "--state-file", str(state_path)])
         out = capsys.readouterr().out
         assert code == 0, out
-        assert out == "unsupported: this driver does not implement metrics()\n"
+        if out.strip() == "no samples":
+            pass
+        else:
+            for line in out.splitlines():
+                kind, metric_name, value = line.split()
+                assert kind in ("gauge", "counter")
+                assert float(value) == float(value)  # parses
+                if kind == "counter":
+                    assert metric_name.endswith("_total")
 
         # --- status: the verb that actually exercises new code live. Its
         # `live` line is a real read() against DigitalOcean and its
@@ -91,15 +109,15 @@ class TestResourceVerbsAgainstALiveDroplet:
         assert lines["live"] == "present"
         assert lines["config"] == f"in sync with {md_path.name}"
         assert droplet_id in lines["deployed"]
-        assert lines["health"] == "unsupported: this driver does not implement health()"
+        assert lines["health"].startswith("ok — active, public v4 ")
 
         # --- the fleet form: no <name>, so every tracked resource, and
         # check's coverage line proves the leniency is visible rather
         # than inferred from an exit code that cannot express it.
         code = cli.main(["resource", "check", "--state-file", str(state_path)])
         out = capsys.readouterr().out
-        assert code == 2, out
-        assert out.splitlines()[-1] == "0 of 1 resources report health; 1 unsupported"
+        assert code == 0, out
+        assert out.splitlines()[-1] == "1 of 1 resources report health; 0 unsupported"
 
         # --- json stays a single parseable document on the live path.
         code = cli.main(
@@ -109,8 +127,35 @@ class TestResourceVerbsAgainstALiveDroplet:
         assert code == 0, out
         doc = json.loads(out)
         assert doc["resources"][0]["live"] == "present"
-        assert doc["resources"][0]["health"] is None
-        assert doc["resources"][0]["health_unsupported"]
+        assert doc["resources"][0]["health"]["status"] == "ok"
+        assert doc["resources"][0]["health_unsupported"] is None
+        assert doc["resources"][0]["health"]["observations"]["locked"] == "false"
+
+        # --- the assertion the verb exists for: power the droplet off
+        # behind aiform's back and confirm check says so, and that its
+        # exit code says so. Done on this droplet rather than a third
+        # one, and last, because it leaves the droplet unusable for the
+        # assertions above.
+        _power_off(token, droplet_id)
+        code = cli.main(["resource", "check", name, "--state-file", str(state_path)])
+        out = capsys.readouterr().out
+        assert code == 1, out
+        lines = out.splitlines()
+        assert lines[0] == f'failing  {key}  status is "off"', out
+        # observations appear exactly when the verdict is bad, which is
+        # the whole conditional -- no flag, because the gate case and the
+        # diagnosis case never overlap.
+        assert "    status       off" in lines, out
+
+        code = cli.main(["resource", "status", name, "--state-file", str(state_path)])
+        out = capsys.readouterr().out
+        assert code == 0, out
+        # status exits 0 on a FAILING resource: a wrapper must not turn
+        # one bad reading into a command failure.
+        assert 'health    failing — status is "off"' in out, out
+        # ...and it is still in sync, which is the distinction status
+        # exists to draw. Powering a droplet off is not drift.
+        assert f"config    in sync with {md_path.name}" in out, out
 
         assert state_path.read_bytes() == before, (
             "an `aiform resource` command wrote state; these commands must never do that"
@@ -158,19 +203,34 @@ class TestResourceVerbsAgainstALiveDroplet:
         assert lines["config"] == "not applicable: resource is gone"
         assert droplet_id in lines["deployed"]
 
-        # check reports the same resource as failing, via the same live
-        # 404 -- but through health(), which declines here, so it is
-        # still `unsupported` rather than `failing`. Asserted so the day
-        # the driver implements health() this line fails loudly and gets
-        # tightened rather than silently continuing to pass.
+        # check reports the same vanished resource through health(),
+        # which raises ResourceNotFoundError on the live 404 and reaches
+        # the renderer as FAILING. Exit 1, not 2: a verdict was produced,
+        # and it is a bad one.
         code = cli.main(["resource", "check", name, "--state-file", str(state_path)])
-        assert code == 2
-        assert "unsupported" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert code == 1, out
+        assert out.startswith(f"failing  {key}  resource not found"), out
 
         assert state_path.read_bytes() == before, (
             "`aiform resource status` wrote state after observing drift; it must not -- "
             "`plan refresh` is the command that reconciles"
         )
+
+
+def _power_off(token, droplet_id: str) -> None:
+    """Power the droplet off directly, not through aiform: this is meant
+    to be a change aiform did not make, the way a real operator's console
+    click would be."""
+    driver = _load_compute_driver()
+    credentials = {"DIGITALOCEAN_TOKEN": str(token)}
+    driver._do_action_and_wait(
+        droplet_id,
+        credentials,
+        {"type": "power_off"},
+        lambda d: d["status"] == "off",
+        "system-test-power-off",
+    )
 
 
 def _load_compute_driver():

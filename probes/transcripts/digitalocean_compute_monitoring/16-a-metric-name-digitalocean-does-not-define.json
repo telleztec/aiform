@@ -1,0 +1,27 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 272,
+ "note": "a metric name DigitalOcean does not define",
+ "prediction": {
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:37.409954+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/cpu_percent?host_id=589098829&start=1789482571&end=1789483171"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "not found",
+   "request_id": "47714fb5-7bc7-46a7-b729-a67ef9aded12"
+  },
+  "status": 404
+ },
+ "seq": 16
+}

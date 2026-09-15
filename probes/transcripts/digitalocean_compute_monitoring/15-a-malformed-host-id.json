@@ -1,0 +1,27 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 238,
+ "note": "a malformed host_id",
+ "prediction": {
+  "status": 400
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-15T14:39:37.170921+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/memory_total?host_id=not-an-id&start=1789482571&end=1789483171"
+ },
+ "response": {
+  "body": {
+   "id": "unknown",
+   "message": "unauthorized",
+   "request_id": "363ea796-4284-4dc1-a8ad-7880f0d37768"
+  },
+  "status": 401
+ },
+ "seq": 15
+}
