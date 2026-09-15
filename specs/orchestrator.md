@@ -550,17 +550,23 @@ next time `plan create` runs against that resource, not here.
      which `prompts/diff_plan.md` already stated as a forced answer. See
      `specs/planner.md`'s `create_entry()` and issue &#35;117.
 
-     Note the precise claim: **no *categorization* call**, not "no model
-     call at all". `parser.parse_file()` still runs
-     `extract_intent_notes()` earlier in this loop whenever the file's
-     hash changed and its Intent section is non-empty — which for an
-     untracked resource is always, since `previous_hash` is `None`. That
-     call is now wasted work: its `intent_notes` are consumed only by
-     `plan_resource()`, which these two branches skip. Not a regression
-     (the call used to feed the rationale), but a real remaining
-     inefficiency, recurring on every `plan create` until an `apply`
-     persists the hash. Left alone here because it belongs to
-     `specs/parser.md`'s judgment call 2 and wants its own decision.
+     The claim used to need a caveat here, and no longer does.
+     `parser.parse_file()` also runs `extract_intent_notes()` whenever
+     the file's hash changed and its Intent section is non-empty — which
+     for an untracked resource is always, since `previous_hash` is
+     `None` — and those `intent_notes` are consumed only by
+     `plan_resource()`, which these two branches skip. So the call was
+     bought and discarded on every `plan create` until an `apply`
+     persisted the hash, and it is what made `PLAN.md` §9's "a first
+     `plan create` makes zero Anthropic calls" false (#125).
+
+     Decided and removed (#140): when `state_entry is None` this loop
+     does not call `parse_file()` at all. It builds a `ParsedResource`
+     from the content it has already read and the frontmatter it has
+     already parsed, which drops a redundant second read of the same
+     file along with the call. `parse_file()` remains the tracked
+     branch's path, where the notes are genuinely consumed. So the claim
+     is now the plain one: **no model call at all** on this branch.
 
      **Otherwise**: `entry = planner.plan_resource(key,
      current_attributes, spec.params, intent_notes=parsed.intent_notes,

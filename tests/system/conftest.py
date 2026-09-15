@@ -304,6 +304,18 @@ def teardown_tracked_resources(project_dir: Path):
                 )
 
 
+def verbose_call_count(captured) -> int:
+    """The number in `[verbose] N Anthropic API call(s) made`.
+
+    Shared rather than per-suite: three spellings of this existed across
+    the three live suites -- a raw substring, a local helper, and an
+    inline split -- and the substring form is what let #125 sit unnoticed,
+    since `"... 0 ..."` and `"... 1 ..."` differ only in a character
+    nobody reads carefully in a 700-line file."""
+    assert "[verbose]" in captured.err, f"no [verbose] line in stderr:\n{captured.err}"
+    return int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
+
+
 def assert_cli_ok(code: int, captured, step: str) -> None:
     """Assert a CLI invocation exited 0, surfacing its stderr when it
     didn't. Every failure mode these suites exist to catch (a gate #2

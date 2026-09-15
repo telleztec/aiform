@@ -28,6 +28,7 @@ from tests.system.conftest import (
     list_account_ssh_key_fingerprints,
     live_token,
     unique_name,
+    verbose_call_count,
     wait_until_droplet_gone,
     write_aiform_md,
 )
@@ -77,20 +78,27 @@ class TestFullLifecycleSequence:
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
+        # Zero, and structurally so rather than by luck. #118 skips
+        # categorization for an untracked resource and #119 removed gate
+        # #1 from this path -- but both overlooked aiform/parser.py, and
+        # for a while this really did cost one intent parse (#125). The
+        # orchestrator no longer buys it: parse_file()'s intent_notes are
+        # consumed only by plan_resource(), which this branch skips, so
+        # the untracked branch builds its ParsedResource directly from
+        # content it has already read. PLAN.md §9's claim is true again.
+        assert verbose_call_count(captured) == 0
 
-        # Case 3: first `plan apply --yes` -- one call again, and for a
-        # reason worth naming: a CREATE action never triggers gate #2
-        # (apply_plan()'s needs_review covers only DESTROY and a
-        # likely-replace UPDATE), but `plan create` does not write the
-        # tracked sha256 -- only a completed apply does -- so this
-        # re-parses the same intent prose. The project's cost claim is
-        # therefore about the *re-plan* in case 4, which is genuinely
-        # zero, not about the first create-and-apply pair (#125).
+        # Case 3: first `plan apply --yes` -- zero as well. A CREATE action
+        # never triggers gate #2 (apply_plan()'s needs_review covers only
+        # DESTROY and a likely-replace UPDATE), and apply re-runs
+        # build_create_plan(), which takes the same untracked branch. This
+        # used to cost one: `plan create` does not write the tracked
+        # sha256 -- only a completed apply does -- so the apply re-parsed
+        # the same intent prose it had already thrown away once (#125).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
+        assert verbose_call_count(captured) == 0
 
         st = state.load(state_path)
         assert key in st.resources

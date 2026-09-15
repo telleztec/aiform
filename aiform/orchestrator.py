@@ -22,6 +22,7 @@ from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNo
 from aiform.models import (
     DriverInfo,
     LLMConfig,
+    ParsedResource,
     PlanAction,
     PlanEntry,
     PlanReview,
@@ -312,9 +313,25 @@ def build_create_plan(
         state_entry = st.resources.get(key)
         previous_hash = state_entry.aiform_md_sha256 if state_entry else None
 
-        parsed = parser.parse_file(
-            path, previous_aiform_md_sha256=previous_hash, client=client, llm_config=llm_config
-        )
+        # Only when a state entry exists. parse_file() does three things:
+        # read the file, parse the frontmatter, and -- if the hash moved
+        # -- spend one intent_orchestration_call on extract_intent_notes().
+        # The first two are already done above, and the third feeds
+        # `intent_notes`, which is consumed only by plan_resource() in the
+        # tracked branch below. On an untracked resource that call was
+        # bought and thrown away, which is what made PLAN.md §9's "a first
+        # plan create makes zero Anthropic calls" false (#125): the parse
+        # cost one every time, and a second read of the same file with it.
+        if state_entry is None:
+            parsed = ParsedResource(
+                spec=resource_spec,
+                intent_notes=[],
+                aiform_md_sha256=parser.compute_sha256(content),
+            )
+        else:
+            parsed = parser.parse_file(
+                path, previous_aiform_md_sha256=previous_hash, client=client, llm_config=llm_config
+            )
 
         driver_key = (resource_spec.provider, resource_spec.resource)
         if driver_key not in driver_cache:

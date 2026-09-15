@@ -94,25 +94,24 @@ class TestFirewallLifecycle:
             project_dir, name=name, inbound_rules=[SSH_RULE], outbound_rules=[DNS_OUT_RULE]
         )
 
-        # Exactly one Anthropic call, and it is worth being precise
-        # about which. An untracked resource skips categorization (#118)
-        # and gate #1 is gone from this path (#119) -- but parse_file()
-        # still calls extract_intent_notes() whenever the .aiform.md
-        # sha256 differs from the tracked one, which on a first plan it
-        # always does. So the floor for a brand-new resource is one
-        # intent parse, not zero.
-        #
-        # tests/system/test_cli_domain.py asserts zero here and is red on
-        # main for exactly this reason: its comment reasons about
-        # categorization and gate #1 and overlooks intent parsing.
+        # Zero, and this suite is where the count stopped being guessed.
+        # It used to assert one, correctly at the time: an untracked
+        # resource skips categorization (#118) and gate #1 is gone from
+        # this path (#119), but parse_file() still spent one
+        # extract_intent_notes() call whose notes nothing on that branch
+        # reads. #125 recorded that as the real floor; #140 removed the
+        # waste instead, so the floor is zero again and PLAN.md §9's
+        # claim is true as written.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
-        # One again, and for the same reason: `plan create` does not
-        # write the tracked sha256 -- only a completed apply does -- so
+        # Zero again. `plan create` does not write the tracked sha256 --
+        # only a completed apply does -- so this still takes the
+        # untracked branch, which no longer buys an intent parse; before
+        # #140 that made it one, not zero. Kept because
         # apply re-parses a file it still considers new. A CREATE action
         # never triggers gate #2 (apply_plan()'s needs_review covers
         # DESTROY and likely-replace UPDATE only), so the intent parse is
@@ -120,7 +119,7 @@ class TestFirewallLifecycle:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply")
-        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
         st = state.load(state_path)
         assert key in st.resources
@@ -271,7 +270,7 @@ class TestEverySupportedRuleShape:
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan create (all shapes)")
-        assert "[verbose] 1 Anthropic API call(s) made" in captured.err
+        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         captured = capsys.readouterr()
