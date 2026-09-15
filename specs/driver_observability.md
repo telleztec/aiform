@@ -38,7 +38,7 @@ ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ # ...apply some load...
 $ aiform resource metrics web-01
-gauge  memory_bytes  2.147e+09
+gauge  memory_bytes  2147483648
 gauge  cpu_percent   41.2
 ```
 
@@ -56,10 +56,10 @@ $ aiform resource check web-01
 failing  digitalocean.compute.web-01  status is "off"
 
 $ aiform resource status web-01
-deployed    2026-09-10T14:02:11Z, id 123456789
-live        present
-config      in sync with examples/web.aiform.md
-health      failing — status is "off"
+deployed  2026-09-10T14:02:11Z, id 123456789
+live      present
+config    in sync with examples/web.aiform.md
+health    failing — status is "off"
 ```
 
 The diagnostic order matters: `check` answers *is it working*, `status`
@@ -164,7 +164,9 @@ error — and putting it in `exceptions.py` would re-create the stale `PLAN.md`
 **The parameter lists are contract, not style.** `driver_gen.py`'s AST
 validator does exact list equality on `[arg.arg for arg in method.args.args]`,
 so both are `["self", "id", "credentials"]` — identical to `read()` and
-`delete()`. A driver renaming `id` to `resource_id` fails validation.
+`delete()`. A driver renaming `id` to `resource_id` would be rejected by the
+`OPTIONAL_METHOD_PARAMS` check, which `specs/driver_gen.md` specifies and
+`aiform/driver_gen.py` does not yet implement.
 
 ### `aiform/models.py`
 
@@ -223,7 +225,7 @@ class StatusReport:
     """`aiform resource status`. Four independent answers; any one can be
     the surprising one, so none is folded into another."""
 
-    resource_key: str  # the fleet form prints a row per resource and must label it
+    resource_key: str  # the fleet form heads each resource's rows with this
     name: str
     deployed: str | None  # last_applied_at + id, or None if not in state
     live: str  # "present" | "missing on the provider" | an error
@@ -301,9 +303,9 @@ exporter (`PLAN.md` §10), and without it the extra call bought nothing.
 
 **`check`'s exit code is the one exception in this whole surface**, and it is
 deliberate. Everywhere else — `metrics`, `status` — a non-zero exit means
-*aiform could not answer*, never *the answer was bad*; `metrics` exits 0 on
-a `FAILING` resource precisely so a cron wrapper does not page on one bad
-reading. `check` inverts that because it exists to be used as an assertion
+*aiform could not answer*, never *the answer was bad*. `status` exits 0 on a
+`FAILING` resource precisely so a wrapper does not fail on one bad reading;
+`metrics` never sees a health verdict at all, and exits 0 whenever it ran. `check` inverts that because it exists to be used as an assertion
 (`aiform resource check web-01 && ./smoke-test.sh`), and an assertion that
 exits 0 when the thing is down is useless. `UNKNOWN` and an unsupported
 `health()` both exit non-zero too, for a named resource: neither is evidence
@@ -497,8 +499,11 @@ that never runs.
    `plan` can never disagree about which driver file they loaded — and
    credentials by provider. This mirrors `refresh_state()`'s caching shape;
    it does not call `refresh_state()`, which saves state.
-3. Per resource, call `health()` then `metrics()`, each guarded independently:
-   one being unsupported or raising does not skip the other.
+3. Per resource, call the methods the flags ask for — `health()` when
+   `want_health`, `metrics()` when `want_metrics` — each guarded
+   independently, so one being unsupported or raising does not skip the other.
+   A method the caller did not ask for is never called, and its columns in the
+   table below simply do not arise for that verb.
 4. Return a `Collection`. **Never writes state.**
 
 `Collection` is a dataclass rather than a widening tuple because `errors`
@@ -556,32 +561,14 @@ otherwise classify it `UNKNOWN`, contradicting the `FAILING` mapping below. It
 is not recorded in `errors`: the resource being gone is the finding, not a
 failure to observe.
 
-**`metrics()` is still attempted after `health()` reports the resource gone**,
-per step 3's "guarded independently". One hole is worth naming, because it
-is the one shape in which a vanished resource goes unreported: if
-`health()` *declines* the capability and `metrics()` then raises
-`ResourceNotFoundError`, the resource has no `up` series to go to zero and no
-error recorded, so it simply stops appearing. A driver that declines `health()`
-therefore cannot report its own disappearance at all — an argument for
-implementing `health()` even where the verdict is thin, and a limitation stated
-here rather than discovered from a dashboard that quietly lost a row.
-
-`UNKNOWN` is represented as a real `HealthReport`, not as `health=None`, so
-a renderer can tell it from a decline and from a never-reached driver
-without consulting `errors`. `health=None` therefore means only "the
-method was never called"; the `health_unsupported` field distinguishes a
-deliberate decline from a failure before the call.
-
-**A missing credential is per-resource here, not fatal.** This is a deliberate
-divergence from `refresh_state()`, which lets `PlanBlockedError` abort the
-whole run. A sweep covering two providers must still report the one whose token
-is present — aborting everything because an unrelated provider's token expired
-is precisely the "one broken thing blanks the dashboard" failure above.
-
-`ResourceNotFoundError` is handled for **both** methods, not just `health()`:
-from `metrics()` it means the same thing, and the resource contributes no
-samples rather than an error, since `health()` has already reported `FAILING`
-for it.
+**`ResourceNotFoundError` is reported by whichever verb saw it.** `check` and
+`status` call `health()` and render `FAILING`. `metrics` does not call
+`health()` at all, so a vanished resource would otherwise print an empty block
+and exit 0 with nothing recorded — instead it records
+`"resource not found"` in that resource's `errors`, which the text and JSON
+forms both show. An earlier draft justified staying silent here on the
+grounds that `health()` had already reported it; no verb calls both methods
+any more, so nothing had.
 
 ### Rendering
 
@@ -589,14 +576,18 @@ for it.
 is aligned columns, and the layout is a rule rather than an example, since a
 test has to assert exact output:
 
-- **One resource per block.** A block opens with a header line naming the
-  resource — `digitalocean.compute.web-01` — and its rows are indented two
-  spaces beneath it. In the single-resource form the header is still printed,
-  so the two forms differ only in how many blocks follow.
-- **Columns are padded to the widest value in that block**, two spaces
-  between columns, no trailing whitespace. `check`'s row is
-  `<status>  <summary>`; `metrics`' rows are `<kind>  <name>  <value>`;
-  `status`' rows are `<label>  <value>` over the four labels.
+- **`check` prints one line per resource**, never a block:
+  `<status>  <key>  <summary>`. The key is inline because the line is the
+  unit — a fleet check is a list you scan down.
+- **`metrics` and `status` print rows.** With a `<name>` given, the rows
+  alone; in the fleet form each resource's rows are preceded by a header line
+  naming its key and indented two spaces beneath it, since a bare row cannot
+  say which resource it belongs to. `metrics`' rows are
+  `<kind>  <name>  <value>`; `status`' are `<label>  <value>` over the four
+  labels.
+- **Every column is padded to the widest value in that column across the
+  whole output**, two spaces between columns, no trailing whitespace. In the
+  fleet form that means one alignment for all resources, not per-block.
 - **Numbers**: a float that is integral within 1e-6 prints without a decimal
   part; anything else prints with `repr()`'s shortest round-trip form. No
   thousands separators, no unit scaling — `2147483648`, not `2.1 GiB`. The
@@ -606,7 +597,9 @@ test has to assert exact output:
   prints its header and one indented line: `unsupported: <reason>`, or
   `no samples`.
 
-`check`'s coverage line is printed last, unindented, only in the fleet form. There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
+`check`'s coverage line is printed last, unindented, only in the fleet form.
+
+There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
 integration" gives it one, and appending (see `--output`) would produce an
 invalid document anyway.
 
@@ -641,8 +634,8 @@ runs, and a consumer that needs one has its own clock.
 
 **Where this runs: `collect()`, not a renderer.** Specifying it under
 one renderer alone would let `cpu%` through unvalidated in the other,
-reporting the same driver bug differently depending on a flag. Each `Sample` is validated once, on the way out of the sweep; all three
-both renderers receive the same already-validated set.
+reporting the same driver bug differently depending on a flag. Each `Sample` is validated once, on the way out of the sweep; both renderers
+receive the same already-validated set.
 
 **Where a rejection is recorded follows what it belongs to.** A per-sample
 rejection — a bad name, a mistyped counter, a non-finite value, a colliding
@@ -675,9 +668,10 @@ nobody can split is not a record:
 === 2026-09-15T05:41:02Z  aiform resource metrics web-01
 ```
 
-UTC, ISO-8601, then the invocation. `--format json` uses the same line — the
-file is a stream of runs, not one document, and a consumer splits on the
-delimiter before parsing each block. Without it an operator cannot tell which
+UTC, ISO-8601, then the invocation. **Only with `--output`** — stdout carries
+the report and nothing else, so `--format json | jq` stays valid. In a file
+`--format json` uses the same delimiter: the file is a stream of runs, not one
+document, and a consumer splits on the delimiter before parsing each block. Without it an operator cannot tell which
 block came from which run, which is the whole point of appending.
 
 Two further consequences of appending, stated because they are surprising
@@ -694,7 +688,7 @@ otherwise:
 
 **Without `--output`, every format goes to stdout, and stdout is a clean
 stream.** That is a contract, not an accident: it is what makes
-`aiform resource metrics --format json | jq '.resources[].health.status'`
+`aiform resource metrics --format json | jq '.resources[].samples'`
 work.
 
 | Channel | Carries |
@@ -804,8 +798,8 @@ For `metrics` and `status`:
 | 0 | the command ran — **including** when resources reported `FAILING`, `UNKNOWN`, or an unsupported capability |
 | 2 | the command could not run: malformed state, an unwritable `--output` or one whose parent directory is missing, an unknown `--format`, or a `<name>` that is unknown or ambiguous |
 
-**0 on `FAILING` is the important one.** The resource's health belongs in the
-metrics, where an alert rule evaluates it with history and a `for:` duration —
+**0 on `FAILING` is the important one**, for `status`. A resource's health
+belongs in what the command reports, where a consumer can weigh it —
 not in the exit code, where a wrapper turns one bad reading into a failure.
 An implementation returning 1 on any `UNKNOWN` would fail on exactly the
 transient blip the four-state design exists to absorb. There is no code 1 for
@@ -860,15 +854,18 @@ per-verb differences are only in what each resource carries.
      "observations": {"status": "off", "locked": "false"}}
   ],
   "coverage": {"reporting": 2, "total": 3, "unsupported": 1},
-  "verdict": "failing"
+  "worst_status": "failing"
 }
 ```
 
 `coverage` is the field the text form prints as its coverage line, so the
 information is never a stray line that would make the document unparseable.
-`verdict` is the aggregate the exit code is derived from — `ok`, `failing`,
-or `no-verdict` — stated once so a consumer does not have to re-derive the
-aggregate rule.
+`worst_status` is the least healthy verdict seen, ordered
+`ok` < `degraded` < `unknown` < `failing`, or `null` when nothing reported —
+a `HealthStatus` value, not a second vocabulary. The exit code follows from
+it: `0` for `ok`, `1` for anything else, `2` for `null`. An earlier draft
+called this field `verdict` and gave it values that reused `failing` to mean
+"any bad verdict", which collided with the per-resource `status` beside it.
 
 `status`:
 
@@ -899,9 +896,6 @@ A consumer contract, so it is fixed here rather than left to the renderer:
       "resource_key": "digitalocean.compute.web-01",
       "provider": "digitalocean", "resource_type": "compute",
       "name": "web-01", "id": "123456789",
-      "health": {"status": "ok", "summary": "active, public v4 assigned",
-                 "observations": {"status": "active"}},
-      "health_unsupported": null,
       "samples": [{"name": "memory_bytes", "kind": "gauge",
                    "value": 2147483648.0, "labels": {}}],
       "samples_unsupported": null,
@@ -987,16 +981,16 @@ same list.
 - that `prompts/review_driver.md` is reached by no code path, so `/code-review`
   at PR time is the only gate these rules have
 
-*Inferred, not verified* — that the three-state-to-binary `up` mapping is the
-right loss, that ≤5s is the right per-resource target, that per-resource
+*Inferred, not verified* — that `DEGRADED` should fail `check`, that ≤5s is
+the right per-resource target, that per-resource
 credential failure (rather than `refresh_state()`'s abort-everything) is right,
 and that `observations` stays small enough to render. All four need one real
 driver implementation, and this spec should be edited after it.
 
-*Recalled, not verified* — that a second `# TYPE` line for one metric name is a
-hard parse error rather than a tolerated duplicate. The renderer groups by
-family regardless, so nothing depends on the distinction; confirm it only if
-that grouping is ever relaxed.
+*Recalled, not verified* — that a metrics system types a series by name, so
+two drivers giving one name different kinds cannot both be represented. This
+is why such a family is rejected in `collect()`; confirm it when the deferred
+exporter is designed.
 
 ## Decisions
 
@@ -1070,8 +1064,9 @@ until every driver implements `health()`. But *nothing* answering is exit 2,
 not 0, so leniency never becomes a gate that passes having assessed nothing.
 
 `UNKNOWN` fails the gate while being *absent* from the `up` gauge. Not an
-inconsistency: a series can afford a gap and let the next reading answer; a
-script about to run the next deploy step cannot.
+inconsistency with a future exported series, which may choose to say nothing
+for `UNKNOWN` and let the next reading answer; a script about to run the next
+deploy step cannot afford that.
 
 ### The pipeline is a separate project
 

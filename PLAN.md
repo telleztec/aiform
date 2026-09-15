@@ -1276,9 +1276,9 @@ aiform resource metrics [<name>] [--format text|json]
 
     Both forms make zero Anthropic API calls and never write state. A
     resource whose driver declines a capability reports
-    "unsupported: <reason>"; one whose driver raises reports UNKNOWN.
-    Neither aborts the sweep: a single broken driver must not blank a
-    dashboard.
+    "unsupported: <reason>"; one whose driver raises has the error
+    recorded against that resource. Neither aborts the sweep: a single
+    broken driver must not blank the whole report.
 
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one named

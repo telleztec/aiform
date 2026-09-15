@@ -840,14 +840,13 @@ exposition format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
 integration" gives it one.
 
 **Exit code:** `0` if the command ran, `2` if it could not (name not found or
-ambiguous, unwritable `--output`, unreadable state). A `failing` resource exits `0` — it is an answer, and
-putting it in the exit code would make a cron wrapper page on one transient
-blip.
+ambiguous, unwritable `--output`, unreadable state). `metrics` reports no
+health verdict at all, so there is nothing for its exit code to carry.
 
-**Both forms** make zero Anthropic API calls and write no
-state, and never aborts because one resource is sick: a driver that declines a
-capability reports `unsupported`, one that raises reports `unknown`, and the
-rest still render. A single broken driver must not blank a dashboard.
+**Both forms** make zero Anthropic API calls and write no state, and neither
+aborts because one resource is sick: a driver that declines reports
+`unsupported`, one that raises has the error recorded against that resource,
+and the rest still render. A single broken driver must not blank a dashboard.
 
 ---
 
