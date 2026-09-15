@@ -1029,13 +1029,42 @@ arguments alone, so `cli.py` warns on stderr and never reaches `Collection`.
   undesigned. It belongs with `PLAN.md` §10's "Centralized server support",
   which names the direction without committing to an architecture.
 
-  **A flag that prints the URL Prometheus should scrape belongs there too,
-  and cannot exist before it.** aiform serves no endpoint, so it has no URL
-  to name: the address Prometheus hits belongs to whatever transport carries
-  the payload — node_exporter, a Pushgateway, an agent — and aiform neither
-  chooses nor knows it. A flag printing a guess would be worse than none. Once
-  the exporter exists it owns an address, and printing that is a reasonable
-  feature *of the exporter*.
+  **Advertising a scrape target belongs there too, and cannot exist before
+  it** — but the shape it must take is settled here, so the exporter is built
+  against a contract rather than inventing one.
+
+  Today aiform serves no endpoint, so it has no address to advertise: what
+  Prometheus would hit belongs to whichever transport carries the payload —
+  node_exporter, a Pushgateway, an agent — which aiform neither chooses nor
+  knows. A flag printing a guess is worse than no flag, because a wrong URL
+  in `prometheus.yml` becomes a target that is permanently `up 0`, which
+  reads as an outage of the infrastructure rather than as a typo.
+
+  **Even once aiform serves, it still cannot know its own reachable
+  address.** It binds `0.0.0.0:<port>`; whether Prometheus reaches that
+  through a LAN address, a DNS name, or a NAT is deployment knowledge no
+  process can read off its own socket. So the division is: the operator
+  supplies the host, and aiform owns everything else — the port it bound, the
+  path it serves, the labels, and the format. That is most of what is
+  error-prone, which is what makes the feature worth having.
+
+  **Prefer HTTP service discovery over emitting a URL to paste.** Prometheus
+  can fetch its target list from an endpoint on a refresh interval
+  (`http_sd_configs`, default 60s), so nothing writes `prometheus.yml` at
+  all — an exporter that also serves SD keeps the target list live as
+  resources come and go, which a pasted URL cannot. The contract is exact:
+  HTTP 200, `Content-Type: application/json`, UTF-8, and the whole list every
+  time (no incremental updates):
+
+  ```json
+  [{"targets": ["aiform-host:9840"],
+    "labels": {"job": "aiform", "__metrics_path__": "/metrics"}}]
+  ```
+
+  An empty list is `200` with `[]`, never a 404. `file_sd_configs` takes the
+  same structure through a watched file and does not rescue the no-exporter
+  case: it tells Prometheus what to scrape, and what it would scrape is the
+  transport's endpoint, which aiform still does not know.
 - **Prescribing a transport** — how the payload reaches Prometheus is a
   deployment decision. See Decisions, "aiform does not prescribe a transport".
 - **Historical storage.** aiform holds no time series. These commands are stateless; the
@@ -1179,6 +1208,25 @@ not 0, so leniency never becomes a gate that passes having assessed nothing.
 `UNKNOWN` fails the gate while being *absent* from the `up` gauge. Not an
 inconsistency: a scrape can afford to say nothing and let the next one answer;
 a script about to run the next deploy step cannot.
+
+### Emitting a scrape target: possible, but only for what aiform owns
+
+**Decision.** No flag or command prints a scrape URL today. The shape one must
+take is recorded in Out of scope, against the deferred exporter.
+
+**Reasoning.** The proposal — call aiform, get the URL, write it into
+Prometheus's config — is sound, and Prometheus supports something better than
+the pasted-URL version of it: `http_sd_configs` polls an endpoint for the
+target list, so the config never has to be rewritten and the list stays live.
+Both forms require aiform to serve HTTP, which it does not.
+
+The constraint that survives into the exporter: **a process cannot read its
+own reachable address off its socket.** Binding `0.0.0.0:9840` says nothing
+about whether Prometheus reaches it by LAN address, DNS name, or through a
+NAT. So aiform can only ever advertise a host it was told to advertise —
+and owns the rest, which is the error-prone part. An earlier answer in this
+spec said aiform "has no URL to name" as though that were permanent; it is
+contingent on not serving, and this entry replaces that framing.
 
 ### aiform does not prescribe a transport
 
