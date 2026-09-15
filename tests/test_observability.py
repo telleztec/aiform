@@ -1771,3 +1771,60 @@ class TestReviewRound2Regressions:
             "dropped family 'q_total': digitalocean.firewall says counter, "
             "digitalocean.compute says gauge"
         ]
+
+
+class TestStatusReports:
+    """The fleet form. status_for() in a loop loaded state once per
+    resource and handed each call throwaway caches, so N droplets cost N
+    exec_module()s and N credential resolutions."""
+
+    def _fleet(self, tmp_path, stub_environment, n=3):
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)
+        )
+        md = tmp_path / "web.aiform.md"
+        md.write_text(TestStatusFor.SOURCE, encoding="utf-8")
+        entries = [
+            make_state_entry(name=f"web-{i:02d}", id=str(i), aiform_md_path=str(md))
+            for i in range(n)
+        ]
+        return write_state(tmp_path / "state.json", *entries)
+
+    def test_reports_every_tracked_resource_when_keys_is_none(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        reports = observability.status_reports(state_path=path)
+        assert [r.name for r in reports] == ["web-00", "web-01", "web-02"]
+
+    def test_loads_the_driver_once_for_the_whole_fleet(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        observability.status_reports(state_path=path)
+        assert stub_environment["load_calls"] == [("digitalocean", "compute")]
+        assert stub_environment["credential_calls"] == ["digitalocean"]
+
+    def test_status_for_in_a_loop_is_what_this_replaces(self, tmp_path, stub_environment):
+        # The behaviour being fixed, asserted so the fix cannot silently
+        # regress to it: one load per resource.
+        path = self._fleet(tmp_path, stub_environment)
+        for i in range(3):
+            observability.status_for(f"digitalocean.compute.web-{i:02d}", state_path=path)
+        assert len(stub_environment["load_calls"]) == 3
+
+    def test_reports_only_the_named_keys(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        reports = observability.status_reports(["digitalocean.compute.web-01"], state_path=path)
+        assert [r.name for r in reports] == ["web-01"]
+
+    def test_an_empty_state_reports_nothing(self, tmp_path, stub_environment):
+        path = write_state(tmp_path / "state.json")
+        assert observability.status_reports(state_path=path) == []
+
+    def test_raises_for_an_untracked_key(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        with pytest.raises(ValueError):
+            observability.status_reports(["digitalocean.compute.absent"], state_path=path)
+
+    def test_writes_no_state(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        before = path.read_bytes()
+        observability.status_reports(state_path=path)
+        assert path.read_bytes() == before

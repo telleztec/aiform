@@ -269,6 +269,14 @@ def collect(
     Makes zero Anthropic API calls."""
 
 
+def status_reports(keys=None, *, state_path=state.DEFAULT_STATE_PATH) -> list[StatusReport]:
+    """`status` for exactly `keys`, or every tracked resource when None.
+    The fleet form, and the one cli.py calls. Owns one State and one pair
+    of driver/credential caches -- status_for() in a loop loaded state
+    per resource and handed each call throwaway caches, so N droplets
+    cost N exec_module()s and N credential resolutions."""
+
+
 def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
@@ -373,7 +381,11 @@ one already specified elsewhere. It writes no state, per use case 3.
 
 `status_for()` loads the driver and credentials **once** and threads them
 through all three live steps, rather than calling `collect()` for the
-health line and resolving again for the other two.
+health line and resolving again for the other two. The fleet form goes
+through `status_reports()`, which shares one `State` and one pair of
+caches across every resource — `status_for()` in a loop paid for a fresh
+driver exec and a fresh credential resolution per resource, and reported
+a missing token once per resource too.
 `orchestrator.load_driver()` execs the driver file on every call, so the
 composed-from-parts shape would exec it three times to answer about one
 resource. The live read goes through `orchestrator.refresh_resource()`

@@ -401,23 +401,52 @@ def _resources_for(
     return driver_cache[driver_key], credentials_cache[entry.provider]
 
 
+def status_reports(
+    keys: list[str] | None = None, *, state_path: Path = state.DEFAULT_STATE_PATH
+) -> list[StatusReport]:
+    """`status` for exactly `keys`, or every tracked resource when None.
+
+    Exists because the fleet form is N resources, not one: calling
+    status_for() in a loop loads state once per resource and hands each
+    call throwaway caches, so twenty droplets meant twenty
+    exec_module()s, twenty credential resolutions and twenty-one state
+    reads -- and a missing token reported twenty times. One State and one
+    pair of caches here, the shape collect() already uses."""
+    st = state.load(state_path)
+    if keys is None:
+        keys = list(st.resources)
+    driver_cache: dict[tuple[str, str], ResourceDriver] = {}
+    credentials_cache: dict[str, dict[str, str]] = {}
+    return [_status_for_entry(st, key, driver_cache, credentials_cache) for key in keys]
+
+
 def status_for(key: str, *, state_path: Path = state.DEFAULT_STATE_PATH) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
     health(). Adds no driver method of its own. Writes no state.
 
-    Loads the driver once and threads it through all three, rather than
-    going via collect(): orchestrator.load_driver() execs the driver file
-    on every call, so composing the three steps independently would exec
-    it three times for one resource."""
-    st = state.load(state_path)
+    For more than one resource use status_reports(), which shares the
+    driver and credential caches across them."""
+    return _status_for_entry(state.load(state_path), key, {}, {})
+
+
+def _status_for_entry(
+    st: State,
+    key: str,
+    driver_cache: dict[tuple[str, str], ResourceDriver],
+    credentials_cache: dict[str, dict[str, str]],
+) -> StatusReport:
+    """Loads the driver once and threads it through all three live
+    answers, rather than going via collect(): orchestrator.load_driver()
+    execs the driver file on every call, so composing the three steps
+    independently would exec it three times for one resource."""
     entry = st.resources.get(key)
     if entry is None:
         tracked = ", ".join(sorted(st.resources)) or "nothing"
         raise ValueError(f"{key!r} is not tracked; tracked: {tracked}")
 
     errors: list[str] = []
-    driver, credentials = _resources_for(entry, {}, {}, errors)
+    driver, credentials = _resources_for(entry, driver_cache, credentials_cache, errors)
     if driver is None or credentials is None:
         # The four lines are independent, but all three live answers rest
         # on the same driver and credentials, so one failure is the
