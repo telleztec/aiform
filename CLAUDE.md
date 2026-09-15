@@ -177,22 +177,23 @@ to make something easier to build.
   why; don't quietly start building toward it early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
   names, argument order, both exception types and their fields
-  (`DriverUpdateNotSupported`'s `reason`/`unsupported_fields`, and, once
-  built, `CapabilityNotSupported`'s `capability`/`reason`), and the four
+  (`DriverUpdateNotSupported`'s `reason`/`unsupported_fields`, and
+  `CapabilityNotSupported`'s `capability`/`reason`), and the four
   declarative class attributes (`PARAM_SCHEMA`, `LIKELY_REPLACE_FIELDS`,
   `NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS` — the last of which §4 still
   omits, see #133). Every future driver depends on this contract being
   stable.
 - Four of the contract's methods are required (`create`/`read`/`update`/
   `delete`); `health()`/`metrics()` are **optional** and reached only from
-  the `aiform resource` commands, never from `plan`/`apply`. **Specified but NOT YET
-  BUILT** — `specs/driver_observability.md` is the design;
-  `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
-  `Sample`, the two base methods, `aiform/observability.py` and the `aiform resource`
-  commands do not exist in the code yet, so don't import them.
-  Once they do: a driver omitting both is complete, not unfinished,
-  because the base class implements them by raising. Don't add them to a
-  driver speculatively — they call CSP endpoints that need their own
+  the `aiform resource` commands, never from `plan`/`apply`.
+  `specs/driver_observability.md` is the design, and it carries a
+  per-piece build-status table — consult that rather than this line, which
+  is the one that goes stale. Built so far: `CapabilityNotSupported`,
+  `HealthStatus`/`HealthReport`/`MetricKind`/`Sample`, the two base
+  methods, and `aiform/observability.py`. A driver omitting both methods
+  is complete, not unfinished, because the base class implements them by
+  raising — every shipped driver does exactly that today. Don't add them
+  to a driver speculatively: they call CSP endpoints that need their own
   probe session first (`specs/driver_creation.md`).
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for

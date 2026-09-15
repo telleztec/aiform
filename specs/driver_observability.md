@@ -17,7 +17,7 @@ acceptance criteria each PR is written against.
 |---|---|
 | `models.py`'s four types | built |
 | `driver.py`'s `CapabilityNotSupported` + the two concrete methods | built |
-| `aiform/observability.py` | not built |
+| `aiform/observability.py` | built |
 | `cli.py`'s `aiform resource` verbs | not built |
 | `health()`/`metrics()` on any driver | not built |
 | `driver_gen.py`'s `OPTIONAL_METHOD_PARAMS` check | not built |
@@ -366,6 +366,17 @@ from the state entry (deployed), a live `read()` (live), `diff_attributes()`
 against the discovered `.aiform.md` (config), and `health()` (health) — every
 one already specified elsewhere. It writes no state, per use case 3.
 
+`status_for()` loads the driver and credentials **once** and threads them
+through all three live steps, rather than calling `collect()` for the
+health line and resolving again for the other two.
+`orchestrator.load_driver()` execs the driver file on every call, so the
+composed-from-parts shape would exec it three times to answer about one
+resource. The live read goes through `orchestrator.refresh_resource()`
+rather than `driver.read()` directly, so a `NON_DIFFABLE_FIELDS` value is
+carried forward here exactly as it is on the plan path — without that, a
+write-only field like `ssh_keys` reports permanent drift on the `config`
+line for every droplet that declares one.
+
 ## Behavior
 
 ### What `health()` may look at
@@ -540,6 +551,21 @@ flag".
 All three verbs take `--format text|json`. `--output` stays on `metrics`
 alone, since it is the one whose output an operator accumulates across runs.
 
+**All three renderers take a keyword-only `fleet: bool | None`.** The list
+alone cannot distinguish a fleet that happens to hold one resource from a
+named one, and the two render differently — a header line and the two-space
+indent for `metrics`/`status`, the coverage line for `check`. `None` (the
+default) reads it off the list length, which is right except in that one
+case; `cli.py` passes it explicitly, since `<name> is None` is exactly the
+question. Added because the declared `(readings, fmt)` signature could not
+answer it.
+
+`render_metrics` additionally takes keyword-only `elapsed_seconds` and
+`errors`. Both belong to the `Collection` rather than to any one reading,
+and the JSON document's fixed shape below carries both — the declared
+signature and the declared document could not both be satisfied without
+them.
+
 `render_check` returns its exit code alongside its text rather than having the
 CLI re-derive it from `HealthStatus`. The mapping is the one place in this
 surface where an exit code carries a verdict, and deriving it twice is how the
@@ -670,6 +696,15 @@ the driver:
   the whole family is dropped with an error naming both drivers. A consumer
   that types a series by name, as Prometheus does, cannot hold both, and
   silently picking one would mistype the other's samples.
+
+  **Only a `_total` name can actually collide**, which the `queue_depth`
+  example below gets wrong. The `COUNTER`-must-end-in-`_total` rule runs
+  first and per sample, so a `COUNTER` named `queue_depth` is already gone
+  before the family check sees it; a `GAUGE` may legitimately end in
+  `_total` (`memory_total`). The reachable case is therefore one driver's
+  `GAUGE` and another's `COUNTER` both named `queue_depth_total`. Found by
+  the test written against the example, which could not be made to fail
+  the way the example describes.
 
 **No timestamps.** `Sample` carries none: the reading happens when the command
 runs, and a consumer that needs one has its own clock.
@@ -812,6 +847,13 @@ tracked resource, matching `plan refresh`/`show`/`create`.
   `config` line reports "no source file found", not "in sync". The other three
   lines are still answered. Silence on a drift question reads as *no drift*,
   which is the opposite of what is known.
+- **`status` on a resource whose driver file is missing, or whose
+  credentials will not resolve** — all three live lines rest on the same
+  driver and credentials, so one failure is reported once on `live` rather
+  than restated three times: `config` reads
+  "not applicable: the resource could not be read", and `health` is
+  `null`. `deployed` is still answered from state, which is the line that
+  does not need the provider at all.
 - **`status` on a resource that is gone** (`ResourceNotFoundError`) — `live`
   reports "missing on the provider", `config` is skipped (there is nothing to
   diff against), and `deployed` still reports when aiform last applied it.
@@ -899,6 +941,14 @@ per-verb differences are only in what each resource carries.
   "worst_status": "failing"
 }
 ```
+
+Two per-resource fields are not shown in that example and are always
+present: **`unsupported`** (the decline reason, or `null`) and
+**`errors`**. Without the first, a declining resource would carry
+`"status": null` with nothing saying why; without the second, a resource
+whose driver file or credentials failed would vanish from `check`'s JSON
+entirely, since it has no verdict and no decline. `status` and `summary`
+are `null` in both of those cases.
 
 `coverage` is the field the text form prints as its coverage line, so the
 information is never a stray line that would make the document unparseable.
@@ -1023,10 +1073,24 @@ same list.
 - that `prompts/review_driver.md` is reached by no code path, so `/code-review`
   at PR time is the only gate these rules have
 
+*Settled by building `aiform/observability.py`* —
+
+- that the `queue_depth` family-collision example is unreachable, since the
+  `_total` rule drops the counter first (above)
+- that `(readings, fmt)` cannot distinguish a one-resource fleet from a
+  named resource, and cannot carry `elapsed_seconds` into the JSON document
+  its own shape fixes — hence the three keyword-only parameters above
+- that `check`'s JSON needs `unsupported` and `errors` per resource, or a
+  declining resource says `null` with no reason and an errored one
+  disappears from the document
+- that `status_for()` must hold one driver instance rather than compose
+  three independent lookups, because `load_driver()` execs the file each
+  time
+
 *Inferred, not verified* — that `DEGRADED` should fail `check`, that ≤5s is
 the right per-resource target, that per-resource
 credential failure (rather than `refresh_state()`'s abort-everything) is right,
-and that `observations` stays small enough to render. All four need one real
+and that `observations` stays small enough to render. All four still need one real
 driver implementation, and this spec should be edited after it.
 
 *Recalled, not verified* — that a metrics system types a series by name, so
