@@ -16,12 +16,14 @@ import logging
 import math
 import re
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiform import config, orchestrator, parser, planner, state
 from aiform.driver import CapabilityNotSupported, ResourceDriver
-from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
+from aiform.exceptions import ResourceNotFoundError
 from aiform.models import HealthReport, HealthStatus, MetricKind, Sample, StateEntry
 from aiform.state import State
 
@@ -31,8 +33,11 @@ logger = logging.getLogger(__name__)
 # driver's mistake is caught here rather than on the Pydantic model so it
 # lands as a dropped sample naming the driver, not a crash -- see
 # specs/models.md.
-_METRIC_NAME = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:]*$")
-_LABEL_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# fullmatch, not match: `$` also matches just before a trailing newline,
+# so "cpu_percent\n" validated and then rendered as one sample split
+# across two lines with every other row padded to the inflated width.
+_METRIC_NAME = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
+_LABEL_NAME = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
 
 # A future exporter must stamp these to make a series addressable, and
 # cannot do so safely if a driver has already put its own values there.
@@ -94,7 +99,11 @@ class StatusReport:
 
     resource_key: str
     name: str
-    deployed: str | None
+    # Not `str | None`, as the spec's dataclass declares it: status_for()
+    # raises for an untracked key, so every report has a state entry and
+    # nothing can produce None. A field whose None arm no caller can
+    # reach is error handling for a scenario that cannot happen.
+    deployed: str
     live: str
     config: str
     health: HealthReport | None
@@ -118,6 +127,13 @@ def resolve_name(name: str, st: State) -> str:
     )
 
 
+def _oneline(text: str) -> str:
+    """Collapse whitespace, as log.py does. A driver's exception text can
+    be multi-line, and `check` renders one line per resource -- a
+    continuation line at column zero reads as another resource's row."""
+    return " ".join(text.split())
+
+
 def _warn(message: str, **fields) -> str:
     logger.warning(message, extra=fields)
     return message
@@ -127,7 +143,7 @@ def _health_for(
     driver: ResourceDriver, entry: StateEntry, credentials: dict[str, str], errors: list[str]
 ) -> tuple[HealthReport | None, str | None]:
     try:
-        return driver.health(entry.id, credentials), None
+        report = driver.health(entry.id, credentials)
     except CapabilityNotSupported as exc:
         # Declining a capability is not an error anywhere in this spec.
         return None, exc.reason
@@ -136,13 +152,39 @@ def _health_for(
         # observe, so it is the verdict and is not repeated in errors.
         return HealthReport(status=HealthStatus.FAILING, summary="resource not found"), None
     except Exception as exc:  # noqa: BLE001 - one bad driver must not blank the report
-        message = _warn(
-            f"{entry.provider}.{entry.resource_type} health() failed: {exc}",
-            resource_key=_key_of(entry),
-            operation="health",
+        return _unknown(entry, f"health() failed: {exc}", errors), None
+
+    if not isinstance(report, HealthReport):
+        # Caught here rather than in the renderer: a driver returning a
+        # dict would otherwise crash render_check partway through the
+        # sweep, taking every other resource's line with it.
+        return _unknown(
+            entry, f"health() returned {type(report).__name__}, not HealthReport", errors
+        ), None
+    if report.status is HealthStatus.UNKNOWN:
+        # driver.py's docstring forbids it: UNKNOWN means aiform could
+        # not find out, and only collect() knows that. A driver returning
+        # it has swallowed the error text that would say what went wrong,
+        # so the verdict stands but the driver bug is recorded.
+        errors.append(
+            _warn(
+                f"{entry.provider}.{entry.resource_type} health() returned UNKNOWN; a driver "
+                "must let its own failures propagate instead",
+                resource_key=_key_of(entry),
+                operation="health",
+            )
         )
-        errors.append(message)
-        return HealthReport(status=HealthStatus.UNKNOWN, summary=str(exc)), None
+    return report, None
+
+
+def _unknown(entry: StateEntry, detail: str, errors: list[str]) -> HealthReport:
+    message = _warn(
+        _oneline(f"{entry.provider}.{entry.resource_type} {detail}"),
+        resource_key=_key_of(entry),
+        operation="health",
+    )
+    errors.append(message)
+    return HealthReport(status=HealthStatus.UNKNOWN, summary=message)
 
 
 def _samples_for(
@@ -166,7 +208,19 @@ def _samples_for(
     except Exception as exc:  # noqa: BLE001 - same reason as _health_for
         errors.append(
             _warn(
-                f"{entry.provider}.{entry.resource_type} metrics() failed: {exc}",
+                _oneline(f"{entry.provider}.{entry.resource_type} metrics() failed: {exc}"),
+                resource_key=_key_of(entry),
+                operation="metrics",
+            )
+        )
+        return [], None
+    if not isinstance(raw, list) or not all(isinstance(s, Sample) for s in raw):
+        # Same reasoning as health()'s type check: without this a driver
+        # returning dicts raises AttributeError out of collect() and
+        # blanks every other resource's reading too.
+        errors.append(
+            _warn(
+                f"{entry.provider}.{entry.resource_type} metrics() did not return list[Sample]",
                 resource_key=_key_of(entry),
                 operation="metrics",
             )
@@ -197,7 +251,7 @@ def _validated(samples: list[Sample], entry: StateEntry, errors: list[str]) -> l
 
 
 def _rejection_reason(sample: Sample) -> str | None:
-    if not _METRIC_NAME.match(sample.name):
+    if not _METRIC_NAME.fullmatch(sample.name):
         return "name is not a valid metric name"
     if sample.kind is MetricKind.COUNTER and not sample.name.endswith("_total"):
         return "a counter's name must end in '_total'"
@@ -208,7 +262,7 @@ def _rejection_reason(sample: Sample) -> str | None:
     for label in sample.labels:
         if label in _IDENTITY_LABELS:
             return f"label {label!r} collides with an identity label the output already carries"
-        if not _LABEL_NAME.match(label):
+        if not _LABEL_NAME.fullmatch(label):
             return f"label name {label!r} is not a valid label name"
     return None
 
@@ -315,15 +369,30 @@ def _resources_for(
     if driver_key not in driver_cache:
         try:
             driver_cache[driver_key] = orchestrator.load_driver(*driver_key)
-        except PlanBlockedError as exc:
-            errors.append(_warn(str(exc), resource_key=_key_of(entry), operation="load_driver"))
+        except Exception as exc:  # noqa: BLE001 - see below
+            # Not just PlanBlockedError: load_driver() converts only
+            # FileNotFoundError, so a driver file with a SyntaxError, a
+            # bad import, or no Driver class propagates as-is and would
+            # blank the whole report.
+            errors.append(
+                _warn(_oneline(str(exc)), resource_key=_key_of(entry), operation="load_driver")
+            )
             return None, None
     if entry.provider not in credentials_cache:
         try:
             credentials_cache[entry.provider] = config.resolve_credentials(entry.provider)
         except RuntimeError as exc:
+            # Deliberately not cached as a failure. A review pass noted a
+            # fleet sharing one missing token re-reads credentials.env
+            # once per resource -- true, and it costs a stat on a cold
+            # error path, against a union-typed cache every reader would
+            # then have to decode. Left simple.
             errors.append(
-                _warn(str(exc), resource_key=_key_of(entry), operation="resolve_credentials")
+                _warn(
+                    _oneline(str(exc)),
+                    resource_key=_key_of(entry),
+                    operation="resolve_credentials",
+                )
             )
             return None, None
     return driver_cache[driver_key], credentials_cache[entry.provider]
@@ -361,25 +430,36 @@ def status_for(key: str, *, state_path: Path = state.DEFAULT_STATE_PATH) -> Stat
         )
 
     health, health_unsupported = _health_for(driver, entry, credentials, errors)
-    live, attributes = _live_for(driver, entry, credentials)
+    live, attributes, liveness = _live_for(driver, entry, credentials)
     return StatusReport(
         resource_key=key,
         name=entry.name,
         deployed=f"{_stamp(entry.last_applied_at)}, id {entry.id}",
         live=live,
-        config=_config_for(driver, entry, attributes),
+        config=_config_for(driver, entry, attributes, liveness),
         health=health,
         health_unsupported=health_unsupported,
     )
 
 
-def _stamp(moment) -> str:
-    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+def _stamp(moment: datetime) -> str:
+    # astimezone first: state.json can carry an offset other than +00:00,
+    # and strftime would then stamp a Z onto a time that is not UTC.
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# _live_for's third value: whether `attributes is None` means the
+# resource is gone, or only that aiform could not read it. Without it
+# _config_for reported "resource is gone" beside a `live` line saying
+# HTTP 503 -- the spec reserves that wording for ResourceNotFoundError.
+GONE = "gone"
+UNREADABLE = "unreadable"
+PRESENT = "present"
 
 
 def _live_for(
     driver: ResourceDriver, entry: StateEntry, credentials: dict[str, str]
-) -> tuple[str, dict | None]:
+) -> tuple[str, dict | None, str]:
     """Whether the record is still true, plus the live attributes the
     config line diffs against. Goes through refresh_resource() rather
     than driver.read() directly, so a NON_DIFFABLE_FIELDS value is
@@ -389,23 +469,52 @@ def _live_for(
     its callers."""
     try:
         attributes, drifted_missing = orchestrator.refresh_resource(driver, entry, credentials)
-    except DriverExecutionError as exc:
-        return str(exc), None
+    except Exception as exc:  # noqa: BLE001 - a read failure is an answer, not a crash
+        # Not just DriverExecutionError: refresh_resource() only wraps
+        # what driver.read() raises, and _pop_id() can raise on its own.
+        return _oneline(str(exc)), None, UNREADABLE
     if drifted_missing:
-        return "missing on the provider", None
-    return "present", attributes
+        return "missing on the provider", None, GONE
+    return "present", attributes, PRESENT
 
 
-def _config_for(driver: ResourceDriver, entry: StateEntry, attributes: dict | None) -> str:
-    if attributes is None:
-        # Nothing to diff against. Reported rather than left silent:
-        # silence on a drift question reads as "no drift", which is the
-        # opposite of what is known.
+def _config_for(
+    driver: ResourceDriver, entry: StateEntry, attributes: dict | None, liveness: str
+) -> str:
+    # Nothing to diff against. Reported rather than left silent: silence
+    # on a drift question reads as "no drift", which is the opposite of
+    # what is known -- but which of the two it is matters, since only one
+    # of them means the resource is actually gone.
+    if liveness == GONE:
         return "not applicable: resource is gone"
+    if attributes is None:
+        return "not applicable: the resource could not be read"
+
+    source = Path(entry.aiform_md_path)
     try:
-        spec = parser.parse_frontmatter(Path(entry.aiform_md_path).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
+        content = source.read_text(encoding="utf-8-sig")
+    except OSError:
         return "no source file found"
+    try:
+        spec = parser.parse_frontmatter(content)
+    except ValueError as exc:
+        # Distinct from a missing file: `plan` would say "malformed
+        # frontmatter" here, and reporting it as absent sends a reader
+        # looking for a file that is sitting right there.
+        return _oneline(f"source file is malformed: {exc}")
+    if (spec.provider, spec.resource, spec.name) != (
+        entry.provider,
+        entry.resource_type,
+        entry.name,
+    ):
+        # The plan path matches by frontmatter, not by the recorded path
+        # (orchestrator.build_create_plan), so a file since repurposed to
+        # another resource would have `status` and `plan` disagreeing --
+        # `status` diffing this droplet against, say, a firewall's params.
+        return (
+            f"{entry.aiform_md_path} now declares "
+            f"{spec.provider}.{spec.resource}.{spec.name}, not this resource"
+        )
     drifted = planner.diff_attributes(
         attributes, spec.params, unordered_fields=driver.UNORDERED_FIELDS
     )
@@ -471,14 +580,7 @@ def render_check(
             code,
         )
 
-    rows = [
-        [
-            r.health.status.value if r.health is not None else "unsupported",
-            r.resource_key,
-            _check_summary(r),
-        ]
-        for r in readings
-    ]
+    rows = [[_check_label(r), r.resource_key, _check_summary(r)] for r in readings]
     widths = _widths(rows)
     lines: list[str] = []
     for reading, row in zip(readings, rows, strict=True):
@@ -492,6 +594,17 @@ def render_check(
     return "\n".join(lines), code
 
 
+def _check_label(reading: ResourceReading) -> str:
+    if reading.health is not None:
+        return reading.health.status.value
+    if reading.health_unsupported is not None:
+        return "unsupported"
+    # Neither a verdict nor a decline: the driver file or the credentials
+    # failed. Labelling it "unsupported" contradicted the coverage line
+    # printed directly beneath it, which counts only real declines.
+    return "error"
+
+
 def _check_summary(reading: ResourceReading) -> str:
     if reading.health is not None:
         return reading.health.summary
@@ -499,7 +612,7 @@ def _check_summary(reading: ResourceReading) -> str:
         return reading.health_unsupported
     # No verdict and no decline: the driver file or the credentials
     # failed, and the reason is the only thing worth printing here.
-    return "; ".join(reading.errors) or "no verdict"
+    return _oneline("; ".join(reading.errors)) or "no verdict"
 
 
 def _observation_lines(reading: ResourceReading) -> list[str]:
@@ -539,7 +652,7 @@ def render_metrics(
     *,
     fleet: bool | None = None,
     elapsed_seconds: float = 0.0,
-    errors: list[str] = (),
+    errors: Sequence[str] = (),
 ) -> str:
     """`elapsed_seconds` and `errors` are keyword-only because they come
     off the Collection rather than off any one reading, and the JSON
@@ -557,23 +670,18 @@ def render_metrics(
             indent=2,
         )
 
-    rows = [
-        [sample.kind.value, sample.name, _number(sample.value)]
-        for reading in readings
-        for sample in reading.samples
+    per_resource = [
+        [[s.kind.value, s.name, _number(s.value)] for s in reading.samples] for reading in readings
     ]
-    widths = _widths(rows)
-    indent = _ROW_INDENT if _is_fleet(readings, fleet) else ""
+    widths = _widths([row for rows in per_resource for row in rows])
+    is_fleet = _is_fleet(readings, fleet)
+    indent = _ROW_INDENT if is_fleet else ""
     lines: list[str] = []
-    for reading in readings:
-        if _is_fleet(readings, fleet):
+    for reading, rows in zip(readings, per_resource, strict=True):
+        if is_fleet:
             lines.append(reading.resource_key)
-        if reading.samples:
-            lines.extend(
-                _row([s.kind.value, s.name, _number(s.value)], widths, indent)
-                for s in reading.samples
-            )
-        else:
+        lines.extend(_row(row, widths, indent) for row in rows)
+        if not rows:
             lines.append(indent + _placeholder(reading))
         lines.extend(indent + error for error in reading.errors)
     lines.extend(errors)
@@ -619,16 +727,17 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
     if fmt == JSON:
         return json.dumps({"resources": [_status_json(r) for r in reports]}, indent=2)
 
-    rows = [[label, _status_value(report, label)] for report in reports for label in _STATUS_LABELS]
-    widths = _widths(rows)
-    indent = _ROW_INDENT if _is_fleet(reports, fleet) else ""
+    per_resource = [
+        [[label, _status_value(report, label)] for label in _STATUS_LABELS] for report in reports
+    ]
+    widths = _widths([row for rows in per_resource for row in rows])
+    is_fleet = _is_fleet(reports, fleet)
+    indent = _ROW_INDENT if is_fleet else ""
     lines: list[str] = []
-    for report in reports:
-        if _is_fleet(reports, fleet):
+    for report, rows in zip(reports, per_resource, strict=True):
+        if is_fleet:
             lines.append(report.resource_key)
-        lines.extend(
-            _row([label, _status_value(report, label)], widths, indent) for label in _STATUS_LABELS
-        )
+        lines.extend(_row(row, widths, indent) for row in rows)
     return "\n".join(lines)
 
 
@@ -639,8 +748,6 @@ def _status_value(report: StatusReport, label: str) -> str:
         if report.health_unsupported is not None:
             return f"unsupported: {report.health_unsupported}"
         return "no verdict"
-    if label == "deployed":
-        return report.deployed if report.deployed is not None else "never deployed by aiform"
     return getattr(report, label)
 
 

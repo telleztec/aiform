@@ -25,7 +25,7 @@ whenever starting or resuming work on a module. Per-module specs live in
 Current status: **MVP walkthrough end to end.** `pyproject.toml`,
 `aiform/models.py`, `state.py`, `config.py`, `llm.py`, `log.py`,
 `exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,
-`orchestrator.py`, `cli.py`, `__main__.py`, and
+`orchestrator.py`, `observability.py`, `cli.py`, `__main__.py`, and
 `drivers/digitalocean/compute.py` are all written, and `python -m aiform`
 exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
 The "Suggested implementation order" below is now a record of how it was

@@ -238,7 +238,8 @@ class StatusReport:
 
     resource_key: str  # the fleet form heads each resource's rows with this
     name: str
-    deployed: str | None  # last_applied_at + id, or None if not in state
+    deployed: str  # last_applied_at + id. NOT `str | None`: status_for()
+    # raises for an untracked key, so nothing produces None
     live: str  # "present" | "missing on the provider" | an error
     config: str  # "in sync with <path>" | "<n> fields drifted: a, b" | "no source file found" | "not applicable: resource is gone"
     health: HealthReport | None
@@ -982,7 +983,7 @@ A consumer contract, so it is fixed here rather than left to the renderer:
 ```json
 {
   "elapsed_seconds": 0.83,
-  "errors": ["dropped family 'queue_depth': compute says gauge, firewall says counter"],
+  "errors": ["dropped family 'queue_depth_total': digitalocean.compute says gauge, digitalocean.firewall says counter"],
   "resources": [
     {
       "resource_key": "digitalocean.compute.web-01",
@@ -1072,6 +1073,40 @@ same list.
   before dispatching
 - that `prompts/review_driver.md` is reached by no code path, so `/code-review`
   at PR time is the only gate these rules have
+
+*Settled by reviewing `aiform/observability.py`* — nine correctness
+findings, each now carrying a regression test:
+
+- `status`' `config` line said "resource is gone" for any unreadable
+  resource, not just a `ResourceNotFoundError` one, so a transient `503`
+  printed `live: ...HTTP 503` beside `config: not applicable: resource is
+  gone`. `_live_for()` now reports *which* of the two it was.
+- A present-but-malformed `.aiform.md` reported "no source file found",
+  sending a reader to look for a file sitting right there; and a file
+  since repurposed to another resource was diffed against this one, so
+  `status` and `plan` (which matches by frontmatter, not by the recorded
+  path) disagreed.
+- `check`'s text form labelled a resource whose driver or credentials
+  failed `unsupported`, directly above a coverage line counting zero
+  unsupported. It is `error` now — a third label, because it is a third
+  thing.
+- Neither driver return value was type-checked, so a driver returning
+  dicts raised out of `collect()` and blanked every other resource's
+  reading — the one thing "partial failure never aborts the sweep"
+  forbids.
+- `load_driver()` converts only `FileNotFoundError`, so a driver file
+  with a `SyntaxError` or a bad import propagated out of `collect()` too.
+- The name and label patterns used `$` with `.match`, and `$` also
+  matches before a trailing newline: `"cpu_percent\n"` validated, then
+  rendered as one sample split across two lines with every other row
+  padded to the inflated width. `fullmatch` now.
+- A driver's multi-line exception text broke `check`'s one-line-per-
+  resource rule, a continuation line at column zero reading as another
+  resource's row. Collapsed, as `log.py` does.
+- A driver that *returns* `UNKNOWN` — which `driver.py`'s docstring
+  forbids — passed straight through. The verdict stands, but the driver
+  bug is now recorded.
+- `_stamp()` wrote a `Z` onto whatever offset `state.json` carried.
 
 *Settled by building `aiform/observability.py`* —
 
