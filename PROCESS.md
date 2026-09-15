@@ -237,10 +237,13 @@ Concretely, a merge needs **four gates, all green on the exact head SHA**:
   `llm-review`. **The default `pull_request`/`push` CI triggers must
   never run it** — `.github/workflows/tests.yml` holds no credentials
   and a PR-triggered run would create billable resources on every push.
-  That is narrower than "CI cannot": `specs/system_test.md`'s "Orphan
-  cleanup" prescribes a separate `schedule` + `workflow_dispatch`
-  workflow that *does* hold both tokens as repo secrets, and nothing here
-  forbids a future opt-in workflow posting this status from such a run.
+  That is narrower than "CI cannot": `specs/system_test.md`'s "Edge
+  cases / errors" prescribes a `schedule` + `workflow_dispatch` workflow
+  that *does* hold both tokens as repo secrets, and nothing here forbids
+  a future opt-in workflow posting this status from such a run. (Its
+  "Orphan cleanup" section prescribes a second, different scheduled
+  workflow, with `DIGITALOCEAN_TOKEN` only — an earlier version of this
+  paragraph cited that one by mistake.)
 
 **When `system-test` requires an actual run.** The check is path-based,
 like the cosmetic carry-forward below. A **runtime path** is anything that
@@ -257,6 +260,8 @@ git diff --name-only <since-sha> <pr-head-sha> | awk '
     /^drivers\/.*\.py$/ ||
     /^prompts\// ||
     /^tests\/system\// ||
+    /(^|\/)conftest\.py$/ ||
+    $0=="tests/__init__.py" ||
     $0=="scripts/run_system_tests.py" ||
     $0=="pyproject.toml"'
 ```
@@ -275,6 +280,14 @@ this rule:
   a pass.
 - **`scripts/run_system_tests.py`** — same reason, one level up: it is
   the runner whose exit code the gate reads.
+- **Any `conftest.py`, and `tests/__init__.py`** — `tests/conftest.py` is
+  loaded for a `tests/system/` run too, not just the unit suite:
+  `pytest tests/system --fixtures` lists `forbid_llm_client` from it. So
+  a PR that patched `urlopen` in an autouse fixture there, or dropped
+  `_scan_for_leaked_credentials`'s assert, would change what a green
+  gate proves while the path check printed nothing. Exempting it was a
+  hole found by review, on exactly the reasoning that had already
+  earned `tests/system/**` its place.
 
 Do not shorten this list on the reasoning that some path "is only
 tests" or "is only prose". A false N/A is the failure mode this gate
@@ -283,16 +296,24 @@ exists to prevent; a false "must run" only costs ten minutes.
 Three outcomes, and `<since-sha>` differs between them:
 
 1. **Nothing to run** — the check against the PR's base is empty, using
-   `origin/main...<head>` (**three** dots, so it compares against the
-   merge base and lists only what this PR touched). A two-dot diff on a
-   branch behind `main` lists what *`main`* changed too, producing a
-   false "must run". Post `success` with description
+   `git fetch origin` then `origin/<base>...<head>` (**three** dots, so
+   it compares against the merge base and lists only what this PR
+   touched). Two dots on a branch behind its base lists what the *base*
+   changed too, producing a false "must run"; a stale `origin` does the
+   same, hence the fetch. Use the PR's **own** base, not `main` —
+   `gh pr view <n> --json baseRefName`. A stacked PR whose base is
+   another branch gets the whole stack's files against `main`, which is
+   only ever a false "must run", never a false n/a, but it wastes a
+   ten-minute suite. Post `success` with description
    `n/a: no runtime path in this diff`.
 2. **Carry forward** — an earlier SHA on this branch already has a green
    `system-test`, and the check from *that SHA* to head is empty. Use a
-   **two**-dot diff here, deliberately: three-dot would hide a runtime
-   change merged in from another branch, which is exactly what must
-   re-trigger the suite. Post `success` naming the SHA, e.g.
+   **two**-dot diff here. Not for the reason an earlier version of this
+   line gave — while that SHA is an ancestor of head the two forms are
+   identical, since `merge-base(X, head) == X` — but because a rebase can
+   orphan the SHA the status sits on, and two-dot then still compares the
+   two trees rather than searching for a merge base that no longer
+   means anything. Post `success` naming the SHA, e.g.
    `carried from <sha>: no runtime path since`. A
    ten-minute billable suite should not re-run for a typo fix, and the
    path check is what makes that safe to say.
@@ -308,8 +329,10 @@ Three outcomes, and `<since-sha>` differs between them:
    a suite that failed two tests reported success. Run the script as the
    last command, or capture `$?` immediately.
 
-**The suite is not green on `main` today, so this gate blocks every PR
-until it is.** A full run at the time of writing failed two tests —
+**The suite was not green on `main` when this gate was written, so until
+that is fixed the gate blocks every PR.** The fix is **#140**; once it
+merges this paragraph is history rather than a live warning, and can go.
+A full run at the time of writing failed two tests —
 `test_cli_digitalocean.py::TestFullLifecycleSequence::test_full_lifecycle`
 and `test_cli_domain.py::TestDomainLifecycleSequence::test_full_lifecycle`
 — both on the same assertion, `[verbose] 0 Anthropic API call(s) made` on
@@ -319,8 +342,8 @@ a first `plan create`, which actually costs exactly 1 because
 the correct count; #125 names only the domain suite, and the droplet
 suite carries the identical bug. This gate is deliberately **not** given
 a "known failures" allowance — an allowance is how a gate rots — so #125
-has to be fixed first, and that is the honest cost of adding this gate at
-all.
+had to be fixed first, and that was the honest cost of adding this gate
+at all. #140 does it, and a full run on #140 is green: 10 passed, 448s.
 
 **The check is deliberately conservative about `.py` files.** It reads
 paths, not content, so a comment-only edit to `aiform/driver.py` re-triggers

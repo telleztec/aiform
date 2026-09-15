@@ -97,6 +97,8 @@ git diff --name-only <since-sha> <pr-head-sha> | awk '
     /^drivers\/.*\.py$/ ||
     /^prompts\// ||
     /^tests\/system\// ||
+    /(^|\/)conftest\.py$/ ||
+    $0=="tests/__init__.py" ||
     $0=="scripts/run_system_tests.py" ||
     $0=="pyproject.toml"'
 ```
