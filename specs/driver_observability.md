@@ -303,12 +303,7 @@ def scan_resources(*, keys=None, state_path=state.DEFAULT_STATE_PATH) -> ScanRes
 def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
-    health(). Adds no fifth driver method. Writes no state."""
-
-
-def render_text(result: ScanResult) -> str: ...
-def render_json(result: ScanResult) -> str: ...
-def render_prometheus(result: ScanResult) -> str: ...
+    health(). Adds no driver method of its own. Writes no state."""
 
 
 # The three verbs render a list -- one entry when <name> was given, every
@@ -1099,8 +1094,8 @@ on — today just a family-level rejection from validation. A per-sample
 rejection has a resource, so it appears in that resource's own `errors`
 instead. Without the top-level array a family rejection would exist only in
 the log, and a JSON consumer would see a short `resources` list with no
-indication anything was dropped. `render_text` prints the same list;
-`render_prometheus` cannot, so it logs it at `WARNING` — an exposition file
+indication anything was dropped. `render_metrics` in `text` form prints the
+same list; in `prometheus` form it cannot, so it logs it at `WARNING` — an exposition file
 has no channel for prose, and inventing an `aiform_scan_errors` counter would
 be a metric nobody asked for.
 
