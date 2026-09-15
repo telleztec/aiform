@@ -461,7 +461,12 @@ DO_API_MAX_PAGES = 100
 DO_API_TIMEOUT_SECONDS = 30
 
 SYSTEM_TEST_ZONE_PREFIX = "systest-"
-SYSTEM_TEST_ZONE_PARENT = "telleztec.com"
+# telleztec.com is production, owned by a separate DigitalOcean team --
+# DO's domain API 422s with "domain or a subdomain is already owned by
+# another user" for any *.telleztec.com zone from this suite's token,
+# which points at the isolated dev team (TellezTecDevelopment) instead.
+# cloudaiform.com is registered to that dev team for exactly this.
+SYSTEM_TEST_ZONE_PARENT = "cloudaiform.com"
 # Lowercase 't'/'z' to match what unique_zone_name() emits and what
 # DigitalOcean stores (it folds a zone name's case -- a requested
 # ...T000759Z... came back as ...t000759z...). Note this is cosmetic
@@ -1163,10 +1168,11 @@ def _sweep_leaked_system_test_zones(_require_live_credentials):
     why unique_zone_name()'s shape is part of the safety mechanism.
 
     A zone is deleted only if all three hold: the literal `systest-`
-    prefix, the `.telleztec.com` suffix, and an encoded creation time at
-    least SWEEP_MIN_AGE_MINUTES old. The account's real zones fail the
-    first two independently -- `telleztec.com` itself is excluded twice
-    over, not once -- and an unparseable name is skipped, never deleted.
+    prefix, the `.cloudaiform.com` suffix (SYSTEM_TEST_ZONE_PARENT), and
+    an encoded creation time at least SWEEP_MIN_AGE_MINUTES old. The
+    account's real zones fail the first two independently --
+    `cloudaiform.com` itself is excluded twice over, not once -- and an
+    unparseable name is skipped, never deleted.
 
     The age threshold is what keeps this from deleting a *concurrent*
     run's live zones: "older than this session started" would do exactly
