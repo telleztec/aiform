@@ -59,7 +59,19 @@ completely on its own.
    codebase generally.
 4. **Tests pass (green).** Rerun the module's tests, then the full suite.
    All green before moving on.
-5. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer,
+5. **Live system test.** `pytest` proves the code does what its mocks
+   were told to expect. It cannot prove DigitalOcean agrees. Before the
+   PR can merge, run the live suite against a real account —
+   `.venv/bin/python scripts/run_system_tests.py`
+   (`specs/run_system_tests.md`) — from a checkout of the exact commit
+   being merged, and record the result as the `system-test` status. See
+   "PR approval and merge" below for when this is required, when it may
+   be carried forward, and when it is N/A.
+
+   This step costs real money and creates real droplets. That is the
+   point: every bug this process has caught late was a bug about what a
+   provider actually does, not about what the code says it does.
+6. **Independent review.** Run Claude Code's `/code-review` (Opus 5 or newer,
    and never the model that authored the diff) against the diff. You launch
    this yourself — it does not wait on the human. Address findings, or
    explicitly note in the PR why a finding is being deferred — don't
@@ -67,7 +79,7 @@ completely on its own.
    no pass has read, so run `/code-review-since <PR>` over each round until
    the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
-6. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
+7. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
    `.claude/skills/github-commit-process/SKILL.md`. A PR closes at most
    one GitHub issue; if the pair is two issues, that needs a human waiver
@@ -75,7 +87,7 @@ completely on its own.
    CI must be green.
    Human reviews and approves — nothing merges without that, same rule as
    always.
-7. **Move on.** The next module's spec may treat this module's interface
+8. **Move on.** The next module's spec may treat this module's interface
    as fixed. If building the next module reveals this one's interface was
    wrong or incomplete, don't quietly work around it — go back, fix the
    spec and code in a small follow-up, and flag it, the same way
@@ -185,8 +197,10 @@ in here.
   if you ever bypass the hook.
 - **Definition of done**, per module: spec exists and is accurate; tests
   exist and were actually observed failing; implementation makes them
-  pass; `/code-review` ran and findings were addressed or explicitly
-  deferred; CI is green; PR is open and awaiting human approval.
+  pass; the live system test ran green (or is recorded N/A, per "PR
+  approval and merge"); `/code-review` ran and findings were addressed or
+  explicitly deferred; CI is green; PR is open and awaiting human
+  approval.
 - **Specs are living docs, not write-once**: if implementation reveals a
   spec was wrong, update it in the same PR and say so — same treatment
   `PLAN.md` itself asks for at the top of CLAUDE.md.
@@ -199,8 +213,8 @@ on) — this section is a human-readable summary of what it does and why,
 not a duplicate. If the two ever disagree, the skill wins; update this
 section to match rather than the other way around.
 
-Step 6 of the loop above says "nothing merges without human approval."
-Concretely, a merge needs **three gates, all green on the exact head SHA**:
+Step 7 of the loop above says "nothing merges without human approval."
+Concretely, a merge needs **four gates, all green on the exact head SHA**:
 
 - **`human-approval`** — posted when the repo owner leaves
   `/claude-merge-approved` as a PR comment or review body — or
@@ -216,12 +230,54 @@ Concretely, a merge needs **three gates, all green on the exact head SHA**:
   commits are unread code, so each round is re-reviewed incrementally until
   head is covered.
 - **`test`** — CI green. No override exists; no comment waives it.
+- **`system-test`** — the live suite ran green against real DigitalOcean
+  and Anthropic APIs, on this SHA's content. Posted by the author, like
+  `llm-review`. CI cannot post it: it has no credentials, and must never
+  create billable resources.
+
+**When `system-test` requires an actual run.** The check is path-based,
+like the cosmetic carry-forward below. Runtime paths are `aiform/**.py`,
+`drivers/**.py` and `pyproject.toml` — everything else (prose, specs,
+`tests/**`, `scripts/**`) cannot change what the tool does against a
+provider:
+
+```sh
+# Prints the paths that make a live run mandatory. Empty output means none.
+# awk, not `grep -v` -- grep here is ugrep, whose -qv does not invert.
+git diff --name-only <since-sha> <pr-head-sha> \
+  | awk '/^aiform\/.*\.py$/ || /^drivers\/.*\.py$/ || $0=="pyproject.toml"'
+```
+
+Three outcomes, and `<since-sha>` differs between them:
+
+1. **Nothing to run** — the check against the PR's *base* is empty. Post
+   `success` with description `n/a: no runtime path in this diff`.
+2. **Carry forward** — an earlier SHA on this branch already has a green
+   `system-test`, and the check from *that SHA* to head is empty. Post
+   `success` naming it: `carried from <sha>: prose-only delta`. A
+   ten-minute billable suite should not re-run for a typo fix, and the
+   path check is what makes that safe to say.
+3. **Run it** — everything else. `.venv/bin/python
+   scripts/run_system_tests.py` from a checkout of the head SHA; it must
+   exit 0. Put the log filename it wrote in the description, so the
+   status points at evidence rather than asserting a result.
+
+**The check is deliberately conservative about `.py` files.** It reads
+paths, not content, so a comment-only edit to `aiform/driver.py` re-triggers
+the suite. Making it content-aware — "this diff is only comments, skip it" —
+is exactly the cleverness that produces a false N/A on the one gate that
+says anything about real infrastructure. Pay the run.
+
+Be precise about what this buys, the same way the paragraph below is
+about the other two: `system-test` is posted **by the author**, so it
+catches "the agent skipped the live run", not "the agent lied about it".
+The log file under `.aiform/testlog/` is the artifact a human can check.
 
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs or after; either order ends in a merge. Nothing waits on
 anything else.
 
-**Any new commit clears all three**, because each is pinned to a SHA and a
+**Any new commit clears all four**, because each is pinned to a SHA and a
 new commit mints a new one. That single rule covers every restart case: the
 author fixing review findings, the human pushing their own commits, or a
 branch update to catch up with `main`. The lone exception is that
@@ -233,12 +289,25 @@ is path-based; if it doesn't pass cleanly the change is not cosmetic, however
 small it looks. `llm-review` is never carried forward; it re-runs, which now
 costs no round-trip.
 
-All three are required by branch protection (`strict: true`,
-`enforce_admins: true`), so even the repo owner cannot merge past a missing
-one. Worth being precise about what that guarantees: `llm-review` and
-`human-approval` are posted *by the agent*, so requiring them catches "the
-agent forgot", not "the agent misbehaves". Only `test` is enforced against
-an actively wrong agent.
+**`test`, `llm-review` and `human-approval` are required by branch
+protection** (`strict: true`, `enforce_admins: true`), so even the repo
+owner cannot merge past a missing one. Worth being precise about what that
+guarantees: `llm-review` and `human-approval` are posted *by the agent*, so
+requiring them catches "the agent forgot", not "the agent misbehaves". Only
+`test` is enforced against an actively wrong agent.
+
+**`system-test` is NOT in branch protection yet**, deliberately: adding a
+required context is a repo-settings change that can block every open PR if
+the new gate is wrong, so it is the repo owner's call rather than an
+agent's. Until they make it, this document is the requirement and the
+status is the record — which means for this one gate, "the agent forgot"
+is not caught either. The command, when they want it:
+
+```sh
+gh api -X PATCH repos/{owner}/{repo}/branches/main/protection/required_status_checks \
+  -f 'contexts[]=test' -f 'contexts[]=llm-review' \
+  -f 'contexts[]=human-approval' -f 'contexts[]=system-test'
+```
 
 A **`/claude-merge-rejected`** comment stops the merge instead. Its feedback
 must be read and addressed in a new commit, which by the rule above restarts
