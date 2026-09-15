@@ -738,11 +738,11 @@ def _cmd_resource_metrics(args: argparse.Namespace) -> int:
 
 
 def _cmd_resource_status(args: argparse.Namespace) -> int:
-    st = state.load(args.state_file)
-    keys = _resource_keys(args, st)
-    if keys is None:
-        keys = list(st.resources)
-    reports = [observability.status_for(key, state_path=args.state_file) for key in keys]
+    # status_reports(), not status_for() in a loop: the loop reloaded
+    # state and re-exec'd the driver once per resource, and reported an
+    # unresolvable token once per resource too.
+    keys = _resource_keys(args, state.load(args.state_file))
+    reports = observability.status_reports(keys, state_path=args.state_file)
     _emit(
         observability.render_status(reports, args.format, fleet=args.name is None),
         args,

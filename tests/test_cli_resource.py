@@ -637,3 +637,27 @@ class TestBrokenPipe:
         _, err = writer.communicate(timeout=60)
         reader.wait(timeout=60)
         assert writer.returncode != 0 or b"BrokenPipeError" in err
+
+
+class TestFleetStatusSharesOneDriver:
+    def test_the_fleet_form_loads_each_driver_once(self, project, capsys, monkeypatch):
+        # The CLI loop used to call status_for() per key, which reloads
+        # state and re-execs the driver every time.
+        loads = []
+        original = orchestrator.load_driver
+
+        def counting(provider, resource_type):
+            loads.append((provider, resource_type))
+            return original(provider, resource_type)
+
+        path = project(
+            make_state_entry(name="web-01"),
+            make_state_entry(name="web-02", id="2"),
+            make_state_entry(name="web-03", id="3"),
+            health=OK_REPORT,
+            read=LIVE,
+        )
+        monkeypatch.setattr(orchestrator, "load_driver", counting)
+        assert cli.main(["resource", "status", "--state-file", str(path)]) == 0
+        assert loads == [("digitalocean", "compute")]
+        assert len(capsys.readouterr().out.splitlines()) == 3 * 5
