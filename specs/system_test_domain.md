@@ -139,7 +139,7 @@ What is new:
 
   ```python
   SYSTEM_TEST_ZONE_PREFIX = "systest-"
-  SYSTEM_TEST_ZONE_PARENT = "telleztec.com"
+  SYSTEM_TEST_ZONE_PARENT = "cloudaiform.com"
 
 
   def unique_zone_name(label: str) -> str:
@@ -147,7 +147,11 @@ What is new:
       return f"{stem}-{label}.{SYSTEM_TEST_ZONE_PARENT}".lower()
   ```
 
-  yielding e.g. `systest-20260904t000759z-718b80-lifecycle.telleztec.com`.
+  yielding e.g. `systest-20260904t000759z-718b80-lifecycle.cloudaiform.com`.
+  (`telleztec.com` was the original parent; switched when aiform's own
+  dev/test work moved to a separate DigitalOcean team from the one
+  hosting production, which telleztec.com belongs to — see the code
+  comment at `tests/system/conftest.py`'s `SYSTEM_TEST_ZONE_PARENT`.)
   Three properties, each load-bearing:
 
   - **Lowercased at generation.** DO folds the case of a stored zone name
@@ -171,7 +175,7 @@ What is new:
     unowned name: DigitalOcean does not verify domain ownership, so both
     work and both cost nothing, but this keeps every name the suite
     creates inside a namespace the operator actually controls. The
-    tradeoff, taken deliberately, is that `telleztec.com` appears in the
+    tradeoff, taken deliberately, is that `cloudaiform.com` appears in the
     same `GET /v2/domains` listing the sweep reads — see "Orphan cleanup".
 - **`write_domain_aiform_md()`** — the `resource: domain` parallel to
   `write_aiform_md()` that `specs/digitalocean_domain.md` predicted would
@@ -440,7 +444,7 @@ Two layers, same division of labour as the droplet suite:
   `per_page=20` and this account hosts real zones too — and deletes a zone
   only when **all three** hold:
   1. its name starts with the literal `systest-` prefix, **and**
-  2. its name ends with `.telleztec.com`, **and**
+  2. its name ends with `.cloudaiform.com`, **and**
   3. the `%Y%m%dt%H%M%Sz` timestamp parsed out of the name is at least
      `SWEEP_MIN_AGE_MINUTES` (60) old.
 
@@ -452,8 +456,8 @@ Two layers, same division of labour as the droplet suite:
   legitimately lasts more than a few minutes, so an hour cannot overlap a
   healthy one.
 
-  Conditions 1 and 2 are independent guards, and `telleztec.com` itself
-  fails the first — so the production zone is excluded twice over, not
+  Conditions 1 and 2 are independent guards, and `cloudaiform.com` itself
+  fails the first — so the parent zone is excluded twice over, not
   once. A zone whose name doesn't parse is **skipped, never deleted**:
   the failure mode of a name this suite doesn't recognize must be a leak
   someone notices, not a deletion of something it didn't create. Per
