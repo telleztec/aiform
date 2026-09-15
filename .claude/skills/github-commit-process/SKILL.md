@@ -74,26 +74,50 @@ CI runs `pytest`, which runs against mocked `urllib.request.urlopen` and a
 fake Anthropic client. It proves the code does what its mocks were told to
 expect; it cannot prove DigitalOcean agrees. The live suite
 (`specs/system_test.md`) is what does, and it needs real credentials and
-creates real, billable droplets — so CI must never run it, and you run it
-yourself before the PR merges.
+creates real, billable droplets — so the default `pull_request`/`push`
+triggers must never run it, and you run it yourself before the PR merges.
+(`specs/system_test.md` does prescribe a separate `schedule` +
+`workflow_dispatch` workflow holding both tokens; nothing here forbids
+that one posting this status later.)
 
-Which of three outcomes applies is path-based. Runtime paths are
-`aiform/**.py`, `drivers/**.py`, `pyproject.toml`; everything else cannot
-change what the tool does against a provider:
+Which of three outcomes applies is path-based. A **runtime path** is
+anything that can change what the tool does against a provider, or what
+the live suite proves about it — `aiform/**.py`, `drivers/**.py`,
+`prompts/**` (read at runtime by `llm.py` on every model call),
+`tests/system/**` and `scripts/run_system_tests.py` (a changed suite or
+runner changes what a green gate proves), and `pyproject.toml`:
 
 ```sh
 # Empty output means no runtime path changed between the two SHAs.
 # awk, not `grep -v` -- grep here is ugrep, whose -qv does not invert.
-git diff --name-only <since-sha> <pr-head-sha> \
-  | awk '/^aiform\/.*\.py$/ || /^drivers\/.*\.py$/ || $0=="pyproject.toml"'
+# awk also exits 0 whether or not it matched, so key on the OUTPUT being
+# empty, never on the exit status.
+git diff --name-only <since-sha> <pr-head-sha> | awk '
+    /^aiform\/.*\.py$/ ||
+    /^drivers\/.*\.py$/ ||
+    /^prompts\// ||
+    /^tests\/system\// ||
+    $0=="scripts/run_system_tests.py" ||
+    $0=="pyproject.toml"'
 ```
 
-1. **Empty against the PR's base** — nothing to run:
+Never shorten this list because a path "is only tests" or "is only
+prose". A false N/A is what this gate exists to prevent; a false "must
+run" only costs ten minutes. `prompts/**` in particular is markdown that
+executes — the cosmetic carry-forward below already says so, and these
+two path lists must never disagree.
+
+1. **Empty against the PR's base**, compared as `origin/main...<head>`
+   (**three** dots — against the merge base, so it lists only what this
+   PR touched; two dots on a branch behind `main` also lists what `main`
+   changed, a false "must run") — nothing to run:
    `-f description="n/a: no runtime path in this diff"`.
 2. **Empty against an earlier SHA on this branch that already has a green
    `system-test`** — carry it forward, naming that SHA in the description
-   so it is auditable rather than asserted. A ten-minute billable suite
-   should not re-run for a typo fix.
+   so it is auditable rather than asserted. Use a **two**-dot diff here,
+   deliberately: three-dot would hide a runtime change merged in from
+   another branch, which is precisely what must re-trigger the suite. A
+   ten-minute billable suite should not re-run for a typo fix.
 3. **Otherwise** — run it, from a checkout of the head SHA:
 
 ```sh
@@ -101,7 +125,10 @@ git diff --name-only <since-sha> <pr-head-sha> \
 ```
 
 It writes a log under `.aiform/testlog/`. Put that filename in the status
-description — the status should point at evidence, not assert a result.
+description. Be clear-eyed about how much that buys: the directory is
+gitignored, rotates after ten runs, and the log records no commit SHA, so
+it is local evidence for whoever ran it rather than a durable audit
+trail. Only the status's SHA pinning ties the run to content.
 
 ```sh
 gh api repos/{owner}/{repo}/statuses/<head-sha> \
@@ -141,8 +168,7 @@ carry-forward, above, on the same auditable "name the prior SHA" pattern as
 `human-approval`'s — but keyed on runtime paths rather than prose paths,
 because the two gates are answering different questions.
 
-**The one exception — cosmetic carry-forward.** `human-approval`, and only it,
-may be re-posted onto a new SHA when the delta since the approved SHA is
+**Cosmetic carry-forward.** `human-approval` may be re-posted onto a new SHA when the delta since the approved SHA is
 *provably* cosmetic:
 
 ```sh
@@ -591,7 +617,7 @@ gh api repos/{owner}/{repo}/commits/"$SHA"/status \
 
 Actions results are **check-runs**; the legacy `/status` endpoint does not
 report them at all, so querying `/status` for CI returns an empty `contexts`
-array and reads as a pass. The two queries hit different APIs deliberately —
+array and reads as a pass. These queries hit different APIs deliberately —
 do not consolidate them.
 
 Then merge, pinned:

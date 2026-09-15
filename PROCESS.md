@@ -60,8 +60,10 @@ completely on its own.
 4. **Tests pass (green).** Rerun the module's tests, then the full suite.
    All green before moving on.
 5. **Live system test.** `pytest` proves the code does what its mocks
-   were told to expect. It cannot prove DigitalOcean agrees. Before the
-   PR can merge, run the live suite against a real account —
+   were told to expect. It cannot prove DigitalOcean agrees. Run the live
+   suite against a real account **at merge time**, on the settled head —
+   a run on a commit that review then changes proves nothing about what
+   merges —
    `.venv/bin/python scripts/run_system_tests.py`
    (`specs/run_system_tests.md`) — from a checkout of the exact commit
    being merged, and record the result as the `system-test` status. See
@@ -232,35 +234,93 @@ Concretely, a merge needs **four gates, all green on the exact head SHA**:
 - **`test`** — CI green. No override exists; no comment waives it.
 - **`system-test`** — the live suite ran green against real DigitalOcean
   and Anthropic APIs, on this SHA's content. Posted by the author, like
-  `llm-review`. CI cannot post it: it has no credentials, and must never
-  create billable resources.
+  `llm-review`. **The default `pull_request`/`push` CI triggers must
+  never run it** — `.github/workflows/tests.yml` holds no credentials
+  and a PR-triggered run would create billable resources on every push.
+  That is narrower than "CI cannot": `specs/system_test.md`'s "Orphan
+  cleanup" prescribes a separate `schedule` + `workflow_dispatch`
+  workflow that *does* hold both tokens as repo secrets, and nothing here
+  forbids a future opt-in workflow posting this status from such a run.
 
 **When `system-test` requires an actual run.** The check is path-based,
-like the cosmetic carry-forward below. Runtime paths are `aiform/**.py`,
-`drivers/**.py` and `pyproject.toml` — everything else (prose, specs,
-`tests/**`, `scripts/**`) cannot change what the tool does against a
-provider:
+like the cosmetic carry-forward below. A **runtime path** is anything that
+can change what the tool does against a provider, or what the live suite
+proves about it:
 
 ```sh
 # Prints the paths that make a live run mandatory. Empty output means none.
 # awk, not `grep -v` -- grep here is ugrep, whose -qv does not invert.
-git diff --name-only <since-sha> <pr-head-sha> \
-  | awk '/^aiform\/.*\.py$/ || /^drivers\/.*\.py$/ || $0=="pyproject.toml"'
+# Note awk exits 0 whether or not it matched, so key on the OUTPUT being
+# empty; `... | awk '...' && foo` is always true.
+git diff --name-only <since-sha> <pr-head-sha> | awk '
+    /^aiform\/.*\.py$/ ||
+    /^drivers\/.*\.py$/ ||
+    /^prompts\// ||
+    /^tests\/system\// ||
+    $0=="scripts/run_system_tests.py" ||
+    $0=="pyproject.toml"'
 ```
+
+Three of those are not obvious and were missed by the first version of
+this rule:
+
+- **`prompts/**`** — `aiform/llm.py` `read_text()`s these on every
+  Anthropic call. `diff_plan.md` *is* the plan categorizer; rewording it
+  so a size change classifies as `update` rather than a replace changes
+  live behaviour with no `.py` diff at all. `SKILL.md`'s cosmetic
+  carry-forward already treats `prompts/**` as markdown that executes;
+  the two lists must not disagree.
+- **`tests/system/**`** — a changed suite changes what a green gate
+  *proves*. Exempting it would let a PR weaken an assertion and inherit
+  a pass.
+- **`scripts/run_system_tests.py`** — same reason, one level up: it is
+  the runner whose exit code the gate reads.
+
+Do not shorten this list on the reasoning that some path "is only
+tests" or "is only prose". A false N/A is the failure mode this gate
+exists to prevent; a false "must run" only costs ten minutes.
 
 Three outcomes, and `<since-sha>` differs between them:
 
-1. **Nothing to run** — the check against the PR's *base* is empty. Post
-   `success` with description `n/a: no runtime path in this diff`.
+1. **Nothing to run** — the check against the PR's base is empty, using
+   `origin/main...<head>` (**three** dots, so it compares against the
+   merge base and lists only what this PR touched). A two-dot diff on a
+   branch behind `main` lists what *`main`* changed too, producing a
+   false "must run". Post `success` with description
+   `n/a: no runtime path in this diff`.
 2. **Carry forward** — an earlier SHA on this branch already has a green
-   `system-test`, and the check from *that SHA* to head is empty. Post
-   `success` naming it: `carried from <sha>: prose-only delta`. A
+   `system-test`, and the check from *that SHA* to head is empty. Use a
+   **two**-dot diff here, deliberately: three-dot would hide a runtime
+   change merged in from another branch, which is exactly what must
+   re-trigger the suite. Post `success` naming the SHA, e.g.
+   `carried from <sha>: no runtime path since`. A
    ten-minute billable suite should not re-run for a typo fix, and the
    path check is what makes that safe to say.
 3. **Run it** — everything else. `.venv/bin/python
-   scripts/run_system_tests.py` from a checkout of the head SHA; it must
-   exit 0. Put the log filename it wrote in the description, so the
-   status points at evidence rather than asserting a result.
+   scripts/run_system_tests.py` from the root of a checkout of the head
+   SHA (`LOG_DIR` is relative to the working directory); it must exit 0.
+   Put the log filename it wrote in the description, so the status points
+   at evidence rather than asserting a result.
+
+   **Read the log, do not trust a shell's exit status.** The first real
+   use of this gate nearly recorded a false green: the runner was invoked
+   in a compound command whose trailing `tail` supplied the exit code, so
+   a suite that failed two tests reported success. Run the script as the
+   last command, or capture `$?` immediately.
+
+**The suite is not green on `main` today, so this gate blocks every PR
+until it is.** A full run at the time of writing failed two tests —
+`test_cli_digitalocean.py::TestFullLifecycleSequence::test_full_lifecycle`
+and `test_cli_domain.py::TestDomainLifecycleSequence::test_full_lifecycle`
+— both on the same assertion, `[verbose] 0 Anthropic API call(s) made` on
+a first `plan create`, which actually costs exactly 1 because
+`parser.parse_file()` calls `extract_intent_notes()` for a non-empty
+`## Intent` section. That is issue #125, which diagnoses it and states
+the correct count; #125 names only the domain suite, and the droplet
+suite carries the identical bug. This gate is deliberately **not** given
+a "known failures" allowance — an allowance is how a gate rots — so #125
+has to be fixed first, and that is the honest cost of adding this gate at
+all.
 
 **The check is deliberately conservative about `.py` files.** It reads
 paths, not content, so a comment-only edit to `aiform/driver.py` re-triggers
@@ -268,19 +328,31 @@ the suite. Making it content-aware — "this diff is only comments, skip it" —
 is exactly the cleverness that produces a false N/A on the one gate that
 says anything about real infrastructure. Pay the run.
 
-Be precise about what this buys, the same way the paragraph below is
-about the other two: `system-test` is posted **by the author**, so it
-catches "the agent skipped the live run", not "the agent lied about it".
-The log file under `.aiform/testlog/` is the artifact a human can check.
+Be precise about what this buys. `system-test` is posted **by the
+author** and is **not** in branch protection (see below), so unlike
+`llm-review` it does not even catch "the agent forgot" — it is a
+convention plus a record, and the record is only as honest as the agent
+writing it.
+
+Nor is the log a durable audit trail: `.aiform/testlog/` is gitignored,
+rotates after ten runs, and records no commit SHA or dirty-tree state, so
+it cannot by itself confirm the run happened *on this SHA's content*.
+What ties the two together is only that the status is pinned to the SHA.
+Making the log self-describing — a `git rev-parse HEAD` and
+`git status --porcelain` header — would fix that, and belongs with
+`scripts/run_system_tests.py` rather than in this document.
 
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs or after; either order ends in a merge. Nothing waits on
 anything else.
 
 **Any new commit clears all four**, because each is pinned to a SHA and a
-new commit mints a new one. That single rule covers every restart case: the
+new commit mints a new one — with two carry-forward exceptions,
+`human-approval`'s cosmetic one below and `system-test`'s runtime-path
+one above. They are keyed on different path lists because they answer
+different questions. That single rule covers every restart case: the
 author fixing review findings, the human pushing their own commits, or a
-branch update to catch up with `main`. The lone exception is that
+branch update to catch up with `main`. The first exception is that
 `human-approval` may be carried forward onto a new SHA when the delta since
 the approved commit is provably prose — `*.md` files **excluding**
 `.claude/**`, `prompts/**`, `CLAUDE.md` and `PROCESS.md`, which are markdown

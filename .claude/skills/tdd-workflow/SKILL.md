@@ -27,7 +27,16 @@ pass.
 5. **Review.** Run `/code-review` (Opus 5 or newer) on the diff yourself —
    it does not wait on the human. Fix what it
    flags, or note explicitly in the PR why something is deferred.
-6. **PR.** Follow `.claude/skills/github-commit-process/SKILL.md`
+6. **Live suite.** `pytest` proves the code does what its mocks were told
+   to expect; it cannot prove the provider agrees. Before merge, run
+   `.venv/bin/python scripts/run_system_tests.py` from the head being
+   merged and record the result as the `system-test` status — or record
+   it N/A when the path check says the diff cannot change live behaviour.
+   `.claude/skills/github-commit-process/SKILL.md`'s "Satisfying
+   `system-test`" carries the path check and the three outcomes. This
+   gate is **not** enforced by branch protection, so forgetting it is not
+   caught.
+7. **PR.** Follow `.claude/skills/github-commit-process/SKILL.md`
    exactly — branch, commits, PR body, and critically: never merge
    without explicit human approval, same as every other change in this
    repo.
