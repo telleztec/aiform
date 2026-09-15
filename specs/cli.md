@@ -831,7 +831,7 @@ collector's directory varies by deployment, and a wrong guess writes a file
 nothing reads with no error raised. A missing parent directory is an error
 rather than something to create, for the same reason. The file is an **export,
 not state**: aiform writes it and never reads it back, nothing backs it up,
-deleting it costs one scrape interval, and aiform never rotates or cleans it.
+deleting it costs nothing but a rerun, and aiform never rotates or cleans it.
 `specs/driver_observability.md` has the full lifecycle.
 
 **Output**, `--format text` — aligned columns, meant to be read by eye and run
@@ -896,7 +896,7 @@ missing or drifted is an *answer*, not a failure of the command.
 
 ### Implementation notes
 
-Each handler is a thin wrapper over `aiform/scan.py` — named for the sweep
+Each handler is a thin wrapper over `aiform/observability.py` — named for the sweep
 it performs, not for a command, since no command is called `scan` — matching how
 `_cmd_plan_refresh` wraps `orchestrator.refresh_state()`. All belong to the
 **plain** dispatch set, not the LLM set: they make zero Anthropic API calls by

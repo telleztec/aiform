@@ -338,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported (+ CapabilityNotSupported and health()/metrics(), not yet built)
-│   ├── scan.py                     # the sweep behind `aiform resource check/metrics/status`: health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
+│   ├── observability.py                   # the sweep behind `aiform resource check/metrics/status`: health()/metrics() over tracked resources, render text/json/prometheus (specs/driver_observability.md) — NOT YET BUILT
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
@@ -1293,7 +1293,8 @@ aiform resource metrics [<name>] [--format text|json|prometheus]
     See specs/driver_observability.md for the full lifecycle.
 
     The no-argument form makes zero Anthropic API calls and never
-    writes state -- it is meant to run repeatedly on a scrape interval. A resource whose
+    writes state, so it is safe to run as often as a deployment needs.
+    A resource whose
     driver declines a capability reports "unsupported: <reason>"; one
     whose driver raises reports UNKNOWN. Neither aborts the sweep: a
     single broken driver must not blank a dashboard.

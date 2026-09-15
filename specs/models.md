@@ -405,20 +405,3 @@ implementation pass, not a deliberate asymmetry.
 - `DesiredResourceSpec` as a distinct type — confirmed a naming slip,
   not two types. `PLAN.md` §1's `parser.py` comment has been corrected
   to `ResourceSpec` to match.
-
-## Addendum: `HealthReport`/`Sample` (`specs/driver_observability.md`, not yet implemented)
-
-Four new types, for the optional `health()`/`metrics()` driver methods:
-`HealthStatus` (`ok`/`degraded`/`failing`/`unknown`) and `HealthReport`
-(`status`, `summary`, `observations: dict[str, str]`); `MetricKind`
-(`counter`/`gauge`) and `Sample` (`name`, `kind`, `value: float`,
-`labels: dict[str, str]`).
-
-Two shapes worth not re-litigating when they are written: `Sample` carries no
-`unit` field and no timestamp (the base unit lives in the name per Prometheus
-convention, and the scrape time is the right timestamp), and `observations` is
-`dict[str, str]` rather than `dict[str, Any]` so it renders in both output
-formats. Rationale in `specs/driver_observability.md`.
-
-Note `aiform/driver.py` will import `HealthReport`/`Sample` from here for its
-signatures. That direction is safe — this module imports nothing from `aiform`.
