@@ -338,7 +338,7 @@ aiform/
 │   ├── orchestrator.py             # drives plan/apply, dynamic driver import, credential wiring
 │   ├── llm.py                      # model-source dispatch: intent_orchestration_call(), code_generator_call(), review_driver(), review_plan()
 │   ├── driver.py                   # ResourceDriver ABC + DriverUpdateNotSupported + CapabilityNotSupported and health()/metrics()
-│   ├── observability.py            # health()/metrics() over tracked resources for `aiform resource check/metrics/status` (specs/driver_observability.md) — NOT YET BUILT
+│   ├── observability.py            # health()/metrics() over tracked resources for `aiform resource check/metrics/status` (specs/driver_observability.md)
 │   ├── driver_gen.py                # draft/validate/review pipeline; built and tested, called by nothing — retained seed for `aiform driver create` (see "Driver curation")
 │   ├── log.py                      # structured logging: file + stderr handlers, one key=value line format (§10 "Logging", specs/log.md)
 │   ├── models.py                   # Pydantic: ResourceSpec, PlanAction, PlanEntry, StateEntry, DriverReview
