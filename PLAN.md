@@ -593,9 +593,16 @@ to `aiform/driver.py`. An earlier version of this paragraph claimed two
 divergences and was itself wrong about the count, which is why the
 docstring was brought back into sync rather than the tally corrected: a
 count is a thing to maintain, and this one had already gone stale once.
-(The rest of the block — the SPDX header, `AIFORM_MANAGED_TAG`, the tag
-helpers — differs for the ordinary reason that those pieces are
-unbuilt.)
+The **rest** of the block is a different matter and is not certified by
+that sentence: it has not been kept in sync with `aiform/driver.py`
+through several later contract additions, and a full diff shows roughly
+ten hunks. `UNORDERED_FIELDS` is missing from it entirely (already
+tracked as #133), `update()`'s ORDERING REQUIREMENT and the
+shared-class-attribute warnings on `LIKELY_REPLACE_FIELDS`/
+`NON_DIFFABLE_FIELDS` are file-only, and the SPDX header runs the other
+way — present in the file, absent here. So "unbuilt" does not explain
+those; staleness does. Treat the file as authoritative for anything
+outside the observability portion until §4 is reconciled.
 
 ```python
 # aiform/driver.py — hand-written, not generated
