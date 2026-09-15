@@ -296,8 +296,9 @@ Decisions, "Three verbs, not four".
 | `status` | is what I deployed still there, and still what I declared? | `health()` + state + a live `read()` | the command ran |
 
 Each verb calls exactly what its question needs: `check` calls `health()`,
-`metrics` calls `metrics()`, `status` composes both with a state lookup and a
-live `read()`. An earlier draft had `metrics` call `health()` too, so its
+`metrics` calls `metrics()`, `status` calls `health()` and combines it with a
+state lookup and a live `read()`. No verb calls both `health()` and
+`metrics()`. An earlier draft had `metrics` call `health()` too, so its
 output could carry a `up`-style series; that series belongs to the deferred
 exporter (`PLAN.md` §10), and without it the extra call bought nothing.
 
@@ -331,9 +332,9 @@ switch between them because the two cases never overlap.
 ```
 $ aiform resource check db-01
 failing  digitalocean.compute.db-01  status is "off"
-    status        off
-    locked        false
-    last_action   power_off
+    status       off
+    locked       false
+    last_action  power_off
 ```
 
 **A driver is what decides whether this is useful.** `observations` is
@@ -537,7 +538,9 @@ two copies drift.
 
 Everything is caught per resource and per method. One driver raising means that
 resource reports `UNKNOWN` and the rest still render — a single broken driver
-must not blank the dashboard. Concretely, for each way a resource can fail:
+must not blank the report. A driver raising under `check` or `status` yields
+`UNKNOWN`; under `metrics` there is no verdict to yield, so the error is
+recorded against the resource. Concretely, for each way a resource can fail:
 
 | Failure | `health` | `health_unsupported` | `samples` | `errors` |
 |---|---|---|---|---|
@@ -545,7 +548,7 @@ must not blank the dashboard. Concretely, for each way a resource can fail:
 | `health()` raises `ResourceNotFoundError` | `HealthReport(FAILING, "resource not found")` | `None` | `metrics()` still attempted | unchanged |
 | `health()` raises anything else | `HealthReport(UNKNOWN, summary=<exception text>)` | `None` | `metrics()` still attempted | the exception text |
 | `metrics()` declines | untouched | untouched | `[]`, `samples_unsupported` set | unchanged |
-| `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | unchanged |
+| `metrics()` raises `ResourceNotFoundError` | untouched | untouched | `[]` | `"resource not found"` |
 | `metrics()` raises anything else | untouched | untouched | `[]` | the exception text |
 | Driver file missing (`PlanBlockedError`) | `None` | `None` | `[]` | the error |
 | Credentials unresolvable | `None` | `None` | `[]` | the error |
@@ -557,9 +560,12 @@ whose `errors` column says "unchanged" is a normal outcome, not a failure —
 declining a capability is not an error anywhere in this spec.
 
 `ResourceNotFoundError` gets its own rows because "raises anything else" would
-otherwise classify it `UNKNOWN`, contradicting the `FAILING` mapping below. It
-is not recorded in `errors`: the resource being gone is the finding, not a
-failure to observe.
+otherwise classify it `UNKNOWN`, contradicting the `FAILING` mapping below.
+Where it is recorded depends on whether a health verdict carried it: from
+`health()` it becomes the `FAILING` verdict and is **not** repeated in
+`errors`, since the resource being gone is the finding rather than a failure
+to observe. From `metrics()` there is no verdict to carry it, so it goes in
+`errors` — see the paragraph below.
 
 **`ResourceNotFoundError` is reported by whichever verb saw it.** `check` and
 `status` call `health()` and render `FAILING`. `metrics` does not call
@@ -567,8 +573,8 @@ failure to observe.
 and exit 0 with nothing recorded — instead it records
 `"resource not found"` in that resource's `errors`, which the text and JSON
 forms both show. An earlier draft justified staying silent here on the
-grounds that `health()` had already reported it; no verb calls both methods
-any more, so nothing had.
+grounds that `health()` had already reported it — true when `metrics` called
+both methods, false once it stopped.
 
 ### Rendering
 
@@ -593,11 +599,36 @@ test has to assert exact output:
   thousands separators, no unit scaling — `2147483648`, not `2.1 GiB`. The
   name carries the unit, and a reader comparing two runs needs the digits to
   line up rather than be re-scaled between them.
-- **An empty block** — a resource with no samples, or a declined capability —
-  prints its header and one indented line: `unsupported: <reason>`, or
-  `no samples`.
+- **A resource with nothing to show** — no samples, or a declined capability —
+  prints one line in place of its rows: `unsupported: <reason>`, or
+  `no samples`. It follows the same shape as a populated resource: bare in the
+  single form, and under its header with the two-space indent in the fleet
+  form.
+- **`check`'s `observations`** are indented **four** spaces beneath the
+  resource's line, as `<key>  <value>` padded to the widest key across that
+  resource's observations. Four rather than two so they cannot be mistaken for
+  a second resource's row in the fleet form.
 
 `check`'s coverage line is printed last, unindented, only in the fleet form.
+
+The fleet form of `metrics` and `status`, which the rule above describes but
+no example showed:
+
+```
+$ aiform resource metrics
+digitalocean.compute.web-01
+  gauge  memory_bytes    2147483648
+  gauge  cpu_percent     41.2
+digitalocean.firewall.web-fw
+  gauge  rule_count      4
+  gauge  attached_count  1
+```
+
+The header line sits at column zero and takes no part in the column widths;
+the two-space indent is not a column either. Widths are computed across every
+row of every resource, so `attached_count` sets the name column for `web-01`'s
+rows too — one alignment for the whole output, which is what makes the numbers
+scannable down the page.
 
 There is no third format: it has no consumer until `PLAN.md` §10's "Metrics pipeline
 integration" gives it one, and appending (see `--output`) would produce an
@@ -1063,7 +1094,7 @@ listed but does not fail the aggregate — otherwise the fleet form is unusable
 until every driver implements `health()`. But *nothing* answering is exit 2,
 not 0, so leniency never becomes a gate that passes having assessed nothing.
 
-`UNKNOWN` fails the gate while being *absent* from the `up` gauge. Not an
+`UNKNOWN` fails the gate. Not an
 inconsistency with a future exported series, which may choose to say nothing
 for `UNKNOWN` and let the next reading answer; a script about to run the next
 deploy step cannot afford that.

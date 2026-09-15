@@ -1282,7 +1282,8 @@ aiform resource metrics [<name>] [--format text|json]
 
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
     NOT YET IMPLEMENTED. Four independent answers for one named
-    resource, or a row per resource when <name> is omitted:
+    resource, or every tracked resource when <name> is omitted, each
+    under a header line naming it:
     deployed (from state), live (a driver.read()), config (diff against
     the discovered .aiform.md), health (driver.health()). Adds no fourth
     driver method -- it composes what §4 already defines. Writes no

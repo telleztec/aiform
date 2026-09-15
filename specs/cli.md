@@ -767,14 +767,14 @@ ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ aiform resource check db-01
 failing  digitalocean.compute.db-01  status is "off"
-    status        off
-    locked        false
-    last_action   power_off
+    status       off
+    locked       false
+    last_action  power_off
 
 $ aiform resource check
-ok           digitalocean.compute.web-01   active, public v4 203.0.113.10
-failing      digitalocean.compute.db-01    status is "off"
-unsupported  digitalocean.domain.example   no per-domain health signal
+ok           digitalocean.compute.web-01  active, public v4 203.0.113.10
+failing      digitalocean.compute.db-01   status is "off"
+unsupported  digitalocean.domain.example  no per-domain health signal
 2 of 3 resources report health; 1 unsupported
 ```
 
@@ -831,7 +831,7 @@ directory or unwritable path is an ordinary error.
 again a minute later to watch a number move:
 
 ```
-gauge  memory_bytes  2.147e+09
+gauge  memory_bytes  2147483648
 gauge  cpu_percent   41.2
 ```
 
@@ -857,18 +857,18 @@ deployed it, is it still there, does it still match what you declared, and is
 it healthy. Composes a state lookup, a live `read()`, a config diff, and
 `health()`; adds no new driver method.
 
-**Arguments:** `<name>` as above; omitting it reports a row per tracked
-resource. This is the most expensive of the three commands — a live `read()`
+**Arguments:** `<name>` as above; omitting it reports every tracked resource,
+each under a header line naming it. This is the most expensive of the three commands — a live `read()`
 **and** a `health()` per resource, so the fleet form costs 2N provider calls
 against a rate limit shared with `plan`/`apply`.
 
 **Output:** four labelled lines, any of which can be the surprising one:
 
 ```
-deployed    2026-09-10T14:02:11Z, id 123456789
-live        present
-config      in sync with examples/web.aiform.md
-health      failing — status is "off"
+deployed  2026-09-10T14:02:11Z, id 123456789
+live      present
+config    in sync with examples/web.aiform.md
+health    failing — status is "off"
 ```
 
 **Exit code:** `0` if the command ran, `2` if it could not. A resource that is
