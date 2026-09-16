@@ -5,11 +5,12 @@
 -- see specs/system_test_domain.md.
 
 These run in the DEFAULT pytest run, deliberately: the code under test
-here decides which live DNS zones the orphan sweep deletes, on an account
-that also hosts a production zone. Gating its only coverage behind
-`-m system` and live credentials would mean the one function that can
-destroy production DNS is exercised solely by the suite it exists to
-clean up after. Mirrors specs/conftest.md's reasoning for extracting
+here decides which live DNS zones the orphan sweep deletes, and the
+token driving it may point at a team hosting a real zone alongside test
+ones, not only test ones. Gating its only coverage behind `-m system`
+and live credentials would mean the one function that can destroy real
+DNS is exercised solely by the suite it exists to clean up after.
+Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 

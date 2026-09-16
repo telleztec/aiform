@@ -30,6 +30,7 @@ import pytest
 from aiform import cli, planner, state
 from drivers.digitalocean import domain as do_domain
 from tests.system.conftest import (
+    SYSTEM_TEST_ZONE_PARENT,
     assert_cli_ok,
     count_driver_reads,
     create_domain_directly,
@@ -38,6 +39,7 @@ from tests.system.conftest import (
     list_domain_records,
     live_token,
     token_has_domain_scope,
+    token_owns_zone_parent,
     unique_zone_name,
     verbose_call_count,
     wait_until_domain_gone,
@@ -204,6 +206,11 @@ class TestDomainLifecycleSequence:
             pytest.skip(
                 "this DIGITALOCEAN_TOKEN cannot read /v2/domains -- the domain suite needs a "
                 "token with `domain` scope; aiform init's preflight only checks droplet access"
+            )
+        if not token_owns_zone_parent(token):
+            pytest.skip(
+                f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT} -- "
+                "the domain suite creates every zone under it"
             )
 
         state_path = project_dir / ".aiform" / "state.json"
@@ -606,6 +613,8 @@ def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
     token = live_token()
     if not token_has_domain_scope(token):
         pytest.skip("DIGITALOCEAN_TOKEN lacks `domain` scope")
+    if not token_owns_zone_parent(token):
+        pytest.skip(f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT}")
 
     zone = unique_zone_name("already-exists")
     create_domain_directly(token, zone)
@@ -666,6 +675,8 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan():
     token = live_token()
     if not token_has_domain_scope(token):
         pytest.skip("DIGITALOCEAN_TOKEN lacks `domain` scope")
+    if not token_owns_zone_parent(token):
+        pytest.skip(f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT}")
 
     zone = unique_zone_name("rollback")
     try:

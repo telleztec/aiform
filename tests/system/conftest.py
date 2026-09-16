@@ -619,6 +619,23 @@ def get_domain_or_none(token: str, zone: str) -> dict | None:
     return payload["domain"]
 
 
+def token_owns_zone_parent(token: str) -> bool:
+    """Whether this token's team can create zones under
+    SYSTEM_TEST_ZONE_PARENT at all.
+
+    Distinct from token_has_domain_scope(): that checks the token *can
+    read* the domain API; this checks its *team owns the specific parent*
+    this suite creates every zone under. A token scoped for domains but
+    on the wrong team -- exactly what happened when DIGITALOCEAN_TOKEN
+    moved to an isolated dev team that doesn't own the suite's old
+    parent -- passes the scope check and then 422s on the first zone
+    POST with "domain or a subdomain is already owned by another user",
+    several minutes into a live run. This turns that into a `pytest.skip`
+    before anything is created.
+    """
+    return get_domain_or_none(token, SYSTEM_TEST_ZONE_PARENT) is not None
+
+
 def list_domain_records(token: str, zone: str) -> list[dict]:
     """Every record in `zone`, unfiltered -- SOA and DO-managed apex NS
     included. The driver's read() filters those out; this returns the raw
@@ -1018,11 +1035,12 @@ def is_sweepable_droplet(droplet: dict, cutoff: datetime) -> bool:
 
     Extracted as a pure function, and tested in the DEFAULT pytest run
     (tests/test_system_conftest.py), for the reason that file's docstring
-    gives: this decides which live droplets get deleted on an account
-    that also runs production workloads. Gating its only coverage behind
-    `-m system` and live credentials would leave the one function that
-    can destroy a production droplet exercised solely by the suite it
-    exists to clean up after.
+    gives: this decides which live droplets get deleted, and the token
+    driving it may point at a team holding real workloads alongside test
+    ones -- the guard does not get to assume otherwise. Gating its only
+    coverage behind `-m system` and live credentials would leave the one
+    function that can destroy someone's real droplet exercised solely by
+    the suite it exists to clean up after.
 
     THREE independent signals must all hold -- the suite's name prefix,
     the suite's tag, and an age past the floor. Any one alone is
@@ -1058,9 +1076,10 @@ def _sweep_leaked_system_test_droplets(_require_live_credentials):
 
     Same three-way match as the firewall sweep -- name prefix AND the
     `aiform-system-test` tag AND an age past the floor -- so a real
-    droplet on this account cannot match. That matters more here than
-    anywhere else in this file: this account runs production workloads,
-    and a sweep keying on one signal could delete one.
+    droplet cannot match by coincidence. That matters more here than
+    anywhere else in this file: the token this suite runs with may point
+    at a team holding real workloads, not only test ones, and a sweep
+    keying on one signal could delete one.
     """
     yield
 
