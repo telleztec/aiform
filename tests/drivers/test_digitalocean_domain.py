@@ -30,7 +30,7 @@ from email.message import Message
 import pytest
 
 from aiform.compare import unordered_equal
-from aiform.driver import DriverUpdateNotSupported
+from aiform.driver import CapabilityNotSupported, DriverUpdateNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
 from drivers.digitalocean.domain import Driver
@@ -1999,3 +1999,17 @@ class TestUpdateFoldsDoErrorMessages:
             driver.update(DOMAIN, current, desired, CREDENTIALS)
 
         assert "internal trouble" in str(excinfo.value)
+
+
+class TestObservabilityNotImplemented:
+    """Neither optional method is overridden yet -- CLAUDE.md and
+    specs/driver.md both claim this; pin it mechanically so a
+    speculative health()/metrics() addition can't go in silently."""
+
+    def test_health_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.health(DOMAIN, CREDENTIALS)
+
+    def test_metrics_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.metrics(DOMAIN, CREDENTIALS)

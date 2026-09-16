@@ -22,6 +22,7 @@ from email.message import Message
 
 import pytest
 
+from aiform.driver import CapabilityNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
 from drivers.digitalocean import firewall as firewall_module
@@ -863,3 +864,17 @@ class TestCreateRollsBackAfterTheResourceExists:
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             driver.create(NAME, minimal_params(), CREDENTIALS)
         assert excinfo.value.code == 500
+
+
+class TestObservabilityNotImplemented:
+    """Neither optional method is overridden yet -- CLAUDE.md and
+    specs/driver.md both claim this; pin it mechanically so a
+    speculative health()/metrics() addition can't go in silently."""
+
+    def test_health_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.health(firewall_id(), CREDENTIALS)
+
+    def test_metrics_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.metrics(firewall_id(), CREDENTIALS)
