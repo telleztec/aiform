@@ -78,7 +78,7 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
      that approval comment's timestamp**, not on the head commit — no commit
      is pushed on this path, so the default watermark would leave the plain
      approval still latest and the loop would re-fire on it immediately, in
-     a spin. Then satisfy **all three gates on one and the
+     a spin. Then satisfy **all four gates on one and the
      same SHA**:
      1. `human-approval` — post it on **the SHA the loop was watching**, not
         on a newer head. The loop's watermark is that commit's date, so the
@@ -92,6 +92,14 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
         **not** appear in `/status`, which returns an empty `contexts` array
         for a green run and reads as a pass. Use each endpoint for its own
         gate; do not consolidate.
+     4. `system-test` is `success` — `/commits/<sha>/status`, the same
+        endpoint as `llm-review`. **This gate is not in branch
+        protection**, so nothing downstream catches it missing: skip the
+        check here and the merge goes through without it. If it is
+        absent, that gate is yours to satisfy — run the path check in
+        `.claude/skills/github-commit-process/SKILL.md`'s "Satisfying
+        `system-test`", run the live suite if it says to, and post the
+        status. Never post it on a SHA whose suite you did not run.
 
      Then merge with `gh pr merge <PR> --merge --match-head-commit <sha>`, so
      it fails rather than merging something that landed in between.
@@ -109,7 +117,7 @@ nothing to wait for. Run `/code-review` in parallel with this, not before it.
 
    - `REJECTED`: do not merge. Read the PR's comments and inline review for
      what was actually said, address it in a new commit, and start a fresh
-     cycle — the new SHA clears all three gates. Restart this loop after
+     cycle — the new SHA clears all four gates. Restart this loop after
      pushing.
 
 ## The loop script
