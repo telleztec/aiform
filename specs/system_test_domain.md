@@ -83,10 +83,9 @@ pattern `specs/digitalocean_domain.md` used for its own authoring):
 All of the above except the last item were measured against
 `telleztec.com` on the account this suite ran against before that
 migration. The suite's own live run against the new parent,
-`cloudaiform.com`, is what settles whether they still hold there — see
-`specs/system_test.md`'s test plan for the run this PR requires before
-merge; append a dated confirmation line here once it's green, rather
-than assuming these facts carried over unchanged.
+`cloudaiform.com`, is what settles whether they still hold there; append
+a dated confirmation line here once it's green, rather than assuming
+these facts carried over unchanged.
 
 **Settled by the suite's own first green run** (case 6), which is what it
 was built to do — these were `specs/digitalocean_domain.md`'s last
