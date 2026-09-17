@@ -3,12 +3,14 @@
 
 import json
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from aiform import cli, config, observability, orchestrator, state
+from aiform import cli, config, orchestrator, state
 from aiform.driver import CapabilityNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 from aiform.models import DriverInfo, HealthReport, HealthStatus, MetricKind, Sample, StateEntry
@@ -400,6 +402,16 @@ class TestMetricsOutput:
         self._run(project, out)
         assert not (project.dir / "absent").exists()
 
+    def test_a_present_parent_does_not_get_the_missing_parent_hint(self, project, capsys):
+        # --output pointed at an existing directory: the parent (project.dir)
+        # is there, so open("a") raises IsADirectoryError, not a missing
+        # parent. The hint is conditional on path.parent.is_dir() -- this
+        # is the case where it must not fire.
+        out = project.dir
+        assert self._run(project, out) == 2
+        err = capsys.readouterr().err
+        assert "aiform does not create" not in err
+
     def test_json_to_a_file_keeps_the_delimiter(self, project):
         # The file is a stream of runs, not one document; a consumer
         # splits on the delimiter before parsing each block.
@@ -504,20 +516,42 @@ class TestZeroLLMCalls:
 
 class TestStdoutIsACleanStream:
     def test_a_warning_does_not_reach_stdout(self, project, capsys):
+        # An earlier version asserted only on stderr and then parsed a
+        # separately rendered document, so it would have passed unchanged
+        # if the warning HAD gone to stdout -- the one thing its name
+        # claims to check.
+        #
+        # Asserted on the log line's *shape*, not on the message text: an
+        # UNKNOWN verdict's summary legitimately IS the exception text,
+        # and that summary is part of the report, which belongs on
+        # stdout. What must never appear there is a log line -- its level
+        # and its key=value fields.
         path = project(health_exc=TimeoutError("boom"))
         cli.main(["resource", "check", "web-01", "-v", "--state-file", str(path)])
         captured = capsys.readouterr()
-        assert json.loads(
-            observability.render_check(
-                observability.collect(
-                    keys=["digitalocean.compute.web-01"],
-                    want_metrics=False,
-                    state_path=path,
-                ).readings,
-                "json",
-            )[0]
-        )
         assert "boom" in captured.err
+        # log.py renders WARNING as "WARN" (log.py's _Formatter), so the
+        # marker is that, not the level's Python name.
+        assert "WARN " in captured.err
+        assert "WARN" not in captured.out
+        assert "resource_key=" not in captured.out
+        assert "operation=" not in captured.out
+        # stdout is exactly the report: one line per resource, plus the
+        # observations block for a non-ok verdict.
+        assert captured.out.splitlines()[0].startswith("unknown  digitalocean.compute.web-01  ")
+
+    def test_a_warning_leaves_json_on_stdout_parseable(self, project, capsys):
+        # The consequence that matters: `--format json | jq` must survive
+        # a resource whose driver raised.
+        path = project(samples_exc=TimeoutError("boom"))
+        cli.main(
+            ["resource", "metrics", "web-01", "-v", "--format", "json", "--state-file", str(path)]
+        )
+        captured = capsys.readouterr()
+        doc = json.loads(captured.out)
+        assert "boom" in doc["resources"][0]["errors"][0]
+        assert "boom" in captured.err
+        assert "WARN" not in captured.out
 
     def test_json_output_is_parseable_with_verbose_on(self, project, capsys):
         path = project(samples=[Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=1.0)])
@@ -569,3 +603,71 @@ class TestDeclineIsNotAnError:
         code = cli.main(["resource", "check", "web-01", "--state-file", str(path)])
         assert code == 2
         assert "unsupported  digitalocean.compute.web-01  no signal here" in capsys.readouterr().out
+
+
+class TestBrokenPipe:
+    """`aiform resource metrics --format json | head` closes stdout
+    early. Python's default is a traceback plus a non-zero exit, for a
+    command built to be piped.
+
+    Driven through a real subprocess with a real pipe: capsys replaces
+    stdout with a StringIO, which never raises BrokenPipeError, so the
+    except branch is unreachable under capture.
+    """
+
+    def test_a_closed_pipe_is_a_successful_run(self, tmp_path):
+        script = "import sys; from aiform import cli; cli._print_stream('x' * 5_000_000)"
+        reader = subprocess.Popen(
+            ["head", "-c", "10"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL
+        )
+        writer = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=reader.stdin, stderr=subprocess.PIPE
+        )
+        reader.stdin.close()
+        _, err = writer.communicate(timeout=60)
+        reader.wait(timeout=60)
+        assert writer.returncode == 0, err.decode()
+        # Not merely "no crash": the interpreter's own shutdown flush
+        # re-raises a BrokenPipeError after the handler returns unless
+        # the fd was reopened on devnull, and that shows up here.
+        assert b"BrokenPipeError" not in err
+        assert b"Traceback" not in err
+
+    def test_the_same_script_without_the_handler_does_traceback(self, tmp_path):
+        # The control. Without it, the test above proves only that this
+        # environment happens not to raise.
+        script = "print('x' * 5_000_000)"
+        reader = subprocess.Popen(
+            ["head", "-c", "10"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL
+        )
+        writer = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=reader.stdin, stderr=subprocess.PIPE
+        )
+        reader.stdin.close()
+        _, err = writer.communicate(timeout=60)
+        reader.wait(timeout=60)
+        assert writer.returncode != 0 or b"BrokenPipeError" in err
+
+
+class TestFleetStatusSharesOneDriver:
+    def test_the_fleet_form_loads_each_driver_once(self, project, capsys, monkeypatch):
+        # The CLI loop used to call status_for() per key, which reloads
+        # state and re-execs the driver every time.
+        loads = []
+        original = orchestrator.load_driver
+
+        def counting(provider, resource_type):
+            loads.append((provider, resource_type))
+            return original(provider, resource_type)
+
+        path = project(
+            make_state_entry(name="web-01"),
+            make_state_entry(name="web-02", id="2"),
+            make_state_entry(name="web-03", id="3"),
+            health=OK_REPORT,
+            read=LIVE,
+        )
+        monkeypatch.setattr(orchestrator, "load_driver", counting)
+        assert cli.main(["resource", "status", "--state-file", str(path)]) == 0
+        assert loads == [("digitalocean", "compute")]
+        assert len(capsys.readouterr().out.splitlines()) == 3 * 5

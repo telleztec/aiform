@@ -1526,6 +1526,34 @@ class TestPlanApply:
         assert "exit_code=2" in lines[-1]
         assert "outcome=error" in lines[-1]
 
+    def test_a_declined_apply_confirmation_logs_as_error_not_unhealthy(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # exit 1 is not exclusively `resource check`'s unhealthy verdict:
+        # a declined confirmation returns 1 too (ApplyResult.aborted), and
+        # keying the log outcome on the bare integer instead of the
+        # command would log this at INFO as outcome=unhealthy, dropping
+        # it out of the `grep ERROR .aiform/logs/` sweep specs/cli.md
+        # guarantees catches every failed invocation.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [])
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
+        monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+        code = cli.main(["plan", "apply", "--state-file", str(state_file)])
+        capsys.readouterr()
+
+        assert code == 1
+        log_files = list((project_dir / ".aiform" / "logs").glob("*.log"))
+        assert len(log_files) == 1
+        lines = log_files[0].read_text().splitlines()
+        assert "exit_code=1" in lines[-1]
+        assert "outcome=error" in lines[-1]
+        assert lines[-1].split()[1] == "ERROR"
+
     def test_apply_verbose_reports_call_count_even_when_blocked(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):

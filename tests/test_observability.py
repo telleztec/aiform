@@ -814,8 +814,12 @@ class TestRenderCheckText:
         assert text == "ok  digitalocean.compute.web-01  active, public v4 203.0.113.10"
 
     def test_observations_are_hidden_when_the_verdict_is_ok(self):
-        text, _ = observability.render_check([self._reading(health=OK_REPORT)], "text")
-        assert "status" not in text.split("  ", 2)[2] or "\n" not in text
+        # An earlier version of this was `A or B` with B always true.
+        report = HealthReport(
+            status=HealthStatus.OK, summary="fine", observations={"status": "active"}
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text")
+        assert text == "ok  digitalocean.compute.web-01  fine"
 
     def test_observations_print_indented_four_spaces_when_the_verdict_is_not_ok(self):
         text, _ = observability.render_check([self._reading(health=FAILING_REPORT)], "text")
@@ -1380,3 +1384,483 @@ class TestAgainstARealDriverOnDisk:
         driver = orchestrator.load_driver("digitalocean", "compute")
         base_health = type(driver).__mro__[1].health
         assert type(driver).health is not base_health
+
+
+class TestReviewRound1Regressions:
+    """One test per correctness finding from the first /code-review pass.
+    Each was a real failure mode, so each gets an assertion rather than a
+    fixed line of code and a note."""
+
+    def _reading(self, tmp_path, stub_environment, driver, **flags):
+        stub_environment["drivers"][("digitalocean", "compute")] = driver
+        path = write_state(tmp_path / "state.json", make_state_entry())
+        return observability.collect(state_path=path, **flags).readings[0]
+
+    def test_a_trailing_newline_does_not_pass_the_metric_name_check(
+        self, tmp_path, stub_environment
+    ):
+        # `$` also matches just before a trailing newline, so this
+        # validated and then rendered as one sample split across two
+        # lines with every other row padded to the inflated width.
+        reading = self._reading(
+            tmp_path,
+            stub_environment,
+            StubDriver(
+                metrics_result=[Sample(name="cpu_percent\n", kind=MetricKind.GAUGE, value=1.0)]
+            ),
+            want_health=False,
+        )
+        assert reading.samples == []
+        assert len(reading.errors) == 1
+
+    def test_a_trailing_newline_does_not_pass_the_label_name_check(
+        self, tmp_path, stub_environment
+    ):
+        reading = self._reading(
+            tmp_path,
+            stub_environment,
+            StubDriver(
+                metrics_result=[
+                    Sample(
+                        name="x_bytes", kind=MetricKind.GAUGE, value=1.0, labels={"mount\n": "/"}
+                    )
+                ]
+            ),
+            want_health=False,
+        )
+        assert reading.samples == []
+
+    def test_metrics_returning_the_wrong_type_does_not_abort_the_sweep(
+        self, tmp_path, stub_environment
+    ):
+        # Previously raised AttributeError out of collect(), taking every
+        # other resource's reading with it.
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            metrics_result=[{"name": "memory_bytes"}]
+        )
+        stub_environment["drivers"][("digitalocean", "firewall")] = StubDriver(
+            metrics_result=[Sample(name="rule_count", kind=MetricKind.GAUGE, value=4.0)]
+        )
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(name="web-01"),
+            make_state_entry(name="fw", resource_type="firewall", id="f1"),
+        )
+        result = observability.collect(state_path=path, want_health=False)
+        by_key = {r.resource_key: r for r in result.readings}
+        assert by_key["digitalocean.compute.web-01"].samples == []
+        assert "list[Sample]" in by_key["digitalocean.compute.web-01"].errors[0]
+        assert [s.name for s in by_key["digitalocean.firewall.fw"].samples] == ["rule_count"]
+
+    def test_health_returning_the_wrong_type_is_unknown_not_a_renderer_crash(
+        self, tmp_path, stub_environment
+    ):
+        reading = self._reading(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_result={"status": "ok"}),
+            want_metrics=False,
+        )
+        assert reading.health.status is HealthStatus.UNKNOWN
+        assert "not HealthReport" in reading.health.summary
+        observability.render_check([reading], "text")
+
+    def test_a_driver_returning_unknown_is_recorded_as_a_driver_bug(
+        self, tmp_path, stub_environment
+    ):
+        # driver.py's docstring forbids it: UNKNOWN means aiform could
+        # not find out, and only collect() knows that.
+        reading = self._reading(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_result=HealthReport(status=HealthStatus.UNKNOWN, summary="dunno")),
+            want_metrics=False,
+        )
+        assert reading.health.status is HealthStatus.UNKNOWN
+        assert any("must let its own failures propagate" in e for e in reading.errors)
+
+    def test_a_broken_driver_file_is_recorded_rather_than_propagating(
+        self, tmp_path, stub_environment, monkeypatch
+    ):
+        # load_driver() converts only FileNotFoundError, so a SyntaxError
+        # or a bad import used to blank the whole report.
+        def explode(provider, resource_type):
+            raise SyntaxError("invalid syntax (compute.py, line 12)")
+
+        monkeypatch.setattr(orchestrator, "load_driver", explode)
+        path = write_state(tmp_path / "state.json", make_state_entry())
+        result = observability.collect(state_path=path)
+        assert "invalid syntax" in result.readings[0].errors[0]
+
+    def test_a_multi_line_error_renders_as_one_line_per_resource(self, tmp_path, stub_environment):
+        # A continuation line at column zero reads as another resource's
+        # row in the fleet form.
+        reading = self._reading(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_exception=RuntimeError("line one\nline two")),
+            want_metrics=False,
+        )
+        text, _ = observability.render_check([reading], "text", fleet=False)
+        assert len(text.splitlines()) == 1
+
+    def test_an_errored_resource_is_labelled_error_not_unsupported(
+        self, tmp_path, stub_environment
+    ):
+        # "unsupported" contradicted the coverage line printed directly
+        # beneath it, which counts only real declines. `network` has no
+        # driver file, so this is the no-verdict-no-decline case rather
+        # than a decline.
+        path = write_state(tmp_path / "state.json", make_state_entry(resource_type="network"))
+        result = observability.collect(state_path=path, want_metrics=False)
+        text, code = observability.render_check(result.readings, "text", fleet=True)
+        assert text.splitlines()[0].startswith("error  ")
+        assert text.splitlines()[-1] == "0 of 1 resources report health; 0 unsupported"
+        assert code == 2
+
+
+class TestStatusForRound1Regressions:
+    SOURCE = TestStatusFor.SOURCE
+
+    def _report(
+        self, tmp_path, stub_environment, driver, *, source=SOURCE, path_name="web.aiform.md"
+    ):
+        stub_environment["drivers"][("digitalocean", "compute")] = driver
+        md = tmp_path / path_name
+        if source is not None:
+            md.write_text(source, encoding="utf-8")
+        state_path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
+        return observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+
+    def test_a_read_failure_does_not_claim_the_resource_is_gone(self, tmp_path, stub_environment):
+        # live said "HTTP 503" while config said "resource is gone" --
+        # the spec reserves that wording for ResourceNotFoundError.
+        report = self._report(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_result=OK_REPORT, read_exception=RuntimeError("HTTP 503")),
+        )
+        assert "HTTP 503" in report.live
+        assert report.config == "not applicable: the resource could not be read"
+
+    def test_a_gone_resource_still_says_gone(self, tmp_path, stub_environment):
+        report = self._report(
+            tmp_path,
+            stub_environment,
+            StubDriver(
+                health_exception=ResourceNotFoundError("gone"),
+                read_exception=ResourceNotFoundError("gone"),
+            ),
+        )
+        assert report.live == "missing on the provider"
+        assert report.config == "not applicable: resource is gone"
+
+    def test_a_malformed_source_file_is_not_reported_as_missing(self, tmp_path, stub_environment):
+        report = self._report(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)),
+            source="not frontmatter at all\n",
+        )
+        assert report.config.startswith("source file is malformed")
+
+    def test_an_undecodable_source_file_is_reported_not_raised(self, tmp_path, stub_environment):
+        # read_text(encoding="utf-8-sig") raises UnicodeDecodeError on
+        # undecodable bytes -- a ValueError subclass, not an OSError, so
+        # it must land in the same branch as a malformed-frontmatter
+        # ValueError. Undetected, this crashes status_for() outright
+        # instead of reporting the one resource, which in status_reports()
+        # would blank every other resource's line too.
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)
+        )
+        md = tmp_path / "web.aiform.md"
+        md.write_bytes(b"---\nprovider: digitalocean\n\xff\xfe\n---\n")
+        state_path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
+
+        report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+
+        assert report.config.startswith("source file is malformed")
+
+    def test_a_repurposed_source_file_is_not_diffed_against_this_resource(
+        self, tmp_path, stub_environment
+    ):
+        # The plan path matches by frontmatter, not by the recorded path,
+        # so diffing this droplet against another resource's params would
+        # have status and plan disagreeing.
+        other = TestStatusFor.SOURCE.replace("name: web-01", "name: other-01")
+        report = self._report(
+            tmp_path,
+            stub_environment,
+            StubDriver(health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)),
+            source=other,
+        )
+        assert "now declares digitalocean.compute.other-01" in report.config
+
+    def test_a_non_utc_last_applied_at_is_converted_rather_than_stamped_z(
+        self, tmp_path, stub_environment
+    ):
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)
+        )
+        md = tmp_path / "web.aiform.md"
+        md.write_text(TestStatusFor.SOURCE, encoding="utf-8")
+        state_path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(aiform_md_path=str(md), last_applied_at="2026-09-10T14:02:11+05:00"),
+        )
+        report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+        assert report.deployed.startswith("2026-09-10T09:02:11Z")
+
+
+LIVE_ATTRS = {"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"}
+
+
+class TestClaimsTheFirstReviewFoundUntested:
+    def test_check_json_carries_the_decline_reason(self):
+        reading = observability.ResourceReading(
+            resource_key="digitalocean.compute.web-01",
+            provider="digitalocean",
+            resource_type="compute",
+            name="web-01",
+            id="1",
+            health=None,
+            health_unsupported="no status is reported",
+            samples=[],
+            samples_unsupported=None,
+            errors=[],
+        )
+        doc = json.loads(observability.render_check([reading], "json")[0])
+        # Without this a declining resource says status: null with
+        # nothing saying why.
+        assert doc["resources"][0]["status"] is None
+        assert doc["resources"][0]["unsupported"] == "no status is reported"
+
+    def test_check_json_carries_an_errored_resources_errors(self):
+        reading = observability.ResourceReading(
+            resource_key="digitalocean.network.n1",
+            provider="digitalocean",
+            resource_type="network",
+            name="n1",
+            id="1",
+            health=None,
+            health_unsupported=None,
+            samples=[],
+            samples_unsupported=None,
+            errors=["no driver found for (provider='digitalocean', resource_type='network')"],
+        )
+        doc = json.loads(observability.render_check([reading], "json")[0])
+        # It has no verdict and no decline, so without `errors` it would
+        # disappear from the document entirely.
+        assert doc["resources"][0]["unsupported"] is None
+        assert "no driver found" in doc["resources"][0]["errors"][0]
+
+    def test_a_non_diffable_field_does_not_report_permanent_drift(self, tmp_path, stub_environment):
+        # status' config line goes through refresh_resource() precisely
+        # so a write-only field is carried forward from state, exactly as
+        # on the plan path. Without it every droplet declaring ssh_keys
+        # reports drift forever -- the shape of #133.
+        class SSHKeyDriver(StubDriver):
+            NON_DIFFABLE_FIELDS = ["ssh_keys"]
+
+        source = """\
+---
+resource: compute
+name: web-01
+provider: digitalocean
+params:
+  region: sfo3
+  size: s-1vcpu-2gb
+  ssh_keys:
+    - "aa:bb:cc"
+---
+"""
+        md = tmp_path / "web.aiform.md"
+        md.write_text(source, encoding="utf-8")
+        # read() cannot return ssh_keys -- DO's droplet GET has no such
+        # field -- which is the whole reason the carry-forward exists.
+        stub_environment["drivers"][("digitalocean", "compute")] = SSHKeyDriver(
+            health_result=OK_REPORT,
+            read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
+        )
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(
+                aiform_md_path=str(md),
+                attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["aa:bb:cc"]},
+            ),
+        )
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert report.config == f"in sync with {md}"
+
+    def test_unresolvable_credentials_answer_every_live_line_once(
+        self, tmp_path, stub_environment, monkeypatch
+    ):
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT
+        )
+
+        def refuse(provider):
+            raise RuntimeError("DIGITALOCEAN_TOKEN not found")
+
+        monkeypatch.setattr(config, "resolve_credentials", refuse)
+        path = write_state(tmp_path / "state.json", make_state_entry())
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert "DIGITALOCEAN_TOKEN" in report.live
+        assert report.config == "not applicable: the resource could not be read"
+        assert report.health is None
+        assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+
+
+class TestReviewRound2Regressions:
+    def _reading(self, **kwargs):
+        defaults = dict(
+            resource_key="digitalocean.compute.web-01",
+            provider="digitalocean",
+            resource_type="compute",
+            name="web-01",
+            id="1",
+            health=None,
+            health_unsupported=None,
+            samples=[],
+            samples_unsupported=None,
+            errors=[],
+        )
+        defaults.update(kwargs)
+        return observability.ResourceReading(**defaults)
+
+    def test_a_multi_line_driver_summary_stays_one_line(self):
+        # The first fix collapsed exception text but not the driver's own
+        # summary, which is just as free-form.
+        report = HealthReport(
+            status=HealthStatus.FAILING, summary='status is "off"\nlast_action power_off'
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_decline_reason_stays_one_line(self):
+        text, _ = observability.render_check(
+            [self._reading(health_unsupported="no signal\nand none coming")], "text", fleet=False
+        )
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_observation_value_does_not_inflate_the_column_width(self):
+        report = HealthReport(
+            status=HealthStatus.FAILING,
+            summary="down",
+            observations={"status": "off", "detail": "line one\nline two"},
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert len(text.splitlines()) == 3
+        assert all(line == line.rstrip() for line in text.splitlines())
+
+    def test_a_multi_line_observation_key_does_not_inflate_the_column_width(self):
+        # The case the code comment describes, which the value-only test
+        # above does not reach: an uncollapsed key sets `width` for every
+        # other row.
+        report = HealthReport(
+            status=HealthStatus.FAILING,
+            summary="down",
+            observations={"status": "off", "last\naction": "power_off"},
+        )
+        text, _ = observability.render_check([self._reading(health=report)], "text", fleet=False)
+        assert text.splitlines()[1:] == [
+            "    status       off",
+            "    last action  power_off",
+        ]
+
+    def test_a_multi_line_metrics_decline_stays_one_line(self):
+        text = observability.render_metrics(
+            [self._reading(samples_unsupported="no endpoint\nfor this kind")], "text", fleet=False
+        )
+        assert len(text.splitlines()) == 1
+
+    def test_a_multi_line_status_health_line_stays_one_line(self):
+        report = observability.StatusReport(
+            resource_key="digitalocean.compute.web-01",
+            name="web-01",
+            deployed="2026-09-10T14:02:11Z, id 1",
+            live="present",
+            config="in sync with web.aiform.md",
+            health=HealthReport(status=HealthStatus.FAILING, summary="a\nb"),
+            health_unsupported=None,
+        )
+        text = observability.render_status([report], "text", fleet=False)
+        assert len(text.splitlines()) == 4
+
+    def test_the_family_error_names_the_counter_first(self, tmp_path, stub_environment):
+        # The claims are sorted by MetricKind, and "counter" < "gauge" --
+        # the spec's example had the order backwards.
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            metrics_result=[Sample(name="q_total", kind=MetricKind.GAUGE, value=1.0)]
+        )
+        stub_environment["drivers"][("digitalocean", "firewall")] = StubDriver(
+            metrics_result=[Sample(name="q_total", kind=MetricKind.COUNTER, value=2.0)]
+        )
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(name="web-01"),
+            make_state_entry(name="fw", resource_type="firewall", id="f1"),
+        )
+        result = observability.collect(state_path=path, want_health=False)
+        assert result.errors == [
+            "dropped family 'q_total': digitalocean.firewall says counter, "
+            "digitalocean.compute says gauge"
+        ]
+
+
+class TestStatusReports:
+    """The fleet form. status_for() in a loop loaded state once per
+    resource and handed each call throwaway caches, so N droplets cost N
+    exec_module()s and N credential resolutions."""
+
+    def _fleet(self, tmp_path, stub_environment, n=3):
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)
+        )
+        md = tmp_path / "web.aiform.md"
+        md.write_text(TestStatusFor.SOURCE, encoding="utf-8")
+        entries = [
+            make_state_entry(name=f"web-{i:02d}", id=str(i), aiform_md_path=str(md))
+            for i in range(n)
+        ]
+        return write_state(tmp_path / "state.json", *entries)
+
+    def test_reports_every_tracked_resource_when_keys_is_none(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        reports = observability.status_reports(state_path=path)
+        assert [r.name for r in reports] == ["web-00", "web-01", "web-02"]
+
+    def test_loads_the_driver_once_for_the_whole_fleet(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        observability.status_reports(state_path=path)
+        assert stub_environment["load_calls"] == [("digitalocean", "compute")]
+        assert stub_environment["credential_calls"] == ["digitalocean"]
+
+    def test_status_for_in_a_loop_is_what_this_replaces(self, tmp_path, stub_environment):
+        # The behaviour being fixed, asserted so the fix cannot silently
+        # regress to it: one load per resource.
+        path = self._fleet(tmp_path, stub_environment)
+        for i in range(3):
+            observability.status_for(f"digitalocean.compute.web-{i:02d}", state_path=path)
+        assert len(stub_environment["load_calls"]) == 3
+
+    def test_reports_only_the_named_keys(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        reports = observability.status_reports(["digitalocean.compute.web-01"], state_path=path)
+        assert [r.name for r in reports] == ["web-01"]
+
+    def test_an_empty_state_reports_nothing(self, tmp_path, stub_environment):
+        path = write_state(tmp_path / "state.json")
+        assert observability.status_reports(state_path=path) == []
+
+    def test_raises_for_an_untracked_key(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        with pytest.raises(ValueError):
+            observability.status_reports(["digitalocean.compute.absent"], state_path=path)
+
+    def test_writes_no_state(self, tmp_path, stub_environment):
+        path = self._fleet(tmp_path, stub_environment)
+        before = path.read_bytes()
+        observability.status_reports(state_path=path)
+        assert path.read_bytes() == before

@@ -5,12 +5,15 @@
 The hand-written contract every `(provider, resource)` driver
 implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
-driver's internals, only the four methods below. Pure interface + one
-exception type — no file I/O, no LLM calls, no CSP API calls, no dynamic
-import logic. (Both addenda below describe growth to this contract that is
-specified but not yet implemented — "one exception type" and "the four methods
-below" describe `driver.py` as it stands today, which is what this file is
-supposed to do.)
+driver's internals, only the four abstract methods below. Pure interface plus
+exceptions — no file I/O, no LLM calls, no CSP API calls, no dynamic import
+logic. `driver.py` today holds **two** exception types
+(`DriverUpdateNotSupported` and `CapabilityNotSupported`) and **six**
+methods: the four abstract ones the orchestrator calls, plus the two
+optional concrete ones the `aiform resource` commands call. Four addenda
+follow. `UNORDERED_FIELDS`, "one writable spelling per value" and
+`health()`/`metrics()` are built and in force; the marker-tag helpers
+alone are still a description of growth to come.
 
 **Flagged discrepancy**: `PLAN.md` §1's repo-layout comment lists
 `DriverUpdateNotSupported` as living in `exceptions.py`, but §4's actual
@@ -267,8 +270,10 @@ addendum.
 
 `ResourceDriver` has two optional methods and one exception, for the day-2
 questions `read()` cannot answer. Built — unlike the marker-tag addendum
-above, which is still a description of a contract about to grow. No driver
-overrides either method yet, so every driver in the repo declines both:
+above, which is still a description of a contract about to grow.
+`digitalocean`/`compute` overrides both now; `domain` and `firewall`
+still decline both, which is how a driver that hasn't overridden either
+method behaves:
 
 ```python
 class CapabilityNotSupported(Exception):
@@ -313,9 +318,11 @@ flagging at the top since it was written.
 The parameter *names* are binding, not just their order: a driver spelling
 `id` as `resource_id` would be rejected — by the `OPTIONAL_METHOD_PARAMS`
 check in `specs/driver_gen.md`, which is specified and not yet implemented.
-Until it is, nothing mechanical enforces the names; `PROCESS.md`'s PR-time
-`/code-review` is the only gate, as it is for every other rule these two
-methods carry.
+`tests/test_driver.py`'s signature assertion holds these names against
+`ResourceDriver` itself, but until `OPTIONAL_METHOD_PARAMS` lands, nothing
+mechanical enforces them on a driver's own copy; `PROCESS.md`'s PR-time
+`/code-review` is the only gate on that, as it is for every other rule these
+two methods carry.
 
 Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
 are their only caller, and none of those writes state. Full rules — control

@@ -235,10 +235,14 @@ class TestOptionalMetrics:
 
 
 class TestOptionalMethodSignatures:
-    # Contract, not style: driver_gen.py's AST validator does exact list
-    # equality on the positional parameter names, so a driver renaming
-    # `id` to `resource_id` is rejected. The base class is what those
-    # names are checked against.
+    # Contract, not style: specs/driver_gen.md specifies an
+    # OPTIONAL_METHOD_PARAMS check that does exact list equality on these
+    # names. That check is NOT built -- EXPECTED_METHOD_PARAMS covers
+    # only create/read/update/delete, and validate_driver_source()
+    # returns None for a driver spelling `id` as `resource_id`. Until it
+    # is built this assertion is the only thing holding the names, which
+    # is why it asserts against the base class rather than trusting the
+    # validator to.
     def test_both_take_exactly_self_id_credentials(self):
         import inspect
 

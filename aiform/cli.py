@@ -661,7 +661,9 @@ def _print_stream(text: str) -> None:
         # exit, for a command whose whole point is to be piped. Reopening
         # the fd on devnull stops the interpreter's shutdown flush from
         # raising it again after this function returns.
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, sys.stdout.fileno())
+        os.close(devnull_fd)
 
 
 def _append_report(path: Path, text: str, invocation: str) -> None:
@@ -674,12 +676,17 @@ def _append_report(path: Path, text: str, invocation: str) -> None:
             # came from which run, which is the whole point of appending.
             handle.write(f"=== {stamp}  {invocation}\n{text}\n")
     except OSError as exc:
-        # aiform does not create the directory: a mkdir -p here writes
-        # metrics into a directory nothing reads, failing silently rather
-        # than loudly.
-        raise RuntimeError(
-            f"cannot append to {path}: {exc} -- aiform does not create {path.parent}"
-        ) from exc
+        # Only claim the parent is missing when it actually is. Every
+        # other OSError -- a read-only mount, ENOSPC, a directory in the
+        # way -- reached this message too, sending the operator off to
+        # create a directory that already exists.
+        reason = f"cannot append to {path}: {exc}"
+        if not path.parent.is_dir():
+            # aiform does not create it: a mkdir -p here writes metrics
+            # into a directory nothing reads, failing silently rather
+            # than loudly.
+            reason += f" -- aiform does not create {path.parent}"
+        raise RuntimeError(reason) from exc
 
 
 def _emit(text: str, args: argparse.Namespace) -> None:
@@ -733,11 +740,11 @@ def _cmd_resource_metrics(args: argparse.Namespace) -> int:
 
 
 def _cmd_resource_status(args: argparse.Namespace) -> int:
-    st = state.load(args.state_file)
-    keys = _resource_keys(args, st)
-    if keys is None:
-        keys = list(st.resources)
-    reports = [observability.status_for(key, state_path=args.state_file) for key in keys]
+    # status_reports(), not status_for() in a loop: the loop reloaded
+    # state and re-exec'd the driver once per resource, and reported an
+    # unresolvable token once per resource too.
+    keys = _resource_keys(args, state.load(args.state_file))
+    reports = observability.status_reports(keys, state_path=args.state_file)
     _emit(
         observability.render_status(reports, args.format, fleet=args.name is None),
         args,
@@ -787,9 +794,10 @@ def _build_parser() -> argparse.ArgumentParser:
     plan_sub.add_parser("refresh", parents=[global_parent, state_parent])
     plan_sub.add_parser("show", parents=[global_parent, state_parent])
 
-    # A noun with its own verb lifecycle, matching `aiform driver` rather
-    # than `aiform plan`: none of these plans or applies anything, and
-    # none writes state.
+    # A noun with its own verb lifecycle -- the shape PLAN.md §10
+    # specifies for the unbuilt `aiform driver` group, rather than
+    # `aiform plan`'s: none of these plans or applies anything, and none
+    # writes state.
     resource_parser = subparsers.add_parser("resource", parents=[global_parent])
     resource_sub = resource_parser.add_subparsers(dest="resource_command", required=True)
     for verb in ("check", "metrics", "status"):
@@ -843,7 +851,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     invoked = argv if argv is not None else sys.argv[1:]
-    args.invocation = " ".join(["aiform", *invoked])
+    # split()/rejoin, not a plain " ".join: an arg containing a newline
+    # (e.g. --output/--state-file with one in the path) would otherwise
+    # corrupt the run-splitting a --output delimiter line exists to
+    # support.
+    args.invocation = " ".join(" ".join(["aiform", *invoked]).split())
     try:
         logging_config = config.resolve_logging_config()
     except _HANDLED_EXCEPTIONS as exc:
@@ -859,11 +871,19 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("invoked: %s", " ".join(invoked))
 
     code = _dispatch(args)
-    # Exit 1 is `aiform resource check`'s unhealthy verdict -- the one
-    # code in this CLI that answers the question rather than reporting
-    # whether aiform could answer it. Logging it as an error would make
-    # every powered-off droplet read as an aiform failure in the log.
-    outcome = {0: "success", 1: "unhealthy"}.get(code, "error")
-    level = logging.ERROR if outcome == "error" else logging.INFO
+    # Keyed on the command, not on the integer. `resource check` exit 1
+    # is an unhealthy verdict -- a powered-off droplet, not an aiform
+    # failure -- but `plan apply`/`destroy` also return 1, for a declined
+    # confirmation or a blocked gate #2 review. Mapping the bare integer
+    # logged those at INFO with outcome=unhealthy, which dropped them out
+    # of the `grep ERROR .aiform/logs/` sweep specs/cli.md guarantees
+    # catches every failed invocation.
+    unhealthy = (
+        code == 1
+        and args.command == "resource"
+        and getattr(args, "resource_command", None) == "check"
+    )
+    outcome = "success" if code == 0 else "unhealthy" if unhealthy else "error"
+    level = logging.INFO if outcome != "error" else logging.ERROR
     logger.log(level, "", extra={"exit_code": code, "outcome": outcome})
     return code

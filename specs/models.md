@@ -394,11 +394,19 @@ native percentiles; adding histograms means a new kind and a driver that
 can produce bucket boundaries.
 
 Neither `Sample`'s name/label character rules nor the `_total` suffix
-rule for a `COUNTER` is a Pydantic validator here. They are enforced in
-`observability.collect()`, which is the one place both renderers are fed
-from — putting them on the model would make a driver's mistake a crash
-rather than a dropped sample with an error naming the driver, which is
-what `specs/driver_observability.md`'s partial-failure table calls for.
+rule for a `COUNTER` is a Pydantic validator here. They belong in
+`observability.collect()` — the one place both renderers are fed from —
+which `specs/driver_observability.md` specifies and which is **not built
+yet**; until it is, nothing enforces them at all.
+
+Not because a model validator would crash the command: a driver builds
+its own `Sample`s, so the `ValidationError` would raise inside
+`metrics()` and the partial-failure table's "`metrics()` raises anything
+else" row would catch it per resource. The actual cost is that it would
+take *all* of that resource's samples with it rather than the one bad
+one — making that table's "A returned `Sample` fails validation → the
+surviving samples" row unreachable — and would report a Pydantic message
+instead of one naming the driver and the sample.
 
 ## Behavior
 

@@ -30,6 +30,7 @@ import pytest
 from aiform import cli, planner, state
 from drivers.digitalocean import domain as do_domain
 from tests.system.conftest import (
+    SYSTEM_TEST_ZONE_PARENT,
     assert_cli_ok,
     count_driver_reads,
     create_domain_directly,
@@ -38,7 +39,9 @@ from tests.system.conftest import (
     list_domain_records,
     live_token,
     token_has_domain_scope,
+    token_owns_zone_parent,
     unique_zone_name,
+    verbose_call_count,
     wait_until_domain_gone,
     write_domain_aiform_md,
 )
@@ -106,11 +109,6 @@ ALL_TYPE_RECORDS = [
 
 def _resource_key(zone: str) -> str:
     return f"digitalocean.domain.{zone}"
-
-
-def _verbose_call_count(captured) -> int:
-    assert "[verbose]" in captured.err, f"no [verbose] line in stderr:\n{captured.err}"
-    return int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
 
 
 def _find_live(records: list[dict], **match) -> dict:
@@ -209,6 +207,11 @@ class TestDomainLifecycleSequence:
                 "this DIGITALOCEAN_TOKEN cannot read /v2/domains -- the domain suite needs a "
                 "token with `domain` scope; aiform init's preflight only checks droplet access"
             )
+        if not token_owns_zone_parent(token):
+            pytest.skip(
+                f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT} -- "
+                "the domain suite creates every zone under it"
+            )
 
         state_path = project_dir / ".aiform" / "state.json"
         zone = unique_zone_name("lifecycle")
@@ -224,23 +227,32 @@ class TestDomainLifecycleSequence:
 
         write_domain_aiform_md(project_dir, name=zone, records=BASE_RECORDS)
 
-        # Case 2: first `plan create` on an untracked resource -- zero
-        # Anthropic calls. #118 already skips categorization for an
-        # untracked resource, and #119 removed gate #1 (the driver review)
-        # from this path entirely, so nothing is left to call.
+        # Case 2: first `plan create` on an untracked resource.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        # Zero, and structurally so rather than by luck. #118 skips
+        # categorization for an untracked resource and #119 removed gate
+        # #1 from this path -- but both overlooked aiform/parser.py, and
+        # for a while this really did cost one intent parse (#125). The
+        # orchestrator no longer buys it: parse_file()'s intent_notes are
+        # consumed only by plan_resource(), which this branch skips, so
+        # the untracked branch builds its ParsedResource directly from
+        # content it has already read. PLAN.md §9's claim is true again.
+        assert verbose_call_count(captured) == 0
 
-        # Case 3: `plan apply --yes` -- a CREATE action never triggers gate
-        # #2 either (apply_plan()'s needs_review only covers DESTROY and a
-        # likely-replace UPDATE), so this is zero calls too.
+        # Case 3: first `plan apply --yes` -- zero as well. A CREATE action
+        # never triggers gate #2 (apply_plan()'s needs_review covers only
+        # DESTROY and a likely-replace UPDATE), and apply re-runs
+        # build_create_plan(), which takes the same untracked branch. This
+        # used to cost one: `plan create` does not write the tracked
+        # sha256 -- only a completed apply does -- so the apply re-parsed
+        # the same intent prose it had already thrown away once (#125).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        assert verbose_call_count(captured) == 0
 
         st = state.load(state_path)
         assert key in st.resources
@@ -545,7 +557,7 @@ class TestDomainLifecycleSequence:
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 8: plan destroy --yes")
-        assert _verbose_call_count(captured) >= 1
+        assert verbose_call_count(captured) >= 1
 
         leftover = wait_until_domain_gone(token, zone)
         assert leftover is None, f"destroyed zone {zone} still live: {leftover}"
@@ -601,6 +613,8 @@ def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
     token = live_token()
     if not token_has_domain_scope(token):
         pytest.skip("DIGITALOCEAN_TOKEN lacks `domain` scope")
+    if not token_owns_zone_parent(token):
+        pytest.skip(f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT}")
 
     zone = unique_zone_name("already-exists")
     create_domain_directly(token, zone)
@@ -661,6 +675,8 @@ def test_record_failure_rolls_the_zone_back_leaving_no_orphan():
     token = live_token()
     if not token_has_domain_scope(token):
         pytest.skip("DIGITALOCEAN_TOKEN lacks `domain` scope")
+    if not token_owns_zone_parent(token):
+        pytest.skip(f"this DIGITALOCEAN_TOKEN's team does not own {SYSTEM_TEST_ZONE_PARENT}")
 
     zone = unique_zone_name("rollback")
     try:

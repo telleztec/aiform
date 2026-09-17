@@ -24,14 +24,21 @@ class DriverUpdateNotSupported(Exception):
 class CapabilityNotSupported(Exception):
     """Raised by health()/metrics() when this driver cannot answer that
     question for this resource kind. Lives here rather than in
-    exceptions.py because the base class below raises it itself, which
-    makes it part of the driver contract rather than a general-purpose
-    error.
+    exceptions.py because the base class itself raises it, so it is part
+    of the contract — same reasoning as DriverUpdateNotSupported above.
+    The `aiform resource` commands catch it per-resource and report
+    "unsupported: <reason>". That is not an error for `metrics` or
+    `status`; `check <name>` exits 2, having no verdict to give.
 
     A driver that deliberately cannot implement one overrides it to raise
     this with a resource-specific reason, so the decision is recorded
     where a reviewer reads it instead of being indistinguishable from a
-    forgotten method."""
+    forgotten method.
+
+    Caught directly by its caller, never through
+    orchestrator._call_driver(): that helper converts every exception
+    into DriverExecutionError, which would turn a deliberate decline into
+    an UNKNOWN verdict and a failed `check`."""
 
     def __init__(self, capability: str, reason: str):
         self.capability = capability
@@ -203,12 +210,6 @@ class ResourceDriver(ABC):
     # with the class attributes above. Neither is ever reached from
     # plan/apply — the `aiform resource` commands (§7) are their only
     # caller. Full rules: specs/driver_observability.md.
-    #
-    # Verbatim from PLAN.md §4 but for one clause: §4's block says "as it
-    # does with _tags_for_create/_tags_for_attributes above", and those
-    # two are specs/resource_tagging.md's, still unbuilt — a comment
-    # pointing at a method this file does not define would misread as a
-    # missing implementation rather than an unbuilt spec.
 
     def health(self, id: str, credentials: dict[str, str]) -> HealthReport:
         """

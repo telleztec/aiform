@@ -573,17 +573,36 @@ in `PLAN.md` §4 exactly" — see `specs/driver.md` and
 `aiform/driver.py` file on disk, unlike the tagging addendum above):**
 `CapabilityNotSupported` and two further concrete (non-abstract)
 methods, `health()`/`metrics()`, included below on the same footing and
-for the same reason. The file's copy of the comment above them drops
-this block's reference to `_tags_for_create`/`_tags_for_attributes`,
-which are still unbuilt — a comment naming a method that file does not
-define reads as a missing implementation rather than an unbuilt spec. They are the day-2 half of the contract — is this
-resource working, and what are its counters — and they are **optional**:
+for the same reason. `health()` and `metrics()` are the day-2 half of the
+contract — is this resource working, and what are its counters — and they
+are **optional**:
 the base implementations raise, and a driver either overrides with a
 real implementation or overrides to raise with a resource-specific
 reason. See `specs/driver_observability.md` for the full rules (control
 plane only, read-only, no state write, counter honesty). Note a driver's
 `health()` MAY delegate to its own `read()` where that returns enough --
 what it must not do is widen `read()` to make that possible.
+
+**One deliberate divergence, in the observability portion of the block
+below**: the comment above the two methods drops this block's reference
+to `_tags_for_create`/`_tags_for_attributes`, which are still unbuilt —
+a comment naming a method that file does not define reads as a missing
+implementation rather than an unbuilt spec. Everything else in that
+portion, `CapabilityNotSupported`'s docstring included, is byte-identical
+to `aiform/driver.py`. An earlier version of this paragraph claimed two
+divergences and was itself wrong about the count, which is why the
+docstring was brought back into sync rather than the tally corrected: a
+count is a thing to maintain, and this one had already gone stale once.
+The **rest** of the block is a different matter and is not certified by
+that sentence: it has not been kept in sync with `aiform/driver.py`
+through several later contract additions, and a full diff shows roughly
+ten hunks. `UNORDERED_FIELDS` is missing from it entirely (already
+tracked as #133), `update()`'s ORDERING REQUIREMENT and the
+shared-class-attribute warnings on `LIKELY_REPLACE_FIELDS`/
+`NON_DIFFABLE_FIELDS` are file-only, and the SPDX header runs the other
+way — present in the file, absent here. So "unbuilt" does not explain
+those; staleness does. Treat the file as authoritative for anything
+outside the observability portion until §4 is reconciled.
 
 ```python
 # aiform/driver.py — hand-written, not generated
@@ -617,7 +636,17 @@ class CapabilityNotSupported(Exception):
     of the contract — same reasoning as DriverUpdateNotSupported above.
     The `aiform resource` commands catch it per-resource and report
     "unsupported: <reason>". That is not an error for `metrics` or
-    `status`; `check <name>` exits 2, having no verdict to give."""
+    `status`; `check <name>` exits 2, having no verdict to give.
+
+    A driver that deliberately cannot implement one overrides it to raise
+    this with a resource-specific reason, so the decision is recorded
+    where a reviewer reads it instead of being indistinguishable from a
+    forgotten method.
+
+    Caught directly by its caller, never through
+    orchestrator._call_driver(): that helper converts every exception
+    into DriverExecutionError, which would turn a deliberate decline into
+    an UNKNOWN verdict and a failed `check`."""
 
     def __init__(self, capability: str, reason: str):
         self.capability = capability
@@ -891,7 +920,20 @@ class Driver(ResourceDriver):
      `aiform_md_sha256` in state matches the file's current hash — no
      reason to re-extract intent from unchanged prose. Also skipped
      unconditionally for an `AIFORM-DELETE-` file, regardless of hash
-     — a destroy needs no interpretive guidance.
+     — a destroy needs no interpretive guidance. **Also skipped for a
+     brand-new resource** (no state entry exists for it yet, so there is
+     no tracked hash to compare against): `intent_notes` are consumed
+     only by the categorization call in step 6, which — per that step's
+     own "two more cases skip it" — a resource with no state entry never
+     reaches (see §9 and `specs/orchestrator.md`). Flagged and added by
+     #140, which found the original two-condition list left this call
+     running, uselessly, on every first `plan create`. The other of step
+     6's "two more cases," a tracked resource that has gone
+     `drifted_missing`, is **not** added here: it does have a tracked
+     hash to compare against, so it stays on the ordinary
+     hash-short-circuit path above rather than a new unconditional skip
+     — `specs/orchestrator.md` explains why removing that call too is a
+     separate decision, not a side effect of this one.
 3. **Ensure a driver is usable** for `(provider, resource)`:
    - **Driver file missing** → `aiform plan create` fails immediately with a
      clear, actionable error (raises
@@ -1251,7 +1293,7 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
 
 aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.metrics() for one named resource, or
+    driver.metrics() for one named resource, or
     for EVERY tracked resource when <name> is omitted. Only metrics():
     check is the verb that asks health(). No-argument-means-everything is this CLI's existing
     convention -- `plan refresh`, `plan show` and `plan create` all work
