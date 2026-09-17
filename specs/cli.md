@@ -5,7 +5,8 @@
 The `aiform` command-line surface (`PLAN.md` §7, minus the `driver ...`
 subcommands, which are unbuilt and not currently being built — see Out
 of scope): `init`, `plan
-create`, `plan apply`, `plan destroy`, `plan refresh`, `plan show`.
+create`, `plan apply`, `plan destroy`, `plan refresh`, `plan show`,
+`resource check`, `resource metrics`, `resource status`.
 Argument parsing, plan/state output formatting, error-message
 formatting, and process exit codes all live here — `orchestrator.py`
 does none of this (`specs/orchestrator.md`'s "Out of scope": "All CLI

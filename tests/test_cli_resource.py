@@ -402,6 +402,16 @@ class TestMetricsOutput:
         self._run(project, out)
         assert not (project.dir / "absent").exists()
 
+    def test_a_present_parent_does_not_get_the_missing_parent_hint(self, project, capsys):
+        # --output pointed at an existing directory: the parent (project.dir)
+        # is there, so open("a") raises IsADirectoryError, not a missing
+        # parent. The hint is conditional on path.parent.is_dir() -- this
+        # is the case where it must not fire.
+        out = project.dir
+        assert self._run(project, out) == 2
+        err = capsys.readouterr().err
+        assert "aiform does not create" not in err
+
     def test_json_to_a_file_keeps_the_delimiter(self, project):
         # The file is a stream of runs, not one document; a consumer
         # splits on the delimiter before parsing each block.

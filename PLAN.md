@@ -1293,7 +1293,7 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
 
 aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.metrics() for one named resource, or
+    driver.metrics() for one named resource, or
     for EVERY tracked resource when <name> is omitted. Only metrics():
     check is the verb that asks health(). No-argument-means-everything is this CLI's existing
     convention -- `plan refresh`, `plan show` and `plan create` all work

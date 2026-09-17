@@ -661,7 +661,9 @@ def _print_stream(text: str) -> None:
         # exit, for a command whose whole point is to be piped. Reopening
         # the fd on devnull stops the interpreter's shutdown flush from
         # raising it again after this function returns.
-        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull_fd, sys.stdout.fileno())
+        os.close(devnull_fd)
 
 
 def _append_report(path: Path, text: str, invocation: str) -> None:
@@ -849,7 +851,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     invoked = argv if argv is not None else sys.argv[1:]
-    args.invocation = " ".join(["aiform", *invoked])
+    # split()/rejoin, not a plain " ".join: an arg containing a newline
+    # (e.g. --output/--state-file with one in the path) would otherwise
+    # corrupt the run-splitting a --output delimiter line exists to
+    # support.
+    args.invocation = " ".join(" ".join(["aiform", *invoked]).split())
     try:
         logging_config = config.resolve_logging_config()
     except _HANDLED_EXCEPTIONS as exc:
