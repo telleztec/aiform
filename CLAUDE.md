@@ -25,7 +25,7 @@ whenever starting or resuming work on a module. Per-module specs live in
 Current status: **MVP walkthrough end to end.** `pyproject.toml`,
 `aiform/models.py`, `state.py`, `config.py`, `llm.py`, `log.py`,
 `exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,
-`orchestrator.py`, `cli.py`, `__main__.py`, and
+`orchestrator.py`, `observability.py`, `cli.py`, `__main__.py`, and
 `drivers/digitalocean/compute.py` are all written, and `python -m aiform`
 exposes `init` plus `plan create`/`apply`/`destroy`/`refresh`/`show`.
 The "Suggested implementation order" below is now a record of how it was
@@ -108,7 +108,10 @@ to make something easier to build.
   **never** have a `credentials` parameter, local variable, or import
   anywhere in it. This is meant to be literally grep-verifiable:
   `grep -n credentials aiform/llm.py` should return nothing, ever. All
-  credential-bearing code lives in `orchestrator.py`'s driver-execution path.
+  credential-bearing code lives in the driver-execution paths:
+  `orchestrator.py`'s, and `observability.py`'s, which resolves
+  credentials itself for the `aiform resource` commands because those
+  never go through the orchestrator at all.
 - `ANTHROPIC_API_KEY` — env var only, never a CLI flag. Which *model* to call
   is separate from this and lives in `.aiform/config.yaml` — a model name
   isn't a secret, don't conflate the two files.
@@ -190,13 +193,13 @@ to make something easier to build.
   per-piece **build-status table** — read that rather than this
   paragraph, which is the copy that goes stale. Built:
   `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
-  `Sample`, and the two base methods. Not built:
-  `aiform/observability.py` and the `aiform resource` commands, so don't
-  import them yet. A driver omitting both methods is complete, not
-  unfinished, because the base class implements them by raising — every
-  shipped driver does exactly that today. Don't add them to a driver
-  speculatively: they call CSP endpoints that need their own probe
-  session first (`specs/driver_creation.md`).
+  `Sample`, the two base methods, and `aiform/observability.py`. Not
+  built: the `aiform resource` commands, so don't reach for them yet. A
+  driver omitting both methods is complete, not unfinished, because the
+  base class implements them by raising — every shipped driver does
+  exactly that today. Don't add them to a driver speculatively: they call
+  CSP endpoints that need their own probe session first
+  (`specs/driver_creation.md`).
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
   the full layout, including `tests/drivers/test_digitalocean_compute.py`
