@@ -308,7 +308,12 @@ def collect(
 ) -> Collection:
     """Read tracked resources: exactly those in `keys`, or every one when
     `keys` is None. Reads state; never writes it. Makes zero Anthropic
-    API calls."""
+    API calls.
+
+    An unknown key is silently skipped rather than raised, unlike
+    status_reports()'s per-key ValueError -- not reachable from cli.py
+    today (resolve_name() raises first), but a caller synthesizing keys
+    of its own should not assume the two agree."""
     started = time.monotonic()
     st = state.load(state_path)
     entries = (
@@ -525,14 +530,16 @@ def _config_for(
     source = Path(entry.aiform_md_path)
     try:
         content = source.read_text(encoding="utf-8-sig")
+        spec = parser.parse_frontmatter(content)
     except OSError:
         return "no source file found"
-    try:
-        spec = parser.parse_frontmatter(content)
     except ValueError as exc:
-        # Distinct from a missing file: `plan` would say "malformed
-        # frontmatter" here, and reporting it as absent sends a reader
-        # looking for a file that is sitting right there.
+        # Catches both a malformed-frontmatter ValueError and the
+        # UnicodeDecodeError read_text() raises on undecodable bytes --
+        # itself a ValueError subclass, so it belongs in this branch, not
+        # OSError's. Distinct from a missing file: `plan` would say
+        # "malformed frontmatter" here, and reporting it as absent sends
+        # a reader looking for a file that is sitting right there.
         return _oneline(f"source file is malformed: {exc}")
     if (spec.provider, spec.resource, spec.name) != (
         entry.provider,

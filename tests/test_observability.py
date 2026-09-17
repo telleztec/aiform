@@ -1546,6 +1546,24 @@ class TestStatusForRound1Regressions:
         )
         assert report.config.startswith("source file is malformed")
 
+    def test_an_undecodable_source_file_is_reported_not_raised(self, tmp_path, stub_environment):
+        # read_text(encoding="utf-8-sig") raises UnicodeDecodeError on
+        # undecodable bytes -- a ValueError subclass, not an OSError, so
+        # it must land in the same branch as a malformed-frontmatter
+        # ValueError. Undetected, this crashes status_for() outright
+        # instead of reporting the one resource, which in status_reports()
+        # would blank every other resource's line too.
+        stub_environment["drivers"][("digitalocean", "compute")] = StubDriver(
+            health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)
+        )
+        md = tmp_path / "web.aiform.md"
+        md.write_bytes(b"---\nprovider: digitalocean\n\xff\xfe\n---\n")
+        state_path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
+
+        report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+
+        assert report.config.startswith("source file is malformed")
+
     def test_a_repurposed_source_file_is_not_diffed_against_this_resource(
         self, tmp_path, stub_environment
     ):
