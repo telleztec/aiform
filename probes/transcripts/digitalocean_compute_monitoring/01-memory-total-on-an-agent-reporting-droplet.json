@@ -1,0 +1,66 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 579,
+ "note": "memory_total on an agent-reporting droplet",
+ "prediction": {
+  "labels": [
+   "host_id"
+  ],
+  "series": 1,
+  "shape": "Prometheus-style matrix: data.result[].values[][ts, string]",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:31.622257+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/memory_total?host_id=589098829&start=1789482571&end=1789483171"
+ },
+ "response": {
+  "body": {
+   "data": {
+    "result": [
+     {
+      "metric": {
+       "host_id": "589098829"
+      },
+      "values": [
+       [
+        1789482480,
+        "2063577088"
+       ],
+       [
+        1789482600,
+        "2063577088"
+       ],
+       [
+        1789482720,
+        "2063577088"
+       ],
+       [
+        1789482840,
+        "2063577088"
+       ],
+       [
+        1789482960,
+        "2063577088"
+       ],
+       [
+        1789483080,
+        "2063577088"
+       ]
+      ]
+     }
+    ],
+    "resultType": "matrix"
+   },
+   "status": "success"
+  },
+  "status": 200
+ },
+ "seq": 1
+}

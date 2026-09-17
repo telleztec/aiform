@@ -1,0 +1,68 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 331,
+ "note": "bandwidth public outbound",
+ "prediction": {
+  "labels": [
+   "direction",
+   "host_id",
+   "interface"
+  ],
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:38.422956+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/bandwidth?host_id=589098829&start=1789482571&end=1789483171&interface=public&direction=outbound"
+ },
+ "response": {
+  "body": {
+   "data": {
+    "result": [
+     {
+      "metric": {
+       "direction": "outbound",
+       "host_id": "589098829",
+       "interface": "public"
+      },
+      "values": [
+       [
+        1789482480,
+        "0.004296720156555772"
+       ],
+       [
+        1789482600,
+        "0.003833913725490196"
+       ],
+       [
+        1789482720,
+        "0.004146520547945206"
+       ],
+       [
+        1789482840,
+        "0.004650610966057441"
+       ],
+       [
+        1789482960,
+        "0.004617104166666666"
+       ],
+       [
+        1789483080,
+        "0.0038842597402597404"
+       ]
+      ]
+     }
+    ],
+    "resultType": "matrix"
+   },
+   "status": "success"
+  },
+  "status": 200
+ },
+ "seq": 18
+}

@@ -132,9 +132,11 @@ Check specifically for:
       (a) its name must end in `_total`, and it must not be computed by
       subtracting or differencing two values the driver read — both
       visible in the source in front of you; (b) `COUNTER` is only correct for a value the
-      CSP *documents* as cumulative and monotonic over the resource's
-      lifetime, which you cannot verify without that documentation in
-      front of you. A value that resets on reboot is a `GAUGE`. Getting
+      CSP *documents* as cumulative and monotonic while the resource is
+      running, which you cannot verify without that documentation in
+      front of you. A value that resets on reboot may still be a
+      `COUNTER` — `cpu_seconds_total` is one — but a value that can
+      *decrease* while the resource keeps running is a `GAUGE`. Getting
       this wrong makes `rate()` produce a plausible, silently false
       number — worse than no metric.
     - **Setting an identity label.** `provider`, `resource_type`, `name`

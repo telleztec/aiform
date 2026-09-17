@@ -11,7 +11,7 @@ from email.message import Message
 
 import pytest
 
-from aiform.driver import CapabilityNotSupported, DriverUpdateNotSupported
+from aiform.driver import DriverUpdateNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from drivers.digitalocean.compute import Driver
 
@@ -160,6 +160,10 @@ class FakeUrlopen:
                 "body": body,
                 "authorization": request.get_header("Authorization"),
                 "content_type": request.get_header("Content-type"),
+                # health()/metrics() must pass a shorter bound than the
+                # driver's 30s default, and the only way to assert that
+                # is to record what urlopen was actually given.
+                "timeout": kwargs.get("timeout", args[0] if args else None),
             }
         )
 
@@ -1576,7 +1580,11 @@ class TestLogging:
 
         record = next(r for r in caplog.records if getattr(r, "step", None) == "power-off")
         assert record.outcome == "timeout"
-        assert record.attempts_used == 30
+        # Pinned to the live default rather than a literal: this is
+        # exactly the number that drifted from 30 to 45 (issue #152), and
+        # a literal here would need editing every time that budget is
+        # re-tuned rather than catching a caller who forgot to update it.
+        assert record.attempts_used == driver._poll_until.__defaults__[0]
         assert record.levelno == logging.ERROR
 
     def test_tags_step_logs_what_it_set_out_to_change(self, driver, fake_urlopen, caplog):
@@ -1735,17 +1743,3 @@ class TestLogging:
         exc = http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"})
 
         assert driver._do_error_message(exc) == "disk size cannot be decreased"
-
-
-class TestObservabilityNotImplemented:
-    """Neither optional method is overridden yet -- CLAUDE.md and
-    specs/driver.md both claim this; pin it mechanically so a
-    speculative health()/metrics() addition can't go in silently."""
-
-    def test_health_declines(self, driver):
-        with pytest.raises(CapabilityNotSupported):
-            driver.health("123", CREDENTIALS)
-
-    def test_metrics_declines(self, driver):
-        with pytest.raises(CapabilityNotSupported):
-            driver.metrics("123", CREDENTIALS)

@@ -12,6 +12,7 @@ import urllib.request
 from aiform import log
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
+from aiform.models import HealthReport, HealthStatus, MetricKind, Sample
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
@@ -28,6 +29,58 @@ REQUEST_TIMEOUT_SECONDS = 30
 # permanent rejection either. Left as-is unless a concrete, observed DO
 # status code demonstrates otherwise.
 _RESIZE_REJECTED_STATUSES = (400, 422)
+
+# health()/metrics() are run in a loop by a script and a human waits on
+# them, so they must not inherit REQUEST_TIMEOUT_SECONDS -- six times
+# specs/driver_observability.md's per-resource target, per resource, per
+# request. Be honest about what this bounds: metrics() issues one request
+# per family below, so a pathological worst case is still that many
+# multiples of this, which is past the target. The spec says plainly that
+# no whole-sweep deadline exists yet and owns that gap under PLAN.md
+# §10's timeout/retry entry.
+OBSERVE_TIMEOUT_SECONDS = 5
+
+# DigitalOcean's monitoring series steps every 120 seconds and its newest
+# point was observed up to ~100s old (probe 12), so a window narrower
+# than about four minutes can legitimately return nothing for a droplet
+# that is reporting normally.
+METRIC_WINDOW_SECONDS = 600
+
+# Statuses this driver models. Anything else is DEGRADED rather than OK:
+# a verdict of OK on a status the driver has never seen asserts health it
+# has no basis for.
+_FAILING_STATUSES = ("off", "archive")
+
+# (endpoint, sample name, kind). Bare names, unit in the name: a future
+# exporter applies any prefix and the identity labels, and needs them
+# unqualified to do it.
+#
+# cpu is the one COUNTER. Its per-mode seconds reset when the droplet
+# reboots, which an earlier version of the counter-honesty rule would
+# have disqualified -- see that rule's amendment in
+# specs/driver_observability.md: a reset is a documented, handled
+# condition in every consumer that types series this way, and shipping
+# the canonical counter as a gauge makes rate() meaningless.
+#
+# bandwidth is deliberately absent: it is the only metric in the family
+# that needs interface and direction parameters (probe 11 got a 400
+# without them), so it costs four more requests for four more series, and
+# it reports a rate rather than a state a human reads off a droplet.
+_METRIC_FAMILIES = (
+    ("memory_total", "memory_total_bytes", MetricKind.GAUGE),
+    ("memory_available", "memory_available_bytes", MetricKind.GAUGE),
+    ("filesystem_free", "filesystem_free_bytes", MetricKind.GAUGE),
+    ("filesystem_size", "filesystem_size_bytes", MetricKind.GAUGE),
+    ("load_1", "load1", MetricKind.GAUGE),
+    ("load_5", "load5", MetricKind.GAUGE),
+    ("load_15", "load15", MetricKind.GAUGE),
+    ("cpu", "cpu_seconds_total", MetricKind.COUNTER),
+)
+
+# Identity DigitalOcean stamps on every series. The output already prints
+# the resource beside its samples, and a future exporter must be able to
+# stamp its own without colliding with the driver's.
+_IDENTITY_LABEL = "host_id"
 
 # The PARAM_SCHEMA fields DigitalOcean can change on a live droplet.
 # Everything else forces a replace: region needs a snapshot+recreate,
@@ -70,14 +123,14 @@ class Driver(ResourceDriver):
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
     UNORDERED_FIELDS = ["tags"]
 
-    def _request(self, method, url, credentials, body=None):
+    def _request(self, method, url, credentials, body=None, timeout=REQUEST_TIMEOUT_SECONDS):
         data = None
         headers = {"Authorization": f"Bearer {credentials['DIGITALOCEAN_TOKEN']}"}
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
         if not raw:
             return None
@@ -99,8 +152,8 @@ class Driver(ResourceDriver):
             "ipv4_address": ipv4_address,
         }
 
-    def _get_droplet(self, id, credentials):
-        payload = self._request("GET", f"{BASE_URL}/droplets/{id}", credentials)
+    def _get_droplet(self, id, credentials, timeout=REQUEST_TIMEOUT_SECONDS):
+        payload = self._request("GET", f"{BASE_URL}/droplets/{id}", credentials, timeout=timeout)
         return payload["droplet"]
 
     def _action(self, id, credentials, body):
@@ -124,7 +177,7 @@ class Driver(ResourceDriver):
             return None
         return data.get("message") if isinstance(data, dict) else None
 
-    def _poll_until(self, id, credentials, predicate, step, max_attempts=30, delay_seconds=2):
+    def _poll_until(self, id, credentials, predicate, step, max_attempts=45, delay_seconds=2):
         start = time.monotonic()
         for attempt in range(max_attempts):
             droplet = self._get_droplet(id, credentials)
@@ -187,18 +240,21 @@ class Driver(ResourceDriver):
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
         new_id = payload["droplet"]["id"]
-        # _poll_until's default budget (30 attempts * 2s = 60s) is tuned for
+        # _poll_until's default budget (45 attempts * 2s = 90s) is tuned for
         # update()'s power-off/resize/power-on actions against an already-
         # existing droplet -- full provisioning from scratch commonly takes
         # longer than that per DO's own docs, so this uses a wider budget
         # (60 * 3s = 180s) to avoid spuriously timing out a create that
         # would have converged moments later. The default itself was
-        # raised from 20 to 30 attempts (40s -> 60s) after a live system
-        # test run hit a genuine DO power-off slowdown right at the old
-        # budget's edge -- a real, observed timing adjustment per
-        # PLAN.md's own "guesses tuned against one CSP's observed
-        # behavior, not a real policy" framing for these two constants,
-        # not a fix for a code defect.
+        # raised twice now: 20->30 attempts (40s->60s) after an earlier
+        # live run hit a power-off slowdown at the old edge, then 30->45
+        # attempts (60s->90s, see issue #152) after three consecutive live
+        # runs all timed out on the same power-off step within a second of
+        # each other (~72-73s) -- tight enough clustering that it reads as
+        # DO's power-off latency having shifted, not tail-latency noise.
+        # Real, observed timing adjustments per PLAN.md's own "guesses
+        # tuned against one CSP's observed behavior, not a real policy"
+        # framing for these two constants, not a fix for a code defect.
         droplet = self._poll_until(
             new_id,
             credentials,
@@ -535,3 +591,111 @@ class Driver(ResourceDriver):
                 return None
             raise
         return None
+
+    def health(self, id, credentials):
+        # Deliberately not self.read(): read() projects the droplet down
+        # to what is worth storing, and `locked` -- an action in flight,
+        # which is exactly a DEGRADED signal -- is not in it. Widening
+        # read() to carry it would put a field that churns into state,
+        # which is the thing specs/driver_observability.md forbids.
+        try:
+            droplet = self._get_droplet(id, credentials, timeout=OBSERVE_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise ResourceNotFoundError(f"DigitalOcean droplet {id} not found") from exc
+            # Everything else propagates. A driver does not classify its
+            # own failures as UNKNOWN -- observability.collect() does
+            # that, and keeps the error text a swallowed exception loses.
+            raise
+
+        status = droplet["status"]
+        ipv4 = self._flatten(droplet)["ipv4_address"]
+        observations = {
+            "status": status,
+            "locked": str(bool(droplet.get("locked"))).lower(),
+            "region": droplet["region"]["slug"],
+            "size": droplet["size_slug"],
+            "ipv4_address": ipv4 or "none",
+            "features": ",".join(droplet.get("features") or []) or "none",
+        }
+
+        if status in _FAILING_STATUSES:
+            return HealthReport(
+                status=HealthStatus.FAILING,
+                summary=f'status is "{status}"',
+                observations=observations,
+            )
+        if status == "new":
+            return HealthReport(
+                status=HealthStatus.DEGRADED,
+                summary="still provisioning",
+                observations=observations,
+            )
+        if status != "active":
+            return HealthReport(
+                status=HealthStatus.DEGRADED,
+                summary=f'unmodelled status "{status}"',
+                observations=observations,
+            )
+        if droplet.get("locked"):
+            return HealthReport(
+                status=HealthStatus.DEGRADED,
+                summary="active but locked: an action is in flight",
+                observations=observations,
+            )
+        if not ipv4:
+            return HealthReport(
+                status=HealthStatus.DEGRADED,
+                summary="active with no public v4 address",
+                observations=observations,
+            )
+        return HealthReport(
+            status=HealthStatus.OK,
+            summary=f"active, public v4 {ipv4}",
+            observations=observations,
+        )
+
+    def metrics(self, id, credentials):
+        end = int(time.time())
+        start = end - METRIC_WINDOW_SECONDS
+        samples = []
+        for endpoint, name, kind in _METRIC_FAMILIES:
+            # No try/except: a 401 here means either the droplet is gone
+            # or the token is wrong, and DigitalOcean answers 401 for
+            # both (probes 14 and 15 -- it never 404s on this endpoint).
+            # Guessing ResourceNotFoundError would report a live droplet
+            # as deleted every time a token was wrong, so the error
+            # propagates and collect() records it as what it is.
+            payload = self._request(
+                "GET",
+                f"{BASE_URL}/monitoring/metrics/droplet/{endpoint}"
+                f"?host_id={id}&start={start}&end={end}",
+                credentials,
+                timeout=OBSERVE_TIMEOUT_SECONDS,
+            )
+            samples.extend(self._samples_from_series(payload, name, kind))
+        return samples
+
+    def _samples_from_series(self, payload, name, kind):
+        # An empty result is the normal answer for a droplet whose agent
+        # has not reported -- one created with monitoring off, or simply
+        # younger than the agent's first push (probes 23 and 24). DO
+        # answers 200 with no series, not an error, and so does this.
+        for series in ((payload or {}).get("data") or {}).get("result") or []:
+            values = series.get("values") or []
+            if not values:
+                continue
+            # The newest point, not an average of the window: the value
+            # is already pre-averaged by DigitalOcean over its own 120s
+            # step, and resampling it here would paper over a staleness
+            # the operator should see rather than fix.
+            yield Sample(
+                name=name,
+                kind=kind,
+                value=float(values[-1][1]),
+                labels={
+                    key: value
+                    for key, value in (series.get("metric") or {}).items()
+                    if key != _IDENTITY_LABEL
+                },
+            )

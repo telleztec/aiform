@@ -1,0 +1,61 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 319,
+ "note": "memory_cached shape and cardinality",
+ "prediction": {
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:33.329506+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/memory_cached?host_id=589098829&start=1789482571&end=1789483171"
+ },
+ "response": {
+  "body": {
+   "data": {
+    "result": [
+     {
+      "metric": {
+       "host_id": "589098829"
+      },
+      "values": [
+       [
+        1789482480,
+        "880840704"
+       ],
+       [
+        1789482600,
+        "881025024"
+       ],
+       [
+        1789482720,
+        "881090560"
+       ],
+       [
+        1789482840,
+        "881135616"
+       ],
+       [
+        1789482960,
+        "881147904"
+       ],
+       [
+        1789483080,
+        "881205248"
+       ]
+      ]
+     }
+    ],
+    "resultType": "matrix"
+   },
+   "status": "success"
+  },
+  "status": 200
+ },
+ "seq": 5
+}

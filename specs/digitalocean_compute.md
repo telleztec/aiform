@@ -99,8 +99,8 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   only the new `id` from that response and then polls `GET
   /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
   `update()` uses, but with its own wider budget — `max_attempts=60`,
-  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=30`,
-  `delay_seconds=2` (60s) — because full provisioning from scratch
+  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=45`,
+  `delay_seconds=2` (90s) — because full provisioning from scratch
   commonly takes longer than reconciling an already-existing droplet;
   either way, exhaustion raises `TimeoutError` naming the droplet `id`)
   until `status == "active"`, discarding the transient POST body in
@@ -183,6 +183,109 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   recovered from a `GET` — DigitalOcean's droplet object has no
   `ssh_keys` field at all, on any response, confirmed against the same
   official schema — see Edge cases for what that means for the diff.
+
+### `health(id, credentials)`
+
+One `GET /v2/droplets/{id}`, bounded at `OBSERVE_TIMEOUT_SECONDS` (5s)
+rather than the driver's 30s `REQUEST_TIMEOUT_SECONDS` — a `health()`
+that inherits the default silently gets a bound six times
+`specs/driver_observability.md`'s per-resource target.
+
+**Not delegated to `read()`**, which the contract permits and which
+`read()` almost supports: it returns `status` and `ipv4_address` already.
+What it does not return is `locked` — an action in flight, which is
+exactly a `DEGRADED` signal — and widening `read()` to carry it would put
+a field that churns into `state.json`, the thing that spec forbids.
+
+| Observed | Verdict | Summary |
+|---|---|---|
+| `status` in `off`, `archive` | `FAILING` | `status is "<status>"` |
+| `status == "new"` | `DEGRADED` | `still provisioning` |
+| any other non-`active` status | `DEGRADED` | `unmodelled status "<status>"` |
+| `active` and `locked` | `DEGRADED` | `active but locked: an action is in flight` |
+| `active`, no public v4 | `DEGRADED` | `active with no public v4 address` |
+| `active`, public v4 | `OK` | `active, public v4 <address>` |
+
+`404` becomes `ResourceNotFoundError`, matching `read()`; every other
+`HTTPError` propagates. **Never `UNKNOWN`** — a driver does not classify
+its own failures, and one that caught its own timeout to return `UNKNOWN`
+would destroy the error text `collect()` keeps.
+
+An unmodelled status is `DEGRADED` rather than `OK` deliberately: a
+verdict of `OK` on a status this driver has never seen asserts health it
+has no basis for. `new` is called out separately from the unmodelled
+bucket because it was observed (probe `25`) and it is not a problem —
+nothing is wrong, the droplet simply is not ready.
+
+`observations` carries `status`, `locked`, `region`, `size`,
+`ipv4_address` and `features` — bounded, six keys, and each one something
+an operator diagnosing a bad verdict would otherwise go to the console
+for.
+
+### `metrics(id, credentials)`
+
+One `GET /v2/monitoring/metrics/droplet/<metric>` per family, eight of
+them, each bounded at `OBSERVE_TIMEOUT_SECONDS`. The window is
+`METRIC_WINDOW_SECONDS` (600s) back from now: the series steps every 120s
+and its newest point was observed 64–96s old (probe `12`), so a narrower
+window can legitimately return nothing for a droplet reporting normally.
+The **newest** point of each series is taken, never an average — the
+value is already pre-averaged by DigitalOcean over its own step, and
+resampling would hide a staleness the operator should see.
+
+| Endpoint | Sample | Kind | Labels |
+|---|---|---|---|
+| `memory_total` | `memory_total_bytes` | `GAUGE` | — |
+| `memory_available` | `memory_available_bytes` | `GAUGE` | — |
+| `filesystem_free` | `filesystem_free_bytes` | `GAUGE` | `device`, `fstype`, `mountpoint` |
+| `filesystem_size` | `filesystem_size_bytes` | `GAUGE` | `device`, `fstype`, `mountpoint` |
+| `load_1` | `load1` | `GAUGE` | — |
+| `load_5` | `load5` | `GAUGE` | — |
+| `load_15` | `load15` | `GAUGE` | — |
+| `cpu` | `cpu_seconds_total` | `COUNTER` | `mode` (8 series) |
+
+**`host_id` is stripped from every series.** DigitalOcean stamps it on
+all of them, it is identity the output already prints beside the samples,
+and a future exporter cannot stamp its own if the driver got there first.
+The filesystem labels are kept for the opposite reason: they are what
+tells two filesystems apart, not identity.
+
+**`cpu_seconds_total` is the one `COUNTER`**, under the amended
+counter-honesty rule — see that amendment in
+`specs/driver_observability.md`. Its per-mode seconds reset when the
+droplet reboots, which the original rule would have disqualified;
+shipping the canonical counter as a gauge makes `rate()` over it
+meaningless, and a reset is a documented, handled condition in every
+consumer that types series this way.
+
+**`bandwidth` is deliberately absent.** It is the only metric in the
+family not addressable by `host_id` alone — `400` without `interface` and
+`direction` (probe `11`) — so it costs four more requests for four more
+series, and it reports a rate rather than a state a human reads off a
+droplet. Named here so its absence reads as a decision.
+
+**An empty series is normal, not an error.** A droplet created with
+monitoring off, or simply younger than the agent's first push, answers
+`200` with no series (probes `23`, `24`); those families contribute no
+samples, and a droplet where every family is empty yields `[]`, which
+`observability.py` renders as `no samples`. One empty family never
+suppresses the others.
+
+**A `401` propagates and is never `ResourceNotFoundError`.**
+DigitalOcean answers `401 unauthorized` for a `host_id` that does not
+exist *and* for a malformed one (probes `14`, `15`) — it never `404`s on
+this endpoint. So `metrics()` structurally cannot tell "the droplet is
+gone" from "the token is wrong," and guessing the former would report a
+live droplet as deleted every time a credential was bad. The error
+propagates and `collect()` records it as a failure to observe. This is
+why `specs/driver_observability.md`'s
+"`metrics()` raises `ResourceNotFoundError`" row is unreachable here.
+
+**Honest cost.** Eight sequential requests, each bounded at 5s, so a
+pathological worst case is 40s for one droplet — well past that spec's
+≤5s per-resource target, which it already states is not mechanically
+enforced and belongs to `PLAN.md` §10's timeout/retry entry. In practice
+the observed total is a few hundred milliseconds.
 
 ### `delete(id, credentials)`
 

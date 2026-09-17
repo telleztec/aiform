@@ -1335,12 +1335,17 @@ class TestRenderMetricsElapsedSeconds:
 
 class TestAgainstARealDriverOnDisk:
     """The stub tests above patch load_driver; these do not, so they
-    exercise the real dynamic-import path and the real base-class
-    decline. Every shipped driver declines both methods today.
+    exercise the real dynamic-import path against a driver file on disk.
+
+    `domain` is the subject rather than `compute`: compute now implements
+    both methods, so it no longer exercises the base-class decline at
+    all. These two tests asserted "every shipped driver declines" and
+    failed loudly the moment that stopped being true, which is what they
+    were for.
 
     Credentials are still stubbed: resolving them for real reads
     DIGITALOCEAN_TOKEN, which .envrc exports here and CI does not -- a
-    test that green here and red there is worse than no test."""
+    test green here and red there is worse than no test."""
 
     @pytest.fixture(autouse=True)
     def _stub_credentials(self, monkeypatch):
@@ -1348,9 +1353,14 @@ class TestAgainstARealDriverOnDisk:
             config, "resolve_credentials", lambda provider: {"DIGITALOCEAN_TOKEN": "tok"}
         )
 
+    def _decliner(self, tmp_path):
+        return write_state(
+            tmp_path / "state.json",
+            make_state_entry(resource_type="domain", name="example.com", id="example.com"),
+        )
+
     def test_a_real_driver_declines_both_and_the_sweep_still_renders(self, tmp_path):
-        path = write_state(tmp_path / "state.json", make_state_entry())
-        result = observability.collect(state_path=path)
+        result = observability.collect(state_path=self._decliner(tmp_path))
         reading = result.readings[0]
         assert reading.health is None
         assert "does not implement health()" in reading.health_unsupported
@@ -1359,13 +1369,21 @@ class TestAgainstARealDriverOnDisk:
         assert reading.errors == []
 
     def test_check_over_a_fleet_of_decliners_exits_two(self, tmp_path):
-        path = write_state(tmp_path / "state.json", make_state_entry())
-        result = observability.collect(state_path=path, want_metrics=False)
+        result = observability.collect(state_path=self._decliner(tmp_path), want_metrics=False)
         text, code = observability.render_check(result.readings, "text", fleet=True)
         # Leniency about some resources declining must not become a gate
         # that passes having assessed nothing.
         assert code == 2
         assert text.splitlines()[-1] == "0 of 1 resources report health; 1 unsupported"
+
+    def test_the_compute_driver_no_longer_declines(self, tmp_path, monkeypatch):
+        # The other half of the change above, asserted rather than
+        # implied: compute answers both questions now, so a future
+        # regression that reverted it would not quietly satisfy the two
+        # decline tests above.
+        driver = orchestrator.load_driver("digitalocean", "compute")
+        base_health = type(driver).__mro__[1].health
+        assert type(driver).health is not base_health
 
 
 class TestReviewRound1Regressions:

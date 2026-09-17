@@ -1,0 +1,28 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 437,
+ "note": "omitting start and end",
+ "prediction": {
+  "note": "schema marks both required",
+  "status": 400
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-15T14:39:36.324885+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/monitoring/metrics/droplet/memory_total?host_id=589098829"
+ },
+ "response": {
+  "body": {
+   "id": "bad_request",
+   "message": "failed to parse start time: cannot parse to a valid timestamp",
+   "request_id": "46238002-cb0c-4628-b6c0-bc43fa787207"
+  },
+  "status": 400
+ },
+ "seq": 13
+}

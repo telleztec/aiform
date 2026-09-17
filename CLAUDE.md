@@ -191,16 +191,17 @@ to make something easier to build.
   `delete`); `health()`/`metrics()` are **optional** and reached only from
   the `aiform resource` commands, never from `plan`/`apply`.
   `specs/driver_observability.md` is the design, and it carries a
-  per-piece **build-status table** — read that rather than this
-  paragraph, which is the copy that goes stale. Built:
-  `CapabilityNotSupported`, `HealthStatus`/`HealthReport`/`MetricKind`/
-  `Sample`, the two base methods, `aiform/observability.py`, and
-  `aiform resource check`/`metrics`/`status`. Not built: `health()`/
-  `metrics()` on any driver, so every shipped driver declines both. A
-  driver omitting them is complete, not unfinished, because the base
-  class implements them by raising. Don't add them to a driver
-  speculatively: they call CSP endpoints that need their own probe
-  session first (`specs/driver_creation.md`).
+  per-piece build-status table — consult that rather than this line, which
+  is the one that goes stale. All of it is built: the exception, the four
+  models, the two base methods, `aiform/observability.py`, `aiform resource
+  check`/`metrics`/`status`, and `health()`/`metrics()` on
+  `drivers/digitalocean/compute.py`. A driver omitting both methods is
+  complete, not unfinished, because the base class implements them by
+  raising — `domain` and `firewall` do exactly that. Don't add them to a
+  driver speculatively: they call CSP endpoints that need their own probe
+  session first (`specs/driver_creation.md`), and the compute one turned
+  up three contradicted predictions — see
+  `knowledge/drivers/digitalocean_compute_monitoring/FINDINGS.md`.
 - Tests live in `tests/`, mirroring the module they test
   (`tests/test_state.py` for `aiform/state.py`, etc.) — see `PLAN.md` §1 for
   the full layout, including `tests/drivers/test_digitalocean_compute.py`

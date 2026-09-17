@@ -19,12 +19,13 @@ acceptance criteria each PR is written against.
 | `driver.py`'s `CapabilityNotSupported` + the two concrete methods | built |
 | `aiform/observability.py` | built |
 | `cli.py`'s `aiform resource` verbs | built |
-| `health()`/`metrics()` on any driver | not built |
+| `health()`/`metrics()` on any driver | built for `digitalocean`/`compute`; `domain` and `firewall` still decline |
 | `driver_gen.py`'s `OPTIONAL_METHOD_PARAMS` check | not built |
 
-Until a driver overrides one, every driver declines both — which is the
-state the fleet-form exit-code rules under "Exit codes" were written for,
-not a temporary anomaly they do not cover.
+`digitalocean`/`compute` overrides both; `domain` and `firewall` still
+decline, so a mixed fleet — some resources reporting, some listed as
+`unsupported` — is the normal state the fleet-form exit-code rules under
+"Exit codes" were written for, not a transitional one.
 
 ## Purpose
 
@@ -124,10 +125,13 @@ discharge the other.
 ## How `health()` relates to `read()`
 
 A driver's `health()` **may** call its own `read()` and classify the result,
-when `read()` returns enough — `compute.py`'s does; `firewall.py`'s does not,
-having projected `status` away. What a driver may **not** do is widen `read()`
-to make that work: `read()` returns what is worth storing, and status fields
-are excluded from it precisely because they churn.
+when `read()` returns enough. `compute.py`'s does not: `read()` already
+returns `status`, but one path through its verdict also needs `locked` —
+an action in flight, exactly a DEGRADED signal — which `read()` doesn't
+carry, for the same reason no driver may widen `read()` to add it: `locked`
+churns faster than the fields `read()` does keep, and a churning field has
+no business in state. `domain.py` and `firewall.py` don't override
+`health()` at all yet, so the question doesn't arise for them.
 
 These stay separate methods on separate commands because `read()`'s return is
 an attribute dict with no room for a verdict, and because every caller that
@@ -480,11 +484,25 @@ the provider's API, not of how the output is transported. A driver should not
 paper over it by resampling.
 
 **Counter honesty.** `COUNTER` is only for a value the CSP itself documents as
-cumulative and monotonic over the resource's lifetime. aiform never derives a
+cumulative and monotonic *while the resource is running*. aiform never derives a
 counter by differencing two reads — these commands are stateless and hold no history to
-difference against, by construction. A value the CSP resets on reboot is not a
-counter. When in doubt, `GAUGE`: a wrong gauge reads as noise, a wrong counter
+difference against, by construction. When in doubt, `GAUGE`: a wrong gauge reads as noise, a wrong counter
 makes `rate()` produce a plausible, silently false number.
+
+**Amended: a reset at reboot does not disqualify a counter.** This rule
+previously read "a value the CSP resets on reboot is not a counter," which
+would have forced DigitalOcean's per-mode CPU seconds — the canonical
+counter, and the direct analogue of Prometheus's own
+`node_cpu_seconds_total` — to ship as a `GAUGE` whose `rate()` is
+meaningless. A counter reset is a *documented, handled* condition in every
+consumer that types series this way, not a trap: `rate()` detects the
+discontinuity and drops that interval rather than reporting a huge negative
+slope. The narrowed rule still excludes what the original was aimed at — a
+value that wanders down for reasons other than a restart, which `rate()`
+cannot tell from a reset. Decided by the repo owner when
+`drivers/digitalocean/compute.py` became the first driver to hit the
+question; recorded here rather than in that driver, because it governs
+every driver.
 
 ### Rules both methods must follow
 

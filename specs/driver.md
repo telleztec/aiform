@@ -270,8 +270,10 @@ addendum.
 
 `ResourceDriver` has two optional methods and one exception, for the day-2
 questions `read()` cannot answer. Built — unlike the marker-tag addendum
-above, which is still a description of a contract about to grow. No driver
-overrides either method yet, so every driver in the repo declines both:
+above, which is still a description of a contract about to grow.
+`digitalocean`/`compute` overrides both now; `domain` and `firewall`
+still decline both, which is how a driver that hasn't overridden either
+method behaves:
 
 ```python
 class CapabilityNotSupported(Exception):
