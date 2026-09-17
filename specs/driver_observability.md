@@ -125,13 +125,13 @@ discharge the other.
 ## How `health()` relates to `read()`
 
 A driver's `health()` **may** call its own `read()` and classify the result,
-when `read()` returns enough. `compute.py`'s does not: a verdict needs
-`locked` — an action in flight, exactly a DEGRADED signal — and `read()`
-doesn't carry it, for the same reason no driver may widen `read()` to make
-delegation work: `read()` returns what is worth storing, and status fields
-are excluded from it precisely because they churn. `domain.py` and
-`firewall.py` don't override `health()` at all yet, so the question doesn't
-arise for them.
+when `read()` returns enough. `compute.py`'s does not: `read()` already
+returns `status`, but one path through its verdict also needs `locked` —
+an action in flight, exactly a DEGRADED signal — which `read()` doesn't
+carry, for the same reason no driver may widen `read()` to add it: `locked`
+churns faster than the fields `read()` does keep, and a churning field has
+no business in state. `domain.py` and `firewall.py` don't override
+`health()` at all yet, so the question doesn't arise for them.
 
 These stay separate methods on separate commands because `read()`'s return is
 an attribute dict with no room for a verdict, and because every caller that
