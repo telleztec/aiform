@@ -11,7 +11,7 @@ from email.message import Message
 
 import pytest
 
-from aiform.driver import DriverUpdateNotSupported
+from aiform.driver import CapabilityNotSupported, DriverUpdateNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from drivers.digitalocean.compute import Driver
 
@@ -1735,3 +1735,17 @@ class TestLogging:
         exc = http_error(actions_url("123"), 422, {"message": "disk size cannot be decreased"})
 
         assert driver._do_error_message(exc) == "disk size cannot be decreased"
+
+
+class TestObservabilityNotImplemented:
+    """Neither optional method is overridden yet -- CLAUDE.md and
+    specs/driver.md both claim this; pin it mechanically so a
+    speculative health()/metrics() addition can't go in silently."""
+
+    def test_health_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.health("123", CREDENTIALS)
+
+    def test_metrics_declines(self, driver):
+        with pytest.raises(CapabilityNotSupported):
+            driver.metrics("123", CREDENTIALS)

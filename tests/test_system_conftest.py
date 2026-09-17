@@ -5,11 +5,12 @@
 -- see specs/system_test_domain.md.
 
 These run in the DEFAULT pytest run, deliberately: the code under test
-here decides which live DNS zones the orphan sweep deletes, on an account
-that also hosts a production zone. Gating its only coverage behind
-`-m system` and live credentials would mean the one function that can
-destroy production DNS is exercised solely by the suite it exists to
-clean up after. Mirrors specs/conftest.md's reasoning for extracting
+here decides which live DNS zones the orphan sweep deletes, and the
+token driving it may point at a team hosting a real zone alongside test
+ones, not only test ones. Gating its only coverage behind `-m system`
+and live credentials would mean the one function that can destroy real
+DNS is exercised solely by the suite it exists to clean up after.
+Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 
@@ -85,23 +86,23 @@ class TestZoneCreatedAtRefusesForeignNames:
         "name",
         [
             # The real zone on the account this suite runs against.
-            "telleztec.com",
-            "www.telleztec.com",
+            "cloudaiform.com",
+            "www.cloudaiform.com",
             # Prefix-adjacent but carrying no parsable timestamp.
-            "systest.telleztec.com",
-            "systest-.telleztec.com",
-            "systest-notatimestamp-abc.telleztec.com",
+            "systest.cloudaiform.com",
+            "systest-.cloudaiform.com",
+            "systest-notatimestamp-abc.cloudaiform.com",
             # Right shape, wrong parent -- the suffix guard is what
             # catches this one, independently of the prefix guard.
             "systest-20260904t000759z-abc.example.com",
             # Suffix spoofing: contains the parent, does not end with it.
-            "systest-20260904t000759z-abc.telleztec.com.evil.com",
+            "systest-20260904t000759z-abc.cloudaiform.com.evil.com",
             # Prefix present but not at position 0.
-            "prod-systest-20260904t000759z-abc.telleztec.com",
+            "prod-systest-20260904t000759z-abc.cloudaiform.com",
             # Uppercase. DigitalOcean folds a stored zone name, so this
             # spelling never comes back from the API -- but if it somehow
             # did, refusing is the safe answer.
-            "SYSTEST-20260904T000759Z-abc.telleztec.com",
+            "SYSTEST-20260904T000759Z-abc.cloudaiform.com",
             "",
         ],
     )
@@ -111,7 +112,7 @@ class TestZoneCreatedAtRefusesForeignNames:
 
 class TestZoneCreatedAtClaimsOurOwn:
     def test_parses_the_encoded_timestamp(self):
-        created = zone_created_at("systest-20260904t000759z-1cb41c-lifecycle.telleztec.com")
+        created = zone_created_at("systest-20260904t000759z-1cb41c-lifecycle.cloudaiform.com")
         assert created is not None
         assert (created.year, created.month, created.day) == (2026, 9, 4)
         assert (created.hour, created.minute, created.second) == (0, 7, 59)
@@ -119,7 +120,7 @@ class TestZoneCreatedAtClaimsOurOwn:
     def test_returns_an_aware_datetime(self):
         # The sweep compares this against a timezone-aware `now`; a naive
         # return would raise TypeError mid-teardown and skip the cleanup.
-        created = zone_created_at("systest-20260904t000759z-1cb41c-lifecycle.telleztec.com")
+        created = zone_created_at("systest-20260904t000759z-1cb41c-lifecycle.cloudaiform.com")
         assert created.tzinfo is not None
         assert created.utcoffset().total_seconds() == 0
 

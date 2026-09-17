@@ -286,9 +286,24 @@ def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport
 # The three verbs render a list -- one entry when <name> was given, every
 # tracked resource when it was not. render_check also returns the exit
 # code, since the aggregate rule that produces it lives in one place.
-def render_check(readings: list[ResourceReading], fmt: str) -> tuple[str, int]: ...
-def render_metrics(readings: list[ResourceReading], fmt: str) -> str: ...
-def render_status(reports: list[StatusReport], fmt: str) -> str: ...
+# `fleet` is keyword-only on all three: (readings, fmt) alone cannot tell
+# a one-resource fleet from a named resource, and the two render
+# differently. render_metrics also takes elapsed_seconds and errors,
+# keyword-only, since its JSON document's fixed shape carries both and
+# neither comes off any one reading -- see "Settled by building
+# aiform/observability.py" under Knowledge-confidence below.
+def render_check(
+    readings: list[ResourceReading], fmt: str, *, fleet: bool | None = None
+) -> tuple[str, int]: ...
+def render_metrics(
+    readings: list[ResourceReading],
+    fmt: str,
+    *,
+    fleet: bool | None = None,
+    elapsed_seconds: float = 0.0,
+    errors: Sequence[str] = (),
+) -> str: ...
+def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None = None) -> str: ...
 ```
 
 ### `aiform/cli.py`

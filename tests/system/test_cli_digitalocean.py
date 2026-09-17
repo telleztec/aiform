@@ -28,6 +28,7 @@ from tests.system.conftest import (
     list_account_ssh_key_fingerprints,
     live_token,
     unique_name,
+    verbose_call_count,
     wait_until_droplet_gone,
     write_aiform_md,
 )
@@ -63,25 +64,32 @@ class TestFullLifecycleSequence:
 
         write_aiform_md(project_dir, name=name)
 
-        # Case 2: first `plan create` on an untracked resource -- zero
-        # Anthropic calls. #118 already skips categorization for an
-        # untracked resource, and #119 removed gate #1 (the driver review)
-        # from this path entirely, so nothing is left to call.
+        # Case 2: first `plan create` on an untracked resource.
         code = cli.main(["plan", "create", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 2: first plan create")
         assert f"+ {key}: create" in captured.out
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        # Zero, and structurally so rather than by luck. #118 skips
+        # categorization for an untracked resource and #119 removed gate
+        # #1 from this path -- but both overlooked aiform/parser.py, and
+        # for a while this really did cost one intent parse (#125). The
+        # orchestrator no longer buys it: parse_file()'s intent_notes are
+        # consumed only by plan_resource(), which this branch skips, so
+        # the untracked branch builds its ParsedResource directly from
+        # content it has already read. PLAN.md §9's claim is true again.
+        assert verbose_call_count(captured) == 0
 
-        # Case 3: `plan apply --yes` -- a CREATE action never triggers gate
-        # #2 either (apply_plan()'s needs_review only covers DESTROY and a
-        # likely-replace UPDATE), so this is zero calls too. This is the
-        # strongest statement of the project's cost claim: a first `plan
-        # create` and `apply` on a brand-new project cost nothing.
+        # Case 3: first `plan apply --yes` -- zero as well. A CREATE action
+        # never triggers gate #2 (apply_plan()'s needs_review covers only
+        # DESTROY and a likely-replace UPDATE), and apply re-runs
+        # build_create_plan(), which takes the same untracked branch. This
+        # used to cost one: `plan create` does not write the tracked
+        # sha256 -- only a completed apply does -- so the apply re-parsed
+        # the same intent prose it had already thrown away once (#125).
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
-        assert "[verbose] 0 Anthropic API call(s) made" in captured.err
+        assert verbose_call_count(captured) == 0
 
         st = state.load(state_path)
         assert key in st.resources
@@ -184,8 +192,7 @@ class TestFullLifecycleSequence:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 7: forced-replace plan apply")
-        replace_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert replace_call_count >= 1
+        assert verbose_call_count(captured) >= 1
 
         # Old droplet gone. Polled, not checked once: DO's delete is async
         # (see conftest.wait_until_droplet_gone).
@@ -200,8 +207,7 @@ class TestFullLifecycleSequence:
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 8: plan destroy --yes")
-        destroy_call_count = int(captured.err.split("[verbose] ")[1].split(" Anthropic")[0])
-        assert destroy_call_count >= 1
+        assert verbose_call_count(captured) >= 1
 
         destroyed = wait_until_droplet_gone(token, replaced_id)
         assert destroyed is None, f"destroyed droplet {replaced_id} still live: {destroyed}"

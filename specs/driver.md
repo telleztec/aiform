@@ -5,9 +5,9 @@
 The hand-written contract every `(provider, resource)` driver
 implements (`PLAN.md` §4). This is the seam that lets the orchestrator
 call any provider/resource combination identically — it never inspects a
-driver's internals, only the four abstract methods below. Pure interface
-+ exceptions — no file I/O, no LLM calls, no CSP API calls, no dynamic
-import logic. `driver.py` today holds **two** exception types
+driver's internals, only the four abstract methods below. Pure interface plus
+exceptions — no file I/O, no LLM calls, no CSP API calls, no dynamic import
+logic. `driver.py` today holds **two** exception types
 (`DriverUpdateNotSupported` and `CapabilityNotSupported`) and **six**
 methods: the four abstract ones the orchestrator calls, plus the two
 optional concrete ones the `aiform resource` commands call. Four addenda
@@ -316,9 +316,11 @@ flagging at the top since it was written.
 The parameter *names* are binding, not just their order: a driver spelling
 `id` as `resource_id` would be rejected — by the `OPTIONAL_METHOD_PARAMS`
 check in `specs/driver_gen.md`, which is specified and not yet implemented.
-Until it is, nothing mechanical enforces the names; `PROCESS.md`'s PR-time
-`/code-review` is the only gate, as it is for every other rule these two
-methods carry.
+`tests/test_driver.py`'s signature assertion holds these names against
+`ResourceDriver` itself, but until `OPTIONAL_METHOD_PARAMS` lands, nothing
+mechanical enforces them on a driver's own copy; `PROCESS.md`'s PR-time
+`/code-review` is the only gate on that, as it is for every other rule these
+two methods carry.
 
 Neither method is reachable from `plan`/`apply`; the `aiform resource` commands
 are their only caller, and none of those writes state. Full rules — control
