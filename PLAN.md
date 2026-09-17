@@ -330,7 +330,7 @@ aiform/
 ├── aiform/
 │   ├── __init__.py
 │   ├── __main__.py                 # `python -m aiform` entry point
-│   ├── cli.py                      # plan / apply / destroy / init / refresh / show (+ resource check/metrics/status, not yet built)
+│   ├── cli.py                      # plan / apply / destroy / init / refresh / show + resource check/metrics/status
 │   ├── config.py                   # env var + credentials-file resolution (§8)
 │   ├── parser.py                   # aiform.md -> ResourceSpec
 │   ├── state.py                    # state.json load/save, Pydantic models, backup-on-write
@@ -1266,7 +1266,7 @@ aiform plan show [--state-file <path>]
     last-applied) in readable form.
 
 aiform resource check   [<name>] [--format text|json] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.health() for one named resource, or for
+    driver.health() for one named resource, or for
     every tracked resource when <name> is omitted. An ASSERTION: this is
     the only command in the surface whose exit code carries the answer
     rather than whether it could answer, so it can be written as
@@ -1293,7 +1293,7 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
 
 aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
-    NOT YET IMPLEMENTED. driver.metrics() for one named resource, or
+    driver.metrics() for one named resource, or
     for EVERY tracked resource when <name> is omitted. Only metrics():
     check is the verb that asks health(). No-argument-means-everything is this CLI's existing
     convention -- `plan refresh`, `plan show` and `plan create` all work
@@ -1326,7 +1326,7 @@ aiform resource metrics [<name>] [--format text|json]
     broken driver must not blank the whole report.
 
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
-    NOT YET IMPLEMENTED. Four independent answers for one named
+    Four independent answers for one named
     resource, or every tracked resource when <name> is omitted, each
     under a header line naming it:
     deployed (from state), live (a driver.read()), config (diff against

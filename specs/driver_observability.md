@@ -18,7 +18,7 @@ acceptance criteria each PR is written against.
 | `models.py`'s four types | built |
 | `driver.py`'s `CapabilityNotSupported` + the two concrete methods | built |
 | `aiform/observability.py` | built |
-| `cli.py`'s `aiform resource` verbs | not built |
+| `cli.py`'s `aiform resource` verbs | built |
 | `health()`/`metrics()` on any driver | not built |
 | `driver_gen.py`'s `OPTIONAL_METHOD_PARAMS` check | not built |
 
