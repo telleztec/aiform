@@ -1580,7 +1580,11 @@ class TestLogging:
 
         record = next(r for r in caplog.records if getattr(r, "step", None) == "power-off")
         assert record.outcome == "timeout"
-        assert record.attempts_used == 30
+        # Pinned to the live default rather than a literal: this is
+        # exactly the number that drifted from 30 to 45 (issue #152), and
+        # a literal here would need editing every time that budget is
+        # re-tuned rather than catching a caller who forgot to update it.
+        assert record.attempts_used == driver._poll_until.__defaults__[0]
         assert record.levelno == logging.ERROR
 
     def test_tags_step_logs_what_it_set_out_to_change(self, driver, fake_urlopen, caplog):

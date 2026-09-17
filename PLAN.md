@@ -1670,10 +1670,12 @@ entry's own note below.
   the user already confirmed). **When this actually gets built, replace
   the two hardcoded `_poll_until` budgets it's meant to supersede**,
   both in `drivers/digitalocean/compute.py`: the default
-  (`max_attempts=30`, `delay_seconds=2` — 60s, used by `update`'s
-  power-off/resize/power-on actions; raised from an original 20/40s
-  after a live system-test run hit DO taking longer than 40s to power
-  off a droplet) and `create`'s own override (`max_attempts=60`,
+  (`max_attempts=45`, `delay_seconds=2` — 90s, used by `update`'s
+  power-off/resize/power-on actions; raised twice now — from an
+  original 20/40s after a live system-test run hit DO taking longer
+  than 40s to power off a droplet, then from 30/60s after issue #152's
+  three consecutive live runs all timed out within a second of each
+  other at ~72-73s) and `create`'s own override (`max_attempts=60`,
   `delay_seconds=3` — 180s, widened specifically because the default
   was tuned for `update` and timed out too eagerly on full droplet
   provisioning). Both are guesses tuned against one CSP's observed

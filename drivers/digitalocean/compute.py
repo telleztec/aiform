@@ -177,7 +177,7 @@ class Driver(ResourceDriver):
             return None
         return data.get("message") if isinstance(data, dict) else None
 
-    def _poll_until(self, id, credentials, predicate, step, max_attempts=30, delay_seconds=2):
+    def _poll_until(self, id, credentials, predicate, step, max_attempts=45, delay_seconds=2):
         start = time.monotonic()
         for attempt in range(max_attempts):
             droplet = self._get_droplet(id, credentials)
@@ -240,18 +240,21 @@ class Driver(ResourceDriver):
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
         new_id = payload["droplet"]["id"]
-        # _poll_until's default budget (30 attempts * 2s = 60s) is tuned for
+        # _poll_until's default budget (45 attempts * 2s = 90s) is tuned for
         # update()'s power-off/resize/power-on actions against an already-
         # existing droplet -- full provisioning from scratch commonly takes
         # longer than that per DO's own docs, so this uses a wider budget
         # (60 * 3s = 180s) to avoid spuriously timing out a create that
         # would have converged moments later. The default itself was
-        # raised from 20 to 30 attempts (40s -> 60s) after a live system
-        # test run hit a genuine DO power-off slowdown right at the old
-        # budget's edge -- a real, observed timing adjustment per
-        # PLAN.md's own "guesses tuned against one CSP's observed
-        # behavior, not a real policy" framing for these two constants,
-        # not a fix for a code defect.
+        # raised twice now: 20->30 attempts (40s->60s) after an earlier
+        # live run hit a power-off slowdown at the old edge, then 30->45
+        # attempts (60s->90s, see issue #152) after three consecutive live
+        # runs all timed out on the same power-off step within a second of
+        # each other (~72-73s) -- tight enough clustering that it reads as
+        # DO's power-off latency having shifted, not tail-latency noise.
+        # Real, observed timing adjustments per PLAN.md's own "guesses
+        # tuned against one CSP's observed behavior, not a real policy"
+        # framing for these two constants, not a fix for a code defect.
         droplet = self._poll_until(
             new_id,
             credentials,
