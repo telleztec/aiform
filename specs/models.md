@@ -342,6 +342,72 @@ convention (`PLAN.md` §1) just as much as `ResourceSpec.resource` is —
 the validation gap between the two was a review finding on the first
 implementation pass, not a deliberate asymmetry.
 
+### `HealthStatus`, `HealthReport`, `MetricKind`, `Sample`
+
+The four types `specs/driver_observability.md` adds for the day-2
+questions `read()` cannot answer. They carry a driver's answers out of
+`health()`/`metrics()` and into `aiform/observability.py`'s renderers;
+nothing in `plan`/`apply` touches them.
+
+```python
+class HealthStatus(str, Enum):
+    OK = "ok"
+    DEGRADED = "degraded"
+    FAILING = "failing"
+    UNKNOWN = "unknown"
+
+
+class HealthReport(BaseModel):
+    status: HealthStatus
+    summary: str
+    observations: dict[str, str] = Field(default_factory=dict)
+
+
+class MetricKind(str, Enum):
+    COUNTER = "counter"
+    GAUGE = "gauge"
+
+
+class Sample(BaseModel):
+    name: str
+    kind: MetricKind
+    value: float
+    labels: dict[str, str] = Field(default_factory=dict)
+```
+
+**Four health states, not two.** `UNKNOWN` is aiform failing to observe,
+not evidence the resource is broken. A driver never returns it — it lets
+its exception propagate and `collect()` converts it — so a driver that
+catches its own timeout cannot hide the error text behind a verdict.
+
+**`observations` is a flat `str -> str` map**, free-form by design: the
+contract cannot know which fields matter for a resource kind it has
+never seen. `dict[str, str]` rather than `dict[str, Any]` because the
+renderers pad it into columns and a nested value has no column width.
+
+**`Sample` carries no `unit` field and no timestamp**, both deliberately
+— the unit lives in the name per Prometheus convention (`_bytes`,
+`_seconds`), where a second source of truth would be one the two
+renderers could disagree about, and the reading happens when the command
+runs. `MetricKind` is `COUNTER|GAUGE` and nothing else, so there are no
+native percentiles; adding histograms means a new kind and a driver that
+can produce bucket boundaries.
+
+Neither `Sample`'s name/label character rules nor the `_total` suffix
+rule for a `COUNTER` is a Pydantic validator here. They belong in
+`observability.collect()` — the one place both renderers are fed from —
+which `specs/driver_observability.md` specifies and which is **not built
+yet**; until it is, nothing enforces them at all.
+
+Not because a model validator would crash the command: a driver builds
+its own `Sample`s, so the `ValidationError` would raise inside
+`metrics()` and the partial-failure table's "`metrics()` raises anything
+else" row would catch it per resource. The actual cost is that it would
+take *all* of that resource's samples with it rather than the one bad
+one — making that table's "A returned `Sample` fails validation → the
+surviving samples" row unreachable — and would report a Pydantic message
+instead of one naming the driver and the sample.
+
 ## Behavior
 
 - `ResourceSpec(**data)` accepts exactly the four frontmatter fields;

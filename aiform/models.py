@@ -76,6 +76,52 @@ class KeyCheck(BaseModel):
     detail: str | None = None
 
 
+class HealthStatus(str, Enum):
+    """Four states, not two. UNKNOWN is aiform failing to observe, which
+    is not evidence the resource is broken -- collapsing it into FAILING
+    would page somebody every time aiform's own network hiccuped."""
+
+    OK = "ok"
+    DEGRADED = "degraded"
+    FAILING = "failing"
+    UNKNOWN = "unknown"
+
+
+class HealthReport(BaseModel):
+    """One driver's answer to "is this resource working". `observations`
+    is a free-form flat map of what the driver actually saw; the contract
+    cannot know which fields matter for a resource kind it has never
+    seen, so a driver returning an empty map is legal."""
+
+    status: HealthStatus
+    summary: str
+    observations: dict[str, str] = Field(default_factory=dict)
+
+
+class MetricKind(str, Enum):
+    """COUNTER is only for a value the CSP itself documents as cumulative
+    and monotonic over the resource's lifetime -- aiform holds no history
+    to difference against. When in doubt, GAUGE: a wrong gauge reads as
+    noise, a wrong counter makes rate() produce a plausible, silently
+    false number."""
+
+    COUNTER = "counter"
+    GAUGE = "gauge"
+
+
+class Sample(BaseModel):
+    """No `unit` field and no timestamp, both deliberately. The unit
+    lives in the name per Prometheus convention (`_bytes`, `_seconds`),
+    and a second source of truth is one the renderers could disagree
+    about; the reading happens when the command runs, and a consumer that
+    needs a timestamp has its own clock."""
+
+    name: str
+    kind: MetricKind
+    value: float
+    labels: dict[str, str] = Field(default_factory=dict)
+
+
 class ModelSource(str, Enum):
     ANTHROPIC = "anthropic"
 
