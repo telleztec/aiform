@@ -593,9 +593,16 @@ to `aiform/driver.py`. An earlier version of this paragraph claimed two
 divergences and was itself wrong about the count, which is why the
 docstring was brought back into sync rather than the tally corrected: a
 count is a thing to maintain, and this one had already gone stale once.
-(The rest of the block — the SPDX header, `AIFORM_MANAGED_TAG`, the tag
-helpers — differs for the ordinary reason that those pieces are
-unbuilt.)
+The **rest** of the block is a different matter and is not certified by
+that sentence: it has not been kept in sync with `aiform/driver.py`
+through several later contract additions, and a full diff shows roughly
+ten hunks. `UNORDERED_FIELDS` is missing from it entirely (already
+tracked as #133), `update()`'s ORDERING REQUIREMENT and the
+shared-class-attribute warnings on `LIKELY_REPLACE_FIELDS`/
+`NON_DIFFABLE_FIELDS` are file-only, and the SPDX header runs the other
+way — present in the file, absent here. So "unbuilt" does not explain
+those; staleness does. Treat the file as authoritative for anything
+outside the observability portion until §4 is reconciled.
 
 ```python
 # aiform/driver.py — hand-written, not generated
@@ -913,7 +920,20 @@ class Driver(ResourceDriver):
      `aiform_md_sha256` in state matches the file's current hash — no
      reason to re-extract intent from unchanged prose. Also skipped
      unconditionally for an `AIFORM-DELETE-` file, regardless of hash
-     — a destroy needs no interpretive guidance.
+     — a destroy needs no interpretive guidance. **Also skipped for a
+     brand-new resource** (no state entry exists for it yet, so there is
+     no tracked hash to compare against): `intent_notes` are consumed
+     only by the categorization call in step 6, which — per that step's
+     own "two more cases skip it" — a resource with no state entry never
+     reaches (see §9 and `specs/orchestrator.md`). Flagged and added by
+     #140, which found the original two-condition list left this call
+     running, uselessly, on every first `plan create`. The other of step
+     6's "two more cases," a tracked resource that has gone
+     `drifted_missing`, is **not** added here: it does have a tracked
+     hash to compare against, so it stays on the ordinary
+     hash-short-circuit path above rather than a new unconditional skip
+     — `specs/orchestrator.md` explains why removing that call too is a
+     separate decision, not a side effect of this one.
 3. **Ensure a driver is usable** for `(provider, resource)`:
    - **Driver file missing** → `aiform plan create` fails immediately with a
      clear, actionable error (raises
