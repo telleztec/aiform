@@ -14,7 +14,6 @@ import urllib.request
 
 import pytest
 
-from aiform.driver import CapabilityNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from aiform.models import HealthStatus, MetricKind
 from drivers.digitalocean.compute import (
@@ -353,4 +352,3 @@ class TestBothMethodsAreReadOnly:
         # decline any more.
         assert Driver().health.__qualname__.startswith("Driver")
         assert Driver().metrics.__qualname__.startswith("Driver")
-        assert not isinstance(Driver().health, CapabilityNotSupported)

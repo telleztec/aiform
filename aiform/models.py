@@ -100,7 +100,7 @@ class HealthReport(BaseModel):
 
 class MetricKind(str, Enum):
     """COUNTER is only for a value the CSP itself documents as cumulative
-    and monotonic over the resource's lifetime -- aiform holds no history
+    and monotonic while the resource is running -- aiform holds no history
     to difference against. When in doubt, GAUGE: a wrong gauge reads as
     noise, a wrong counter makes rate() produce a plausible, silently
     false number."""

@@ -251,7 +251,7 @@ class ResourceDriver(ABC):
             name/id labels, so this driver must not set those itself.
 
         COUNTER is only for a value the CSP documents as cumulative and
-        monotonic over the resource's lifetime, and its name must end in
+        monotonic while the resource is running, and its name must end in
         `_total`. aiform never derives a counter by differencing two
         reads — these commands are stateless by construction and hold no history
         to difference against. When in doubt, GAUGE: a wrong gauge reads
