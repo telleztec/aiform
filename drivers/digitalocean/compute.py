@@ -266,20 +266,13 @@ class Driver(ResourceDriver):
 
     def _create_droplet(self, body, credentials):
         # A freshly-uploaded managed key (_upload_managed_key -> a fresh
-        # `POST /v2/account/keys`, not the cached-sidecar or
-        # list-matched path) is not immediately usable in
-        # `POST /v2/droplets` -- verified live: reproducing this exact
-        # sequence (register the key, then create with its id in the
-        # same body) hit DO's own `"<id> are invalid key identifiers for
-        # Droplet creation"` 422 on 8 consecutive attempts roughly 1s
-        # apart before succeeding on the 9th (~9s of propagation lag).
-        # Not discoverable from a mock, which encodes the same
-        # instantaneous-consistency assumption the driver would
-        # otherwise make -- found running this PR's own live system
-        # test. Retried only for this specific, recognized message (any
-        # other 422 -- a bad region/size/image combination, say -- is a
-        # genuine rejection and must fail immediately, not spend 20s
-        # retrying something that will never succeed).
+        # `POST /v2/account/keys`) can take a few seconds to propagate
+        # before `POST /v2/droplets` recognizes its id, surfacing as DO's
+        # `"<id> are invalid key identifiers for Droplet creation"` 422.
+        # Retried only for this specific, recognized message -- any other
+        # 422 (a bad region/size/image combination, say) is a genuine
+        # rejection and must fail immediately, not spend time retrying
+        # something that will never succeed.
         for attempt in range(_KEY_PROPAGATION_RETRY_ATTEMPTS):
             try:
                 return self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
