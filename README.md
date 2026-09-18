@@ -69,9 +69,10 @@ toward them would make aiform worse for the person it's actually for. When
 a decision comes down to "where does this credential live" or "who's
 around to review this," the answer we want is the one that's right for one
 person on one machine they actually sit at, not the one that would be right
-for a platform team. This is exactly the framing that grounded a recent
-SSH-key storage design decision: the right answer depended on there being
-one operator with one long-lived laptop, not a fleet of them.
+for a platform team. That's not hypothetical: it's exactly the reasoning
+that decided how this project stores SSH keys, where the right answer
+depended on there being one operator with one long-lived laptop, not a
+fleet of them.
 
 ## Use Case
 
@@ -87,16 +88,15 @@ running yourself, which is exactly the part Terraform-style IaC has never
 covered (see "The pitch" above): it builds infrastructure up, it doesn't
 run it, alert when it fails, or adjust as needs change.
 
-aiform is the AI-driven infrastructure-as-code ("AIC") layer this person
-uses to build and manage that assembled system. It's not a general-purpose
-orchestration platform for a team of infrastructure engineers — it's the
-tool one person reaches for to stand up, evolve, and (eventually) help
-operate the handful of resources their system needs. Every scoping call in
-this project — the MVP's single-cloud, single-resource-kind scope, the
-credential-handling choices (see [`PLAN.md`](./PLAN.md)'s credentials
-section), the emphasis on costing near-zero on a repeat run — is in
-service of that one operator, not some larger deployment this project
-isn't building for.
+aiform is the AI-driven IaC layer this person uses to build and manage that
+assembled system. It's not a general-purpose orchestration platform for a
+team of infrastructure engineers — it's the tool one person reaches for to
+stand up, evolve, and (eventually) help operate the handful of resources
+their system needs. Every scoping call in this project — the MVP's
+single-cloud, single-resource-kind scope, the credential-handling choices
+(see [`PLAN.md`](./PLAN.md) §8, "Credentials handling"), the emphasis on
+costing zero LLM calls on a repeat run — is in service of that one
+operator, not some larger deployment this project isn't building for.
 
 ## Status
 

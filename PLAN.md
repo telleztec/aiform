@@ -61,8 +61,8 @@ out of open-source components rather than a collection of locked-in SaaS
 products, using aiform as the AI-driven IaC layer to build and manage it.
 
 That framing isn't introductory color: it's meant to be checked against
-real scoping decisions the same way it grounded a recent SSH-key storage
-design choice. Read it before making a design or scope call that turns on
+real scoping decisions, the same way it already decided how this project
+stores SSH keys. Read it before making a design or scope call that turns on
 "who is this actually for."
 
 ## MVP scope (locked)
