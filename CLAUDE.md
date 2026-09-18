@@ -22,6 +22,16 @@ it's a PR.
 whenever starting or resuming work on a module. Per-module specs live in
 `specs/`, one file per module — see `specs/README.md` for the format.
 
+**Before any of that loop starts, there's a gate upstream of it.**
+`PROCESS.md`'s "Before the loop: plan and get explicit approval" section
+requires a written plan and the human's explicit approval of that specific
+plan — not silence, not a description of a problem, not general agreement
+that something is worth fixing — before an implementation agent is
+spawned or any code is written. It binds the *coordinating* session's own
+decision to start implementation work, not just what an already-spawned
+implementation agent does once it exists. Read it before spawning a
+subagent to write code, or writing code yourself.
+
 Current status: **MVP walkthrough end to end.** `pyproject.toml`,
 `aiform/models.py`, `state.py`, `config.py`, `llm.py`, `log.py`,
 `exceptions.py`, `driver.py`, `driver_gen.py`, `parser.py`, `planner.py`,

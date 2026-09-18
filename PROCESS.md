@@ -17,6 +17,167 @@ writes, Opus reviews, both fixed, not configurable) for building the tool
 itself, because it's the same philosophy at a different level, not
 because the two are the same mechanism.
 
+## Before the loop: plan and get explicit approval
+
+This section is a gate, not a step of the loop below — it runs *before*
+the loop's step 1 (Spec), and answers a different question. Step 1 asks
+"what does this module's interface look like"; this gate asks "should any
+implementation work start at all, and on which approach" for anything the
+human hasn't already committed to. Both must pass; neither substitutes for
+the other.
+
+It exists because of a concrete failure on 2026-09-18: the coordinating
+session, on hearing the human describe a live-test timeout, spawned an
+implementation agent immediately — no written approach, no human sign-off
+on one — and the agent shipped a full exponential-backoff redesign of
+`_poll_until` (PR #172) when what the human actually wanted was something
+larger and different: a centralized, configurable, runtime-modifiable
+timeout policy, separately proposed in issue #154 — which the coordinating
+session hadn't even noticed was related before building #172. The same
+evening also produced PR #170 from the identical undisciplined pattern —
+smaller, and this time the right change, but arrived at the same
+unapproved way. Getting the right answer once doesn't validate the
+process that produced it: this gate exists so the outcome doesn't depend
+on which one the coordinator happens to land on.
+
+### Who this binds
+
+**The coordinating Claude Code session's own delegation behavior** —
+specifically, the decision to spawn a subagent that will write
+implementation code, or to start writing implementation code itself. It is
+not a rule about what an already-spawned implementation agent does
+internally; that agent still follows the loop below and
+`.claude/skills/tdd-workflow/SKILL.md` exactly as before. This gate decides
+whether, and on what approach, that agent gets spawned in the first place.
+
+### When it applies
+
+Before any implementation work begins on a change — a new module, a bug
+fix, a behavior or design change, a refactor with behavior implications:
+anything that will produce a diff to `.py` files, `drivers/**`,
+`prompts/**`, `.github/workflows/**`, `PLAN.md` (a `PLAN.md` edit *is* a
+design change, by this document's own opening line), or any other path
+"PR approval and merge" below already treats as runtime-affecting. It also
+covers edits to this repo's own governing process — `CLAUDE.md`,
+`PROCESS.md`, `.claude/**` — since those are markdown the agents in this
+repo execute, not inert prose; the same reasoning that keeps them out of
+`human-approval`'s cosmetic carry-forward below applies here.
+
+Does **not** apply: a pure prose/documentation edit with no behavior
+change — the same category the cosmetic carry-forward recognizes (`*.md`
+files, excluding `.claude/**`, `prompts/**`, `CLAUDE.md`, `PROCESS.md`,
+and, per this section's own "when it applies" above, `PLAN.md` — the
+cosmetic carry-forward's own exclusion list doesn't need `PLAN.md` since
+`PLAN.md` isn't `human-approval`'s concern, but this gate's does, so it's
+added here rather than borrowed unmodified) — or work the human has
+already approved a specific plan for and is now simply asking to be
+executed. A comment-only edit inside a `.py` file does **not** qualify
+for this exemption: this document already refuses that exact "it's only
+a comment" judgment call for `system-test`'s path check ("The check is
+deliberately conservative about `.py` files"), for the same reason —
+content-aware exemptions are where a gate like this quietly stops meaning
+anything.
+
+There is no size exception. "Small" or "mechanical" is not a reason to
+skip this gate — PR #170 was both, and still should have gone through it.
+
+### What counts as a plan
+
+A written, specific description of the proposed approach, visible to the
+human **before** any implementation agent is spawned or any code or test
+file is written:
+
+- **what** will change — files/modules affected, at the level of
+  specificity the human could actually disagree with;
+- **why** — what problem it solves, referencing the actual complaint or
+  issue, not a paraphrase of it;
+- **how** — the mechanism. "Add exponential backoff with a cap to
+  `_poll_until`" and "introduce a config-driven, LLM-adjustable timeout
+  policy store" are two different plans even though both respond to the
+  same timeout report — proposing one is not proposing the other.
+
+A chat message counts if it is specific enough to satisfy those three
+bullets. Plan mode's own output, or a short scratch doc, is preferable for
+anything non-trivial, because it leaves an artifact the human can point
+back to when approving. A `specs/<module>.md` file (loop step 1) is not
+itself this plan — it is normally written by the implementer, after the
+decision to implement has already been made, and it's scoped per module
+rather than per change; a bug fix in particular often has no `specs/`
+entry to double as one.
+
+### What counts as approval
+
+The human, having seen that specific written plan, says to proceed with
+**it**. Concretely:
+
+- **Counts:** the human has read a written approach (per the bullets
+  above) and responds with something that unambiguously greenlights that
+  approach — "yes, do that," "go ahead with the backoff-cap approach,"
+  approving a plan-mode exit, and the like.
+- **Does not count:** the human describing a bug or problem — "the live
+  test keeps timing out." That's a problem report, not a plan.
+- **Does not count:** the human agreeing the problem is worth fixing —
+  "yeah, that's worth fixing." That's agreement on priority, not approval
+  of an approach; nothing has been proposed yet at that point.
+- **Does not count:** silence, or the absence of an objection. If the
+  coordinator described a plan and got no response, that is not approval.
+- **Does not count:** a follow-up idea mentioned in passing while
+  discussing something else, unless a specific plan for *that* idea was
+  then written down and the human responded to it.
+
+When in doubt whether a given human message clears this bar, it doesn't —
+ask a direct yes/no question against the specific plan rather than
+proceeding on a generous reading.
+
+This is a distinct mechanism from `human-approval` on a PR
+(`/claude-merge-approved`, see "PR approval and merge" below): that gate
+approves a finished diff at merge time; this one approves an approach
+before the diff exists. Don't conflate the two — a plan approval doesn't
+skip PR review, and a PR merge approval doesn't retroactively excuse
+skipping this gate.
+
+### If implementation already started without this gate
+
+Stop adding commits. Write the plan now — covering what's already been
+done and what remains, using the "what/why/how" bar above — and get the
+human's explicit approval on it before any further implementation work,
+exactly as if no code existed yet. Work already merged or already shipped
+isn't undone by this gate retroactively; it's simply a reason the
+*remaining* work on that change needs a plan before it continues, not a
+precedent that skipping the gate once makes skipping it again acceptable.
+
+### Recording it
+
+Every other gate this document defines is an external, GitHub-visible
+artifact, precisely because chat history is not durable — a long
+conversation, a compaction, or a fresh agent instance resuming the same
+work can all silently lose a chat-only approval
+(`.claude/skills/github-commit-process/SKILL.md`'s "critically, all four
+are external... never something inferred from conversation history" makes
+exactly this argument for the merge gates). This gate is chat-native —
+there's no GitHub artifact to attach it to before a PR exists — so it
+doesn't get that guarantee for free. To get as close as this shape of gate
+can: when the PR is opened, its description must include a
+`## Approved plan` section stating what was approved and, where practical,
+quoting or summarizing the human's approval. A PR without one is a PR
+whose plan-approval cannot be checked by anyone reading only the PR later,
+which defeats the point.
+
+### Once approved
+
+Implementation proceeds through the loop below starting at step 1, exactly
+as before. The approved plan doesn't replace the module spec
+(`specs/<module>.md`) — it's coarser and comes earlier — but the spec
+should not contradict it. If writing the spec reveals the approved
+approach was wrong at the level of detail a spec captures, that's the same
+situation this document's "Specs are living docs, not write-once" practice
+already covers: update it in the same PR and say so. But if what's wrong
+is the approach itself, not just its write-up — the mechanism the human
+approved turns out to be the wrong mechanism — that's not a spec fix. Stop
+and take the revised approach back to the human for approval, the same as
+if none had been given yet; don't quietly implement something else under
+the old approval.
+
 ## The loop
 
 One pass of this loop = one module = one PR. Don't batch multiple modules
