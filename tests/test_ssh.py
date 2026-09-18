@@ -294,16 +294,24 @@ class TestShutdownViaSsh:
     def test_worst_case_wall_time_is_bounded_by_the_budget(self, tmp_path, monkeypatch, fake_clock):
         # Regression test for the bug caught during /code-review: an
         # earlier version derived a fixed attempt count from
-        # connect_timeout_budget / _RETRY_DELAY_SECONDS alone, ignoring
-        # that each attempt's own subprocess timeout was a *separate*,
-        # unbounded-by-the-budget ceiling -- a 45s budget could in the
-        # worst case spend upwards of 150s of real wall time before
-        # giving up, silently regressing the fallback-latency problem
-        # #171/#172/#174 were rejected for.
-        timeouts = []
-
+        # connect_timeout_budget / _RETRY_DELAY_SECONDS alone, and gave
+        # every attempt the full _PER_ATTEMPT_TIMEOUT_SECONDS ceiling
+        # regardless of what was left of the budget -- a 45s budget
+        # could in the worst case spend upwards of 150s of wall time
+        # before giving up, silently regressing the fallback-latency
+        # problem #171/#172/#174 were rejected for.
+        #
+        # The fake `run` below consumes simulated time equal to its own
+        # `timeout=` kwarg before failing -- the worst case, where every
+        # attempt hangs for its full ceiling. A fake that returns
+        # instantly (an earlier version of this test did) never advances
+        # the clock during an attempt at all, which makes this assertion
+        # trivially true regardless of whether the retry loop's own math
+        # is actually bounded -- caught on a second /code-review pass,
+        # which proved this by splicing the pre-fix implementation back
+        # in and confirming the old test still passed against it.
         def _fake_run(argv, **kwargs):
-            timeouts.append(kwargs["timeout"])
+            fake_clock.sleep(kwargs["timeout"])
             return _FakeCompleted(returncode=255)
 
         monkeypatch.setattr(ssh.subprocess, "run", _fake_run)
@@ -316,10 +324,43 @@ class TestShutdownViaSsh:
         )
 
         assert result is False
-        # No attempt's own timeout is ever allowed to run past the
-        # deadline, regardless of the flat per-attempt ceiling.
-        assert all(t <= ssh._PER_ATTEMPT_TIMEOUT_SECONDS for t in timeouts)
-        assert fake_clock.now <= 45.0 + 1e-6
+        # No attempt after the first is ever started without enough
+        # budget left to give it the full ceiling, so total time can
+        # only exceed the budget via the mandatory first attempt, and
+        # only by up to one ceiling's worth.
+        assert fake_clock.now <= 45.0 + ssh._PER_ATTEMPT_TIMEOUT_SECONDS
+
+    def test_every_attempt_gets_the_full_ceiling_never_truncated(
+        self, tmp_path, monkeypatch, fake_clock
+    ):
+        # A subprocess.TimeoutExpired is only a meaningful "ssh had the
+        # full ceiling and still didn't return -- the guest is likely
+        # tearing the connection down as it shuts down" signal if the
+        # attempt actually ran for the full ceiling. An earlier version
+        # truncated an attempt's own timeout to whatever budget remained
+        # (min(_PER_ATTEMPT_TIMEOUT_SECONDS, remaining)) to keep total
+        # wall time bounded -- which meant a late attempt could time out
+        # after only a few seconds and still be read as a successful
+        # shutdown, when ssh may simply not have finished connecting
+        # yet. Caught by /code-review.
+        timeouts = []
+
+        def _fake_run(argv, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            fake_clock.sleep(kwargs["timeout"])
+            return _FakeCompleted(returncode=255)
+
+        monkeypatch.setattr(ssh.subprocess, "run", _fake_run)
+
+        ssh.shutdown_via_ssh(
+            "203.0.113.10",
+            tmp_path / "aiform_managed_key",
+            tmp_path / "known_hosts",
+            connect_timeout_budget=45.0,
+        )
+
+        assert timeouts
+        assert all(t == ssh._PER_ATTEMPT_TIMEOUT_SECONDS for t in timeouts)
 
     def test_always_makes_at_least_one_attempt(self, tmp_path, monkeypatch):
         attempts = []

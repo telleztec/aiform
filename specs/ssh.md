@@ -109,23 +109,38 @@ module's own location.
   offers any identity already loaded in an agent before trying `-i`'s
   key, and an operator with several keys loaded can exhaust the server's
   `MaxAuthTries` before the managed key is ever tried.
-  **Wall-clock bounded, not attempt-count bounded**: a shared
-  `deadline = time.monotonic() + connect_timeout_budget` caps both how
-  long any individual attempt's own subprocess timeout can run (`min` of
-  the per-attempt ceiling and whatever's left of the budget) and whether
-  another attempt starts at all — no attempt is ever allowed to run past
-  the deadline, and no new attempt starts once it's passed. This is a
-  deliberate correction from an earlier version that derived a fixed
-  attempt count from `connect_timeout_budget / 5s` alone: since each
-  attempt's own subprocess timeout was a *separate*, unbounded-by-the-budget
-  ceiling, a 45s budget could in the worst case spend upwards of 150s of
-  real wall time before giving up — silently regressing the exact
-  fallback-latency problem #171/#172/#174 were rejected for; caught by
-  `/code-review`. At least one real attempt always happens, even for a
-  budget of `0` or one already spent by the time the deadline is
-  computed — a truncated near-zero timeout would unfairly fail a
-  connection that was about to succeed. Returns `True` as soon as
-  either:
+  **Wall-clock bounded, not attempt-count bounded, and never truncated**:
+  a shared `deadline = time.monotonic() + connect_timeout_budget`
+  decides whether another attempt is allowed to *start*, but every
+  attempt that does start always gets the full, untruncated
+  `_PER_ATTEMPT_TIMEOUT_SECONDS` (12s) as its own subprocess timeout —
+  no attempt after the first is started unless the remaining budget can
+  fit that full ceiling. This went through two prior, both-flawed
+  versions before landing here, each caught by a separate `/code-review`
+  pass:
+  1. The original derived a fixed attempt count from
+     `connect_timeout_budget / 5s` alone. Since each attempt's own
+     subprocess timeout was a *separate*, unbounded-by-the-budget
+     ceiling, a 45s budget could in the worst case spend upwards of 150s
+     of real wall time before giving up — silently regressing the exact
+     fallback-latency problem #171/#172/#174 were rejected for.
+  2. The fix for that truncated an attempt's own timeout to whatever
+     budget remained (`min(ceiling, remaining)`) to keep total wall time
+     bounded. That broke the meaning of `subprocess.TimeoutExpired`
+     below: it stopped reliably meaning "ssh had the full ceiling and
+     still didn't return" and could fire just because this function cut
+     an attempt off early — misreporting a still-connecting, unreached
+     attempt as a successful shutdown, and costing the caller a wasted
+     poll on the strength of that false signal.
+  Refusing to *start* an attempt that can't fit the full ceiling (rather
+  than truncating one that already started) fixes both: total wall time
+  can only exceed `connect_timeout_budget` via the mandatory first
+  attempt, and only by up to one ceiling's worth (for a budget smaller
+  than one) — and every `TimeoutExpired` still means what it always
+  meant. At least one real attempt always happens regardless of the
+  budget, for the same reason as before: refusing to try at all would
+  unfairly fail a connection that was about to succeed. Returns `True`
+  as soon as either:
   - the command exits `0` (rare in practice — the guest usually tears
     the connection down as it shuts down before `ssh` can read a clean
     exit status), or
@@ -134,7 +149,8 @@ module's own location.
     observed exactly this on every one of its 9 successful runs, so a
     timeout here means the connection was accepted and the shutdown
     command was very likely issued before the guest tore the session
-    down, not that the attempt failed.
+    down, not that the attempt failed. Only a meaningful signal because
+    the attempt ran for the full ceiling, never a truncated one.
   Returns `False` once `connect_timeout_budget` is exhausted with every
   attempt failing outright (non-zero exit, no timeout) — e.g. the guest
   refuses the connection, the managed key isn't authorized, or `sshd`

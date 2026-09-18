@@ -1980,6 +1980,9 @@ class TestCreateRetriesKeyPropagationLag:
             driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert excinfo.value.code == 422
+        # DO's own diagnostic text must not be silently dropped on the
+        # immediately-raised, non-retried path either.
+        assert "size not available in region" in str(excinfo.value)
         post_calls = [
             c for c in fake_urlopen.calls if c["method"] == "POST" and c["url"] == droplets_url()
         ]

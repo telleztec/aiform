@@ -284,16 +284,20 @@ class Driver(ResourceDriver):
             try:
                 return self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
             except urllib.error.HTTPError as exc:
-                do_message = self._do_error_message(exc)
-                last_attempt = attempt == _KEY_PROPAGATION_RETRY_ATTEMPTS - 1
-                if exc.code != 422 or not do_message or "key identifiers" not in do_message:
+                # Folded into exc.msg unconditionally -- including on the
+                # non-retried branches below -- so DO's own diagnostic
+                # text (e.g. "size not available in region") is never
+                # silently dropped from a genuine, immediately-raised
+                # rejection. One call per exception: each retried
+                # attempt is a fresh HTTP request with its own fresh,
+                # unread HTTPError, so there's no double-read hazard.
+                do_message = self._fold_do_error_into_exc(exc)
+                is_key_propagation_lag = (
+                    exc.code == 422 and do_message and "key identifiers" in do_message
+                )
+                if not is_key_propagation_lag:
                     raise
-                if last_attempt:
-                    # Not _fold_do_error_into_exc(exc): that re-reads the
-                    # body via _do_error_message(exc), which is already
-                    # consumed by this same loop iteration's read above
-                    # and would silently return None a second time.
-                    exc.msg = f"{exc.msg}: {do_message}"
+                if attempt == _KEY_PROPAGATION_RETRY_ATTEMPTS - 1:
                     raise
                 logger.info(
                     "",

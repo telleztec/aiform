@@ -30,6 +30,14 @@ SSH-initiated shutdowns completed in 11.3-24.4s, and day-0 ssh_keys
 login worked within 8.7-23.3s of the droplet reporting active, on every
 attempt -- see the PR that introduced aiform/ssh.py for the full run
 transcript.
+
+Known caveat as of that same PR: this script uploads the throwaway key
+and immediately creates a droplet with it, with no retry -- a later
+finding on the same branch (drivers/digitalocean/compute.py's
+_create_droplet) discovered DO's own ~9s propagation lag before a
+freshly-uploaded account key is usable in POST /v2/droplets, so a
+re-run of this probe may need re-running once or twice if droplet
+creation itself 422s with "invalid key identifiers".
 """
 
 import json
@@ -160,6 +168,7 @@ def main() -> int:
                     for net in d.get("networks", {}).get("v4", []):
                         if net.get("type") == "public":
                             ip = net["ip_address"]
+                            break
                     if ip:
                         break
                 time.sleep(3)

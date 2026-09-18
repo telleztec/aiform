@@ -175,37 +175,54 @@ def shutdown_via_ssh(
     *,
     connect_timeout_budget: float,
 ) -> bool:
-    # Wall-clock bounded, not attempt-count bounded: each attempt's own
-    # subprocess timeout is capped at whatever's left of the budget, and
-    # no further attempt starts once the budget is spent. An earlier
-    # version derived a fixed attempt count from
-    # connect_timeout_budget / _RETRY_DELAY_SECONDS alone, which ignored
-    # that each attempt can independently cost up to
-    # _PER_ATTEMPT_TIMEOUT_SECONDS -- a 45s budget could spend ~150s wall
-    # time before giving up, silently regressing the very fallback path
-    # #171/#172/#174 were rejected for slowing down. Caught by
-    # /code-review.
+    # Wall-clock bounded, not attempt-count bounded: no attempt after the
+    # first is ever started unless there's still enough of the budget
+    # left to give it the FULL _PER_ATTEMPT_TIMEOUT_SECONDS ceiling --
+    # never a truncated one. An earlier version derived a fixed attempt
+    # count from connect_timeout_budget / _RETRY_DELAY_SECONDS alone and
+    # gave every attempt the full ceiling regardless of what was left,
+    # which ignored that each attempt can independently cost up to that
+    # ceiling -- a 45s budget could spend ~150s of wall time before
+    # giving up, silently regressing the very fallback path
+    # #171/#172/#174 were rejected for slowing down. A second, later
+    # version fixed the total-time bound but did so by *truncating* an
+    # attempt's own timeout to whatever budget remained -- which broke
+    # the meaning of a `subprocess.TimeoutExpired` below: it stopped
+    # reliably meaning "ssh had the full ceiling and still didn't
+    # return" and could fire just because this function cut an attempt
+    # off early, misreporting an unreached, still-connecting attempt as
+    # a successful shutdown. Never truncating an attempt's own timeout
+    # (only ever deciding whether to *start* one) keeps that meaning
+    # intact. Both caught by /code-review.
     argv = _ssh_argv(ip, private_key_path, known_hosts_path, _SHUTDOWN_COMMAND)
     deadline = time.monotonic() + connect_timeout_budget
+    first_attempt = True
 
     while True:
         remaining = deadline - time.monotonic()
         # At least one real attempt always happens, even for a budget of
-        # 0 or one already spent computing the deadline -- a truncated
-        # near-zero timeout would unfairly fail a connection that was
-        # about to succeed.
-        attempt_timeout = min(_PER_ATTEMPT_TIMEOUT_SECONDS, remaining) if remaining > 0 else None
+        # 0 or one already spent computing the deadline -- refusing to
+        # try at all would unfairly fail a connection that was about to
+        # succeed. This is the only way total wall time can exceed
+        # connect_timeout_budget, and only by up to one ceiling's worth,
+        # for a budget smaller than one.
+        if not first_attempt and remaining < _PER_ATTEMPT_TIMEOUT_SECONDS:
+            return False
+        first_attempt = False
+
         try:
             result = subprocess.run(
                 argv,
                 capture_output=True,
                 text=True,
-                timeout=attempt_timeout or _PER_ATTEMPT_TIMEOUT_SECONDS,
+                timeout=_PER_ATTEMPT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
             # The expected, successful shape: the guest tears the
             # connection down as it shuts down before ssh can read a
-            # clean exit status -- see specs/ssh.md.
+            # clean exit status -- see specs/ssh.md. Only a meaningful
+            # signal because this attempt ran for the full ceiling, not
+            # a truncated one -- see the comment above.
             return True
         if result.returncode == 0:
             return True
