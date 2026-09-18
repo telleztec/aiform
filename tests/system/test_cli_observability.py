@@ -29,7 +29,7 @@ import json
 
 import pytest
 
-from aiform import cli
+from aiform import cli, ssh
 from tests.system.conftest import (
     assert_cli_ok,
     get_droplet_or_none,
@@ -38,6 +38,15 @@ from tests.system.conftest import (
     wait_until_droplet_gone,
     write_aiform_md,
 )
+
+# Comfortably past the 11.3-24.4s SSH-initiated-shutdown times observed
+# live in probes/digitalocean_compute_ssh_shutdown.py (issue #175's own
+# diagnostic), the same reasoning
+# drivers/digitalocean/compute.py's _SSH_POWER_OFF_POLL_* constants use
+# for the identical wait.
+_POWER_OFF_POLL_MAX_ATTEMPTS = 30
+_POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
+_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
 
 pytestmark = pytest.mark.system
 
@@ -226,17 +235,58 @@ class TestResourceVerbsAgainstALiveDroplet:
 
 
 def _power_off(token, droplet_id: str) -> None:
-    """Power the droplet off directly, not through aiform: this is meant
-    to be a change aiform did not make, the way a real operator's console
-    click would be."""
+    """Power the droplet off out-of-band -- a change `aiform` itself did
+    not make, the way a real operator's console click would be -- via
+    `aiform.ssh.shutdown_via_ssh()` directly, as a plain provider-agnostic
+    utility, rather than through DigitalOcean's raw `power_off` API
+    action (what this used to call) or through
+    `_power_off_droplet()`'s own driver-level SSH-then-API-fallback logic
+    (which would defeat the point: that method's whole job is deciding
+    *how* to power off, and this helper needs a power-off that already
+    happened, not another call into the thing under test elsewhere in
+    this suite).
+
+    Switched from the raw API action after issue #175's own live testing
+    hit that action's occasional multi-minute outlier here (the same
+    pre-existing DigitalOcean characteristic #152/#168 already
+    documented) -- not fixed by widening a timeout again, the exact
+    whack-a-mole #171/#172/#174 were rejected for. This test's actual
+    invariant is "does `aiform resource check` correctly detect a
+    droplet that's off without aiform's own `plan apply`/`destroy` having
+    done it," not "specifically via the DO console/raw API" -- SSH is
+    exactly as valid a way to induce the off-state for that purpose, and
+    every droplet `aiform` creates now carries the managed key by default
+    (`drivers/digitalocean/compute.py`'s `create()`, issue #175), so it's
+    always available here. It's also fast and reliable where the raw
+    action isn't: 11.3-24.4s, 9/9, in the live diagnostic that motivated
+    #175 (`probes/digitalocean_compute_ssh_shutdown.py`).
+    """
+    live = get_droplet_or_none(token, droplet_id)
+    ip = None
+    for net in (live or {}).get("networks", {}).get("v4", []):
+        if net.get("type") == "public":
+            ip = net.get("ip_address")
+            break
+    assert ip, f"droplet {droplet_id} has no public v4 address to power off over SSH"
+
+    ssh_dir = ssh.DEFAULT_SSH_DIR
+    issued = ssh.shutdown_via_ssh(
+        ip,
+        ssh_dir / "aiform_managed_key",
+        ssh_dir / "known_hosts",
+        connect_timeout_budget=_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS,
+    )
+    assert issued, f"shutdown_via_ssh could not reach droplet {droplet_id} at {ip}"
+
     driver = _load_compute_driver()
     credentials = {"DIGITALOCEAN_TOKEN": str(token)}
-    driver._do_action_and_wait(
+    driver._poll_until(
         droplet_id,
         credentials,
-        {"type": "power_off"},
         lambda d: d["status"] == "off",
         "system-test-power-off",
+        max_attempts=_POWER_OFF_POLL_MAX_ATTEMPTS,
+        delay_seconds=_POWER_OFF_POLL_DELAY_SECONDS,
     )
 
 
