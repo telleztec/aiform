@@ -13,6 +13,7 @@ import pytest
 
 from aiform.driver import DriverUpdateNotSupported
 from aiform.exceptions import ResourceNotFoundError
+from drivers.digitalocean import compute
 from drivers.digitalocean.compute import Driver
 
 BASE_URL = "https://api.digitalocean.com/v2"
@@ -184,8 +185,32 @@ def fake_urlopen(monkeypatch) -> FakeUrlopen:
 
 
 @pytest.fixture(autouse=True)
-def _no_real_sleep(monkeypatch):
-    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+def _fake_clock(monkeypatch):
+    """_poll_until bounds itself by elapsed wall-clock time
+    (time.monotonic()), not a fixed attempt count -- a plain no-op
+    time.sleep alone would leave that elapsed time frozen, and a poll
+    that never converges would spin at near-zero elapsed time forever
+    instead of ever reaching the timeout ceiling. This advances a virtual
+    clock by exactly the requested sleep duration instead of actually
+    blocking, so the real backoff/timeout arithmetic stays under test
+    while the suite still runs instantly. aiform/log.py's elapsed_ms()
+    also calls time.monotonic(), so duration_ms sees the same clock.
+    Returns the list of sleep durations requested, in order, for tests
+    that want to assert on the backoff curve itself.
+    """
+    virtual_seconds = [0.0]
+    sleeps: list[float] = []
+
+    def fake_monotonic():
+        return virtual_seconds[0]
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        virtual_seconds[0] += seconds
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    return sleeps
 
 
 @pytest.fixture
@@ -402,36 +427,119 @@ class TestCreatePollsUntilActive:
         assert "555" in str(excinfo.value)
 
 
-class TestPollBudgets:
-    # issue #168: two consecutive live system-test runs both timed out
-    # waiting for a power-off, exhausting the (then) 45-attempt/2s-delay
-    # (90s) default budget at ~108.4s and ~108.6s -- a tight cluster at a
-    # higher number than issue #152's own prior bump (30->45 attempts,
-    # 60s->90s, after a ~72-73s cluster), reading as DO's power-off
-    # latency having shifted again rather than a one-off flake.
-    OBSERVED_WORST_CASE_SECONDS = 108.6
+def _simulate_poll_schedule(*, initial, multiplier, max_delay, timeout):
+    """Mirrors _poll_until's own attempt/sleep timeline exactly (a
+    predicate that never succeeds), so tests can assert against the real
+    schedule's math instead of a hand-computed literal that could
+    silently drift from the implementation. Returns (attempts_used,
+    [sleep durations requested, in order])."""
+    elapsed = 0.0
+    delay = initial
+    sleeps = []
+    attempts = 0
+    while True:
+        attempts += 1
+        if elapsed >= timeout:
+            return attempts, sleeps
+        sleep_for = min(delay, timeout - elapsed)
+        sleeps.append(sleep_for)
+        elapsed += sleep_for
+        delay = min(delay * multiplier, max_delay)
 
-    def test_update_default_budget_clears_the_168_observed_latency_with_margin(self, driver):
-        max_attempts, delay_seconds = driver._poll_until.__defaults__
 
-        # The literal pin: this IS the constant issue #168 changed, so a
-        # future retune is expected to edit this line, same as it would
-        # edit the driver. Kept alongside the margin assertion below (which
-        # is implied by this pin once the numbers are fixed) because the
-        # margin is the actual invariant being defended -- a reviewer or a
-        # future retune should be able to see *why* 150s, not just *that*
-        # it's 150s.
-        assert (max_attempts, delay_seconds) == (75, 2)
+class TestPollBackoffSchedule:
+    # issue #171: DigitalOcean's own account-wide action log (GET
+    # /v2/actions) showed most power_off actions completing in ~11-14s but
+    # one taking 303s -- a genuine ~20-25x outlier, not a bug in
+    # _poll_until's own logic. A flat 2s-interval poll forced picking one
+    # cadence for both regimes, and its total budget had already needed
+    # raising three times in two nights (#152, #168, this) to survive
+    # outliers like that one while polling at the same wasteful constant
+    # rate throughout. This replaces the flat interval with exponential
+    # backoff, bounded by total elapsed time rather than attempt count.
+    OBSERVED_WORST_CASE_SECONDS = 303
 
-        # #152's own bump landed ~23% over its observed cluster (90s over a
-        # ~73.4s worst case) and still needed raising again -- land with
-        # more margin than that this time, not just barely above 108.6s.
-        budget_seconds = max_attempts * delay_seconds
-        assert budget_seconds > self.OBSERVED_WORST_CASE_SECONDS * 1.25
+    def test_schedule_constants_are_the_pinned_values(self):
+        # The literal pin: these ARE the constants a future retune is
+        # expected to edit, same as issue #152/#168 edited the old
+        # max_attempts/delay_seconds pair. Kept alongside the behavioral
+        # assertions below (which follow from these once the numbers are
+        # fixed) so a reviewer or future retune can see *why* these
+        # values, not just *that* they're these values. The initial delay
+        # (2s) is what keeps the common ~11-14s case exactly as fast as
+        # the flat interval it replaces -- unchanged, not just unraised.
+        assert compute._POLL_INITIAL_DELAY_SECONDS == 2
+        assert compute._POLL_BACKOFF_MULTIPLIER == 2
+        assert compute._POLL_MAX_DELAY_SECONDS == 20
+        assert compute._POLL_TIMEOUT_SECONDS == 420
 
-    def test_create_override_budget_is_unchanged_and_still_exceeds_update_default(
-        self, driver, fake_urlopen, monkeypatch
+    def test_total_ceiling_clears_the_observed_303s_outlier_with_171s_own_margin(self):
+        # #170 landed its own bump ~38% over its observed 108.6s worst
+        # case (150s). Apply the same margin to this new, larger outlier
+        # rather than picking a rounder number arbitrarily.
+        assert compute._POLL_TIMEOUT_SECONDS > self.OBSERVED_WORST_CASE_SECONDS * 1.38
+
+    def test_delay_sequence_doubles_then_caps_and_never_exceeds_the_max(self):
+        _, sleeps = _simulate_poll_schedule(
+            initial=compute._POLL_INITIAL_DELAY_SECONDS,
+            multiplier=compute._POLL_BACKOFF_MULTIPLIER,
+            max_delay=compute._POLL_MAX_DELAY_SECONDS,
+            timeout=compute._POLL_TIMEOUT_SECONDS,
+        )
+
+        assert sleeps[:4] == [2, 4, 8, 16]
+        assert all(s <= compute._POLL_MAX_DELAY_SECONDS for s in sleeps)
+        assert max(sleeps) == compute._POLL_MAX_DELAY_SECONDS
+        # Growth is monotonic non-decreasing up to the cap, then flat --
+        # except the very last entry, which is deliberately truncated to
+        # land exactly on the total ceiling rather than overshoot it.
+        assert sleeps[:-1] == sorted(sleeps[:-1])
+        assert sleeps[-1] <= compute._POLL_MAX_DELAY_SECONDS
+
+    def test_total_wait_across_the_whole_schedule_is_bounded_by_the_ceiling(self):
+        attempts, sleeps = _simulate_poll_schedule(
+            initial=compute._POLL_INITIAL_DELAY_SECONDS,
+            multiplier=compute._POLL_BACKOFF_MULTIPLIER,
+            max_delay=compute._POLL_MAX_DELAY_SECONDS,
+            timeout=compute._POLL_TIMEOUT_SECONDS,
+        )
+
+        assert sum(sleeps) == compute._POLL_TIMEOUT_SECONDS
+        assert attempts == len(sleeps) + 1
+
+    def test_driver_poll_until_actually_follows_the_simulated_schedule(
+        self, driver, fake_urlopen, _fake_clock
     ):
+        # Never transitions -- forces _poll_until through its whole
+        # schedule to the real timeout, against the real implementation
+        # rather than the simulation above.
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(status="new"))
+        )
+        expected_attempts, expected_sleeps = _simulate_poll_schedule(
+            initial=compute._POLL_INITIAL_DELAY_SECONDS,
+            multiplier=compute._POLL_BACKOFF_MULTIPLIER,
+            max_delay=compute._POLL_MAX_DELAY_SECONDS,
+            timeout=compute._POLL_TIMEOUT_SECONDS,
+        )
+
+        with pytest.raises(TimeoutError):
+            driver._poll_until("123", CREDENTIALS, lambda d: False, "probe")
+
+        assert _fake_clock == expected_sleeps
+        get_calls = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(get_calls) == expected_attempts
+
+    def test_create_and_update_share_the_same_schedule(self, driver, fake_urlopen, monkeypatch):
+        # create()'s previous separate override (max_attempts=60,
+        # delay_seconds=3 -- 180s) existed only because the old flat
+        # default was tuned for update()'s shorter power-off/resize
+        # profile. The new default's 420s ceiling already comfortably
+        # exceeds that 180s override -- and create()'s override was never
+        # once exercised across two straight raises of update()'s own
+        # budget (#152, #168) -- so there's nothing left for a separate
+        # override to buy; sharing one schedule removes one of the two
+        # hardcoded budgets PLAN.md §10 named as needing a real policy.
         fake_urlopen.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
@@ -439,17 +547,11 @@ class TestPollBudgets:
             "GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555, status="active"))
         )
 
-        # Read the true default off the class, not the instance, before
-        # wrapping the instance attribute below -- monkeypatch.setattr on
-        # `driver` shadows the class method for this instance only.
-        update_max_attempts, update_delay_seconds = type(driver)._poll_until.__defaults__
-
         original_poll_until = driver._poll_until
         captured = {}
 
         def spy_poll_until(*args, **kwargs):
-            captured["max_attempts"] = kwargs.get("max_attempts")
-            captured["delay_seconds"] = kwargs.get("delay_seconds")
+            captured["kwargs"] = kwargs
             return original_poll_until(*args, **kwargs)
 
         monkeypatch.setattr(driver, "_poll_until", spy_poll_until)
@@ -457,14 +559,9 @@ class TestPollBudgets:
         result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["status"] == "active"
-        # create() passes its own explicit budget rather than silently
-        # inheriting update()'s default.
-        assert (captured["max_attempts"], captured["delay_seconds"]) == (60, 3)
-        # ...and that budget stays wider than update()'s, the property the
-        # override exists to preserve -- checked against the live default
-        # rather than a second literal, so this keeps holding if either
-        # constant is retuned again without the other.
-        assert 60 * 3 > update_max_attempts * update_delay_seconds
+        # No per-call override -- create() relies on _poll_until's module
+        # default, identical to every update() call site.
+        assert captured["kwargs"] == {}
 
 
 class TestRead:
@@ -1645,11 +1742,19 @@ class TestLogging:
 
         record = next(r for r in caplog.records if getattr(r, "step", None) == "power-off")
         assert record.outcome == "timeout"
-        # Pinned to the live default rather than a literal: this is
-        # exactly the number that drifted from 30 to 45 (issue #152), and
-        # a literal here would need editing every time that budget is
-        # re-tuned rather than catching a caller who forgot to update it.
-        assert record.attempts_used == driver._poll_until.__defaults__[0]
+        # Derived from the live schedule constants rather than a literal:
+        # this is exactly the number that drifted from 45 to 75 attempts
+        # under the old fixed-interval scheme (issue #168), and computing
+        # it here catches a caller who retunes the schedule without
+        # updating this assertion, the same way the old __defaults__
+        # lookup did for the constants it pinned.
+        expected_attempts, _ = _simulate_poll_schedule(
+            initial=compute._POLL_INITIAL_DELAY_SECONDS,
+            multiplier=compute._POLL_BACKOFF_MULTIPLIER,
+            max_delay=compute._POLL_MAX_DELAY_SECONDS,
+            timeout=compute._POLL_TIMEOUT_SECONDS,
+        )
+        assert record.attempts_used == expected_attempts
         assert record.levelno == logging.ERROR
 
     def test_tags_step_logs_what_it_set_out_to_change(self, driver, fake_urlopen, caplog):

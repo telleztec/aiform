@@ -98,24 +98,27 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `status: "new"` and `networks.v4: []` (no IP yet) — `create()` takes
   only the new `id` from that response and then polls `GET
   /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
-  `update()` uses, but with its own wider budget — `max_attempts=60`,
-  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=75`,
-  `delay_seconds=2` (150s) — because full provisioning from scratch
-  commonly takes longer than reconciling an already-existing droplet;
-  either way, exhaustion raises `TimeoutError` naming the droplet `id`)
-  until `status == "active"`, discarding the transient POST body in
-  favor of the converged GET response. **Corrected here**: this
-  paragraph previously claimed `create()` was "bounded the same way" as
-  `update()`'s default budget — stale relative to the code, which has
-  always given `create()` its own wider override; found while touching
-  this area for an unrelated reason, not a new change. This was originally
-  designed the other way (no polling, convergence picked up by a later
-  `plan`/`refresh`) but that left `create()` returning a permanently
-  wrong `status`/`ipv4_address` immediately after every `apply` and was
-  inconsistent with `update()`'s own convergence-polling — revised after
-  a live `code-review-model` run against the curated driver flagged the
-  missing convergence handling as a real correctness gap, not a false
-  positive.
+  `update()` uses) until `status == "active"`, discarding the transient
+  POST body in favor of the converged GET response; exhaustion raises
+  `TimeoutError` naming the droplet `id`. **Corrected here (issue #171)**:
+  `create()` previously passed `_poll_until` its own wider fixed-interval
+  override (`max_attempts=60`, `delay_seconds=3` — 180s) because the old
+  shared default was tuned for `update()`'s shorter power-off/resize
+  profile and would otherwise time out a still-converging create.
+  `_poll_until` is now exponential backoff bounded by a single 420s
+  total-elapsed ceiling shared by every call site — see `_POLL_*`
+  constants in `drivers/digitalocean/compute.py` — which already
+  comfortably exceeds that old 180s override, and `create()`'s override
+  was never once exercised across either of `update()`'s own budget
+  raises (#152, #168), so there was no observed evidence it needed a
+  longer or differently-shaped wait than `update()` gets. This was
+  originally designed the other way (no polling, convergence picked up by
+  a later `plan`/`refresh`) but that left `create()` returning a
+  permanently wrong `status`/`ipv4_address` immediately after every
+  `apply` and was inconsistent with `update()`'s own convergence-polling
+  — revised after a live `code-review-model` run against the curated
+  driver flagged the missing convergence handling as a real correctness
+  gap, not a false positive.
 - Returns a **flattened** dict whose keys mirror `PARAM_SCHEMA`'s flat
   shape (plus `id`/`status`/`ipv4_address` — note that key name, not
   `ip_address`: it must match the field name `PLAN.md`'s worked
@@ -588,7 +591,7 @@ the observed total is a few hundred milliseconds.
   this is one of the two paths in this driver that make more than one
   API call — `read`/`delete` remain genuinely single-request. An
   in-place resize is a multi-step DO operation, not a single request.
-  **If any polling step (2, 5, or 6) exhausts its bounded attempt
+  **If any polling step (2, 5, or 6) exhausts its bounded total-elapsed-time
   budget without reaching the target state**, raise a plain
   `TimeoutError` naming which step and the droplet `id` — don't retry
   indefinitely, don't silently return stale attributes, and don't leave
@@ -729,8 +732,8 @@ the observed total is a few hundred milliseconds.
   for driver network calls" entry tracks the general gap (no retry
   layer, and no orchestrator-level recovery for a driver call that
   fails after partially succeeding). What *is* addressed here: the
-  poll's bounded-attempt budget is sized generously enough
-  (`max_attempts=60`, `delay_seconds=3` — 180 seconds) that a
+  poll's bounded total-elapsed-time budget (420 seconds, exponential
+  backoff — see issue #171) is sized generously enough that a
   legitimately-provisioning droplet essentially never hits it in
   practice; this remains a real but rare failure mode, not a
   routinely-triggered one.

@@ -30,6 +30,31 @@ REQUEST_TIMEOUT_SECONDS = 30
 # status code demonstrates otherwise.
 _RESIZE_REJECTED_STATUSES = (400, 422)
 
+# Backoff schedule for _poll_until, replacing the previous fixed 2s
+# interval (issue #171). DigitalOcean's own account-wide action log
+# (GET /v2/actions) showed most power_off actions completing in ~11-14s
+# but one taking 303s -- a genuine ~20-25x outlier, not a bug in the poll
+# loop itself (a plain, correct poll-predicate-sleep loop). A flat
+# interval forced picking one cadence for both regimes: fast enough not
+# to waste requests, slow enough to survive the outlier -- which is why
+# the flat total budget needed raising three times in two nights (from an
+# original 20/40s, then #152's 30/60s, then #168's 45/90s->75/150s) while
+# polling at that same rate the entire time regardless of how close to
+# done the wait actually was. Starting fast and doubling keeps the common
+# ~11-14s case exactly as fast as before (first retry still at 2s,
+# matching the old fixed interval) while widening the gap for the rare
+# long wait, capped so a check is never more than
+# _POLL_MAX_DELAY_SECONDS behind a completion. Bounding total elapsed
+# time rather than attempt count makes "how long are we willing to wait,
+# total" an explicit number instead of an emergent side effect of
+# attempts * delay -- 420s is ~38% margin over the observed 303s outlier,
+# the same margin #170 used over its own observed worst case (150s over a
+# 108.6s worst case).
+_POLL_INITIAL_DELAY_SECONDS = 2
+_POLL_BACKOFF_MULTIPLIER = 2
+_POLL_MAX_DELAY_SECONDS = 20
+_POLL_TIMEOUT_SECONDS = 420
+
 # health()/metrics() are run in a loop by a script and a human waits on
 # them, so they must not inherit REQUEST_TIMEOUT_SECONDS -- six times
 # specs/driver_observability.md's per-resource target, per resource, per
@@ -177,9 +202,12 @@ class Driver(ResourceDriver):
             return None
         return data.get("message") if isinstance(data, dict) else None
 
-    def _poll_until(self, id, credentials, predicate, step, max_attempts=75, delay_seconds=2):
+    def _poll_until(self, id, credentials, predicate, step, timeout_seconds=_POLL_TIMEOUT_SECONDS):
         start = time.monotonic()
-        for attempt in range(max_attempts):
+        delay = _POLL_INITIAL_DELAY_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
             droplet = self._get_droplet(id, credentials)
             if predicate(droplet):
                 logger.info(
@@ -187,25 +215,27 @@ class Driver(ResourceDriver):
                     extra={
                         "id": id,
                         "step": step,
-                        "attempts_used": attempt + 1,
+                        "attempts_used": attempt,
                         "duration_ms": log.elapsed_ms(start),
                         "outcome": "success",
                     },
                 )
                 return droplet
-            if attempt < max_attempts - 1:
-                time.sleep(delay_seconds)
-        logger.error(
-            "",
-            extra={
-                "id": id,
-                "step": step,
-                "attempts_used": max_attempts,
-                "duration_ms": log.elapsed_ms(start),
-                "outcome": "timeout",
-            },
-        )
-        raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
+            elapsed = time.monotonic() - start
+            if elapsed >= timeout_seconds:
+                logger.error(
+                    "",
+                    extra={
+                        "id": id,
+                        "step": step,
+                        "attempts_used": attempt,
+                        "duration_ms": log.elapsed_ms(start),
+                        "outcome": "timeout",
+                    },
+                )
+                raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
+            time.sleep(min(delay, timeout_seconds - elapsed))
+            delay = min(delay * _POLL_BACKOFF_MULTIPLIER, _POLL_MAX_DELAY_SECONDS)
 
     def _do_action_and_wait(self, id, credentials, body, predicate, step):
         self._action(id, credentials, body)
@@ -240,35 +270,21 @@ class Driver(ResourceDriver):
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
         new_id = payload["droplet"]["id"]
-        # _poll_until's default budget (75 attempts * 2s = 150s) is tuned for
-        # update()'s power-off/resize/power-on actions against an already-
-        # existing droplet -- full provisioning from scratch commonly takes
-        # longer than that per DO's own docs, so this uses a wider budget
-        # (60 * 3s = 180s) to avoid spuriously timing out a create that
-        # would have converged moments later. The default itself was
-        # raised three times now: 20->30 attempts (40s->60s) after an
-        # earlier live run hit a power-off slowdown at the old edge, then
-        # 30->45 attempts (60s->90s, see issue #152) after three
-        # consecutive live runs all timed out on the same power-off step
-        # within a second of each other (~72-73s), then 45->75 attempts
-        # (90s->150s, see issue #168) after two more consecutive runs both
-        # timed out at ~108.4-108.6s -- tight enough clustering each time
-        # that it reads as DO's power-off latency having shifted again,
-        # not tail-latency noise. create()'s own override is left
-        # untouched by #168: nothing observed suggests create's
-        # provisioning latency has drifted, and 180s remains comfortably
-        # above the new 150s default. Real, observed timing adjustments
-        # per PLAN.md's own "guesses tuned against one CSP's observed
-        # behavior, not a real policy" framing for these two constants,
-        # not a fix for a code defect.
-        droplet = self._poll_until(
-            new_id,
-            credentials,
-            lambda d: d["status"] == "active",
-            "create",
-            max_attempts=60,
-            delay_seconds=3,
-        )
+        # Prior to issue #171, create() passed its own wider fixed-interval
+        # budget here (max_attempts=60, delay_seconds=3 -- 180s) because the
+        # old shared default was tuned for update()'s shorter power-off/
+        # resize profile and would otherwise time out a still-converging
+        # create. #171's backoff schedule already gives every _poll_until
+        # caller a 420s total-elapsed ceiling (see _POLL_TIMEOUT_SECONDS)
+        # -- comfortably above that old 180s override -- and create()'s
+        # override was never once exercised across either of update()'s own
+        # budget raises (#152, #168), so there's no observed evidence it
+        # needs a longer or differently-shaped wait than update() gets.
+        # Sharing one schedule here removes one of the two hardcoded
+        # _poll_until budgets PLAN.md §10 named as needing a real backoff
+        # policy instead of magic numbers, rather than just retuning both
+        # again.
+        droplet = self._poll_until(new_id, credentials, lambda d: d["status"] == "active", "create")
         attrs = self._flatten(droplet)
         attrs["ssh_keys"] = params.get("ssh_keys", [])
         attrs["backups"] = params.get("backups", False)

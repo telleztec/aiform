@@ -1647,50 +1647,51 @@ entry's own note below.
   doesn't implement it yet. The only timeout handling that exists today
   is `drivers/digitalocean/compute.py`'s own `REQUEST_TIMEOUT_SECONDS`
   on each raw `urllib` call and `_poll_until`'s local
-  convergence-polling loop (`max_attempts`/`delay_seconds`) for
-  `create`'s convergence-to-`"active"` wait and `update`'s
-  resize/power actions — neither retries a failed request, and neither
-  layer feeds back into `aiform/orchestrator.py`: if a poll loop times
-  out or hits a transient error *after* its mutating call already
-  succeeded (the droplet genuinely exists, or was already resized), the
-  exception still propagates as a hard failure and `state.json` is
-  never updated, leaving a real, billable resource untracked. A
-  transient DigitalOcean or Anthropic `5xx`/`429` today just propagates
-  as a hard failure (`DriverExecutionError`, or an uncaught `anthropic`
-  error). `specs/system_test.md`'s Edge Cases section names the consequence
-  directly: a real transient error during the live system-test suite
-  must surface as a visible test failure rather than being retried away
-  by the test itself, precisely because there's no retry layer yet that
-  a test-level retry would be masking. Not yet designed: retry
-  count/backoff policy, which operations are safe to retry idempotently
-  (`read`/`delete` vs. non-idempotent `create`), whether retry policy is
-  configurable per-role/per-driver the same way model tiering is, and
-  how it interacts with the review-gate LLM calls (a review-tier call
-  retried mid-flow must not silently double-bill or re-trigger a gate
-  the user already confirmed). **When this actually gets built, replace
-  the two hardcoded `_poll_until` budgets it's meant to supersede**,
-  both in `drivers/digitalocean/compute.py`: the default
-  (`max_attempts=75`, `delay_seconds=2` — 150s, used by `update`'s
-  power-off/resize/power-on actions; raised three times now — from an
-  original 20/40s after a live system-test run hit DO taking longer
-  than 40s to power off a droplet, then from 30/60s after issue #152's
-  three consecutive live runs all timed out within a second of each
-  other at ~72-73s, then from 45/90s after issue #168's two consecutive
-  live runs both timed out within 200ms of each other at ~108.4-108.6s)
-  and `create`'s own override (`max_attempts=60`,
-  `delay_seconds=3` — 180s, widened specifically because the default
-  was tuned for `update` and timed out too eagerly on full droplet
-  provisioning; left untouched by #168, since nothing observed
-  implicates create's provisioning latency and 180s remains comfortably
-  above the new 150s default). Both are guesses tuned against one CSP's
-  observed behavior, not a real policy — likely candidates for whatever
-  configurable retry/backoff mechanism this entry ends up designing,
-  rather than two more magic numbers to hand-tune again later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
+  convergence-polling loop for `create`'s convergence-to-`"active"` wait
+  and `update`'s resize/power actions — neither retries a failed
+  request, and neither layer feeds back into `aiform/orchestrator.py`:
+  if a poll loop times out or hits a transient error *after* its
+  mutating call already succeeded (the droplet genuinely exists, or was
+  already resized), the exception still propagates as a hard failure and
+  `state.json` is never updated, leaving a real, billable resource
+  untracked. A transient DigitalOcean or Anthropic `5xx`/`429` today
+  just propagates as a hard failure (`DriverExecutionError`, or an
+  uncaught `anthropic` error). `specs/system_test.md`'s Edge Cases
+  section names the consequence directly: a real transient error during
+  the live system-test suite must surface as a visible test failure
+  rather than being retried away by the test itself, precisely because
+  there's no retry layer yet that a test-level retry would be masking.
+  **The backoff-policy portion of "not yet designed" is now resolved for
+  `_poll_until`'s own convergence-polling loop, by issue #171**: it no
+  longer polls at a fixed interval up to a fixed attempt count
+  (`max_attempts`/`delay_seconds`); it now starts at a short delay,
+  doubles it up to a cap, and bounds the whole wait by an explicit total
+  elapsed-time ceiling (`_POLL_INITIAL_DELAY_SECONDS`,
+  `_POLL_BACKOFF_MULTIPLIER`, `_POLL_MAX_DELAY_SECONDS`,
+  `_POLL_TIMEOUT_SECONDS` in `drivers/digitalocean/compute.py`) — one
+  schedule shared by every `_poll_until` call site, including `create`'s
+  wait, which previously needed its own separate, wider fixed-interval
+  override for exactly the reason a real backoff policy removes: a flat
+  cadence forces one cadence to serve both a fast, common case and a
+  rare, slow outlier. That schedule is still local to this one driver,
+  not the shared, configurable-per-role/per-driver mechanism this entry
+  is about — the same "premature to generalize with only one driver in
+  the codebase" reasoning this entry gives below for `update()`'s
+  HTTPError classification (PR #56) applies here too. **Still not yet
+  designed, unchanged by #171**:
+  retry-on-transient-error (whether and how a failed *request*, not just
+  a not-yet-converged poll, gets retried at all), which operations are
+  safe to retry idempotently (`read`/`delete` vs. non-idempotent
+  `create`), whether retry policy is configurable per-role/per-driver
+  the same way model tiering is, how it interacts with the review-gate
+  LLM calls (a review-tier call retried mid-flow must not silently
+  double-bill or re-trigger a gate the user already confirmed), and the
+  orchestrator-level failover/feedback-into-`state.json` gap described
+  above. **Sharper than "no backoff policy" above: `_poll_until`'s loop
   has no error tolerance at all today.** `drivers/digitalocean/compute.py`'s
   `_get_droplet()` call inside that loop doesn't catch `HTTPError` — so
-  a single transient error on *any one* poll attempt (a `429` from the
-  exact rate-limit/quota mechanism a tight, fixed-interval polling
-  cadence risks triggering, or an ordinary `5xx`) aborts the entire
+  a single transient error on *any one* poll attempt (a `429` from DO's
+  own rate-limit/quota mechanism, or an ordinary `5xx`) aborts the entire
   `create`/`update` operation immediately, rather than being tolerated
   and retried on the next interval. This is a real risk today only at
   the margins (a single resource's poll loop stays well under DO's
