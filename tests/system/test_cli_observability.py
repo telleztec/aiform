@@ -264,37 +264,23 @@ class TestResourceVerbsAgainstALiveDroplet:
 
 def _power_off(token, droplet_id: str) -> None:
     """Power the droplet off out-of-band -- a change `aiform` itself did
-    not make, the way a real operator's console click would be -- via
-    `aiform.ssh.shutdown_via_ssh()` directly, as a plain provider-agnostic
-    utility, rather than through DigitalOcean's raw `power_off` API
-    action (what this used to call) or through
-    `_power_off_droplet()`'s own driver-level SSH-then-API-fallback logic
-    (which would defeat the point: that method's whole job is deciding
-    *how* to power off, and this helper needs a power-off that already
-    happened, not another call into the thing under test elsewhere in
-    this suite).
+    not make, the way a real operator's console click would be -- so this
+    suite's `check`/`status` assertions have a real FAILING droplet to
+    observe.
 
-    Switched from the raw API action after issue #175's own live testing
-    hit that action's occasional multi-minute outlier here (the same
-    pre-existing DigitalOcean characteristic #152/#168 already
-    documented) -- not fixed by widening a timeout again, the exact
-    whack-a-mole #171/#172/#174 were rejected for. This test's actual
-    invariant is "does `aiform resource check` correctly detect a
-    droplet that's off without aiform's own `plan apply`/`destroy` having
-    done it," not "specifically via the DO console/raw API" -- SSH is
-    exactly as valid a way to induce the off-state for that purpose, and
-    every droplet `aiform` creates now carries the managed key by default
-    (`drivers/digitalocean/compute.py`'s `create()`, issue #175), so it's
-    always available here. It's also fast and reliable where the raw
-    action isn't: 11.3-24.4s, 9/9, in the live diagnostic that motivated
-    #175 (`probes/digitalocean_compute_ssh_shutdown.py`).
+    Uses `aiform.ssh.shutdown_via_ssh()` directly, as a plain
+    provider-agnostic utility, rather than DigitalOcean's raw
+    `power_off` API action: that action has its own occasional
+    multi-minute outlier, which this helper's job -- inducing an
+    off-state fast and reliably for the test -- can't tolerate. Falls
+    back to the raw action (with its own poll) if SSH never connects or
+    doesn't converge in time, so a flaky SSH path still eventually
+    reaches the same off-state.
 
-    Still falls back to the raw API action (with its own, separate poll)
-    if SSH never connects, or connects but doesn't converge within a
-    short budget -- trading the raw action's ~300s outlier for an
-    unconditional new flake class would be a worse deal than keeping the
-    one-in-many-runs fallback path this same trade already accepts
-    elsewhere in this PR.
+    Does not go through `_power_off_droplet()`, the driver's own
+    SSH-then-API-fallback logic: that method's whole job is *deciding*
+    how to power off, and this helper needs a power-off that has already
+    happened, not another call into the thing this suite is testing.
     """
     driver = _load_compute_driver()
     credentials = {"DIGITALOCEAN_TOKEN": str(token)}
