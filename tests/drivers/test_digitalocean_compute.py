@@ -402,6 +402,71 @@ class TestCreatePollsUntilActive:
         assert "555" in str(excinfo.value)
 
 
+class TestPollBudgets:
+    # issue #168: two consecutive live system-test runs both timed out
+    # waiting for a power-off, exhausting the (then) 45-attempt/2s-delay
+    # (90s) default budget at ~108.4s and ~108.6s -- a tight cluster at a
+    # higher number than issue #152's own prior bump (30->45 attempts,
+    # 60s->90s, after a ~72-73s cluster), reading as DO's power-off
+    # latency having shifted again rather than a one-off flake.
+    OBSERVED_WORST_CASE_SECONDS = 108.6
+
+    def test_update_default_budget_clears_the_168_observed_latency_with_margin(self, driver):
+        max_attempts, delay_seconds = driver._poll_until.__defaults__
+
+        # The literal pin: this IS the constant issue #168 changed, so a
+        # future retune is expected to edit this line, same as it would
+        # edit the driver. Kept alongside the margin assertion below (which
+        # is implied by this pin once the numbers are fixed) because the
+        # margin is the actual invariant being defended -- a reviewer or a
+        # future retune should be able to see *why* 150s, not just *that*
+        # it's 150s.
+        assert (max_attempts, delay_seconds) == (75, 2)
+
+        # #152's own bump landed ~23% over its observed cluster (90s over a
+        # ~73.4s worst case) and still needed raising again -- land with
+        # more margin than that this time, not just barely above 108.6s.
+        budget_seconds = max_attempts * delay_seconds
+        assert budget_seconds > self.OBSERVED_WORST_CASE_SECONDS * 1.25
+
+    def test_create_override_budget_is_unchanged_and_still_exceeds_update_default(
+        self, driver, fake_urlopen, monkeypatch
+    ):
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake_urlopen.script(
+            "GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555, status="active"))
+        )
+
+        # Read the true default off the class, not the instance, before
+        # wrapping the instance attribute below -- monkeypatch.setattr on
+        # `driver` shadows the class method for this instance only.
+        update_max_attempts, update_delay_seconds = type(driver)._poll_until.__defaults__
+
+        original_poll_until = driver._poll_until
+        captured = {}
+
+        def spy_poll_until(*args, **kwargs):
+            captured["max_attempts"] = kwargs.get("max_attempts")
+            captured["delay_seconds"] = kwargs.get("delay_seconds")
+            return original_poll_until(*args, **kwargs)
+
+        monkeypatch.setattr(driver, "_poll_until", spy_poll_until)
+
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["status"] == "active"
+        # create() passes its own explicit budget rather than silently
+        # inheriting update()'s default.
+        assert (captured["max_attempts"], captured["delay_seconds"]) == (60, 3)
+        # ...and that budget stays wider than update()'s, the property the
+        # override exists to preserve -- checked against the live default
+        # rather than a second literal, so this keeps holding if either
+        # constant is retuned again without the other.
+        assert 60 * 3 > update_max_attempts * update_delay_seconds
+
+
 class TestRead:
     def test_gets_droplet_by_id(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet()))

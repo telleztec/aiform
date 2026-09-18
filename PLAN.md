@@ -1670,16 +1670,20 @@ entry's own note below.
   the user already confirmed). **When this actually gets built, replace
   the two hardcoded `_poll_until` budgets it's meant to supersede**,
   both in `drivers/digitalocean/compute.py`: the default
-  (`max_attempts=45`, `delay_seconds=2` — 90s, used by `update`'s
-  power-off/resize/power-on actions; raised twice now — from an
+  (`max_attempts=75`, `delay_seconds=2` — 150s, used by `update`'s
+  power-off/resize/power-on actions; raised three times now — from an
   original 20/40s after a live system-test run hit DO taking longer
   than 40s to power off a droplet, then from 30/60s after issue #152's
   three consecutive live runs all timed out within a second of each
-  other at ~72-73s) and `create`'s own override (`max_attempts=60`,
+  other at ~72-73s, then from 45/90s after issue #168's two consecutive
+  live runs both timed out within 200ms of each other at ~108.4-108.6s)
+  and `create`'s own override (`max_attempts=60`,
   `delay_seconds=3` — 180s, widened specifically because the default
   was tuned for `update` and timed out too eagerly on full droplet
-  provisioning). Both are guesses tuned against one CSP's observed
-  behavior, not a real policy — likely candidates for whatever
+  provisioning; left untouched by #168, since nothing observed
+  implicates create's provisioning latency and 180s remains comfortably
+  above the new 150s default). Both are guesses tuned against one CSP's
+  observed behavior, not a real policy — likely candidates for whatever
   configurable retry/backoff mechanism this entry ends up designing,
   rather than two more magic numbers to hand-tune again later. **Sharper than "no backoff policy" above: `_poll_until`'s loop
   has no error tolerance at all today.** `drivers/digitalocean/compute.py`'s
