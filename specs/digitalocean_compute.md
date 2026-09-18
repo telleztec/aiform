@@ -1100,6 +1100,27 @@ power-off site:
    slow -- the next person debugging a slow resize shouldn't have to
    re-derive it from timing alone.
 
+**Knowledge-confidence, verified live**: DO can report a droplet
+`status == "active"` before its public `v4` network entry is attached --
+observed on this PR's own live system-test run, where a resize issued
+immediately after `create()` hit step 1's `no-ip-fallback` path because
+`current["ipv4_address"]` came back empty from the fresh `read()`
+`refresh_resource()` always does before a diff, even though the droplet
+had already converged to `active`. `create()`'s own convergence poll
+(`lambda d: d["status"] == "active"`) only waits for status, not for
+network attachment, so this is a real, if apparently brief, gap between
+the two -- not a bug in `_power_off_droplet` or in `read()`'s own
+`_flatten()`, both of which behaved correctly given what DO actually
+returned. `no-ip-fallback` is the correct, safe thing to happen when
+this fires: DO's `power_off` action needs no IP at all, so falling back
+loses nothing but speed. The live test suite works around the race by
+polling for the public network entry before issuing a resize
+immediately after create (`tests/system/test_cli_digitalocean.py`'s
+`_wait_for_public_ipv4`) rather than changing `create()`'s own poll
+predicate -- a real production fix, if this gap turns out to matter in
+practice beyond this specific "resize seconds after create" pattern, is
+its own follow-up.
+
 **Explicitly unaffected by this addendum:**
 `tests/system/test_cli_observability.py`'s `_power_off` helper (it
 deliberately simulates an out-of-band console power-off via the raw API

@@ -14,6 +14,8 @@ Opus/Sonnet-priced calls; never run this on the default pull_request/push
 CI trigger.
 """
 
+import time
+
 import pytest
 
 from aiform import cli, state
@@ -307,6 +309,29 @@ def _last_power_off_path(records) -> str | None:
     return matches[-1].power_off_path if matches else None
 
 
+def _wait_for_public_ipv4(token: str, droplet_id: str, *, max_attempts=15, delay_seconds=2.0):
+    """DO can report a droplet `status == "active"` before its public v4
+    network entry is attached -- observed live (a first run of
+    test_resize_uses_the_ssh_path hit this: the immediate resize's own
+    fresh read() got an active droplet with no public network entry at
+    all, correctly triggering _power_off_droplet's no-ip-fallback path
+    rather than the SSH path this test means to exercise). create()'s
+    own convergence poll only waits for status == "active"
+    (drivers/digitalocean/compute.py), not for network attachment, so a
+    resize issued immediately after create() can race this. Not a
+    production bug -- the no-ip-fallback path is the correct, safe
+    thing for a real user to hit here -- but it makes this specific
+    live scenario non-deterministic, so wait it out explicitly rather
+    than let the assertion flake on DO's own timing."""
+    for _ in range(max_attempts):
+        live = get_droplet_or_none(token, droplet_id)
+        if live:
+            for net in live.get("networks", {}).get("v4", []):
+                if net.get("type") == "public" and net.get("ip_address"):
+                    return
+        time.sleep(delay_seconds)
+
+
 class TestSshFirstPowerOffLive:
     """issue #175: proves the SSH-first power-off split against real
     DigitalOcean behavior, not mocks -- a droplet aiform itself creates
@@ -330,6 +355,7 @@ class TestSshFirstPowerOffLive:
         assert_cli_ok(code, capsys.readouterr(), "ssh power-off: initial create")
 
         droplet_id = state.load(state_path).resources[key].id
+        _wait_for_public_ipv4(token, droplet_id)
 
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
         with collect_driver_log_records("aiform.driver.digitalocean.compute") as handler:
