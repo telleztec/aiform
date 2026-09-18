@@ -714,7 +714,22 @@ full, is the caller's job — see Behavior below), shared verbatim by
    aborted=True)` immediately, nothing executed, state untouched.
    `default_confirm` reads a `y`/`N` answer via `input()`; injectable
    exactly like `client`/`llm_config` elsewhere in this codebase, for the
-   same off-the-real-I/O testing reason.
+   same off-the-real-I/O testing reason. Before reading, it discards
+   whatever is already queued on the terminal
+   (`termios.tcflush(sys.stdin, TCIFLUSH)`), so that only an answer typed
+   against the visible prompt counts — step 1's review call takes tens of
+   seconds with nothing on screen, and a keystroke typed during it would
+   otherwise be consumed here as the answer to a prompt the user never
+   saw (#163). The flush is best-effort and never raises: a non-tty stdin
+   (piped input, tests) has no terminal queue to discard, and a failed
+   flush must not be what stops the confirmation being asked.
+   `termios` is POSIX-only, so importing this module — and therefore
+   `aiform.cli` — now requires a POSIX platform. That is a deliberate
+   narrowing, not an oversight: macOS and Linux are the only platforms
+   this project is developed, CI'd or live-tested on, and guarding the
+   import would be branch logic for a platform nothing else here
+   supports. Windows support, if it is ever wanted, is its own change
+   and this is one of the things it has to handle.
 3. **Execute**, in `planned`'s given order (`PLAN.md`: "trivial for
    MVP's single-resource-per-file model"):
    - `NO_OP` → skip; nothing to persist (`build_create_plan()` already
