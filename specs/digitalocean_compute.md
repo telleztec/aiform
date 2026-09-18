@@ -311,10 +311,13 @@ the observed total is a few hundred milliseconds.
 
 - Best-effort resolves the droplet's IP via `self._get_droplet(id,
   credentials)` / `self._flatten()` before issuing the delete, so it can
-  prune that IP's `known_hosts` entry afterward — see below. If that read
-  404s, the droplet is already gone: skip the resolve and go straight to
-  the delete call, silently (no cleanup needed for a droplet that isn't
-  there).
+  prune that IP's `known_hosts` entry afterward — see below. This lookup
+  is wrapped in a bare `except Exception`, not just a `404` check: it
+  exists only to feed the cleanup step and must never itself abort the
+  delete — a `404` (droplet already gone), a `429`, a `5xx`, a timeout, or
+  an unexpected payload shape from `_flatten()` all leave `ip = None` and
+  fall through to the delete call unaffected, logged at `warning` rather
+  than raised.
 - `DELETE /v2/droplets/{id}`.
 - `204` → success, returns `None`.
 - `404` → **also** success, returns `None` — idempotent delete is a

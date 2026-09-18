@@ -724,6 +724,19 @@ class TestDelete:
 
         assert result is None
 
+    def test_delete_still_succeeds_when_ip_resolution_fails_for_a_non_404_reason(
+        self, driver, fake_urlopen
+    ):
+        # The IP lookup exists only to feed known_hosts cleanup and must
+        # never block the delete itself -- a 429/5xx/timeout here is not
+        # the same as "droplet already gone" and must not propagate.
+        fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 429))
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        result = driver.delete("123", CREDENTIALS)
+
+        assert result is None
+
 
 class TestUpdateRejectsReplaceForcingDiffs:
     # tags/backups are deliberately absent: DigitalOcean can apply both in

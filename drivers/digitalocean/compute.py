@@ -808,9 +808,15 @@ class Driver(ResourceDriver):
         try:
             droplet = self._get_droplet(id, credentials)
             ip = self._flatten(droplet)["ipv4_address"]
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404:
-                raise
+        except Exception:
+            # Best-effort only: this lookup exists solely to feed the
+            # known_hosts cleanup below and must never block the DELETE
+            # itself -- a 429, a 5xx, a timeout, or an unexpected payload
+            # shape here must not abort a delete that would otherwise
+            # have succeeded.
+            logger.warning(
+                "could not resolve ip for known_hosts cleanup", extra={"id": id}, exc_info=True
+            )
 
         try:
             self._request("DELETE", f"{BASE_URL}/droplets/{id}", credentials)
