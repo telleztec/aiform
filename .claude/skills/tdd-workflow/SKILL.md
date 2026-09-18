@@ -11,6 +11,13 @@ you haven't. This file is the short operational checklist for each pass.
 One pass = one module = one PR. Do not fold multiple modules into one
 pass.
 
+**Before step 1 below, there's a gate upstream of this whole checklist:**
+`PROCESS.md`'s "Before the loop: plan and get explicit approval" requires
+a written plan and the human's explicit approval of that specific
+approach — before any implementation agent is spawned or any code is
+written, including the spec in step 1. If that hasn't happened yet for
+this change, stop and get it before starting the checklist below.
+
 ## Checklist, in order
 
 1. **Spec.** Check `specs/<module>.md` exists and is accurate. If not,

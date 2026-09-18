@@ -55,20 +55,38 @@ whether, and on what approach, that agent gets spawned in the first place.
 Before any implementation work begins on a change — a new module, a bug
 fix, a behavior or design change, a refactor with behavior implications:
 anything that will produce a diff to `.py` files, `drivers/**`,
-`prompts/**`, or any other path "PR approval and merge" below already
-treats as runtime-affecting. It also covers edits to this repo's own
-governing process — `CLAUDE.md`, `PROCESS.md`, `.claude/**` — since those
-are markdown the agents in this repo execute, not inert prose; the same
-reasoning that keeps them out of `human-approval`'s cosmetic carry-forward
-below applies here.
+`prompts/**`, `.github/workflows/**`, `PLAN.md` (a `PLAN.md` edit *is* a
+design change, by this document's own opening line), or any other path
+"PR approval and merge" below already treats as runtime-affecting. It also
+covers edits to this repo's own governing process — `CLAUDE.md`,
+`PROCESS.md`, `.claude/**` — since those are markdown the agents in this
+repo execute, not inert prose; the same reasoning that keeps them out of
+`human-approval`'s cosmetic carry-forward below applies here.
 
-Does **not** apply: a pure documentation or comment fix with no behavior
-change (the kind of edit the cosmetic carry-forward already recognizes),
-or work the human has already approved a specific plan for and is now
-simply asking to be executed.
+Does **not** apply: a pure prose/documentation edit with no behavior
+change — the same category the cosmetic carry-forward recognizes (`*.md`
+files, excluding `.claude/**`, `prompts/**`, `CLAUDE.md` and `PROCESS.md`,
+which are markdown that executes and so stay in scope even as `.md`
+files) — or work the human has already approved a specific plan for and
+is now simply asking to be executed. A comment-only edit inside a `.py`
+file does **not** qualify for this exemption: this document already
+refuses that exact "it's only a comment" judgment call for `system-test`'s
+path check ("The check is deliberately conservative about `.py` files"),
+for the same reason — content-aware exemptions are where a gate like this
+quietly stops meaning anything.
 
 There is no size exception. "Small" or "mechanical" is not a reason to
 skip this gate — PR #170 was both, and still should have gone through it.
+
+### If implementation already started without this gate
+
+Stop adding commits. Write the plan now — covering what's already been
+done and what remains — and get the human's explicit approval on it
+before any further implementation work, exactly as if no code existed
+yet. Work already merged or already shipped isn't undone by this gate
+retroactively; it's simply a reason the *remaining* work on that change
+needs a plan before it continues, not a precedent that skipping the gate
+once makes skipping it again acceptable.
 
 ### What counts as a plan
 
@@ -125,15 +143,37 @@ before the diff exists. Don't conflate the two — a plan approval doesn't
 skip PR review, and a PR merge approval doesn't retroactively excuse
 skipping this gate.
 
+### Recording it
+
+Every other gate this document defines is an external, GitHub-visible
+artifact, precisely because chat history is not durable — a long
+conversation, a compaction, or a fresh agent instance resuming the same
+work can all silently lose a chat-only approval
+(`.claude/skills/github-commit-process/SKILL.md`'s "critically, all four
+are external... never something inferred from conversation history" makes
+exactly this argument for the merge gates). This gate is chat-native —
+there's no GitHub artifact to attach it to before a PR exists — so it
+doesn't get that guarantee for free. To get as close as this shape of gate
+can: when the PR is opened, its description must include a
+`## Approved plan` section stating what was approved and, where practical,
+quoting or summarizing the human's approval. A PR without one is a PR
+whose plan-approval cannot be checked by anyone reading only the PR later,
+which defeats the point.
+
 ### Once approved
 
 Implementation proceeds through the loop below starting at step 1, exactly
 as before. The approved plan doesn't replace the module spec
 (`specs/<module>.md`) — it's coarser and comes earlier — but the spec
 should not contradict it. If writing the spec reveals the approved
-approach was wrong, that's a "flag it" moment, the same treatment this
-document already asks for when a spec turns out incomplete mid-build — not
-license to quietly implement something else under the same approval.
+approach was wrong at the level of detail a spec captures, that's the same
+situation this document's "Specs are living docs, not write-once" practice
+already covers: update it in the same PR and say so. But if what's wrong
+is the approach itself, not just its write-up — the mechanism the human
+approved turns out to be the wrong mechanism — that's not a spec fix. Stop
+and take the revised approach back to the human for approval, the same as
+if none had been given yet; don't quietly implement something else under
+the old approval.
 
 ## The loop
 
