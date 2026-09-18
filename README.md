@@ -58,18 +58,18 @@ Who this is for: a cost-sensitive solo entrepreneur, hobbyist, small
 startup, or non-profit — usually one person, sometimes a small handful
 of collaborators or volunteers.
 
-As aiform's own state, credential, and locking model grows to run from
-a real database or vault instead of one operator's machine — reachable
-by distributed runners — a second persona comes into focus: someone who
-already relies on infrastructure-as-code and has hit its limits
-elsewhere. They want IaC that's easy to extend with new resource types,
-and that treats each SaaS subscription as optional rather than assumed
-— replacing the ones that only sell convenience, not real value, with
-something AI-built and self-managed instead.
+As aiform's own state, credentials, and locking grow to live in a real
+database or vault reachable by distributed runners, rather than on one
+operator's machine, a second user comes into focus: someone who already
+relies on infrastructure-as-code and has hit its limits elsewhere. They
+want IaC that's easy to extend with new resource types, and that treats
+each SaaS subscription as optional rather than assumed — replacing the
+ones that only sell convenience, not real value, with something
+AI-built and self-managed instead.
 
 ## Use Case
 
-That first persona wants to build a small system with simple SaaS-like
+That first user wants to build a small system with simple SaaS-like
 properties — a handful of VMs, some networking, a database or two — by
 assembling open-source components themselves, rather than paying for
 and getting locked into a pile of separate SaaS products, or a single

@@ -58,9 +58,9 @@ non-profit — usually one person, sometimes a small handful of
 collaborators or volunteers — assembling a small, SaaS-shaped system (a
 handful of VMs, some networking, a database or two) out of open-source
 components rather than a collection of locked-in SaaS products, using
-aiform as the AI-driven IaC layer to build and manage it. README also
-names a second, later persona this project is designed to grow toward —
-see its "Persona" section for that one.
+aiform as the AI-driven IaC layer to build and manage it. Its "Persona"
+section also names a second, later user this project is designed to
+grow toward.
 
 That framing isn't introductory color: it's meant to be checked against
 real scoping decisions — where a credential lives, who's around to review
