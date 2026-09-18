@@ -804,12 +804,23 @@ class Driver(ResourceDriver):
         )
 
     def delete(self, id, credentials):
+        ip = None
+        try:
+            droplet = self._get_droplet(id, credentials)
+            ip = self._flatten(droplet)["ipv4_address"]
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+
         try:
             self._request("DELETE", f"{BASE_URL}/droplets/{id}", credentials)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             raise
+
+        if ip:
+            ssh.forget_host(ip, ssh.DEFAULT_SSH_DIR / _KNOWN_HOSTS_NAME)
         return None
 
     def health(self, id, credentials):

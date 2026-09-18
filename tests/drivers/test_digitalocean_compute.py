@@ -645,15 +645,17 @@ class TestRead:
 
 class TestDelete:
     def test_deletes_droplet_by_id(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(id=123)))
         fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
 
         driver.delete("123", CREDENTIALS)
 
-        assert fake_urlopen.calls[0]["method"] == "DELETE"
-        assert fake_urlopen.calls[0]["url"] == droplet_url("123")
-        assert fake_urlopen.calls[0]["authorization"] == "Bearer dop_v1_test"
+        delete_calls = [c for c in fake_urlopen.calls if c["method"] == "DELETE"]
+        assert delete_calls[0]["url"] == droplet_url("123")
+        assert delete_calls[0]["authorization"] == "Bearer dop_v1_test"
 
     def test_204_returns_none(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(id=123)))
         fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
 
         result = driver.delete("123", CREDENTIALS)
@@ -661,19 +663,66 @@ class TestDelete:
         assert result is None
 
     def test_404_is_idempotent_success(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 404))
         fake_urlopen.script("DELETE", droplet_url("123"), http_error(droplet_url("123"), 404))
 
         result = driver.delete("123", CREDENTIALS)
 
         assert result is None
-        assert len(fake_urlopen.calls) == 1
 
-    def test_makes_exactly_one_api_call(self, driver, fake_urlopen):
+    def test_makes_at_most_two_api_calls(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(id=123)))
         fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
 
         driver.delete("123", CREDENTIALS)
 
-        assert len(fake_urlopen.calls) == 1
+        assert len(fake_urlopen.calls) == 2
+
+    def test_prunes_the_known_hosts_entry_for_the_deleted_droplet(
+        self, driver, fake_urlopen, ssh_env
+    ):
+        known_hosts_path = ssh_env / "known_hosts"
+        known_hosts_path.write_text(
+            "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTesting123456789\n"
+            "203.0.113.20 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherFakeKeyxxxxxxxxxxxx\n",
+            encoding="utf-8",
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(id=123, public_ip="203.0.113.10")),
+        )
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        driver.delete("123", CREDENTIALS)
+
+        content = known_hosts_path.read_text()
+        assert "203.0.113.10" not in content
+        assert "203.0.113.20" in content
+
+    def test_delete_does_not_raise_when_there_is_nothing_to_prune(
+        self, driver, fake_urlopen, ssh_env
+    ):
+        # No known_hosts file at all -- forget_host must no-op, not raise.
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(id=123, public_ip="203.0.113.10")),
+        )
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        result = driver.delete("123", CREDENTIALS)
+
+        assert result is None
+        assert not (ssh_env / "known_hosts").exists()
+
+    def test_delete_skips_ip_resolution_when_droplet_already_gone(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 404))
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        result = driver.delete("123", CREDENTIALS)
+
+        assert result is None
 
 
 class TestUpdateRejectsReplaceForcingDiffs:

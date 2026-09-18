@@ -309,12 +309,28 @@ the observed total is a few hundred milliseconds.
 
 ### `delete(id, credentials)`
 
-- `DELETE /v2/droplets/{id}`. **Exactly one API call.**
+- Best-effort resolves the droplet's IP via `self._get_droplet(id,
+  credentials)` / `self._flatten()` before issuing the delete, so it can
+  prune that IP's `known_hosts` entry afterward — see below. If that read
+  404s, the droplet is already gone: skip the resolve and go straight to
+  the delete call, silently (no cleanup needed for a droplet that isn't
+  there).
+- `DELETE /v2/droplets/{id}`.
 - `204` → success, returns `None`.
 - `404` → **also** success, returns `None` — idempotent delete is a
   hard requirement (`aiform/driver.py`'s own docstring: "a 404 from the
   CSP ... is treated as success, not an error"). This is the single
   most important behavior this spec's test suite checks.
+- After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
+  "known_hosts")` if an IP was resolved — best-effort, never raises (see
+  `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete
+  into a failure. **Does not** delete the shared managed SSH key itself:
+  there is exactly one managed key for the whole project, registered once
+  via `_ensure_do_key_registered()` and injected into every droplet
+  `create()` makes, so deleting it because one droplet was destroyed
+  would break every other droplet still using it. The DO account
+  registration and the local keypair under `.aiform/ssh/` both outlive
+  any single droplet's `delete()`.
 
 ### `update(id, current, desired, credentials)`
 
@@ -609,9 +625,12 @@ the observed total is a few hundred milliseconds.
      worse, undisclosed version of the refresh-only gap Edge cases
      describes below.
   Alongside `create`'s own convergence-polling (see Behavior above),
-  this is one of the two paths in this driver that make more than one
-  API call — `read`/`delete` remain genuinely single-request. An
-  in-place resize is a multi-step DO operation, not a single request.
+  this is one of the paths in this driver that make more than one API
+  call — `read` remains genuinely single-request, and `delete` makes at
+  most two (a best-effort `GET` to resolve the IP for `known_hosts`
+  cleanup, then the `DELETE` itself; see `delete(id, credentials)`
+  above). An in-place resize is a multi-step DO operation, not a single
+  request.
   **If any polling step (2, 5, or 6) exhausts its bounded attempt
   budget without reaching the target state**, raise a plain
   `TimeoutError` naming which step and the droplet `id` — don't retry
