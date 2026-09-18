@@ -120,7 +120,10 @@ def _confirm(prompt: str) -> bool:
             "pass --yes for non-interactive runs (a --yes run can still hit an "
             "unplanned confirmation it cannot skip -- see PLAN.md's replace-review rule)"
         )
-    return input(f"{prompt} [y/N]: ").strip().lower() == "y"
+    # The no-TTY check is all this adds over the orchestrator's prompt; the
+    # prompt itself, and the pre-prompt input flush that makes it trustworthy
+    # (#163), stay in one place rather than in two copies that can drift.
+    return orchestrator.default_confirm(prompt)
 
 
 def _format_error(exc: Exception) -> str:

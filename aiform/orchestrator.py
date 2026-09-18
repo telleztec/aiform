@@ -7,6 +7,8 @@ import importlib.util
 import json
 import logging
 import shutil
+import sys
+import termios
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -517,6 +519,18 @@ class ApplyResult:
 
 
 def default_confirm(prompt: str) -> bool:
+    # Gate #2's review call takes tens of seconds with nothing on screen, so a
+    # keystroke typed during it is already queued in the terminal when the
+    # prompt finally appears, and input() would take it as the answer to a
+    # prompt the user never saw -- a stray "y" would approve a destroy nobody
+    # agreed to. Discard the queue first, so only an answer typed against the
+    # visible prompt counts. Best-effort by design: a non-tty stdin (piped
+    # input, tests) has no terminal queue and nothing to discard, and a failure
+    # to flush must never be what stops a confirmation from being asked.
+    try:
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
     return input(f"{prompt} [y/N]: ").strip().lower() == "y"
 
 

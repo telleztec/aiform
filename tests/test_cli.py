@@ -1774,3 +1774,27 @@ class TestMainModuleEntryPoint:
         )
         assert result.returncode == 0
         assert "no resources tracked" in result.stdout
+
+
+class TestConfirm:
+    def test_discards_input_typed_before_the_prompt(self, monkeypatch):
+        # The terminal-level reproduction of #163 lives in
+        # tests/test_orchestrator.py's TestDefaultConfirm; here the point is
+        # narrower -- that this call site reaches the flush at all, before
+        # input() gets a chance to consume a pre-prompt keystroke.
+        calls = []
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: calls.append("tcflush"))
+        monkeypatch.setattr("builtins.input", lambda prompt="": calls.append("input") or "y")
+
+        assert cli._confirm("Apply this plan?") is True
+        assert calls == ["tcflush", "input"]
+
+    def test_no_tty_raises_without_reading_stdin(self, monkeypatch):
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinNotTTY())
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": pytest.fail("input() must not be called")
+        )
+
+        with pytest.raises(RuntimeError, match="TTY"):
+            cli._confirm("Apply this plan?")
