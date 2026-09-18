@@ -1129,10 +1129,11 @@ nothing to fall back to).
 `tests/system/test_cli_observability.py`'s `_power_off` helper
 specifically (it deliberately simulates an out-of-band console
 power-off -- via `aiform.ssh.shutdown_via_ssh()` called directly as a
-bare utility, not DO's raw `power_off` action any more [that switch
-was made for the same #152/#168 outlier reason as this addendum, but
-is its own change, not part of it] and not through
-`_power_off_droplet()` -- unrelated to the resize path either way) --
+bare utility first, falling back to DO's raw `power_off` action only if
+that doesn't pan out [that switch was made for the same #152/#168
+outlier reason as this addendum, but is its own change, not part of
+it], and never through `_power_off_droplet()` -- unrelated to the
+resize path either way) --
 **not** the rest of that file: issue #178's active-with-no-public-v4
 race hits the *same test* this helper is called from
 (`test_the_three_verbs_against_a_real_droplet`, inside
