@@ -11,12 +11,16 @@ you haven't. This file is the short operational checklist for each pass.
 One pass = one module = one PR. Do not fold multiple modules into one
 pass.
 
-**Before step 1 below, there's a gate upstream of this whole checklist:**
+**There's a gate upstream of this whole checklist**, binding the
+coordinating session that spawns whoever runs this checklist —
 `PROCESS.md`'s "Before the loop: plan and get explicit approval" requires
 a written plan and the human's explicit approval of that specific
-approach — before any implementation agent is spawned or any code is
-written, including the spec in step 1. If that hasn't happened yet for
-this change, stop and get it before starting the checklist below.
+approach before any implementation agent is spawned or any code is
+written. If you were just spawned to run this checklist, that should
+already be true; it's not this checklist's job to obtain it. If you have
+reason to believe it isn't true — no plan was ever shown to the human, or
+what you're being asked to build doesn't match what was described —
+stop and flag it rather than assuming someone else already checked.
 
 ## Checklist, in order
 

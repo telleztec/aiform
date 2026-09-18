@@ -410,6 +410,12 @@ Use `gh pr create` with a heredoc body, not `-b "single line"`:
 ```sh
 git push -u origin <branch-name>
 gh pr create --title "Short, specific title" --body "$(cat <<'EOF'
+## Approved plan
+What the human approved before this was implemented, and how they
+approved it — see PROCESS.md's "Before the loop: plan and get explicit
+approval". Omit only when the change is exempt from that gate (a pure
+prose/doc edit, or a change with no behavior implications); say which.
+
 ## Summary
 - What changed, as 1-3 bullets
 - Why, if not obvious from the summary alone

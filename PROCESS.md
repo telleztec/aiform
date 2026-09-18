@@ -65,28 +65,21 @@ repo execute, not inert prose; the same reasoning that keeps them out of
 
 Does **not** apply: a pure prose/documentation edit with no behavior
 change — the same category the cosmetic carry-forward recognizes (`*.md`
-files, excluding `.claude/**`, `prompts/**`, `CLAUDE.md` and `PROCESS.md`,
-which are markdown that executes and so stay in scope even as `.md`
-files) — or work the human has already approved a specific plan for and
-is now simply asking to be executed. A comment-only edit inside a `.py`
-file does **not** qualify for this exemption: this document already
-refuses that exact "it's only a comment" judgment call for `system-test`'s
-path check ("The check is deliberately conservative about `.py` files"),
-for the same reason — content-aware exemptions are where a gate like this
-quietly stops meaning anything.
+files, excluding `.claude/**`, `prompts/**`, `CLAUDE.md`, `PROCESS.md`,
+and, per this section's own "when it applies" above, `PLAN.md` — the
+cosmetic carry-forward's own exclusion list doesn't need `PLAN.md` since
+`PLAN.md` isn't `human-approval`'s concern, but this gate's does, so it's
+added here rather than borrowed unmodified) — or work the human has
+already approved a specific plan for and is now simply asking to be
+executed. A comment-only edit inside a `.py` file does **not** qualify
+for this exemption: this document already refuses that exact "it's only
+a comment" judgment call for `system-test`'s path check ("The check is
+deliberately conservative about `.py` files"), for the same reason —
+content-aware exemptions are where a gate like this quietly stops meaning
+anything.
 
 There is no size exception. "Small" or "mechanical" is not a reason to
 skip this gate — PR #170 was both, and still should have gone through it.
-
-### If implementation already started without this gate
-
-Stop adding commits. Write the plan now — covering what's already been
-done and what remains — and get the human's explicit approval on it
-before any further implementation work, exactly as if no code existed
-yet. Work already merged or already shipped isn't undone by this gate
-retroactively; it's simply a reason the *remaining* work on that change
-needs a plan before it continues, not a precedent that skipping the gate
-once makes skipping it again acceptable.
 
 ### What counts as a plan
 
@@ -142,6 +135,16 @@ approves a finished diff at merge time; this one approves an approach
 before the diff exists. Don't conflate the two — a plan approval doesn't
 skip PR review, and a PR merge approval doesn't retroactively excuse
 skipping this gate.
+
+### If implementation already started without this gate
+
+Stop adding commits. Write the plan now — covering what's already been
+done and what remains, using the "what/why/how" bar above — and get the
+human's explicit approval on it before any further implementation work,
+exactly as if no code existed yet. Work already merged or already shipped
+isn't undone by this gate retroactively; it's simply a reason the
+*remaining* work on that change needs a plan before it continues, not a
+precedent that skipping the gate once makes skipping it again acceptable.
 
 ### Recording it
 
