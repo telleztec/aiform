@@ -1129,13 +1129,15 @@ nothing to fall back to).
 `tests/system/test_cli_observability.py`'s `_power_off` helper
 specifically (it deliberately simulates an out-of-band console
 power-off via the raw API action, to test aiform's *reaction* to drift
--- unrelated to the resize path) -- **not** the rest of that file, which
-is where issue #178's active-with-no-public-v4 race actually lives, in
-a different test entirely; `delete()` (DO's delete doesn't require
-power-off first); issue #154's separate configurable/persisted/LLM-
-adjustable timeout table; and `resolve_credentials()`'s shape or the
-`credentials` parameter across the `ResourceDriver` contract (not
-touched).
+-- unrelated to the resize path) -- **not** the rest of that file: issue
+#178's active-with-no-public-v4 race hits the *same test* this helper
+is called from (`TestResourceVerbsAgainstALiveDroplet::
+test_the_three_verbs_against_a_real_droplet`), just at an earlier step
+-- the `resource check` run immediately after `plan apply`, well before
+`_power_off` runs; `delete()` (DO's delete doesn't require power-off
+first); issue #154's separate configurable/persisted/LLM-adjustable
+timeout table; and `resolve_credentials()`'s shape or the `credentials`
+parameter across the `ResourceDriver` contract (not touched).
 
 **Scope note, straight from the approved plan**: the key-storage design
 (a single local keypair under `.aiform/ssh/`, no real keystore, no
