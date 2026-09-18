@@ -34,6 +34,7 @@ def shutdown_via_ssh(
     *,
     connect_timeout_budget: float,
 ) -> bool: ...
+def forget_host(ip: str, known_hosts_path: Path) -> None: ...
 ```
 
 `DEFAULT_SSH_DIR` follows the same implicit-CWD convention as
@@ -168,6 +169,18 @@ module's own location.
   `StrictHostKeyChecking=accept-new` pins the host key on first contact
   and rejects a later *change* to it, safer than the diagnostic's own
   throwaway `=no` + `/dev/null` combination — see Edge cases.
+- `forget_host(ip, known_hosts_path)` — removes any entry for `ip` from
+  `known_hosts_path` via `ssh-keygen -R <ip> -f <known_hosts_path>`. A
+  no-op (no subprocess call) if `known_hosts_path` doesn't exist yet.
+  Best-effort: never raises, logs a warning on an unexpected failure
+  instead. Exists because DigitalOcean recycles IPs across droplets —
+  `StrictHostKeyChecking=accept-new` (above) means `known_hosts_path`
+  gains one entry per IP `shutdown_via_ssh` ever connects to, and nothing
+  else prunes it; a stale entry for a destroyed droplet's IP would make a
+  later droplet at that same IP fail SSH with a host-key mismatch instead
+  of the intended accept-new behavior.
+  `drivers/digitalocean/compute.py`'s `delete()` calls this after a
+  successful DELETE, for whatever IP the droplet last had.
 
 ## Edge cases / errors
 
@@ -196,6 +209,10 @@ module's own location.
   not a recoverable condition this module can work around.
   `generate_backup_script` runs no subprocess at all (it only formats
   and writes a template), so this does not apply to it.
+- `forget_host` never raises — an unexpected `ssh-keygen -R` failure (a
+  permissions problem, a corrupt `known_hosts_path`) is logged as a
+  warning and swallowed, since a failed best-effort prune must not fail
+  the `delete()` it runs inside.
 
 ## Out of scope
 

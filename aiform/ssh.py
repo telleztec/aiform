@@ -256,3 +256,25 @@ def shutdown_via_ssh(
         if remaining <= 0:
             return False
         time.sleep(min(_RETRY_DELAY_SECONDS, remaining))
+
+
+def forget_host(ip: str, known_hosts_path: Path) -> None:
+    # DigitalOcean recycles IPs across droplets, and shutdown_via_ssh's
+    # StrictHostKeyChecking=accept-new means known_hosts_path gains one
+    # entry per IP ever connected to with nothing pruning it -- a stale
+    # entry for a destroyed droplet's IP would otherwise make a future
+    # droplet at that same IP fail SSH with a host-key mismatch instead
+    # of the intended accept-new behavior.
+    if not known_hosts_path.exists():
+        return
+    try:
+        subprocess.run(
+            ["ssh-keygen", "-R", ip, "-f", str(known_hosts_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        # Best-effort: a failed prune must never fail the delete() it
+        # runs inside.
+        logger.warning("failed to prune known_hosts entry", extra={"ip": ip}, exc_info=True)

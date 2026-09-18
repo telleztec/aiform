@@ -421,3 +421,56 @@ def test_default_ssh_dir_is_project_relative(attr):
     value = getattr(ssh, attr)
     assert value == Path(".aiform/ssh")
     assert not value.is_absolute()
+
+
+class TestForgetHost:
+    def test_removes_an_existing_entry_for_the_host(self, tmp_path):
+        known_hosts_path = tmp_path / "known_hosts"
+        known_hosts_path.write_text(
+            "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTesting123456789\n"
+            "203.0.113.20 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherFakeKeyxxxxxxxxxxxx\n",
+            encoding="utf-8",
+        )
+
+        ssh.forget_host("203.0.113.10", known_hosts_path)
+
+        content = known_hosts_path.read_text()
+        assert "203.0.113.10" not in content
+        assert "203.0.113.20" in content
+
+    def test_noop_when_known_hosts_file_does_not_exist(self, tmp_path, monkeypatch):
+        known_hosts_path = tmp_path / "known_hosts"
+
+        def _forbid_run(*args, **kwargs):
+            raise AssertionError("forget_host must not invoke ssh-keygen when the file is absent")
+
+        monkeypatch.setattr(ssh.subprocess, "run", _forbid_run)
+
+        ssh.forget_host("203.0.113.10", known_hosts_path)
+
+        assert not known_hosts_path.exists()
+
+    def test_noop_when_the_file_has_no_entry_for_the_host(self, tmp_path):
+        known_hosts_path = tmp_path / "known_hosts"
+        known_hosts_path.write_text(
+            "203.0.113.20 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherFakeKeyxxxxxxxxxxxx\n",
+            encoding="utf-8",
+        )
+
+        ssh.forget_host("203.0.113.10", known_hosts_path)
+
+        assert "203.0.113.20" in known_hosts_path.read_text()
+
+    def test_never_raises_on_an_unexpected_failure(self, tmp_path, monkeypatch, caplog):
+        known_hosts_path = tmp_path / "known_hosts"
+        known_hosts_path.write_text("203.0.113.10 ssh-ed25519 AAAA\n", encoding="utf-8")
+
+        def _fake_run(argv, **kwargs):
+            raise subprocess.CalledProcessError(returncode=1, cmd=argv)
+
+        monkeypatch.setattr(ssh.subprocess, "run", _fake_run)
+
+        with caplog.at_level("WARNING"):
+            ssh.forget_host("203.0.113.10", known_hosts_path)
+
+        assert any(record.levelname == "WARNING" for record in caplog.records)
