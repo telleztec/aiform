@@ -413,8 +413,12 @@ gh pr create --title "Short, specific title" --body "$(cat <<'EOF'
 ## Approved plan
 What the human approved before this was implemented, and how they
 approved it — see PROCESS.md's "Before the loop: plan and get explicit
-approval". Omit only when the change is exempt from that gate (a pure
-prose/doc edit, or a change with no behavior implications); say which.
+approval". If this change is exempt from that gate (only a pure
+prose/documentation edit with no behavior change qualifies — see that
+section's "does not apply"; there is no other exemption and no size
+exception), keep this section and say so explicitly rather than deleting
+it — don't let leaving the section out be the thing that decides the
+exemption applied.
 
 ## Summary
 - What changed, as 1-3 bullets
