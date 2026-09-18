@@ -178,22 +178,11 @@ def shutdown_via_ssh(
     # Wall-clock bounded, not attempt-count bounded: no attempt after the
     # first is ever started unless there's still enough of the budget
     # left to give it the FULL _PER_ATTEMPT_TIMEOUT_SECONDS ceiling --
-    # never a truncated one. An earlier version derived a fixed attempt
-    # count from connect_timeout_budget / _RETRY_DELAY_SECONDS alone and
-    # gave every attempt the full ceiling regardless of what was left,
-    # which ignored that each attempt can independently cost up to that
-    # ceiling -- a 45s budget could spend ~150s of wall time before
-    # giving up, silently regressing the very fallback path
-    # #171/#172/#174 were rejected for slowing down. A second, later
-    # version fixed the total-time bound but did so by *truncating* an
-    # attempt's own timeout to whatever budget remained -- which broke
-    # the meaning of a `subprocess.TimeoutExpired` below: it stopped
-    # reliably meaning "ssh had the full ceiling and still didn't
-    # return" and could fire just because this function cut an attempt
-    # off early, misreporting an unreached, still-connecting attempt as
-    # a successful shutdown. Never truncating an attempt's own timeout
-    # (only ever deciding whether to *start* one) keeps that meaning
-    # intact. Both caught by /code-review.
+    # never a truncated one. That's what makes a `subprocess.TimeoutExpired`
+    # below a reliable signal: it means ssh ran for the full ceiling and
+    # still didn't return (the expected shape of a successful in-guest
+    # shutdown), never an artifact of this function cutting an attempt
+    # short.
     argv = _ssh_argv(ip, private_key_path, known_hosts_path, _SHUTDOWN_COMMAND)
     deadline = time.monotonic() + connect_timeout_budget
     first_attempt = True
