@@ -613,6 +613,10 @@ class Driver(ResourceDriver):
             private_key_path, _ = ssh.ensure_managed_key(ssh_dir)
             known_hosts_path = ssh_dir / _KNOWN_HOSTS_NAME
 
+            logger.info(
+                "attempting an SSH-initiated shutdown",
+                extra={"id": id, "ip": ip, "power_off_path": "ssh-attempting"},
+            )
             if ssh.shutdown_via_ssh(
                 ip,
                 private_key_path,

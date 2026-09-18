@@ -2212,8 +2212,40 @@ class TestSshFirstPowerOff:
 
         driver.update("123", current, desired, CREDENTIALS)
 
-        record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
-        assert record.power_off_path == "ssh-success"
+        power_off_records = [
+            r for r in caplog.records if getattr(r, "power_off_path", None) is not None
+        ]
+        assert [r.power_off_path for r in power_off_records] == ["ssh-attempting", "ssh-success"]
+
+    def test_logs_before_attempting_ssh_with_id_and_ip(
+        self, driver, fake_urlopen, monkeypatch, caplog
+    ):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        current = make_attrs(status="active", size="s-1vcpu-2gb", ipv4_address="198.51.100.7")
+        desired = make_attrs(size="s-2vcpu-4gb")
+        monkeypatch.setattr(ssh, "shutdown_via_ssh", lambda *a, **kw: True)
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 3, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        record = next(
+            r for r in caplog.records if getattr(r, "power_off_path", None) == "ssh-attempting"
+        )
+        assert record.id == "123"
+        assert record.ip == "198.51.100.7"
 
     def test_ssh_success_but_poll_timeout_falls_back_to_api_power_off(
         self, driver, fake_urlopen, monkeypatch, caplog
@@ -2251,8 +2283,13 @@ class TestSshFirstPowerOff:
 
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
-        record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
-        assert record.power_off_path == "ssh-attempted-fallback"
+        power_off_records = [
+            r for r in caplog.records if getattr(r, "power_off_path", None) is not None
+        ]
+        assert [r.power_off_path for r in power_off_records] == [
+            "ssh-attempting",
+            "ssh-attempted-fallback",
+        ]
 
     def test_ssh_unavailable_falls_back_to_api_power_off(self, driver, fake_urlopen, caplog):
         # The default ssh_env fixture already mocks shutdown_via_ssh to
@@ -2281,8 +2318,13 @@ class TestSshFirstPowerOff:
 
         types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
         assert types == ["power_off", "resize", "power_on"]
-        record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
-        assert record.power_off_path == "ssh-attempted-fallback"
+        power_off_records = [
+            r for r in caplog.records if getattr(r, "power_off_path", None) is not None
+        ]
+        assert [r.power_off_path for r in power_off_records] == [
+            "ssh-attempting",
+            "ssh-attempted-fallback",
+        ]
 
     def test_no_public_ip_skips_ssh_entirely(self, driver, fake_urlopen, monkeypatch, caplog):
         caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
