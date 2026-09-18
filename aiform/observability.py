@@ -112,23 +112,23 @@ class StatusReport:
     live, config, health -- over the resource's identity; any one of the
     four can be the surprising one, so none is folded into another.
 
-    The four are stored as values rather than as the sentences the text
-    form prints: a consumer of `--format json` wanting just the deploy
-    timestamp, just the id, or a plain yes/no "is it in sync" should not
-    have to parse them back out of a string built for a terminal.
-    _status_value() composes those sentences at render time, the way it
-    already did for `health`."""
+    `deployed_at`/`id` and `config` are stored as values rather than as
+    the sentences the text form prints: a consumer of `--format json`
+    wanting just the deploy timestamp, just the id, or a plain yes/no "is
+    it in sync" should not have to parse them back out of a string built
+    for a terminal. _status_value() composes those sentences at render
+    time, the way it already did for `health`. `live` is still a string:
+    its error arm is free-form driver text, and #161 did not ask for it."""
 
     resource_key: str
     provider: str
     resource_type: str
     name: str
     id: str
-    # Not `| None`, as the spec's dataclass declares `deployed`:
-    # status_for() raises for an untracked key, so every report has a
-    # state entry and nothing can produce None. A field whose None arm no
-    # caller can reach is error handling for a scenario that cannot
-    # happen.
+    # Not `| None`: status_for() raises for an untracked key, so every
+    # report has a state entry and nothing can produce None. A field
+    # whose None arm no caller can reach is error handling for a scenario
+    # that cannot happen.
     deployed_at: datetime
     live: str
     config: ConfigStatus

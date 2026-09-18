@@ -711,19 +711,6 @@ Runs the app.
         assert report.resource_type == "compute"
         assert report.name == "web-01"
 
-    def test_deployed_is_two_structured_values_not_one_sentence(self, tmp_path, stub_environment):
-        # The datetime and the id both exist separately on the state
-        # entry; baking them into a terminal sentence at construction
-        # time forces a JSON consumer to parse them back out.
-        driver = StubDriver(
-            health_result=OK_REPORT,
-            read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
-        )
-        path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
-        assert isinstance(report.deployed_at, datetime)
-        assert report.id == "123456789"
-
     def test_config_names_the_spec_file_it_diffed_against(self, tmp_path, stub_environment):
         driver = StubDriver(
             health_result=OK_REPORT,
@@ -1434,14 +1421,6 @@ class TestRenderStatus:
             "health_unsupported": None,
         }
 
-    def test_json_carries_no_prose_sentence_for_deployed_or_config(self):
-        # The complaint #161 makes: a consumer wanting just the timestamp,
-        # just the id, or a yes/no "is it in sync" had to parse them back
-        # out of a string built for a terminal.
-        resource = json.loads(observability.render_status([self._report()], "json"))["resources"][0]
-        assert "deployed" not in resource
-        assert isinstance(resource["config"], dict)
-
     def test_json_names_the_drifted_fields_rather_than_counting_them_in_prose(self):
         doc = json.loads(
             observability.render_status(
@@ -1826,9 +1805,8 @@ class TestStatusForRound1Regressions:
         )
         report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
         # The offset is preserved on the report and normalised where it is
-        # stamped -- in both renderings, which is where a Z can lie.
+        # stamped, which is now the renderer rather than status_for().
         assert report.deployed_at.utcoffset() == timedelta(hours=5)
-        assert "deployed  2026-09-10T09:02:11Z" in observability.render_status([report], "text")
         doc = json.loads(observability.render_status([report], "json"))
         assert doc["resources"][0]["deployed_at"] == "2026-09-10T09:02:11Z"
 

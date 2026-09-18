@@ -413,16 +413,19 @@ line, `type`, precedes them: it is identity rather than an answer, and
 without it the resource kind is legible only to a reader who knows to read
 the middle segment of the dot-joined `resource_key`.
 
-**The four answers are stored as values, not as the sentences the text form
-prints.** `health` was always structured this way — `status`/`summary`/
-`observations` as separate fields, with `_status_value()` composing
-`"failing — status is off"` at render time — and `deployed` and `config`
-match it: a `datetime` and an `id`, and a `ConfigStatus` whose `in_sync` is
-a real boolean. `--format json` exposes those fields, so a consumer wanting
-just the deploy timestamp, just the id, or a plain yes/no "is it in sync"
-reads one field instead of parsing a string built for a terminal. The text
-form's wording is unchanged: it composes the same sentences from the same
-values.
+**`deployed` and `config` are stored as values, not as the sentences the
+text form prints.** `health` was always structured this way —
+`status`/`summary`/`observations` as separate fields, with
+`_status_value()` composing `"failing — status is off"` at render time —
+and those two now match it: a `datetime` and an `id`, and a `ConfigStatus`
+whose `in_sync` is a real boolean. `--format json` exposes those fields, so
+a consumer wanting just the deploy timestamp, just the id, or a plain
+yes/no "is it in sync" reads one field instead of parsing a string built
+for a terminal. The text form's wording is unchanged: it composes the same
+sentences from the same values. `live` is the one answer still carried as a
+string — `"present"` and `"missing on the provider"` are a fixed
+vocabulary, but its third arm is whatever the failed `read()` said, and
+structuring that is a separate question from #161's.
 
 `status_for()` loads the driver and credentials **once** and threads them
 through all three live steps, rather than calling `collect()` for the
