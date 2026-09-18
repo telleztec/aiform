@@ -99,8 +99,8 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   only the new `id` from that response and then polls `GET
   /v2/droplets/{id}` (via the same `_get_droplet`/`_poll_until` helpers
   `update()` uses, but with its own wider budget — `max_attempts=60`,
-  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=45`,
-  `delay_seconds=2` (90s) — because full provisioning from scratch
+  `delay_seconds=3` (180s), vs. `update()`'s default `max_attempts=75`,
+  `delay_seconds=2` (150s) — because full provisioning from scratch
   commonly takes longer than reconciling an already-existing droplet;
   either way, exhaustion raises `TimeoutError` naming the droplet `id`)
   until `status == "active"`, discarding the transient POST body in
