@@ -1135,10 +1135,10 @@ that doesn't pan out [that switch was made for the same #152/#168
 outlier reason as this addendum, but is its own change, not part of
 it], and never through `_power_off_droplet()` -- unrelated to the
 resize path either way); `delete()` (DO's delete doesn't require
-power-off first); issue #154's separate configurable/persisted/LLM-
-adjustable timeout table; and `resolve_credentials()`'s shape or the
-`credentials` parameter across the `ResourceDriver` contract (not
-touched).
+power-off first); issue #154's separate
+configurable/persisted/LLM-adjustable timeout table; and
+`resolve_credentials()`'s shape or the `credentials` parameter across
+the `ResourceDriver` contract (not touched).
 
 **Not** the rest of `test_cli_observability.py`, though: issue #178's
 active-with-no-public-v4 race hit the *same test* `_power_off` is
@@ -1149,10 +1149,10 @@ called from (`test_the_three_verbs_against_a_real_droplet`, inside
 first, via its own `_wait_for_public_ipv4()` (same fix, same
 reasoning, as `tests/system/test_cli_digitalocean.py`'s helper of the
 same name for the SSH-first-power-off live scenario this addendum
-covers -- not an identical implementation: this one takes the already-
-loaded driver and reuses its own `_flatten()` rather than re-walking
-DO's `networks.v4` shape inline) -- added after this exact race
-reproduced 3 of 4 times across this PR's own live runs.
+covers -- not an identical implementation: this one takes the
+already-loaded driver and reuses its own `_flatten()` rather than
+re-walking DO's `networks.v4` shape inline) -- added after this exact
+race reproduced 3 of 4 times across this PR's own live runs.
 
 **Scope note, straight from the approved plan**: the key-storage design
 (a single local keypair under `.aiform/ssh/`, no real keystore, no
