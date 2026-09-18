@@ -98,13 +98,21 @@ module's own location.
   - `ssh_dir / "backup_key_to_1password.sh"` runs the equivalent
     `op item create --category="SSH Key" ...` / `op read` pair against
     the 1Password CLI, for an operator not using Keychain. Scoped and
-    upserted the same way the Keychain script is, for the same reason:
-    the item title is `"<constant> (<account>)"` (`<account>` again
-    `str(ssh_dir.resolve())`), not a bare constant, so two projects don't
-    collide on one item; the script checks `op item get` first and runs
-    `op item edit` instead of `op item create` when the item already
-    exists, since the 1Password CLI has no single-command upsert
-    equivalent to Keychain's `-U`.
+    upserted the same way the Keychain script is, for the same reason,
+    but not the same mechanism: the item title is `"<constant>-<tag>"`,
+    where `<tag>` is a 12-hex-character `sha256(str(ssh_dir.resolve()))`
+    prefix (`_onepassword_item_name()`), not the resolved path itself and
+    not a bare constant. `op://` secret references are slash-delimited,
+    and per 1Password's own docs a title containing an unsupported
+    character (a resolved path always has `/`) must be addressed by item
+    ID instead of title — folding the raw path in, the way the Keychain
+    script's separate `-a` argv can, would break the `op read op://...`
+    restore command this script itself prints. The hash keeps two
+    projects from colliding on one item without introducing that
+    character; the script checks `op item get` first and runs `op item
+    edit` instead of `op item create` when the item already exists,
+    since the 1Password CLI has no single-command upsert equivalent to
+    Keychain's `-U`.
   - Both: `set -eu`, comments explaining what the script does and why it
     exists (since the human is expected to read it before running it),
     and a pointer to the other script so a reader who opens the wrong one

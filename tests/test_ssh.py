@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -137,22 +138,51 @@ class TestGenerateBackupScript:
         assert "op read" in onepassword_content
 
     def test_onepassword_script_is_scoped_per_project_and_upserts(self, tmp_path):
-        # Without the account folded into the item title, two aiform
-        # projects on one machine -- or a single project re-running this
-        # after a key rotation -- would collide on the same 1Password
-        # item instead of each having their own, the same problem the
-        # Keychain script avoids with its separate ACCOUNT field.
+        # Two different projects must get two different item titles --
+        # the same problem the Keychain script avoids with its separate
+        # ACCOUNT field -- but the title must not contain a "/": op://
+        # secret references are slash-delimited, and 1Password's own docs
+        # say a component with an unsupported character must be
+        # addressed by item ID instead of title, which would break the
+        # "op read op://..." restore command this script itself prints.
+        ssh_dir_a = tmp_path / "project-a" / "ssh"
+        ssh_dir_a.mkdir(parents=True)
+        (ssh_dir_a / "aiform_managed_key").write_text("fake-private-key")
+        ssh_dir_b = tmp_path / "project-b" / "ssh"
+        ssh_dir_b.mkdir(parents=True)
+        (ssh_dir_b / "aiform_managed_key").write_text("fake-private-key")
+
+        _, onepassword_path_a = ssh.generate_backup_script(
+            ssh_dir_a, ssh_dir_a / "aiform_managed_key"
+        )
+        _, onepassword_path_b = ssh.generate_backup_script(
+            ssh_dir_b, ssh_dir_b / "aiform_managed_key"
+        )
+        content_a = onepassword_path_a.read_text()
+        content_b = onepassword_path_b.read_text()
+        service_a = re.search(r'SERVICE="([^"]+)"', content_a).group(1)
+        service_b = re.search(r'SERVICE="([^"]+)"', content_b).group(1)
+
+        assert service_a != service_b
+        assert "/" not in service_a
+        assert "op item get" in content_a
+        assert "op item edit" in content_a
+
+    def test_onepassword_item_name_is_stable_across_regenerations(self, tmp_path):
+        # Must be deterministic, not random -- otherwise a re-run after a
+        # key rotation would create a new item instead of upserting the
+        # existing one, the exact collision this scoping exists to avoid.
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
         private_key_path = ssh_dir / "aiform_managed_key"
         private_key_path.write_text("fake-private-key")
 
         _, onepassword_path = ssh.generate_backup_script(ssh_dir, private_key_path)
-        content = onepassword_path.read_text()
+        service_first = re.search(r'SERVICE="([^"]+)"', onepassword_path.read_text()).group(1)
+        _, onepassword_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+        service_second = re.search(r'SERVICE="([^"]+)"', onepassword_path.read_text()).group(1)
 
-        assert str(ssh_dir.resolve()) in content
-        assert "op item get" in content
-        assert "op item edit" in content
+        assert service_first == service_second
 
     def test_resolves_a_relative_private_key_path(self, tmp_path, monkeypatch):
         # A relative KEY_FILE would fail with a confusing `cat:` error the

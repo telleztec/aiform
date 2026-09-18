@@ -6,6 +6,7 @@
 resolving an id to an IP, and deciding what "shut down" means for a given
 provider all stay in the calling driver."""
 
+import hashlib
 import logging
 import subprocess
 import time
@@ -131,11 +132,7 @@ echo "  security find-generic-password -a \\"$ACCOUNT\\" -s \\"$SERVICE\\" -w > 
 _BACKUP_SCRIPT_ONEPASSWORD_TEMPLATE = (
     _BACKUP_SCRIPT_PREAMBLE
     + """
-# The account path is folded into the item title, the same way the
-# Keychain script scopes its entry by account -- otherwise two aiform
-# projects on this machine (or a re-run after a key rotation) would
-# collide on one 1Password item instead of each having their own.
-SERVICE="{service} ({account})"
+SERVICE="{service}"
 KEY_FILE="{private_key_path}"
 
 if op item get "$SERVICE" --vault=Private >/dev/null 2>&1; then
@@ -149,6 +146,20 @@ echo "Restore with:"
 echo "  op read \\"op://Private/$SERVICE/private key\\" > \\"$KEY_FILE\\""
 """
 )
+
+
+def _onepassword_item_name(ssh_dir: Path) -> str:
+    # Scoped per project the same way the Keychain script's ACCOUNT field
+    # is, so two aiform projects on this machine (or a re-run after a key
+    # rotation) don't collide on one 1Password item -- but NOT by folding
+    # the resolved path directly into the title: op:// secret references
+    # are slash-delimited, and 1Password's own docs say a component
+    # containing an unsupported character (a resolved path always has
+    # "/") must be addressed by item ID instead of title, which would
+    # break the very "op read op://..." restore command this script
+    # prints. A short deterministic hash keeps the scoping without one.
+    project_tag = hashlib.sha256(str(ssh_dir.resolve()).encode()).hexdigest()[:12]
+    return f"{_BACKUP_ITEM_NAME}-{project_tag}"
 
 
 def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> tuple[Path, Path]:
@@ -179,8 +190,7 @@ def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> tuple[Path,
             backend="1Password",
             other_script=_BACKUP_SCRIPT_KEYCHAIN_NAME,
             other_backend="macOS Keychain",
-            service=_BACKUP_ITEM_NAME,
-            account=str(ssh_dir.resolve()),
+            service=_onepassword_item_name(ssh_dir),
             private_key_path=resolved_private_key_path,
         ),
         encoding="utf-8",
