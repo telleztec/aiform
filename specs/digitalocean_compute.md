@@ -1114,16 +1114,17 @@ the two -- not a bug in `_power_off_droplet` or in `read()`'s own
 returned. `no-ip-fallback` is the correct, safe thing to happen when
 this fires: DO's `power_off` action needs no IP at all, so falling back
 loses nothing but speed. The live test suite works around the race by
-polling for the public network entry before issuing a resize
-immediately after create (`tests/system/test_cli_digitalocean.py`'s
-`_wait_for_public_ipv4`) rather than changing `create()`'s own poll
-predicate -- a real production fix, if this gap turns out to matter in
-practice beyond this specific "resize seconds after create" pattern, is
-its own follow-up, tracked as issue #178 (which hit the identical race
-independently, the same day, in `tests/system/test_cli_observability.py`'s
-`resource check` run immediately after `plan apply` -- a case with no
-fallback as forgiving as `no-ip-fallback`, since `resource check` has
-nothing to fall back to).
+polling for the public network entry before proceeding, in both places
+it was actually observed live: `tests/system/test_cli_digitalocean.py`'s
+`_wait_for_public_ipv4` before issuing a resize immediately after
+create, and `tests/system/test_cli_observability.py`'s helper of the
+same name before a `resource check` run immediately after `plan apply`
+(issue #178 -- a case with no fallback as forgiving as `no-ip-fallback`,
+since `resource check` has nothing to fall back to). Changing
+`create()`'s own poll predicate instead -- a real production fix, if
+this gap turns out to matter in practice beyond "seconds after create"
+patterns like these two -- is its own follow-up, tracked on #178 and
+deliberately not taken here.
 
 **Explicitly unaffected by this addendum:**
 `tests/system/test_cli_observability.py`'s `_power_off` helper
@@ -1133,21 +1134,25 @@ bare utility first, falling back to DO's raw `power_off` action only if
 that doesn't pan out [that switch was made for the same #152/#168
 outlier reason as this addendum, but is its own change, not part of
 it], and never through `_power_off_droplet()` -- unrelated to the
-resize path either way) --
-**not** the rest of that file: issue #178's active-with-no-public-v4
-race hit the *same test* this helper is called from
-(`test_the_three_verbs_against_a_real_droplet`, inside
+resize path either way); `delete()` (DO's delete doesn't require
+power-off first); issue #154's separate configurable/persisted/LLM-
+adjustable timeout table; and `resolve_credentials()`'s shape or the
+`credentials` parameter across the `ResourceDriver` contract (not
+touched).
+
+**Not** the rest of `test_cli_observability.py`, though: issue #178's
+active-with-no-public-v4 race hit the *same test* `_power_off` is
+called from (`test_the_three_verbs_against_a_real_droplet`, inside
 `TestResourceVerbsAgainstALiveDroplet`), at an earlier step -- the
 `resource check` run immediately after `plan apply`, well before
 `_power_off` runs. That step now polls for the public network entry
-first, via its own `_wait_for_public_ipv4()` (the same fix, same
+first, via its own `_wait_for_public_ipv4()` (same fix, same
 reasoning, as `tests/system/test_cli_digitalocean.py`'s helper of the
 same name for the SSH-first-power-off live scenario this addendum
-covers) -- added after this exact race reproduced 3 of 4 times across
-this PR's own live runs. `delete()` (DO's delete doesn't require power-off
-first); issue #154's separate configurable/persisted/LLM-adjustable
-timeout table; and `resolve_credentials()`'s shape or the `credentials`
-parameter across the `ResourceDriver` contract (not touched).
+covers -- not an identical implementation: this one takes the already-
+loaded driver and reuses its own `_flatten()` rather than re-walking
+DO's `networks.v4` shape inline) -- added after this exact race
+reproduced 3 of 4 times across this PR's own live runs.
 
 **Scope note, straight from the approved plan**: the key-storage design
 (a single local keypair under `.aiform/ssh/`, no real keystore, no
