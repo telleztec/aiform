@@ -1135,11 +1135,16 @@ outlier reason as this addendum, but is its own change, not part of
 it], and never through `_power_off_droplet()` -- unrelated to the
 resize path either way) --
 **not** the rest of that file: issue #178's active-with-no-public-v4
-race hits the *same test* this helper is called from
+race hit the *same test* this helper is called from
 (`test_the_three_verbs_against_a_real_droplet`, inside
-`TestResourceVerbsAgainstALiveDroplet`), just at an earlier step
--- the `resource check` run immediately after `plan apply`, well before
-`_power_off` runs; `delete()` (DO's delete doesn't require power-off
+`TestResourceVerbsAgainstALiveDroplet`), at an earlier step -- the
+`resource check` run immediately after `plan apply`, well before
+`_power_off` runs. That step now polls for the public network entry
+first, via its own `_wait_for_public_ipv4()` (the same fix, same
+reasoning, as `tests/system/test_cli_digitalocean.py`'s helper of the
+same name for the SSH-first-power-off live scenario this addendum
+covers) -- added after this exact race reproduced 3 of 4 times across
+this PR's own live runs. `delete()` (DO's delete doesn't require power-off
 first); issue #154's separate configurable/persisted/LLM-adjustable
 timeout table; and `resolve_credentials()`'s shape or the `credentials`
 parameter across the `ResourceDriver` contract (not touched).

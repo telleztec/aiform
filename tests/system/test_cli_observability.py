@@ -26,6 +26,7 @@ properties of the live API rather than of the code:
 """
 
 import json
+import time
 
 import pytest
 
@@ -58,6 +59,29 @@ def _resource_key(name: str) -> str:
     return f"digitalocean.compute.{name}"
 
 
+def _wait_for_public_ipv4(
+    token, driver, droplet_id: str, *, max_attempts: int = 15, delay_seconds: float = 2.0
+) -> None:
+    """DO can report a droplet `status == "active"` before its public v4
+    network entry is attached (issue #178, root-caused in
+    specs/digitalocean_compute.md's "SSH-first power-off" addendum) --
+    `create()`'s own convergence poll only waits for status, not network
+    attachment. `aiform resource check` immediately after `plan apply`
+    can race this and report `degraded ... active with no public v4
+    address` for a droplet that is, moments later, perfectly healthy.
+    Not a bug in `check`/`health()`, which behaves correctly given what
+    DigitalOcean actually returns -- polls it out here rather than
+    letting the test's own timing race DO's, mirroring
+    tests/system/test_cli_digitalocean.py's identical
+    `_wait_for_public_ipv4` for the SSH-first-power-off live scenario.
+    """
+    for _ in range(max_attempts):
+        live = get_droplet_or_none(token, droplet_id)
+        if live and driver._flatten(live)["ipv4_address"]:
+            return
+        time.sleep(delay_seconds)
+
+
 class TestResourceVerbsAgainstALiveDroplet:
     def test_the_three_verbs_against_a_real_droplet(
         self, project_dir, teardown_tracked_resources, capsys
@@ -75,6 +99,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         )
         droplet_id = json.loads(state_path.read_text())["resources"][key]["id"]
         assert get_droplet_or_none(token, droplet_id) is not None
+        _wait_for_public_ipv4(token, _load_compute_driver(), droplet_id)
 
         # State must be byte-identical across every command below. These
         # are inspection commands: one that mutates the record makes the
