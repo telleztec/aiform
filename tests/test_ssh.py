@@ -136,6 +136,24 @@ class TestGenerateBackupScript:
         assert "op item create" in onepassword_content
         assert "op read" in onepassword_content
 
+    def test_onepassword_script_is_scoped_per_project_and_upserts(self, tmp_path):
+        # Without the account folded into the item title, two aiform
+        # projects on one machine -- or a single project re-running this
+        # after a key rotation -- would collide on the same 1Password
+        # item instead of each having their own, the same problem the
+        # Keychain script avoids with its separate ACCOUNT field.
+        ssh_dir = tmp_path / "ssh"
+        ssh_dir.mkdir(parents=True)
+        private_key_path = ssh_dir / "aiform_managed_key"
+        private_key_path.write_text("fake-private-key")
+
+        _, onepassword_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+        content = onepassword_path.read_text()
+
+        assert str(ssh_dir.resolve()) in content
+        assert "op item get" in content
+        assert "op item edit" in content
+
     def test_resolves_a_relative_private_key_path(self, tmp_path, monkeypatch):
         # A relative KEY_FILE would fail with a confusing `cat:` error the
         # moment the script is run from anywhere but the project root, and

@@ -97,7 +97,14 @@ module's own location.
     (`security find-generic-password ... -w > <private_key_path>`).
   - `ssh_dir / "backup_key_to_1password.sh"` runs the equivalent
     `op item create --category="SSH Key" ...` / `op read` pair against
-    the 1Password CLI, for an operator not using Keychain.
+    the 1Password CLI, for an operator not using Keychain. Scoped and
+    upserted the same way the Keychain script is, for the same reason:
+    the item title is `"<constant> (<account>)"` (`<account>` again
+    `str(ssh_dir.resolve())`), not a bare constant, so two projects don't
+    collide on one item; the script checks `op item get` first and runs
+    `op item edit` instead of `op item create` when the item already
+    exists, since the 1Password CLI has no single-command upsert
+    equivalent to Keychain's `-U`.
   - Both: `set -eu`, comments explaining what the script does and why it
     exists (since the human is expected to read it before running it),
     and a pointer to the other script so a reader who opens the wrong one

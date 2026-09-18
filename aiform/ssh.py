@@ -131,11 +131,19 @@ echo "  security find-generic-password -a \\"$ACCOUNT\\" -s \\"$SERVICE\\" -w > 
 _BACKUP_SCRIPT_ONEPASSWORD_TEMPLATE = (
     _BACKUP_SCRIPT_PREAMBLE
     + """
-SERVICE="{service}"
+# The account path is folded into the item title, the same way the
+# Keychain script scopes its entry by account -- otherwise two aiform
+# projects on this machine (or a re-run after a key rotation) would
+# collide on one 1Password item instead of each having their own.
+SERVICE="{service} ({account})"
 KEY_FILE="{private_key_path}"
 
-op item create --category="SSH Key" --title="$SERVICE" --vault=Private \\
-  "private key[password]=$(cat "$KEY_FILE")"
+if op item get "$SERVICE" --vault=Private >/dev/null 2>&1; then
+  op item edit "$SERVICE" --vault=Private "private key[password]=$(cat "$KEY_FILE")"
+else
+  op item create --category="SSH Key" --title="$SERVICE" --vault=Private \\
+    "private key[password]=$(cat "$KEY_FILE")"
+fi
 echo "Backed up $KEY_FILE to 1Password (item '$SERVICE')."
 echo "Restore with:"
 echo "  op read \\"op://Private/$SERVICE/private key\\" > \\"$KEY_FILE\\""
@@ -172,6 +180,7 @@ def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> tuple[Path,
             other_script=_BACKUP_SCRIPT_KEYCHAIN_NAME,
             other_backend="macOS Keychain",
             service=_BACKUP_ITEM_NAME,
+            account=str(ssh_dir.resolve()),
             private_key_path=resolved_private_key_path,
         ),
         encoding="utf-8",
