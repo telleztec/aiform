@@ -69,10 +69,7 @@ toward them would make aiform worse for the person it's actually for. When
 a decision comes down to "where does this credential live" or "who's
 around to review this," the answer we want is the one that's right for one
 person on one machine they actually sit at, not the one that would be right
-for a platform team. That's not hypothetical: it's exactly the reasoning
-that decided how this project stores SSH keys, where the right answer
-depended on there being one operator with one long-lived laptop, not a
-fleet of them.
+for a platform team.
 
 ## Use Case
 
