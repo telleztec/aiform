@@ -479,9 +479,14 @@ pass, unconditionally subject to gate #2 by construction (every entry
 passed to every `apply_plan()` call — **not** `orchestrator.default_confirm`.
 It checks `sys.stdin.isatty()` first: if `False`, raises `RuntimeError`
 naming the prompt and telling the user `--yes` is required for
-non-interactive runs, **without ever calling `input()`**. If `True`,
-delegates to the same `y`/`N` `input()` prompt `orchestrator.default_confirm`
-uses. This exists specifically for `specs/orchestrator.md` judgment call
+non-interactive runs, **without ever calling `input()`**. If `True`, it
+calls `orchestrator.default_confirm(prompt)` — the no-TTY check is the
+only thing it adds, so the `y`/`N` prompt and the pre-prompt input flush
+that makes the answer trustworthy (`specs/orchestrator.md` step 2, #163)
+live in one implementation rather than two copies that can drift. The
+raise-on-no-TTY behaviour stays this module's, which is why `_confirm` —
+not `default_confirm` — is still what `apply_plan()` is handed.
+This exists specifically for `specs/orchestrator.md` judgment call
 7's scenario: a fully non-interactive `--yes` run that still hits the
 single-resource `DriverUpdateNotSupported` fallback confirmation (never
 skippable by `--yes`) needs to fail cleanly instead of hanging forever

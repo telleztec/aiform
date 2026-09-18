@@ -1,9 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import hashlib
 import json
 import logging
+import os
+import pty
+import subprocess
+import sys
 import types
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2220,3 +2225,67 @@ class TestMoveToTrash:
         assert dest.exists()
         assert (trash_dir / colliding_name).read_text() == "already here"
         assert dest.read_text() == "new content"
+
+
+# Reproducing #163 faithfully needs a real terminal: the keystroke has to sit
+# in the tty driver's input queue while the program is still busy, which no
+# in-process stdin double can imitate.
+_CONFIRM_CHILD = """\
+import time
+from aiform.orchestrator import default_confirm
+
+print("READY", flush=True)
+time.sleep(1.0)
+print("PROMPTING", flush=True)
+print("ANSWER", default_confirm("Apply this plan?"), flush=True)
+"""
+
+
+class TestDefaultConfirm:
+    def test_keystroke_typed_before_the_prompt_is_not_read_as_the_answer(self, tmp_path: Path):
+        script = tmp_path / "child.py"
+        script.write_text(_CONFIRM_CHILD)
+        repo_root = Path(__file__).resolve().parents[1]
+
+        master, slave = pty.openpty()
+        proc = subprocess.Popen(
+            [sys.executable, str(script)],
+            stdin=slave,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=repo_root,
+            env=os.environ | {"PYTHONPATH": str(repo_root)},
+        )
+        os.close(slave)
+        try:
+            assert proc.stdout.readline().strip() == "READY"
+            # Typed during the gate-#2 review wait, long before the prompt.
+            os.write(master, b"y\n")
+
+            assert proc.stdout.readline().strip() == "PROMPTING"
+            # input() writes and flushes its prompt to stdout only after the
+            # flush has run, so seeing those bytes on the pipe is proof the
+            # child is past it -- no sleep, no timing window. An empty read
+            # means the child exited instead, which the final assert catches.
+            seen = ""
+            while not seen.endswith("[y/N]: "):
+                char = proc.stdout.read(1)
+                if not char:
+                    break
+                seen += char
+
+            with contextlib.suppress(OSError):
+                # The real answer, typed against the prompt that is now
+                # visible. Pre-fix the child has already answered "y" and
+                # exited, so writing to the pty raises rather than arriving.
+                os.write(master, b"n\n")
+
+            out = proc.communicate(timeout=30)[0]
+        finally:
+            os.close(master)
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+        assert "ANSWER False" in out
