@@ -402,6 +402,46 @@ class TestCreatePollsUntilActive:
         assert "555" in str(excinfo.value)
 
 
+class TestPollBudgets:
+    # issue #168: two consecutive live system-test runs both timed out
+    # waiting for a power-off, exhausting the (then) 45-attempt/2s-delay
+    # (90s) default budget at ~108.4s and ~108.6s -- a tight cluster at a
+    # higher number than issue #152's own prior bump (30->45 attempts,
+    # 60s->90s, after a ~72-73s cluster), reading as DO's power-off
+    # latency having shifted again rather than a one-off flake.
+    OBSERVED_WORST_CASE_SECONDS = 108.6
+
+    def test_update_default_budget_clears_the_168_observed_latency_with_margin(self, driver):
+        max_attempts, delay_seconds = driver._poll_until.__defaults__
+        budget_seconds = max_attempts * delay_seconds
+
+        # #152's own bump landed ~23% over its observed cluster (90s over a
+        # ~73.4s worst case) and still needed raising again -- land with
+        # more margin than that this time, not just barely above 108.6s.
+        assert budget_seconds > self.OBSERVED_WORST_CASE_SECONDS * 1.25
+        assert (max_attempts, delay_seconds) == (75, 2)
+
+    def test_create_override_budget_is_unchanged_and_still_exceeds_update_default(
+        self, driver, fake_urlopen
+    ):
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        # One fewer than update()'s new default (75) but within create()'s
+        # own 60-attempt/3s-delay override -- proves create() kept its
+        # wider, untouched budget rather than silently inheriting update()'s.
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
+            *([FakeHTTPResponse(200, make_droplet(id=555, status="new"))] * 58),
+            FakeHTTPResponse(200, make_droplet(id=555, status="active")),
+        )
+
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["status"] == "active"
+
+
 class TestRead:
     def test_gets_droplet_by_id(self, driver, fake_urlopen):
         fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet()))
