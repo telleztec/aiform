@@ -118,6 +118,14 @@ _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
 _SSH_POWER_OFF_POLL_MAX_ATTEMPTS = 30
 _SSH_POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
 
+# A freshly-uploaded account SSH key is not immediately usable in
+# POST /v2/droplets -- verified live (see _create_droplet): DO's own
+# "invalid key identifiers" 422 cleared after ~9s in a direct
+# reproduction. 12 * 2s = 24s gives real margin above that without
+# retrying anything close to indefinitely.
+_KEY_PROPAGATION_RETRY_ATTEMPTS = 12
+_KEY_PROPAGATION_RETRY_DELAY_SECONDS = 2.0
+
 # Named explicitly rather than via logging.getLogger(__name__).
 # orchestrator.py's load_driver() execs this file as a module with a
 # synthetic name ("aiform_driver_digitalocean_compute", via
@@ -256,6 +264,49 @@ class Driver(ResourceDriver):
             exc.msg = f"{exc.msg}: {do_message}"
         return do_message
 
+    def _create_droplet(self, body, credentials):
+        # A freshly-uploaded managed key (_upload_managed_key -> a fresh
+        # `POST /v2/account/keys`, not the cached-sidecar or
+        # list-matched path) is not immediately usable in
+        # `POST /v2/droplets` -- verified live: reproducing this exact
+        # sequence (register the key, then create with its id in the
+        # same body) hit DO's own `"<id> are invalid key identifiers for
+        # Droplet creation"` 422 on 8 consecutive attempts roughly 1s
+        # apart before succeeding on the 9th (~9s of propagation lag).
+        # Not discoverable from a mock, which encodes the same
+        # instantaneous-consistency assumption the driver would
+        # otherwise make -- found running this PR's own live system
+        # test. Retried only for this specific, recognized message (any
+        # other 422 -- a bad region/size/image combination, say -- is a
+        # genuine rejection and must fail immediately, not spend 20s
+        # retrying something that will never succeed).
+        for attempt in range(_KEY_PROPAGATION_RETRY_ATTEMPTS):
+            try:
+                return self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
+            except urllib.error.HTTPError as exc:
+                do_message = self._do_error_message(exc)
+                last_attempt = attempt == _KEY_PROPAGATION_RETRY_ATTEMPTS - 1
+                if exc.code != 422 or not do_message or "key identifiers" not in do_message:
+                    raise
+                if last_attempt:
+                    # Not _fold_do_error_into_exc(exc): that re-reads the
+                    # body via _do_error_message(exc), which is already
+                    # consumed by this same loop iteration's read above
+                    # and would silently return None a second time.
+                    exc.msg = f"{exc.msg}: {do_message}"
+                    raise
+                logger.info(
+                    "",
+                    extra={
+                        "step": "create",
+                        "retry": "key-propagation-lag",
+                        "attempt": attempt + 1,
+                        "do_message": do_message,
+                    },
+                )
+                time.sleep(_KEY_PROPAGATION_RETRY_DELAY_SECONDS)
+        raise AssertionError("unreachable")  # the loop always returns or raises
+
     def create(self, name, params, credentials):
         managed_key_id, _ = self._ensure_do_key_registered(credentials)
 
@@ -278,7 +329,7 @@ class Driver(ResourceDriver):
         if managed_key_id not in requested_keys:
             body["ssh_keys"] = [*requested_keys, managed_key_id]
 
-        payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
+        payload = self._create_droplet(body, credentials)
         new_id = payload["droplet"]["id"]
         # _poll_until's default budget (75 attempts * 2s = 150s) is tuned for
         # update()'s power-off/resize/power-on actions against an already-
@@ -548,10 +599,17 @@ class Driver(ResourceDriver):
         drift-simulation helper deliberately keeps calling the raw API
         action directly, unrelated to this method."""
         ip = current.get("ipv4_address")
+        ssh_dir = ssh.DEFAULT_SSH_DIR
         if not ip:
             logger.info("", extra={"id": id, "power_off_path": "no-ip-fallback"})
+        elif not ssh.managed_key_exists(ssh_dir):
+            # No local key to try with -- e.g. .aiform/ssh/ was deleted
+            # after this droplet was created. Minting a fresh one here
+            # would just burn the whole SSH retry budget authenticating
+            # with a key DigitalOcean has never heard of; skip straight
+            # to the API action instead of pretending SSH was attempted.
+            logger.info("", extra={"id": id, "power_off_path": "no-key-fallback"})
         else:
-            ssh_dir = ssh.DEFAULT_SSH_DIR
             private_key_path, _ = ssh.ensure_managed_key(ssh_dir)
             known_hosts_path = ssh_dir / _KNOWN_HOSTS_NAME
 

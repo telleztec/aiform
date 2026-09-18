@@ -200,16 +200,20 @@ def _no_real_sleep(monkeypatch):
 @pytest.fixture(autouse=True)
 def ssh_env(tmp_path, monkeypatch):
     """Redirects aiform/ssh.py's implicit .aiform/ssh/ location into a
-    tmp dir (so no test ever touches a real checkout) and pre-seeds the DO
-    key-id sidecar with MANAGED_KEY_ID, so every create()/update() test
-    exercises _ensure_do_key_registered's cached path -- zero extra HTTP
-    calls, matching this driver's existing behavior before issue #175.
-    Also defaults shutdown_via_ssh to unavailable, so every existing
-    resize test keeps exercising the API power_off fallback exactly as
-    before; TestSshFirstPowerOff overrides this per test to exercise the
-    SSH-success branch."""
+    tmp dir (so no test ever touches a real checkout), pre-generates a
+    real local keypair (so _power_off_droplet's managed_key_exists()
+    guard sees the same precondition create() would already have
+    established live -- a test that skipped this would silently exercise
+    the no-key-fallback path instead of whatever it meant to test), and
+    pre-seeds the DO key-id sidecar with MANAGED_KEY_ID, so every
+    create()/update() test exercises _ensure_do_key_registered's cached
+    path -- zero extra HTTP calls, matching this driver's existing
+    behavior before issue #175. Also defaults shutdown_via_ssh to
+    unavailable, so every existing resize test keeps exercising the API
+    power_off fallback exactly as before; TestSshFirstPowerOff overrides
+    this per test to exercise the SSH-success branch."""
     ssh_dir = tmp_path / "ssh"
-    ssh_dir.mkdir(parents=True)
+    ssh.ensure_managed_key(ssh_dir)
     (ssh_dir / "aiform_managed_key.id").write_text(MANAGED_KEY_ID, encoding="utf-8")
     monkeypatch.setattr(ssh, "DEFAULT_SSH_DIR", ssh_dir)
     monkeypatch.setattr(ssh, "shutdown_via_ssh", lambda *args, **kwargs: False)
@@ -1936,6 +1940,79 @@ class TestCreateInjectsManagedKey:
         assert droplet_body["ssh_keys"] == ["42424242"]
 
 
+class TestCreateRetriesKeyPropagationLag:
+    """A freshly-uploaded account SSH key is not immediately usable in
+    POST /v2/droplets -- verified live (see _create_droplet's own
+    comment): DO's "invalid key identifiers" 422 took ~9s to clear in a
+    direct reproduction. Not discoverable from a mock alone, which is
+    exactly why this needed a live system-test run to catch -- these
+    tests pin the retry mechanism the live finding motivated."""
+
+    def test_retries_on_invalid_key_identifiers_then_succeeds(self, driver, fake_urlopen):
+        propagation_error = {
+            "message": "59419990 are invalid key identifiers for Droplet creation."
+        }
+        fake_urlopen.script(
+            "POST",
+            droplets_url(),
+            http_error(droplets_url(), 422, propagation_error),
+            http_error(droplets_url(), 422, propagation_error),
+            FakeHTTPResponse(202, make_droplet(id=555, status="new")),
+        )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
+
+        result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+        post_calls = [
+            c for c in fake_urlopen.calls if c["method"] == "POST" and c["url"] == droplets_url()
+        ]
+        assert len(post_calls) == 3
+
+    def test_does_not_retry_a_different_422(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "POST",
+            droplets_url(),
+            http_error(droplets_url(), 422, {"message": "size not available in region"}),
+        )
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert excinfo.value.code == 422
+        post_calls = [
+            c for c in fake_urlopen.calls if c["method"] == "POST" and c["url"] == droplets_url()
+        ]
+        assert len(post_calls) == 1
+
+    def test_gives_up_after_exhausting_retries(self, driver, fake_urlopen):
+        # A distinct HTTPError per attempt, not FakeUrlopen's single-item
+        # repeat-forever shape: the same *object* re-raised on every call
+        # would have its body already consumed by this test's own first
+        # read, unlike a real urlopen() call, which returns a fresh
+        # response (and a fresh readable body) on every real HTTP
+        # request.
+        propagation_errors = [
+            http_error(
+                droplets_url(),
+                422,
+                {"message": "59419990 are invalid key identifiers for Droplet creation."},
+            )
+            for _ in range(compute_module._KEY_PROPAGATION_RETRY_ATTEMPTS)
+        ]
+        fake_urlopen.script("POST", droplets_url(), *propagation_errors)
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert excinfo.value.code == 422
+        assert "invalid key identifiers" in str(excinfo.value)
+        post_calls = [
+            c for c in fake_urlopen.calls if c["method"] == "POST" and c["url"] == droplets_url()
+        ]
+        assert len(post_calls) == compute_module._KEY_PROPAGATION_RETRY_ATTEMPTS
+
+
 class TestEnsureDoKeyRegistered:
     def test_uses_the_cached_sidecar_with_no_http_calls(self, driver, fake_urlopen, ssh_env):
         key_id, private_key_path = driver._ensure_do_key_registered(CREDENTIALS)
@@ -2235,3 +2312,45 @@ class TestSshFirstPowerOff:
         assert types == ["power_off", "resize", "power_on"]
         record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
         assert record.power_off_path == "no-ip-fallback"
+
+    def test_no_local_key_skips_ssh_without_minting_a_fresh_one(
+        self, driver, fake_urlopen, monkeypatch, caplog, ssh_env
+    ):
+        # e.g. .aiform/ssh/ was deleted or recreated after this droplet
+        # was created. Calling ensure_managed_key() unconditionally here
+        # would mint a brand-new, DigitalOcean-unauthorized keypair and
+        # then spend the whole SSH connect budget authenticating with a
+        # key no droplet has ever heard of -- flagged during /code-review.
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        (ssh_env / "aiform_managed_key").unlink()
+        (ssh_env / "aiform_managed_key.pub").unlink()
+        current = make_attrs(status="active", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+        ssh_calls = []
+        monkeypatch.setattr(
+            ssh, "shutdown_via_ssh", lambda *a, **kw: ssh_calls.append((a, kw)) or False
+        )
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 3, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-1vcpu-2gb")),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        assert ssh_calls == []
+        assert not (ssh_env / "aiform_managed_key").exists()
+        types = [c["body"]["type"] for c in action_calls(fake_urlopen, "123")]
+        assert types == ["power_off", "resize", "power_on"]
+        record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
+        assert record.power_off_path == "no-key-fallback"

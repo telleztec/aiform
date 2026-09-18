@@ -6,7 +6,6 @@
 resolving an id to an IP, and deciding what "shut down" means for a given
 provider all stay in the calling driver."""
 
-import math
 import subprocess
 import time
 from pathlib import Path
@@ -24,8 +23,32 @@ _RETRY_DELAY_SECONDS = 5.0
 _PER_ATTEMPT_TIMEOUT_SECONDS = 12.0
 
 
+def managed_key_exists(ssh_dir: Path) -> bool:
+    """Whether ensure_managed_key(ssh_dir) would find an existing private
+    key rather than generating a fresh one. Lets a caller that's about to
+    *use* the key (not just prepare it) decide whether it's worth trying
+    at all -- a caller that unconditionally called ensure_managed_key
+    would mint a brand-new, DigitalOcean-unauthorized keypair the first
+    time this is missing and then burn its whole SSH retry budget
+    authenticating with it, for a value only a future create() can
+    actually register."""
+    return (ssh_dir / _PRIVATE_KEY_NAME).exists()
+
+
 def ensure_managed_key(ssh_dir: Path) -> tuple[Path, Path]:
     ssh_dir.mkdir(parents=True, exist_ok=True)
+    # A belt-and-suspenders gitignore inside the directory itself, not
+    # just the repo-root entry `aiform init`'s _GITIGNORE_ENTRIES writes:
+    # a project initialized before this existed, or one that never
+    # re-runs `init` after upgrading, would otherwise get a private key
+    # written into an un-ignored path the first time create() (not
+    # init) calls this -- one `git add -A` away from being committed.
+    # Written here, not only from cli.py, so every caller of this
+    # get-or-create is covered regardless of whether `init` ran first.
+    gitignore_path = ssh_dir / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text("*\n", encoding="utf-8")
+
     private_key_path = ssh_dir / _PRIVATE_KEY_NAME
     public_key_path = ssh_dir / _PUBLIC_KEY_NAME
 
@@ -108,7 +131,12 @@ def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> Path:
         _BACKUP_SCRIPT_TEMPLATE.format(
             service=_KEYCHAIN_SERVICE,
             account=str(ssh_dir.resolve()),
-            private_key_path=private_key_path,
+            # Resolved, not left relative: the script is meant to be read
+            # and run by a human, who may not be sitting in the project
+            # root when they do -- a relative KEY_FILE would fail with a
+            # confusing `cat:` error, and the restore line it echoes
+            # would write the key back to the wrong place.
+            private_key_path=private_key_path.resolve(),
         ),
         encoding="utf-8",
     )
@@ -121,6 +149,12 @@ def _ssh_argv(ip: str, private_key_path: Path, known_hosts_path: Path, command: 
         "ssh",
         "-i",
         str(private_key_path),
+        # Try only the managed key, never anything already loaded in an
+        # ssh-agent -- with -i alone, ssh also offers agent identities
+        # first, and an operator with several keys loaded can exhaust the
+        # server's MaxAuthTries before the managed key is ever tried.
+        "-o",
+        "IdentitiesOnly=yes",
         "-o",
         f"UserKnownHostsFile={known_hosts_path}",
         "-o",
@@ -141,16 +175,32 @@ def shutdown_via_ssh(
     *,
     connect_timeout_budget: float,
 ) -> bool:
-    max_attempts = max(1, math.ceil(connect_timeout_budget / _RETRY_DELAY_SECONDS))
+    # Wall-clock bounded, not attempt-count bounded: each attempt's own
+    # subprocess timeout is capped at whatever's left of the budget, and
+    # no further attempt starts once the budget is spent. An earlier
+    # version derived a fixed attempt count from
+    # connect_timeout_budget / _RETRY_DELAY_SECONDS alone, which ignored
+    # that each attempt can independently cost up to
+    # _PER_ATTEMPT_TIMEOUT_SECONDS -- a 45s budget could spend ~150s wall
+    # time before giving up, silently regressing the very fallback path
+    # #171/#172/#174 were rejected for slowing down. Caught by
+    # /code-review.
     argv = _ssh_argv(ip, private_key_path, known_hosts_path, _SHUTDOWN_COMMAND)
+    deadline = time.monotonic() + connect_timeout_budget
 
-    for attempt in range(max_attempts):
+    while True:
+        remaining = deadline - time.monotonic()
+        # At least one real attempt always happens, even for a budget of
+        # 0 or one already spent computing the deadline -- a truncated
+        # near-zero timeout would unfairly fail a connection that was
+        # about to succeed.
+        attempt_timeout = min(_PER_ATTEMPT_TIMEOUT_SECONDS, remaining) if remaining > 0 else None
         try:
             result = subprocess.run(
                 argv,
                 capture_output=True,
                 text=True,
-                timeout=_PER_ATTEMPT_TIMEOUT_SECONDS,
+                timeout=attempt_timeout or _PER_ATTEMPT_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired:
             # The expected, successful shape: the guest tears the
@@ -159,7 +209,7 @@ def shutdown_via_ssh(
             return True
         if result.returncode == 0:
             return True
-        if attempt < max_attempts - 1:
-            time.sleep(_RETRY_DELAY_SECONDS)
-
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_RETRY_DELAY_SECONDS, remaining))

@@ -23,6 +23,7 @@ from tests.system.conftest import (
     ALTERNATE_SIZE,
     SYSTEM_TEST_TAG,
     assert_cli_ok,
+    collect_driver_log_records,
     count_driver_reads,
     ensure_system_test_tag,
     get_droplet_or_none,
@@ -318,10 +319,7 @@ class TestSshFirstPowerOffLive:
     fast run does not by itself prove which path fired.
     """
 
-    def test_resize_uses_the_ssh_path(
-        self, project_dir, teardown_tracked_resources, caplog, capsys
-    ):
-        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+    def test_resize_uses_the_ssh_path(self, project_dir, teardown_tracked_resources, capsys):
         token = live_token()
         state_path = project_dir / ".aiform" / "state.json"
         name = unique_name("aiform-system-test-sshpoweroff")
@@ -333,17 +331,17 @@ class TestSshFirstPowerOffLive:
 
         droplet_id = state.load(state_path).resources[key].id
 
-        caplog.clear()
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
-        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
-        assert_cli_ok(code, capsys.readouterr(), "ssh power-off: resize")
+        with collect_driver_log_records("aiform.driver.digitalocean.compute") as handler:
+            code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+            assert_cli_ok(code, capsys.readouterr(), "ssh power-off: resize")
+            path = _last_power_off_path(handler.records)
 
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert live["size_slug"] == ALTERNATE_SIZE
         assert str(live["id"]) == droplet_id  # in-place: id unchanged
 
-        path = _last_power_off_path(caplog.records)
         assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
         assert path == "ssh-success", (
             f"expected the SSH-first power-off path on a droplet aiform itself created "
@@ -352,9 +350,8 @@ class TestSshFirstPowerOffLive:
         )
 
     def test_resize_falls_back_when_ssh_is_blocked_by_a_firewall(
-        self, project_dir, teardown_tracked_resources, caplog, capsys
+        self, project_dir, teardown_tracked_resources, capsys
     ):
-        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
         token = live_token()
         if not token_has_firewall_scope(token):
             pytest.skip(
@@ -384,17 +381,17 @@ class TestSshFirstPowerOffLive:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         assert_cli_ok(code, capsys.readouterr(), "ssh fallback: attach a port-22-blocking firewall")
 
-        caplog.clear()
         write_aiform_md(project_dir, name=droplet_name, size=ALTERNATE_SIZE)
-        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
-        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: resize with SSH blocked")
+        with collect_driver_log_records("aiform.driver.digitalocean.compute") as handler:
+            code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+            assert_cli_ok(code, capsys.readouterr(), "ssh fallback: resize with SSH blocked")
+            path = _last_power_off_path(handler.records)
 
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert live["size_slug"] == ALTERNATE_SIZE
         assert str(live["id"]) == droplet_id  # the API fallback still completed the resize
 
-        path = _last_power_off_path(caplog.records)
         assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
         assert path == "ssh-attempted-fallback", (
             f"expected the port-22-blocking firewall to force the API power_off fallback; "

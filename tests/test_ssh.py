@@ -3,6 +3,7 @@
 
 import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,34 @@ def _mode(path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+class TestManagedKeyExists:
+    def test_false_before_any_key_is_generated(self, tmp_path):
+        assert ssh.managed_key_exists(tmp_path / "ssh") is False
+
+    def test_true_after_ensure_managed_key(self, tmp_path):
+        ssh_dir = tmp_path / "ssh"
+        ssh.ensure_managed_key(ssh_dir)
+
+        assert ssh.managed_key_exists(ssh_dir) is True
+
+    def test_does_not_itself_create_anything(self, tmp_path):
+        ssh_dir = tmp_path / "ssh"
+
+        ssh.managed_key_exists(ssh_dir)
+
+        assert not ssh_dir.exists()
+
+
 class TestEnsureManagedKey:
+    def test_writes_a_gitignore_covering_the_whole_directory(self, tmp_path):
+        ssh_dir = tmp_path / ".aiform" / "ssh"
+
+        ssh.ensure_managed_key(ssh_dir)
+
+        gitignore_path = ssh_dir / ".gitignore"
+        assert gitignore_path.exists()
+        assert gitignore_path.read_text().strip() == "*"
+
     def test_creates_a_keypair_under_ssh_dir(self, tmp_path):
         ssh_dir = tmp_path / ".aiform" / "ssh"
 
@@ -101,6 +129,22 @@ class TestGenerateBackupScript:
         assert str(ssh_dir.resolve()) in content
         assert "op item create" in content  # 1Password fallback, commented out
 
+    def test_resolves_a_relative_private_key_path(self, tmp_path, monkeypatch):
+        # A relative KEY_FILE would fail with a confusing `cat:` error the
+        # moment the script is run from anywhere but the project root, and
+        # the restore line it echoes would write the key back to the
+        # wrong place.
+        ssh_dir = tmp_path / "ssh"
+        ssh_dir.mkdir(parents=True)
+        (ssh_dir / "aiform_managed_key").write_text("fake-private-key")
+        monkeypatch.chdir(tmp_path)
+
+        script_path = ssh.generate_backup_script(ssh_dir, Path("ssh/aiform_managed_key"))
+        content = script_path.read_text()
+
+        assert str((tmp_path / "ssh" / "aiform_managed_key").resolve()) in content
+        assert 'KEY_FILE="ssh/aiform_managed_key"' not in content
+
     def test_never_executes_the_script(self, tmp_path, monkeypatch):
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
@@ -132,6 +176,32 @@ class _FakeCompleted:
         self.returncode = returncode
 
 
+class _FakeClock:
+    """A monotonic clock only time.sleep() advances -- lets a test whose
+    connect_timeout_budget genuinely requires several retries stay
+    instant and deterministic, instead of depending on real wall-clock
+    time actually elapsing (which is what a mocked-only time.sleep with
+    real time.monotonic() left it doing -- 12 real seconds for one test,
+    caught while verifying the wall-clock-bounding fix below)."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr(ssh.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(ssh.time, "sleep", clock.sleep)
+    return clock
+
+
 class TestShutdownViaSsh:
     def test_returns_true_on_a_clean_zero_exit(self, tmp_path, monkeypatch):
         calls = []
@@ -160,6 +230,11 @@ class TestShutdownViaSsh:
         assert "BatchMode=yes" in argv
         assert argv[-2] == "root@203.0.113.10"
         assert "shutdown" in argv[-1]
+        # Without this, ssh also offers any identity already loaded in an
+        # agent before trying -i's key, so an operator with several keys
+        # loaded can exhaust the server's MaxAuthTries before the managed
+        # key is ever tried.
+        assert "IdentitiesOnly=yes" in argv
 
     def test_returns_true_on_timeout_expired(self, tmp_path, monkeypatch):
         # The expected, successful shape per the live diagnostic: the guest
@@ -201,12 +276,11 @@ class TestShutdownViaSsh:
         assert result is True
         assert len(attempts) == 3
 
-    def test_returns_false_once_the_budget_is_exhausted(self, tmp_path, monkeypatch):
+    def test_returns_false_once_the_budget_is_exhausted(self, tmp_path, monkeypatch, fake_clock):
         def _fake_run(argv, **kwargs):
             return _FakeCompleted(returncode=255)
 
         monkeypatch.setattr(ssh.subprocess, "run", _fake_run)
-        monkeypatch.setattr(ssh.time, "sleep", lambda seconds: None)
 
         result = ssh.shutdown_via_ssh(
             "203.0.113.10",
@@ -216,6 +290,36 @@ class TestShutdownViaSsh:
         )
 
         assert result is False
+
+    def test_worst_case_wall_time_is_bounded_by_the_budget(self, tmp_path, monkeypatch, fake_clock):
+        # Regression test for the bug caught during /code-review: an
+        # earlier version derived a fixed attempt count from
+        # connect_timeout_budget / _RETRY_DELAY_SECONDS alone, ignoring
+        # that each attempt's own subprocess timeout was a *separate*,
+        # unbounded-by-the-budget ceiling -- a 45s budget could in the
+        # worst case spend upwards of 150s of real wall time before
+        # giving up, silently regressing the fallback-latency problem
+        # #171/#172/#174 were rejected for.
+        timeouts = []
+
+        def _fake_run(argv, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return _FakeCompleted(returncode=255)
+
+        monkeypatch.setattr(ssh.subprocess, "run", _fake_run)
+
+        result = ssh.shutdown_via_ssh(
+            "203.0.113.10",
+            tmp_path / "aiform_managed_key",
+            tmp_path / "known_hosts",
+            connect_timeout_budget=45.0,
+        )
+
+        assert result is False
+        # No attempt's own timeout is ever allowed to run past the
+        # deadline, regardless of the flat per-attempt ceiling.
+        assert all(t <= ssh._PER_ATTEMPT_TIMEOUT_SECONDS for t in timeouts)
+        assert fake_clock.now <= 45.0 + 1e-6
 
     def test_always_makes_at_least_one_attempt(self, tmp_path, monkeypatch):
         attempts = []
@@ -257,8 +361,6 @@ class TestShutdownViaSsh:
 
 @pytest.mark.parametrize("attr", ["DEFAULT_SSH_DIR"])
 def test_default_ssh_dir_is_project_relative(attr):
-    from pathlib import Path
-
     value = getattr(ssh, attr)
     assert value == Path(".aiform/ssh")
     assert not value.is_absolute()

@@ -1026,10 +1026,11 @@ DO-specific answer to "is it off."
 
 1. Call `aiform.ssh.ensure_managed_key(aiform.ssh.DEFAULT_SSH_DIR)` for
    the local keypair half -- pure local file I/O, no network.
-2. If `.aiform/ssh/aiform_managed_key.id` exists, its content *is* the DO
-   key id -- return it immediately with **zero** HTTP calls. This is what
-   keeps a repeat `create()` (a fresh droplet in an already-initialized
-   project) from re-registering the same key every time.
+2. If `.aiform/ssh/aiform_managed_key.id` exists **and is non-empty**
+   (after stripping whitespace), its content *is* the DO key id -- return
+   it immediately with **zero** HTTP calls. This is what keeps a repeat
+   `create()` (a fresh droplet in an already-initialized project) from
+   re-registering the same key every time.
 3. Otherwise, compute the local public key's MD5 fingerprint (via
    `ssh-keygen -E md5 -lf <public_key_path>`, stripping the `MD5:`
    prefix -- the same colon-hex format DO reports as a listed key's own
@@ -1055,34 +1056,49 @@ power-off site:
 
 1. If `current.get("ipv4_address")` is falsy, skip straight to the API
    path below -- no IP means no SSH target.
-2. Otherwise resolve the managed private key via
+2. Otherwise, if `aiform.ssh.managed_key_exists(aiform.ssh.DEFAULT_SSH_DIR)`
+   is `False`, also skip straight to the API path (`power_off_path =
+   "no-key-fallback"`) rather than calling `ensure_managed_key()`
+   unconditionally -- doing so would mint a brand-new, not-yet-registered
+   keypair on the spot and then spend the entire SSH connect budget
+   authenticating with a key no droplet has ever heard of. In normal
+   operation this never fires: `create()` always calls
+   `_ensure_do_key_registered()` first, so the key already exists by the
+   time any droplet reaches a resize. It's a real path only when
+   `.aiform/ssh/` was deleted or recreated after the droplet existed.
+3. Otherwise resolve the managed private key via
    `aiform.ssh.ensure_managed_key()` (already registered with DO by the
    time any droplet exists, from `create()`) and call
    `aiform.ssh.shutdown_via_ssh(ip, private_key_path, known_hosts_path,
-   connect_timeout_budget=45.0)` -- 45s budgeted past the 8.7-23.3s login
-   times the diagnostic observed, with real retry margin rather than a
-   single attempt. `known_hosts_path` is `.aiform/ssh/known_hosts`,
+   connect_timeout_budget=45.0)` -- 45s of **wall-clock-bounded** retrying
+   past the 8.7-23.3s login times the diagnostic observed, with real retry
+   margin rather than a single attempt (`specs/ssh.md`'s `shutdown_via_ssh`
+   bullet has the full wall-clock-bounding mechanism -- an earlier version
+   of this driver passed the same 45.0 but the underlying budget math
+   didn't actually enforce it, worst-casing past 150s; fixed before merge,
+   caught by `/code-review`). `known_hosts_path` is `.aiform/ssh/known_hosts`,
    project-scoped (not `~/.ssh/known_hosts`), pinned via
    `StrictHostKeyChecking=accept-new` -- safer than the diagnostic's own
    throwaway `=no` + `/dev/null`.
-3. If that returns `True` (the command was successfully issued), poll
+4. If that returns `True` (the command was successfully issued), poll
    `_poll_until` for `status == "off"` with a **short** bound --
    `max_attempts=30`, `delay_seconds=2` (60s total), comfortably past the
    11.3-24.4s observed range for a reachable, cooperating guest, and
    deliberately nowhere near the API path's own 150s default: a guest
    that hasn't converged by 60s has stopped cooperating, and the API
    fallback should take over rather than stacking a second long wait.
-4. If SSH never connects, or connects but the droplet doesn't reach
+5. If SSH never connects, or connects but the droplet doesn't reach
    `status == "off"` within that short bound, fall back to the existing
    API `power_off` + `_poll_until` call **exactly as it was before this
    addendum** -- the flat 150s default budget from #168, unchanged.
-5. Log which path fired as a structured `power_off_path` field on an
+6. Log which path fired as a structured `power_off_path` field on an
    otherwise-empty INFO (or, on the SSH-attempted-but-timed-out case,
    WARNING) record: `"ssh-success"`, `"ssh-attempted-fallback"` (SSH
-   unavailable, or SSH connected but its own short poll timed out), or
-   `"no-ip-fallback"`. This exact "which path fired" question is what
-   made the #152/#168 investigation slow -- the next person debugging a
-   slow resize shouldn't have to re-derive it from timing alone.
+   unavailable, or SSH connected but its own short poll timed out),
+   `"no-key-fallback"` (step 2 above), or `"no-ip-fallback"`. This exact
+   "which path fired" question is what made the #152/#168 investigation
+   slow -- the next person debugging a slow resize shouldn't have to
+   re-derive it from timing alone.
 
 **Explicitly unaffected by this addendum:**
 `tests/system/test_cli_observability.py`'s `_power_off` helper (it

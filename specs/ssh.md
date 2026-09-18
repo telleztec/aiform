@@ -24,6 +24,7 @@ and a live diagnostic found that SSHing in and running an in-guest
 DEFAULT_SSH_DIR = Path(".aiform/ssh")
 
 
+def managed_key_exists(ssh_dir: Path) -> bool: ...
 def ensure_managed_key(ssh_dir: Path) -> tuple[Path, Path]: ...
 def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> Path: ...
 def shutdown_via_ssh(
@@ -43,8 +44,24 @@ module's own location.
 
 ## Behavior
 
+- `managed_key_exists(ssh_dir)` — whether `ensure_managed_key(ssh_dir)`
+  would find an existing private key rather than generating a fresh one.
+  Lets a caller that's about to *use* the key, not just prepare it,
+  decide whether trying is worth it at all: a caller that
+  unconditionally called `ensure_managed_key` when none exists yet would
+  mint a brand-new, not-yet-DigitalOcean-registered keypair on the spot,
+  then spend its entire SSH connect budget authenticating with a key no
+  droplet has ever heard of. `drivers/digitalocean/compute.py`'s
+  `_power_off_droplet()` checks this first and skips straight to the API
+  fallback when it's `False`, logging `power_off_path=no-key-fallback`.
 - `ensure_managed_key(ssh_dir)` — get-or-create. Creates `ssh_dir` if
-  missing. If `ssh_dir / "aiform_managed_key"` already exists, reuses it
+  missing, and writes `ssh_dir / ".gitignore"` containing a bare `*` the
+  first time (idempotent past that) — belt-and-suspenders alongside
+  `aiform init`'s repo-root `.gitignore` entry for `.aiform/ssh/`, since
+  this function's caller isn't always `init`: `create()` calls it too,
+  so a project that upgrades aiform and runs `apply` without re-running
+  `init` still never gets a private key written into an un-ignored path.
+  If `ssh_dir / "aiform_managed_key"` already exists, reuses it
   (never regenerates, never prompts `ssh-keygen`'s interactive overwrite
   question) and re-asserts `0o600` on it before returning. Otherwise runs
   `ssh-keygen -t ed25519 -N "" -C aiform-managed-key -f <path>`
@@ -84,13 +101,31 @@ module's own location.
     run" property `_cmd_init` already has for `.aiform/credentials.env`.
 - `shutdown_via_ssh(ip, private_key_path, known_hosts_path, *,
   connect_timeout_budget)` — attempts `ssh -i <private_key_path> -o
-  UserKnownHostsFile=<known_hosts_path> -o
+  IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts_path> -o
   StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o
   BatchMode=yes root@<ip> "sudo shutdown -h now"`, retrying on a
-  connection failure (non-zero exit) every 5 seconds until
-  `connect_timeout_budget` seconds have been spent retrying (at least
-  one attempt always happens, even if `connect_timeout_budget` is
-  smaller than one retry interval). Returns `True` as soon as either:
+  connection failure (non-zero exit) roughly every 5 seconds.
+  `IdentitiesOnly=yes` matters here specifically: without it `ssh` also
+  offers any identity already loaded in an agent before trying `-i`'s
+  key, and an operator with several keys loaded can exhaust the server's
+  `MaxAuthTries` before the managed key is ever tried.
+  **Wall-clock bounded, not attempt-count bounded**: a shared
+  `deadline = time.monotonic() + connect_timeout_budget` caps both how
+  long any individual attempt's own subprocess timeout can run (`min` of
+  the per-attempt ceiling and whatever's left of the budget) and whether
+  another attempt starts at all — no attempt is ever allowed to run past
+  the deadline, and no new attempt starts once it's passed. This is a
+  deliberate correction from an earlier version that derived a fixed
+  attempt count from `connect_timeout_budget / 5s` alone: since each
+  attempt's own subprocess timeout was a *separate*, unbounded-by-the-budget
+  ceiling, a 45s budget could in the worst case spend upwards of 150s of
+  real wall time before giving up — silently regressing the exact
+  fallback-latency problem #171/#172/#174 were rejected for; caught by
+  `/code-review`. At least one real attempt always happens, even for a
+  budget of `0` or one already spent by the time the deadline is
+  computed — a truncated near-zero timeout would unfairly fail a
+  connection that was about to succeed. Returns `True` as soon as
+  either:
   - the command exits `0` (rare in practice — the guest usually tears
     the connection down as it shuts down before `ssh` can read a clean
     exit status), or
@@ -133,11 +168,12 @@ module's own location.
   on first use if it doesn't exist, given the parent directory does
   (which `ensure_managed_key` already guarantees by the time a caller
   would have a private key to shut down with).
-- `ensure_managed_key`/`generate_backup_script` raise
-  `subprocess.CalledProcessError` unmodified if `ssh-keygen` itself
-  fails (e.g. the binary is missing) — no local error-classification
-  layer, since a broken local OpenSSH install is not a recoverable
-  condition this module can work around.
+- `ensure_managed_key` raises `subprocess.CalledProcessError` unmodified
+  if `ssh-keygen` itself fails (e.g. the binary is missing) — no local
+  error-classification layer, since a broken local OpenSSH install is
+  not a recoverable condition this module can work around.
+  `generate_backup_script` runs no subprocess at all (it only formats
+  and writes a template), so this does not apply to it.
 
 ## Out of scope
 
