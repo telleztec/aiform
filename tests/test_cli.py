@@ -329,6 +329,7 @@ class TestInit:
         assert lines.count(".aiform/state.json") == 1
         assert lines.count(".aiform/state.json.backup") == 1
         assert lines.count(".aiform/logs/") == 1
+        assert lines.count(".aiform/ssh/") == 1
         assert "__pycache__/" in lines
 
     def test_does_not_gitignore_trash(self, project_dir: Path):
@@ -381,6 +382,56 @@ class TestInit:
         cli.main(["init"])
         out = capsys.readouterr().out
         assert "✓" in out
+
+
+class TestInitManagedSshKey:
+    """issue #175: init generates aiform's managed SSH keypair and a
+    one-time backup-script pointer, local-only, no network call."""
+
+    def test_generates_a_keypair_under_aiform_ssh(self, project_dir: Path):
+        cli.main(["init"])
+
+        private_key_path = project_dir / ".aiform" / "ssh" / "aiform_managed_key"
+        public_key_path = project_dir / ".aiform" / "ssh" / "aiform_managed_key.pub"
+        assert private_key_path.exists()
+        assert public_key_path.exists()
+        import stat
+
+        assert stat.S_IMODE(private_key_path.stat().st_mode) == 0o600
+
+    def test_generates_the_backup_script(self, project_dir: Path):
+        cli.main(["init"])
+
+        script_path = project_dir / ".aiform" / "ssh" / "backup_key_to_keychain.sh"
+        assert script_path.exists()
+        content = script_path.read_text()
+        assert "security add-generic-password" in content
+
+    def test_rerunning_init_does_not_regenerate_the_key(self, project_dir: Path):
+        cli.main(["init"])
+        private_key_path = project_dir / ".aiform" / "ssh" / "aiform_managed_key"
+        original = private_key_path.read_bytes()
+
+        cli.main(["init"])
+
+        assert private_key_path.read_bytes() == original
+
+    def test_prints_the_backup_pointer_on_first_generation_only(self, project_dir: Path, capsys):
+        cli.main(["init"])
+        first_out = capsys.readouterr().out
+        assert "backup_key_to_keychain.sh" in first_out
+        assert "Generated an aiform-managed SSH key" in first_out
+
+        cli.main(["init"])
+        second_out = capsys.readouterr().out
+        assert "backup_key_to_keychain.sh" not in second_out
+        assert "Generated an aiform-managed SSH key" not in second_out
+
+    def test_gitignore_covers_the_ssh_directory(self, project_dir: Path):
+        cli.main(["init"])
+
+        lines = (project_dir / ".gitignore").read_text().splitlines()
+        assert ".aiform/ssh/" in lines
 
 
 class TestInitMakesNoNetworkCalls:

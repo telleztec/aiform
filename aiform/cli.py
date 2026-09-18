@@ -16,7 +16,7 @@ from typing import Any, NamedTuple
 
 import anthropic
 
-from aiform import config, llm, log, observability, orchestrator, state
+from aiform import config, llm, log, observability, orchestrator, ssh, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
 from aiform.models import KeyCheck, KeyState, PlanAction
 
@@ -27,6 +27,7 @@ _GITIGNORE_ENTRIES = [
     ".aiform/state.json",
     ".aiform/state.json.backup",
     ".aiform/logs/",
+    ".aiform/ssh/",
     ".env",
     "__pycache__/",
     "*.pyc",
@@ -253,6 +254,18 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if example_written:
         example_path.write_text(_EXAMPLE_COMPUTE_AIFORM_MD, encoding="utf-8")
 
+    # Local-only, no network call and no provider credentials needed --
+    # issue #175. `init` is the deliberate, attentive setup moment; a key
+    # generated silently mid-`plan apply` is far more likely to go
+    # unnoticed. Re-running init never regenerates an existing key
+    # (ssh.ensure_managed_key is get-or-create), so key_generated is only
+    # ever True the first time this runs for a given project.
+    ssh_dir = ssh.DEFAULT_SSH_DIR
+    key_generated = not (ssh_dir / "aiform_managed_key").exists()
+    private_key_path, _ = ssh.ensure_managed_key(ssh_dir)
+    if key_generated:
+        backup_script_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
     if example_written:
@@ -268,6 +281,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "value or prompts for one interactively"
     )
     print()
+
+    if key_generated:
+        print(f"Generated an aiform-managed SSH key at {private_key_path}")
+        print(
+            "aiform injects it into every droplet it creates by default, so future "
+            "resizes can shut a droplet down quickly over SSH instead of waiting on "
+            "DigitalOcean's own power_off action."
+        )
+        print(f"This is the only copy of that key. Back it up now: {backup_script_path}")
+        print("(read it before running it -- aiform never runs this script itself)")
+        print()
 
     _print_credential_checks(provider, token_env_var)
 
