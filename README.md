@@ -56,11 +56,11 @@ use it to deploy and run their own SaaS application.
 
 Who this is for: a cost-sensitive solo entrepreneur, hobbyist, small
 startup, or non-profit — usually one person, sometimes a small handful
-of collaborators or volunteers, always watching the budget.
+of collaborators or volunteers.
 
-As aiform's own state, credential, and locking model grows past a
-single operator's machine — into a real database or vault, runnable by
-distributed runners — a second persona comes into focus: someone who
+As aiform's own state, credential, and locking model grows to run from
+a real database or vault instead of one operator's machine — reachable
+by distributed runners — a second persona comes into focus: someone who
 already relies on infrastructure-as-code and has hit its limits
 elsewhere. They want IaC that's easy to extend with new resource types,
 and that treats each SaaS subscription as optional rather than assumed
@@ -69,21 +69,21 @@ something AI-built and self-managed instead.
 
 ## Use Case
 
-This person wants to build a small system with simple SaaS-like properties
-— a handful of VMs, some networking, a database or two — by assembling
-open-source components themselves, rather than paying for and getting
-locked into a pile of separate SaaS products, or a single one-size-fits-all
-platform like Shopify or Square. Assembling instead of subscribing is
-cheaper (a few VMs beat several SaaS bills) and keeps you in control
-(no vendor lock-in, no feature ceiling set by someone else's roadmap) — at
-the cost of now being on the hook for standing the system up and keeping it
-running yourself, which is exactly the part Terraform-style IaC has never
-covered (see "The pitch" above): it builds infrastructure up, it doesn't
-run it, alert when it fails, or adjust as needs change.
+That first persona wants to build a small system with simple SaaS-like
+properties — a handful of VMs, some networking, a database or two — by
+assembling open-source components themselves, rather than paying for
+and getting locked into a pile of separate SaaS products, or a single
+one-size-fits-all platform like Shopify or Square. Assembling instead of
+subscribing is cheaper (a few VMs beat several SaaS bills) and keeps you
+in control (no vendor lock-in, no feature ceiling set by someone else's
+roadmap) — at the cost of now being on the hook for standing the system
+up and keeping it running yourself, which is exactly the part
+Terraform-style IaC has never covered (see "The pitch" above): it builds
+infrastructure up, it doesn't run it, alert when it fails, or adjust as
+needs change.
 
 aiform is the AI-driven IaC layer this person uses to build and manage
-that assembled system, without paying for SaaS components that add
-cost but no real value — some of them just sell you speed.
+that assembled system.
 
 ## Status
 
