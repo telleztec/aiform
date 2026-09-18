@@ -54,11 +54,12 @@ aiform's target user, and the use case it's being built for, are described
 in full in [`README.md`](./README.md)'s "Persona" and "Use Case" sections —
 that's their authoritative home, not a duplicate of this document. In
 short: a cost-sensitive solo entrepreneur, hobbyist, small startup, or
-non-profit — one operator running aiform by hand from a single persistent
-laptop — assembling a small, SaaS-shaped system (a handful of VMs, some
-networking, a database or two)
-out of open-source components rather than a collection of locked-in SaaS
-products, using aiform as the AI-driven IaC layer to build and manage it.
+non-profit — one operator running aiform by hand from a single
+persistent laptop, with local state that's still there the next time
+they run it — assembling a small, SaaS-shaped system (a handful of VMs,
+some networking, a database or two) out of open-source components
+rather than a collection of locked-in SaaS products, using aiform as the
+AI-driven IaC layer to build and manage it.
 
 That framing isn't introductory color: it's meant to be checked against
 real scoping decisions — where a credential lives, who's around to review
