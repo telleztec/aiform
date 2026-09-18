@@ -415,13 +415,14 @@ gh pr create --title "Short, specific title" --body "$(cat <<'EOF'
 - Why, if not obvious from the summary alone
 
 ## Plan
-One summary sentence or short paragraph: what was approved, and how — see
-PROCESS.md's "Before the loop: plan and get explicit approval". If this
-change is exempt from that gate (only a pure prose/documentation edit with
-no behavior change qualifies — see that section's "does not apply"; there
-is no other exemption and no size exception), keep this section and say so
-explicitly rather than deleting it — don't let leaving the section out be
-the thing that decides the exemption applied.
+One lead sentence or short paragraph: what the human approved before this
+was implemented, and how they approved it — see PROCESS.md's "Before the
+loop: plan and get explicit approval". If this change is exempt from that
+gate (only a pure prose/documentation edit with no behavior change
+qualifies — see that section's "does not apply"; there is no other
+exemption and no size exception), keep this section and say so explicitly
+rather than deleting it — don't let leaving the section out be the thing
+that decides the exemption applied.
 - Key point from what was approved
 - Another key point, if needed
 - If this PR closes more than one issue: the waiver, as a bullet — e.g.
