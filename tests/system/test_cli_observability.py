@@ -76,7 +76,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         code = cli.main(["resource", "check", name, "--state-file", str(state_path)])
         out = capsys.readouterr().out
         assert code == 0, out
-        assert out.startswith(f"ok  {key}  active, public v4 "), out
+        assert out.startswith(f"ok  compute  {key}  active, public v4 "), out
         # observations are hidden on an ok verdict -- one line, no block.
         assert len(out.splitlines()) == 1, out
 
@@ -106,6 +106,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         out = capsys.readouterr().out
         assert code == 0, out
         lines = dict(line.split(None, 1) for line in out.splitlines())
+        assert lines["type"] == "compute"
         assert lines["live"] == "present"
         assert lines["config"] == f"in sync with {md_path.name}"
         assert droplet_id in lines["deployed"]
@@ -130,6 +131,19 @@ class TestResourceVerbsAgainstALiveDroplet:
         assert doc["resources"][0]["health"]["status"] == "ok"
         assert doc["resources"][0]["health_unsupported"] is None
         assert doc["resources"][0]["health"]["observations"]["locked"] == "false"
+        # The structured identity and config fields, against a live
+        # read(): a consumer gets the type, the id and a yes/no "is it in
+        # sync" without parsing a sentence or splitting resource_key.
+        assert doc["resources"][0]["provider"] == "digitalocean"
+        assert doc["resources"][0]["resource_type"] == "compute"
+        assert doc["resources"][0]["id"] == droplet_id
+        assert doc["resources"][0]["deployed_at"].endswith("Z")
+        assert doc["resources"][0]["config"] == {
+            "in_sync": True,
+            "spec_file": md_path.name,
+            "drifted_fields": [],
+            "detail": None,
+        }
 
         # --- the assertion the verb exists for: power the droplet off
         # behind aiform's back and confirm check says so, and that its
@@ -141,7 +155,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         out = capsys.readouterr().out
         assert code == 1, out
         lines = out.splitlines()
-        assert lines[0] == f'failing  {key}  status is "off"', out
+        assert lines[0] == f'failing  compute  {key}  status is "off"', out
         # observations appear exactly when the verdict is bad, which is
         # the whole conditional -- no flag, because the gate case and the
         # diagnosis case never overlap. Asserted by content, not by exact
@@ -217,7 +231,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         code = cli.main(["resource", "check", name, "--state-file", str(state_path)])
         out = capsys.readouterr().out
         assert code == 1, out
-        assert out.startswith(f"failing  {key}  resource not found"), out
+        assert out.startswith(f"failing  compute  {key}  resource not found"), out
 
         assert state_path.read_bytes() == before, (
             "`aiform resource status` wrote state after observing drift; it must not -- "

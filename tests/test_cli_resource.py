@@ -207,7 +207,7 @@ class TestCheck:
         code = cli.main(["resource", "check", "web-01", "--state-file", str(path)])
         assert code == 0
         assert capsys.readouterr().out == (
-            "ok  digitalocean.compute.web-01  active, public v4 203.0.113.10\n"
+            "ok  compute  digitalocean.compute.web-01  active, public v4 203.0.113.10\n"
         )
 
     def test_named_failing_exits_one_and_shows_observations(self, project, capsys):
@@ -215,7 +215,7 @@ class TestCheck:
         code = cli.main(["resource", "check", "web-01", "--state-file", str(path)])
         assert code == 1
         assert capsys.readouterr().out == (
-            'failing  digitalocean.compute.web-01  status is "off"\n'
+            'failing  compute  digitalocean.compute.web-01  status is "off"\n'
             "    status  off\n"
             "    locked  false\n"
         )
@@ -285,6 +285,8 @@ class TestCheck:
         assert code == 1
         assert doc["worst_status"] == "failing"
         assert doc["coverage"] == {"reporting": 1, "total": 1, "unsupported": 0}
+        assert doc["resources"][0]["provider"] == "digitalocean"
+        assert doc["resources"][0]["resource_type"] == "compute"
 
     def test_an_empty_state_exits_two(self, project, capsys):
         # A gate that passes because it checked nothing is the failure
@@ -423,11 +425,12 @@ class TestMetricsOutput:
 
 
 class TestStatus:
-    def test_named_prints_the_four_labelled_rows(self, project, capsys):
+    def test_named_prints_the_labelled_rows(self, project, capsys):
         path = project(health=FAILING_REPORT, read=LIVE)
         code = cli.main(["resource", "status", "web-01", "--state-file", str(path)])
         assert code == 0
         assert capsys.readouterr().out == (
+            "type      compute\n"
             "deployed  2026-09-10T14:02:11Z, id 123456789\n"
             "live      present\n"
             "config    in sync with web.aiform.md\n"
@@ -471,7 +474,8 @@ class TestStatus:
         cli.main(["resource", "status", "--state-file", str(path)])
         lines = capsys.readouterr().out.splitlines()
         assert lines[0] == "digitalocean.compute.web-01"
-        assert lines[1].startswith("  deployed  ")
+        assert lines[1].startswith("  type      ")
+        assert lines[2].startswith("  deployed  ")
 
     def test_writes_no_state(self, project, capsys):
         path = project(health=OK_REPORT, read={**LIVE, "size": "s-4vcpu-8gb"})
@@ -485,6 +489,10 @@ class TestStatus:
         doc = json.loads(capsys.readouterr().out)
         assert doc["resources"][0]["live"] == "present"
         assert doc["resources"][0]["health"]["status"] == "ok"
+        assert doc["resources"][0]["resource_type"] == "compute"
+        assert doc["resources"][0]["deployed_at"] == "2026-09-10T14:02:11Z"
+        assert doc["resources"][0]["id"] == "123456789"
+        assert doc["resources"][0]["config"]["in_sync"] is True
 
 
 class TestZeroLLMCalls:
@@ -538,7 +546,9 @@ class TestStdoutIsACleanStream:
         assert "operation=" not in captured.out
         # stdout is exactly the report: one line per resource, plus the
         # observations block for a non-ok verdict.
-        assert captured.out.splitlines()[0].startswith("unknown  digitalocean.compute.web-01  ")
+        assert captured.out.splitlines()[0].startswith(
+            "unknown  compute  digitalocean.compute.web-01  "
+        )
 
     def test_a_warning_leaves_json_on_stdout_parseable(self, project, capsys):
         # The consequence that matters: `--format json | jq` must survive
@@ -602,7 +612,8 @@ class TestDeclineIsNotAnError:
         path = project(health_exc=CapabilityNotSupported("health", "no signal here"))
         code = cli.main(["resource", "check", "web-01", "--state-file", str(path)])
         assert code == 2
-        assert "unsupported  digitalocean.compute.web-01  no signal here" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "unsupported  compute  digitalocean.compute.web-01  no signal here" in out
 
 
 class TestBrokenPipe:
@@ -670,4 +681,5 @@ class TestFleetStatusSharesOneDriver:
         monkeypatch.setattr(orchestrator, "load_driver", counting)
         assert cli.main(["resource", "status", "--state-file", str(path)]) == 0
         assert loads == [("digitalocean", "compute")]
-        assert len(capsys.readouterr().out.splitlines()) == 3 * 5
+        # Three resources, each a header line plus its five labelled rows.
+        assert len(capsys.readouterr().out.splitlines()) == 3 * 6

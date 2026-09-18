@@ -46,7 +46,7 @@ They are the reason the surface is three verbs rather than one sweep.
 
 ```
 $ aiform resource check web-01
-ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+ok  compute  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ # ...apply some load...
 $ aiform resource metrics web-01
@@ -65,9 +65,10 @@ therefore aligned text.
 
 ```
 $ aiform resource check web-01
-failing  digitalocean.compute.web-01  status is "off"
+failing  compute  digitalocean.compute.web-01  status is "off"
 
 $ aiform resource status web-01
+type      compute
 deployed  2026-09-10T14:02:11Z, id 123456789
 live      present
 config    in sync with examples/web.aiform.md
@@ -236,20 +237,31 @@ class Collection:
 
 
 @dataclass
+class ConfigStatus:
+    in_sync: bool | None  # None: aiform could not determine it at all
+    spec_file: str  # the entry's recorded aiform_md_path, always
+    drifted_fields: list[str]  # sorted; empty unless in_sync is False
+    detail: str | None  # why in_sync is None, and only then:
+    # "no source file found" | "source file is malformed: <why>"
+    # | "<path> now declares <other key>, not this resource"
+    # | "not applicable: resource is gone"
+    # | "not applicable: the resource could not be read"
+
+
+@dataclass
 class StatusReport:
     """`aiform resource status`. Four independent answers; any one can be
     the surprising one, so none is folded into another."""
 
     resource_key: str  # the fleet form heads each resource's rows with this
+    provider: str
+    resource_type: str
     name: str
-    deployed: str  # last_applied_at + id. NOT `str | None`: status_for()
-    # raises for an untracked key, so nothing produces None
+    id: str
+    deployed_at: datetime  # NOT `| None`: status_for() raises for an
+    # untracked key, so nothing produces None
     live: str  # "present" | "missing on the provider" | an error
-    config: str  # "in sync with <path>" | "<n> fields drifted: a, b"
-    # | "no source file found" | "source file is malformed: <why>"
-    # | "<path> now declares <other key>, not this resource"
-    # | "not applicable: resource is gone"
-    # | "not applicable: the resource could not be read"
+    config: ConfigStatus
     health: HealthReport | None
     health_unsupported: str | None
 
@@ -374,7 +386,7 @@ switch between them because the two cases never overlap.
 
 ```
 $ aiform resource check db-01
-failing  digitalocean.compute.db-01  status is "off"
+failing  compute  digitalocean.compute.db-01  status is "off"
     status       off
     locked       false
     last_action  power_off
@@ -396,7 +408,21 @@ that case is exit 2, not exit 0.
 `status` composes rather than adding a fourth driver method. Its four lines come
 from the state entry (deployed), a live `read()` (live), `diff_attributes()`
 against the discovered `.aiform.md` (config), and `health()` (health) — every
-one already specified elsewhere. It writes no state, per use case 3.
+one already specified elsewhere. It writes no state, per use case 3. A fifth
+line, `type`, precedes them: it is identity rather than an answer, and
+without it the resource kind is legible only to a reader who knows to read
+the middle segment of the dot-joined `resource_key`.
+
+**The four answers are stored as values, not as the sentences the text form
+prints.** `health` was always structured this way — `status`/`summary`/
+`observations` as separate fields, with `_status_value()` composing
+`"failing — status is off"` at render time — and `deployed` and `config`
+match it: a `datetime` and an `id`, and a `ConfigStatus` whose `in_sync` is
+a real boolean. `--format json` exposes those fields, so a consumer wanting
+just the deploy timestamp, just the id, or a plain yes/no "is it in sync"
+reads one field instead of parsing a string built for a terminal. The text
+form's wording is unchanged: it composes the same sentences from the same
+values.
 
 `status_for()` loads the driver and credentials **once** and threads them
 through all three live steps, rather than calling `collect()` for the
@@ -673,14 +699,16 @@ is aligned columns, and the layout is a rule rather than an example, since a
 test has to assert exact output:
 
 - **`check` prints one line per resource**, never a block:
-  `<status>  <key>  <summary>`. The key is inline because the line is the
-  unit — a fleet check is a list you scan down.
+  `<status>  <type>  <key>  <summary>`. The key is inline because the line is
+  the unit — a fleet check is a list you scan down — and the type gets a
+  column of its own rather than being left as the key's middle segment, which
+  only a reader who knows that convention can parse out.
 - **`metrics` and `status` print rows.** With a `<name>` given, the rows
   alone; in the fleet form each resource's rows are preceded by a header line
   naming its key and indented two spaces beneath it, since a bare row cannot
   say which resource it belongs to. `metrics`' rows are
-  `<kind>  <name>  <value>`; `status`' are `<label>  <value>` over the four
-  labels.
+  `<kind>  <name>  <value>`; `status`' are `<label>  <value>` over `type`
+  and the four answer labels.
 - **Every column is padded to the widest value in that column across the
   whole output**, two spaces between columns, no trailing whitespace. In the
   fleet form that means one alignment for all resources, not per-block.
@@ -986,7 +1014,9 @@ per-verb differences are only in what each resource carries.
 ```json
 {
   "resources": [
-    {"resource_key": "digitalocean.compute.web-01", "name": "web-01",
+    {"resource_key": "digitalocean.compute.web-01",
+     "provider": "digitalocean", "resource_type": "compute",
+     "name": "web-01", "id": "123456789",
      "status": "failing", "summary": "status is \"off\"",
      "observations": {"status": "off", "locked": "false"}}
   ],
@@ -994,6 +1024,11 @@ per-verb differences are only in what each resource carries.
   "worst_status": "failing"
 }
 ```
+
+The identity block is the one `metrics` emits, field for field, and
+`status` emits it too: all three verbs answer about the same resources, so
+a script should not have to split `resource_key` on `.` for one verb and
+read a field for another.
 
 Two per-resource fields are not shown in that example and are always
 present: **`unsupported`** (the decline reason, or `null`) and
@@ -1017,16 +1052,29 @@ called this field `verdict` and gave it values that reused `failing` to mean
 ```json
 {
   "resources": [
-    {"resource_key": "digitalocean.compute.web-01", "name": "web-01",
-     "deployed": "2026-09-10T14:02:11Z, id 123456789",
+    {"resource_key": "digitalocean.compute.web-01",
+     "provider": "digitalocean", "resource_type": "compute",
+     "name": "web-01", "id": "123456789",
+     "deployed_at": "2026-09-10T14:02:11Z",
      "live": "present",
-     "config": "in sync with examples/web.aiform.md",
+     "config": {"in_sync": true, "spec_file": "examples/web.aiform.md",
+                "drifted_fields": [], "detail": null},
      "health": {"status": "failing", "summary": "status is \"off\"",
                 "observations": {}},
      "health_unsupported": null}
   ]
 }
 ```
+
+`deployed_at` and `id` are separate fields rather than the one
+`"2026-09-10T14:02:11Z, id 123456789"` sentence the text form prints, and
+`config` is an object rather than that line's prose, for the reason given
+under "`status` composes" above: the sentence is a rendering, and the text
+renderer still composes it from exactly these values. `in_sync` is `null`
+when aiform could not determine it, and `detail` then carries the reason —
+the same split `health` makes between a `status` value and a free-form
+`summary`. `drifted_fields` is sorted, so two runs over an unchanged
+resource produce identical documents.
 
 ### `metrics`' `render_json` shape
 

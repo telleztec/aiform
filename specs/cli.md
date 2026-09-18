@@ -772,20 +772,24 @@ every resource unconditionally.
 
 ```
 $ aiform resource check web-01
-ok  digitalocean.compute.web-01  active, public v4 203.0.113.10
+ok  compute  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ aiform resource check db-01
-failing  digitalocean.compute.db-01  status is "off"
+failing  compute  digitalocean.compute.db-01  status is "off"
     status       off
     locked       false
     last_action  power_off
 
 $ aiform resource check
-ok           digitalocean.compute.web-01  active, public v4 203.0.113.10
-failing      digitalocean.compute.db-01   status is "off"
-unsupported  digitalocean.domain.example  no per-domain health signal
+ok           compute  digitalocean.compute.web-01  active, public v4 203.0.113.10
+failing      compute  digitalocean.compute.db-01   status is "off"
+unsupported  domain   digitalocean.domain.example  no per-domain health signal
 2 of 3 resources report health; 1 unsupported
 ```
+
+The second column is the resource type. It is a column of its own rather
+than being left as the middle segment of the dot-joined key, which only a
+reader who already knows that convention can pick out.
 
 **Exit code — this is the only command whose exit code carries the answer:**
 
@@ -871,14 +875,21 @@ each under a header line naming it. This is the most expensive of the three comm
 **and** a `health()` per resource, so the fleet form costs 2N provider calls
 against a rate limit shared with `plan`/`apply`.
 
-**Output:** four labelled lines, any of which can be the surprising one:
+**Output:** the resource's type, then four labelled lines, any of which can
+be the surprising one:
 
 ```
+type      compute
 deployed  2026-09-10T14:02:11Z, id 123456789
 live      present
 config    in sync with examples/web.aiform.md
 health    failing — status is "off"
 ```
+
+`--format json` carries the same answers as structured fields rather than
+as these sentences — `deployed_at` and `id` separately, and `config` as an
+object with a real `in_sync` boolean — so a script reads a field where a
+human reads a line. `specs/driver_observability.md` fixes that shape.
 
 **Exit code:** `0` if the command ran, `2` if it could not. A resource that is
 missing or drifted is an *answer*, not a failure of the command.
