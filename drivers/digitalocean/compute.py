@@ -600,8 +600,11 @@ class Driver(ResourceDriver):
         DigitalOcean's own power_off action -- issue #175. Only the
         resize path (the sole existing power_off call site) routes
         through here; tests/system/test_cli_observability.py's `_power_off`
-        drift-simulation helper deliberately keeps calling the raw API
-        action directly, unrelated to this method."""
+        drift-simulation helper calls aiform.ssh.shutdown_via_ssh()
+        directly as a bare utility instead, deliberately bypassing this
+        method entirely -- that helper needs a power-off that has
+        already happened by the time it returns, not a call into the
+        very method whose job is *deciding* how to power off."""
         ip = current.get("ipv4_address")
         ssh_dir = ssh.DEFAULT_SSH_DIR
         if not ip:

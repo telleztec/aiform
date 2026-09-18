@@ -46,6 +46,9 @@ from tests.system.conftest import (
 # for the identical wait.
 _POWER_OFF_POLL_MAX_ATTEMPTS = 30
 _POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
+# Budgeted past the 8.7-23.3s SSH *login* times the same diagnostic
+# observed (a different measurement from the shutdown-convergence one
+# above) -- matches compute.py's own _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS.
 _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
 
 pytestmark = pytest.mark.system
@@ -260,33 +263,65 @@ def _power_off(token, droplet_id: str) -> None:
     always available here. It's also fast and reliable where the raw
     action isn't: 11.3-24.4s, 9/9, in the live diagnostic that motivated
     #175 (`probes/digitalocean_compute_ssh_shutdown.py`).
+
+    Still falls back to the raw API action (with its own, separate poll)
+    if SSH never connects, or connects but doesn't converge within a
+    short budget -- trading the raw action's ~300s outlier for an
+    unconditional new flake class would be a worse deal than keeping the
+    one-in-many-runs fallback path this same trade already accepts
+    elsewhere in this PR.
     """
+    driver = _load_compute_driver()
+    credentials = {"DIGITALOCEAN_TOKEN": str(token)}
+
     live = get_droplet_or_none(token, droplet_id)
-    ip = None
-    for net in (live or {}).get("networks", {}).get("v4", []):
-        if net.get("type") == "public":
-            ip = net.get("ip_address")
-            break
-    assert ip, f"droplet {droplet_id} has no public v4 address to power off over SSH"
+    assert live is not None, f"droplet {droplet_id} not found -- expected it to still be live"
+    ip = driver._flatten(live)["ipv4_address"]
+    assert ip, f"droplet {droplet_id} is live but has no public v4 address to power off over SSH"
 
     ssh_dir = ssh.DEFAULT_SSH_DIR
+    # A precheck, not just a bound on the retry budget: without it, a
+    # regression where create() stops attaching the managed key (exactly
+    # the kind of thing this suite exists to catch) would surface here
+    # only after burning the full connect budget, as a generic "could
+    # not reach droplet" message that points at the network rather than
+    # at the real cause.
+    assert ssh.managed_key_exists(ssh_dir), (
+        f"no local managed key under {ssh_dir} -- create() should have provisioned one "
+        "when this test's own `plan apply` step ran"
+    )
     issued = ssh.shutdown_via_ssh(
         ip,
         ssh_dir / "aiform_managed_key",
         ssh_dir / "known_hosts",
         connect_timeout_budget=_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS,
     )
-    assert issued, f"shutdown_via_ssh could not reach droplet {droplet_id} at {ip}"
+    if issued:
+        try:
+            driver._poll_until(
+                droplet_id,
+                credentials,
+                lambda d: d["status"] == "off",
+                "system-test-power-off-ssh",
+                max_attempts=_POWER_OFF_POLL_MAX_ATTEMPTS,
+                delay_seconds=_POWER_OFF_POLL_DELAY_SECONDS,
+            )
+            return
+        except TimeoutError:
+            pass  # fall through to the API action below
 
-    driver = _load_compute_driver()
-    credentials = {"DIGITALOCEAN_TOKEN": str(token)}
-    driver._poll_until(
+    # SSH never connected, or connected but didn't converge within the
+    # short budget above -- fall back to the raw API action exactly as
+    # this helper used to, rather than trading the ~300s outlier this
+    # switch exists to avoid for a new, unconditional flake class of its
+    # own. Still fully out-of-band: neither branch goes through aiform's
+    # own update()/_power_off_droplet().
+    driver._do_action_and_wait(
         droplet_id,
         credentials,
+        {"type": "power_off"},
         lambda d: d["status"] == "off",
-        "system-test-power-off",
-        max_attempts=_POWER_OFF_POLL_MAX_ATTEMPTS,
-        delay_seconds=_POWER_OFF_POLL_DELAY_SECONDS,
+        "system-test-power-off-api-fallback",
     )
 
 
