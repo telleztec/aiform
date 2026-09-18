@@ -55,8 +55,8 @@ in full in [`README.md`](./README.md)'s "Persona" and "Use Case" sections —
 that's their authoritative home, not a duplicate of this document. In
 short: a cost-sensitive solo entrepreneur, hobbyist, small startup, or
 non-profit — one operator running aiform by hand from a single persistent
-laptop, not an enterprise platform team — assembling a small,
-SaaS-shaped system (a handful of VMs, some networking, a database or two)
+laptop — assembling a small, SaaS-shaped system (a handful of VMs, some
+networking, a database or two)
 out of open-source components rather than a collection of locked-in SaaS
 products, using aiform as the AI-driven IaC layer to build and manage it.
 

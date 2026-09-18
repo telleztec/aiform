@@ -55,21 +55,15 @@ use it to deploy and run their own SaaS application.
 ## Persona
 
 Who this is for: a cost-sensitive solo entrepreneur, hobbyist, small
-startup, or non-profit — not an enterprise platform team, and not someone
-running a sophisticated ephemeral-CI-fleet deployment model. Concretely,
-we're designing for one operator, running aiform (and whatever CI/CD they
-have) by hand, from one persistent laptop — not a rotating pool of
-short-lived build agents with no durable local state.
+startup, or non-profit. Concretely, we're designing for one operator,
+running aiform (and whatever CI/CD they have) by hand, from one
+persistent laptop they actually sit at.
 
-That's not just flavor text, it's a test every real design decision here
-gets checked against. It's easy to default to assumptions that fit a bigger
-organization — a secrets manager, a fleet of identical disposable runners, a
-team of reviewers on call — and those don't hold for this persona; building
-toward them would make aiform worse for the person it's actually for. When
-a decision comes down to "where does this credential live" or "who's
-around to review this," the answer we want is the one that's right for one
-person on one machine they actually sit at, not the one that would be right
-for a platform team.
+That's a real test every design decision here gets checked against.
+When a decision comes down to "where does this credential live" or
+"who's around to review this," the answer we want is the one that's
+right for that one person on that one machine — simple, direct, and
+sized to what they actually need.
 
 ## Use Case
 
@@ -86,14 +80,13 @@ covered (see "The pitch" above): it builds infrastructure up, it doesn't
 run it, alert when it fails, or adjust as needs change.
 
 aiform is the AI-driven IaC layer this person uses to build and manage that
-assembled system. It's not a general-purpose orchestration platform for a
-team of infrastructure engineers — it's the tool one person reaches for to
-stand up, evolve, and (eventually) help operate the handful of resources
-their system needs. Every scoping call in this project — the MVP's
+assembled system — the tool one person reaches for to stand up, evolve,
+and (eventually) help operate the handful of resources their system
+needs. Every scoping call in this project — the MVP's
 single-cloud, single-resource-kind scope, the credential-handling choices
 (see [`PLAN.md`](./PLAN.md) §8, "Credentials handling"), the emphasis on
 costing zero LLM calls on a repeat run — is in service of that one
-operator, not some larger deployment this project isn't building for.
+operator.
 
 ## Status
 
