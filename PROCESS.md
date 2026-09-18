@@ -157,11 +157,13 @@ are external... never something inferred from conversation history" makes
 exactly this argument for the merge gates). This gate is chat-native —
 there's no GitHub artifact to attach it to before a PR exists — so it
 doesn't get that guarantee for free. To get as close as this shape of gate
-can: when the PR is opened, its description must include a
-`## Approved plan` section stating what was approved and, where practical,
-quoting or summarizing the human's approval. A PR without one is a PR
-whose plan-approval cannot be checked by anyone reading only the PR later,
-which defeats the point.
+can: when the PR is opened, its description must include a `## Plan`
+section — one lead sentence or short paragraph stating what was approved,
+then bullets for the key points, where practical quoting or summarizing
+the human's approval (`.claude/skills/github-commit-process/SKILL.md`'s
+"Opening a PR" has the exact template). A PR without one is a PR whose
+plan-approval cannot be checked by anyone reading only the PR later, which
+defeats the point.
 
 ### Once approved
 
