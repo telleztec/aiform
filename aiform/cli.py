@@ -264,7 +264,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
     key_generated = not (ssh_dir / "aiform_managed_key").exists()
     private_key_path, _ = ssh.ensure_managed_key(ssh_dir)
     if key_generated:
-        backup_script_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+        keychain_backup_script_path, onepassword_backup_script_path = ssh.generate_backup_script(
+            ssh_dir, private_key_path
+        )
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
@@ -285,11 +287,12 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if key_generated:
         print(f"Generated an aiform-managed SSH key at {private_key_path}")
         print(
-            "aiform injects it into every droplet it creates by default, so future "
-            "resizes can shut a droplet down quickly over SSH instead of waiting on "
-            "DigitalOcean's own power_off action."
+            "aiform injects it into every droplet it creates by default, so it can "
+            "connect to droplets for maintenance."
         )
-        print(f"This is the only copy of that key. Back it up now: {backup_script_path}")
+        print("This is the only copy of that key. Back it up now:")
+        print(f"  {keychain_backup_script_path}")
+        print(f"  {onepassword_backup_script_path}")
         print("(read it before running it -- aiform never runs this script itself)")
         print()
 

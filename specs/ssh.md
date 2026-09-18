@@ -26,7 +26,7 @@ DEFAULT_SSH_DIR = Path(".aiform/ssh")
 
 def managed_key_exists(ssh_dir: Path) -> bool: ...
 def ensure_managed_key(ssh_dir: Path) -> tuple[Path, Path]: ...
-def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> Path: ...
+def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> tuple[Path, Path]: ...
 def shutdown_via_ssh(
     ip: str,
     private_key_path: Path,
@@ -76,12 +76,13 @@ module's own location.
   `.pub` as a reason to regenerate the whole pair — a regenerated pair
   would silently orphan every droplet already carrying the old public
   key. Returns `(private_key_path, public_key_path)`.
-- `generate_backup_script(ssh_dir, private_key_path)` — writes
-  `ssh_dir / "backup_key_to_keychain.sh"`, `0o700`, overwriting any
-  existing copy (idempotent, no get-or-create semantics needed: unlike
-  the keypair itself, re-generating this file is harmless and keeps it
-  in sync if the template ever changes). The script:
-  - Uses macOS `security add-generic-password -U -a "<account>" -s
+- `generate_backup_script(ssh_dir, private_key_path)` — writes **two**
+  separately executable scripts, `0o700`, each overwriting any existing
+  copy (idempotent, no get-or-create semantics needed: unlike the keypair
+  itself, re-generating these files is harmless and keeps them in sync if
+  a template ever changes), and returns `(keychain_path, onepassword_path)`:
+  - `ssh_dir / "backup_key_to_keychain.sh"` uses macOS
+    `security add-generic-password -U -a "<account>" -s
     aiform-managed-ssh-key -w "$(cat <private_key_path>)"` — mirroring
     this repo's own `.envrc` Keychain pattern (`-U` upserts, so re-running
     the script after a key rotation just updates the stored value).
@@ -90,15 +91,20 @@ module's own location.
     a machine with more than one aiform project (this one has two
     DigitalOcean accounts across projects, per `.envrc`'s own preamble)
     would otherwise have every project's backup script collide on the
-    same Keychain entry and overwrite each other's key.
-  - A restore command as an echoed comment
+    same Keychain entry and overwrite each other's key. Includes a
+    restore command as an echoed comment
     (`security find-generic-password ... -w > <private_key_path>`).
-  - A commented-out equivalent block using the 1Password CLI (`op item
-    create` / `op read`), for an operator not using Keychain.
-  - `set -eu` and comments explaining what it does and why it exists,
-    since the human is expected to read it before running it.
-  - aiform never executes this script itself — same "prepare, don't
+  - `ssh_dir / "backup_key_to_1password.sh"` runs the equivalent
+    `op item create --category="SSH Key" ...` / `op read` pair against
+    the 1Password CLI, for an operator not using Keychain.
+  - Both: `set -eu`, comments explaining what the script does and why it
+    exists (since the human is expected to read it before running it),
+    and a pointer to the other script so a reader who opens the wrong one
+    can find the one for their backend.
+  - aiform never executes either script itself — same "prepare, don't
     run" property `_cmd_init` already has for `.aiform/credentials.env`.
+  - `aiform init` prints both paths so the human can choose which backend
+    to use, rather than picking one for them.
 - `shutdown_via_ssh(ip, private_key_path, known_hosts_path, *,
   connect_timeout_budget)` — attempts `ssh -i <private_key_path> -o
   IdentitiesOnly=yes -o UserKnownHostsFile=<known_hosts_path> -o

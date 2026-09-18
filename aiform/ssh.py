@@ -6,17 +6,21 @@
 resolving an id to an IP, and deciding what "shut down" means for a given
 provider all stay in the calling driver."""
 
+import logging
 import subprocess
 import time
 from pathlib import Path
+
+logger = logging.getLogger("aiform.ssh")
 
 DEFAULT_SSH_DIR = Path(".aiform/ssh")
 
 _PRIVATE_KEY_NAME = "aiform_managed_key"
 _PUBLIC_KEY_NAME = "aiform_managed_key.pub"
-_BACKUP_SCRIPT_NAME = "backup_key_to_keychain.sh"
+_BACKUP_SCRIPT_KEYCHAIN_NAME = "backup_key_to_keychain.sh"
+_BACKUP_SCRIPT_ONEPASSWORD_NAME = "backup_key_to_1password.sh"
 
-_KEYCHAIN_SERVICE = "aiform-managed-ssh-key"
+_BACKUP_ITEM_NAME = "aiform-managed-ssh-key"
 
 _SHUTDOWN_COMMAND = "sudo shutdown -h now"
 _RETRY_DELAY_SECONDS = 5.0
@@ -90,11 +94,11 @@ def ensure_managed_key(ssh_dir: Path) -> tuple[Path, Path]:
     return private_key_path, public_key_path
 
 
-_BACKUP_SCRIPT_TEMPLATE = """#!/bin/sh
-# Backs up aiform's managed SSH private key to the macOS Keychain (or,
-# see the commented block below, 1Password). aiform never runs this --
-# read it, then run it yourself, the same way you'd hand-edit
-# .aiform/credentials.env rather than have a tool write a secret for you.
+_BACKUP_SCRIPT_PREAMBLE = """#!/bin/sh
+# Backs up aiform's managed SSH private key to {backend}. aiform never
+# runs this -- read it, then run it yourself, the same way you'd
+# hand-edit .aiform/credentials.env rather than have a tool write a
+# secret for you.
 #
 # This key is an aiform-internal operational credential: aiform generated
 # it, uses it to shut droplets down quickly over SSH instead of
@@ -104,44 +108,77 @@ _BACKUP_SCRIPT_TEMPLATE = """#!/bin/sh
 # being reachable through the fast path (aiform falls back to the normal
 # DigitalOcean power_off action automatically, so this is inconvenient,
 # not catastrophic).
+#
+# See also {other_script}, the {other_backend} equivalent -- run
+# whichever matches the backend you actually use.
 set -eu
+"""
 
+_BACKUP_SCRIPT_KEYCHAIN_TEMPLATE = (
+    _BACKUP_SCRIPT_PREAMBLE
+    + """
 SERVICE="{service}"
 ACCOUNT="{account}"
 KEY_FILE="{private_key_path}"
 
-# ---- macOS Keychain (default) ----
 security add-generic-password -U -a "$ACCOUNT" -s "$SERVICE" -w "$(cat "$KEY_FILE")"
 echo "Backed up $KEY_FILE to Keychain (service '$SERVICE', account '$ACCOUNT')."
 echo "Restore with:"
 echo "  security find-generic-password -a \\"$ACCOUNT\\" -s \\"$SERVICE\\" -w > \\"$KEY_FILE\\""
-
-# ---- 1Password CLI (alternative -- uncomment to use instead) ----
-# op item create --category="SSH Key" --title="$SERVICE" --vault=Private \\
-#   "private key[password]=$(cat "$KEY_FILE")"
-#
-# Restore with:
-#   op read "op://Private/$SERVICE/private key" > "$KEY_FILE"
 """
+)
+
+_BACKUP_SCRIPT_ONEPASSWORD_TEMPLATE = (
+    _BACKUP_SCRIPT_PREAMBLE
+    + """
+SERVICE="{service}"
+KEY_FILE="{private_key_path}"
+
+op item create --category="SSH Key" --title="$SERVICE" --vault=Private \\
+  "private key[password]=$(cat "$KEY_FILE")"
+echo "Backed up $KEY_FILE to 1Password (item '$SERVICE')."
+echo "Restore with:"
+echo "  op read \\"op://Private/$SERVICE/private key\\" > \\"$KEY_FILE\\""
+"""
+)
 
 
-def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> Path:
-    script_path = ssh_dir / _BACKUP_SCRIPT_NAME
-    script_path.write_text(
-        _BACKUP_SCRIPT_TEMPLATE.format(
-            service=_KEYCHAIN_SERVICE,
+def generate_backup_script(ssh_dir: Path, private_key_path: Path) -> tuple[Path, Path]:
+    # Resolved, not left relative: the script is meant to be read and run
+    # by a human, who may not be sitting in the project root when they do
+    # -- a relative KEY_FILE would fail with a confusing `cat:` error, and
+    # the restore line it echoes would write the key back to the wrong
+    # place.
+    resolved_private_key_path = private_key_path.resolve()
+
+    keychain_path = ssh_dir / _BACKUP_SCRIPT_KEYCHAIN_NAME
+    keychain_path.write_text(
+        _BACKUP_SCRIPT_KEYCHAIN_TEMPLATE.format(
+            backend="the macOS Keychain",
+            other_script=_BACKUP_SCRIPT_ONEPASSWORD_NAME,
+            other_backend="1Password CLI",
+            service=_BACKUP_ITEM_NAME,
             account=str(ssh_dir.resolve()),
-            # Resolved, not left relative: the script is meant to be read
-            # and run by a human, who may not be sitting in the project
-            # root when they do -- a relative KEY_FILE would fail with a
-            # confusing `cat:` error, and the restore line it echoes
-            # would write the key back to the wrong place.
-            private_key_path=private_key_path.resolve(),
+            private_key_path=resolved_private_key_path,
         ),
         encoding="utf-8",
     )
-    script_path.chmod(0o700)
-    return script_path
+    keychain_path.chmod(0o700)
+
+    onepassword_path = ssh_dir / _BACKUP_SCRIPT_ONEPASSWORD_NAME
+    onepassword_path.write_text(
+        _BACKUP_SCRIPT_ONEPASSWORD_TEMPLATE.format(
+            backend="1Password",
+            other_script=_BACKUP_SCRIPT_KEYCHAIN_NAME,
+            other_backend="macOS Keychain",
+            service=_BACKUP_ITEM_NAME,
+            private_key_path=resolved_private_key_path,
+        ),
+        encoding="utf-8",
+    )
+    onepassword_path.chmod(0o700)
+
+    return keychain_path, onepassword_path
 
 
 def _ssh_argv(ip: str, private_key_path: Path, known_hosts_path: Path, command: str) -> list[str]:

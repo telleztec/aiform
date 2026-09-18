@@ -103,31 +103,38 @@ class TestEnsureManagedKey:
 
 
 class TestGenerateBackupScript:
-    def test_writes_an_executable_script_under_ssh_dir(self, tmp_path):
+    def test_writes_two_executable_scripts_under_ssh_dir(self, tmp_path):
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
         private_key_path = ssh_dir / "aiform_managed_key"
         private_key_path.write_text("fake-private-key")
 
-        script_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+        keychain_path, onepassword_path = ssh.generate_backup_script(ssh_dir, private_key_path)
 
-        assert script_path == ssh_dir / "backup_key_to_keychain.sh"
-        assert script_path.exists()
-        assert _mode(script_path) == 0o700
+        assert keychain_path == ssh_dir / "backup_key_to_keychain.sh"
+        assert onepassword_path == ssh_dir / "backup_key_to_1password.sh"
+        assert keychain_path.exists()
+        assert onepassword_path.exists()
+        assert _mode(keychain_path) == 0o700
+        assert _mode(onepassword_path) == 0o700
 
-    def test_script_references_the_private_key_path_and_keychain(self, tmp_path):
+    def test_each_script_references_its_own_backend(self, tmp_path):
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
         private_key_path = ssh_dir / "aiform_managed_key"
         private_key_path.write_text("fake-private-key")
 
-        script_path = ssh.generate_backup_script(ssh_dir, private_key_path)
-        content = script_path.read_text()
+        keychain_path, onepassword_path = ssh.generate_backup_script(ssh_dir, private_key_path)
+        keychain_content = keychain_path.read_text()
+        onepassword_content = onepassword_path.read_text()
 
-        assert str(private_key_path) in content
-        assert "security add-generic-password" in content
-        assert str(ssh_dir.resolve()) in content
-        assert "op item create" in content  # 1Password fallback, commented out
+        assert str(private_key_path) in keychain_content
+        assert "security add-generic-password" in keychain_content
+        assert str(ssh_dir.resolve()) in keychain_content
+
+        assert str(private_key_path) in onepassword_content
+        assert "op item create" in onepassword_content
+        assert "op read" in onepassword_content
 
     def test_resolves_a_relative_private_key_path(self, tmp_path, monkeypatch):
         # A relative KEY_FILE would fail with a confusing `cat:` error the
@@ -139,13 +146,19 @@ class TestGenerateBackupScript:
         (ssh_dir / "aiform_managed_key").write_text("fake-private-key")
         monkeypatch.chdir(tmp_path)
 
-        script_path = ssh.generate_backup_script(ssh_dir, Path("ssh/aiform_managed_key"))
-        content = script_path.read_text()
+        keychain_path, onepassword_path = ssh.generate_backup_script(
+            ssh_dir, Path("ssh/aiform_managed_key")
+        )
+        resolved = str((tmp_path / "ssh" / "aiform_managed_key").resolve())
 
-        assert str((tmp_path / "ssh" / "aiform_managed_key").resolve()) in content
-        assert 'KEY_FILE="ssh/aiform_managed_key"' not in content
+        keychain_content = keychain_path.read_text()
+        onepassword_content = onepassword_path.read_text()
+        assert resolved in keychain_content
+        assert 'KEY_FILE="ssh/aiform_managed_key"' not in keychain_content
+        assert resolved in onepassword_content
+        assert 'KEY_FILE="ssh/aiform_managed_key"' not in onepassword_content
 
-    def test_never_executes_the_script(self, tmp_path, monkeypatch):
+    def test_never_executes_either_script(self, tmp_path, monkeypatch):
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
         private_key_path = ssh_dir / "aiform_managed_key"
@@ -158,17 +171,20 @@ class TestGenerateBackupScript:
 
         ssh.generate_backup_script(ssh_dir, private_key_path)
 
-    def test_overwrites_an_existing_script(self, tmp_path):
+    def test_overwrites_existing_scripts(self, tmp_path):
         ssh_dir = tmp_path / "ssh"
         ssh_dir.mkdir(parents=True)
         private_key_path = ssh_dir / "aiform_managed_key"
         private_key_path.write_text("fake-private-key")
-        script_path = ssh_dir / "backup_key_to_keychain.sh"
-        script_path.write_text("stale content")
+        keychain_path = ssh_dir / "backup_key_to_keychain.sh"
+        keychain_path.write_text("stale content")
+        onepassword_path = ssh_dir / "backup_key_to_1password.sh"
+        onepassword_path.write_text("stale content")
 
         ssh.generate_backup_script(ssh_dir, private_key_path)
 
-        assert "stale content" not in script_path.read_text()
+        assert "stale content" not in keychain_path.read_text()
+        assert "stale content" not in onepassword_path.read_text()
 
 
 class _FakeCompleted:

@@ -399,13 +399,15 @@ class TestInitManagedSshKey:
 
         assert stat.S_IMODE(private_key_path.stat().st_mode) == 0o600
 
-    def test_generates_the_backup_script(self, project_dir: Path):
+    def test_generates_both_backup_scripts(self, project_dir: Path):
         cli.main(["init"])
 
-        script_path = project_dir / ".aiform" / "ssh" / "backup_key_to_keychain.sh"
-        assert script_path.exists()
-        content = script_path.read_text()
-        assert "security add-generic-password" in content
+        keychain_path = project_dir / ".aiform" / "ssh" / "backup_key_to_keychain.sh"
+        onepassword_path = project_dir / ".aiform" / "ssh" / "backup_key_to_1password.sh"
+        assert keychain_path.exists()
+        assert onepassword_path.exists()
+        assert "security add-generic-password" in keychain_path.read_text()
+        assert "op item create" in onepassword_path.read_text()
 
     def test_rerunning_init_does_not_regenerate_the_key(self, project_dir: Path):
         cli.main(["init"])
@@ -420,11 +422,13 @@ class TestInitManagedSshKey:
         cli.main(["init"])
         first_out = capsys.readouterr().out
         assert "backup_key_to_keychain.sh" in first_out
+        assert "backup_key_to_1password.sh" in first_out
         assert "Generated an aiform-managed SSH key" in first_out
 
         cli.main(["init"])
         second_out = capsys.readouterr().out
         assert "backup_key_to_keychain.sh" not in second_out
+        assert "backup_key_to_1password.sh" not in second_out
         assert "Generated an aiform-managed SSH key" not in second_out
 
     def test_gitignore_covers_the_ssh_directory(self, project_dir: Path):
