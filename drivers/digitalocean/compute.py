@@ -4,15 +4,17 @@
 import http.client
 import json
 import logging
+import subprocess
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from aiform import log
+from aiform import log, ssh
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 from aiform.models import HealthReport, HealthStatus, MetricKind, Sample
+from drivers.digitalocean._common import fetch_all_pages
 
 BASE_URL = "https://api.digitalocean.com/v2"
 REQUEST_TIMEOUT_SECONDS = 30
@@ -88,6 +90,33 @@ _IDENTITY_LABEL = "host_id"
 # ssh_keys is guest-OS state cloud-init writes once at first boot --
 # see specs/digitalocean_compute.md's capability table.
 _IN_PLACE_UPDATABLE_FIELDS = ("size", "tags", "backups")
+
+# The name every droplet's aiform-managed DO account key is registered
+# under, and the local sidecar file that caches the id DO assigned it so
+# aiform never re-uploads the same public key (DO 422s on that -- see
+# _upload_managed_key). Both under .aiform/ssh/ alongside the keypair
+# itself (aiform/ssh.py) -- see specs/digitalocean_compute.md.
+_MANAGED_KEY_NAME = "aiform-managed-key"
+_MANAGED_KEY_ID_FILE = "aiform_managed_key.id"
+_KNOWN_HOSTS_NAME = "known_hosts"
+
+# issue #175: DigitalOcean's power_off action attempts a graceful signal
+# first and only forces a hard stop after ~5 minutes, which is why the API
+# fallback below needs _poll_until's full default budget. SSHing in and
+# running an in-guest shutdown bypasses that -- probes/digitalocean_compute_ssh_shutdown.py
+# observed logins succeeding in 8.7-23.3s (9/9), so this budgets well past
+# that with real retry margin, not a single attempt.
+_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
+
+# The same diagnostic saw a reachable, cooperating guest reach status=off
+# in 11.3-24.4s after the shutdown command was issued -- this is
+# comfortably past that range, and deliberately short: nowhere near the
+# API power_off path's own 150s default (_poll_until's default budget),
+# since a guest that hasn't converged by here has stopped cooperating and
+# the API fallback should take over rather than stacking a second long
+# wait on top.
+_SSH_POWER_OFF_POLL_MAX_ATTEMPTS = 30
+_SSH_POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
 
 # Named explicitly rather than via logging.getLogger(__name__).
 # orchestrator.py's load_driver() execs this file as a module with a
@@ -228,6 +257,8 @@ class Driver(ResourceDriver):
         return do_message
 
     def create(self, name, params, credentials):
+        managed_key_id, _ = self._ensure_do_key_registered(credentials)
+
         body = {
             "name": name,
             "region": params["region"],
@@ -237,6 +268,15 @@ class Driver(ResourceDriver):
         for key in ("ssh_keys", "backups", "monitoring", "tags"):
             if key in params:
                 body[key] = params[key]
+
+        # Always on, no opt-out: this is what makes _power_off_droplet's
+        # SSH-first path universally available on every droplet aiform
+        # creates, and closes #150's plaintext-root-password-email
+        # problem unconditionally rather than only for a droplet whose
+        # aiform.md happens to ask for ssh_keys.
+        requested_keys = [str(k) for k in body.get("ssh_keys", [])]
+        if managed_key_id not in requested_keys:
+            body["ssh_keys"] = [*requested_keys, managed_key_id]
 
         payload = self._request("POST", f"{BASE_URL}/droplets", credentials, body=body)
         new_id = payload["droplet"]["id"]
@@ -433,6 +473,120 @@ class Driver(ResourceDriver):
             action.replace("_", "-"),
         )
 
+    def _public_key_fingerprint(self, public_key_path):
+        # DO's own `fingerprint` field on a listed account key is the
+        # colon-hex half of ssh-keygen's "256 MD5:aa:bb:...:cc comment
+        # (ED25519)" output -- computed via ssh-keygen rather than a
+        # crypto library, matching aiform/ssh.py's own reliance on the
+        # local OpenSSH toolchain instead of a new dependency.
+        result = subprocess.run(
+            ["ssh-keygen", "-E", "md5", "-lf", str(public_key_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.split()[1].removeprefix("MD5:")
+
+    def _find_registered_key_id(self, fingerprint, credentials):
+        keys = fetch_all_pages(
+            lambda url: self._request("GET", url, credentials),
+            f"{BASE_URL}/account/keys",
+            "ssh_keys",
+        )
+        for key in keys:
+            if key.get("fingerprint") == fingerprint:
+                return str(key["id"])
+        return None
+
+    def _upload_managed_key(self, public_key_path, fingerprint, credentials):
+        public_key_text = public_key_path.read_text(encoding="utf-8").strip()
+        try:
+            payload = self._request(
+                "POST",
+                f"{BASE_URL}/account/keys",
+                credentials,
+                body={"name": _MANAGED_KEY_NAME, "public_key": public_key_text},
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code != 422:
+                raise
+            # DO 422s when the exact public key content is already
+            # registered on the account -- observed live in tonight's
+            # diagnostic loop. Recover the id it was actually given
+            # rather than treating this as a genuine upload failure.
+            recovered_id = self._find_registered_key_id(fingerprint, credentials)
+            if recovered_id is None:
+                raise
+            return recovered_id
+        return str(payload["ssh_key"]["id"])
+
+    def _ensure_do_key_registered(self, credentials):
+        """Get-or-create the DO account registration of aiform's local
+        managed key. Returns (do_key_id, private_key_path). See
+        specs/digitalocean_compute.md and specs/ssh.md."""
+        ssh_dir = ssh.DEFAULT_SSH_DIR
+        private_key_path, public_key_path = ssh.ensure_managed_key(ssh_dir)
+        id_path = ssh_dir / _MANAGED_KEY_ID_FILE
+
+        cached_id = id_path.read_text(encoding="utf-8").strip() if id_path.exists() else ""
+        if cached_id:
+            return cached_id, private_key_path
+
+        fingerprint = self._public_key_fingerprint(public_key_path)
+        key_id = self._find_registered_key_id(fingerprint, credentials)
+        if key_id is None:
+            key_id = self._upload_managed_key(public_key_path, fingerprint, credentials)
+
+        id_path.write_text(key_id, encoding="utf-8")
+        return key_id, private_key_path
+
+    def _power_off_droplet(self, id, current, credentials):
+        """Try an SSH-initiated in-guest shutdown before falling back to
+        DigitalOcean's own power_off action -- issue #175. Only the
+        resize path (the sole existing power_off call site) routes
+        through here; tests/system/test_cli_observability.py's `_power_off`
+        drift-simulation helper deliberately keeps calling the raw API
+        action directly, unrelated to this method."""
+        ip = current.get("ipv4_address")
+        if not ip:
+            logger.info("", extra={"id": id, "power_off_path": "no-ip-fallback"})
+        else:
+            ssh_dir = ssh.DEFAULT_SSH_DIR
+            private_key_path, _ = ssh.ensure_managed_key(ssh_dir)
+            known_hosts_path = ssh_dir / _KNOWN_HOSTS_NAME
+
+            if ssh.shutdown_via_ssh(
+                ip,
+                private_key_path,
+                known_hosts_path,
+                connect_timeout_budget=_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS,
+            ):
+                try:
+                    self._poll_until(
+                        id,
+                        credentials,
+                        lambda d: d["status"] == "off",
+                        "power-off-ssh",
+                        max_attempts=_SSH_POWER_OFF_POLL_MAX_ATTEMPTS,
+                        delay_seconds=_SSH_POWER_OFF_POLL_DELAY_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "SSH-initiated shutdown was issued but the droplet did not "
+                        "reach status=off within its short poll budget; falling back "
+                        "to the DigitalOcean power_off action",
+                        extra={"id": id, "power_off_path": "ssh-attempted-fallback"},
+                    )
+                else:
+                    logger.info("", extra={"id": id, "power_off_path": "ssh-success"})
+                    return
+            else:
+                logger.info("", extra={"id": id, "power_off_path": "ssh-attempted-fallback"})
+
+        self._do_action_and_wait(
+            id, credentials, {"type": "power_off"}, lambda d: d["status"] == "off", "power-off"
+        )
+
     def _resize_in_place(self, id, current, desired, credentials):
         status = current.get("status")
         if status not in ("active", "off"):
@@ -460,9 +614,7 @@ class Driver(ResourceDriver):
 
         we_powered_off = status == "active"
         if we_powered_off:
-            self._do_action_and_wait(
-                id, credentials, {"type": "power_off"}, lambda d: d["status"] == "off", "power-off"
-            )
+            self._power_off_droplet(id, current, credentials)
 
         try:
             self._action(id, credentials, {"type": "resize", "disk": False, "size": target_size})
