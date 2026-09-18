@@ -9,7 +9,6 @@ import os
 import pty
 import subprocess
 import sys
-import time
 import types
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2265,7 +2264,17 @@ class TestDefaultConfirm:
             os.write(master, b"y\n")
 
             assert proc.stdout.readline().strip() == "PROMPTING"
-            time.sleep(0.2)
+            # input() writes and flushes its prompt to stdout only after the
+            # flush has run, so seeing those bytes on the pipe is proof the
+            # child is past it -- no sleep, no timing window. An empty read
+            # means the child exited instead, which the final assert catches.
+            seen = ""
+            while not seen.endswith("[y/N]: "):
+                char = proc.stdout.read(1)
+                if not char:
+                    break
+                seen += char
+
             with contextlib.suppress(OSError):
                 # The real answer, typed against the prompt that is now
                 # visible. Pre-fix the child has already answered "y" and
