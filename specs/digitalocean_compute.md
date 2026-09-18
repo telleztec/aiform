@@ -724,10 +724,10 @@ the observed total is a few hundred milliseconds.
   If the `POST /v2/droplets` call already succeeded (the droplet exists
   and is billing) but the subsequent poll to `status == "active"`
   exhausts its bounded total-elapsed-time budget (or hits a transient
-  error), `create()`
-  raises `TimeoutError` and `aiform/orchestrator.py`'s `apply_plan()`
-  never gets a return value to write into `state.json` — the droplet
-  is real but untracked. This isn't specific to `create()`: `update()`'s
+  error), `create()` raises `TimeoutError` and
+  `aiform/orchestrator.py`'s `apply_plan()` never gets a return value to
+  write into `state.json` — the droplet is real but untracked. This
+  isn't specific to `create()`: `update()`'s
   own poll timeout above has the same shape (a mutating action already
   succeeded before the poll that follows it times out). Neither is
   fixed here — `PLAN.md` §10's "Timeout/retry/failover orchestration

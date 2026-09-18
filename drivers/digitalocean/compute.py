@@ -41,10 +41,11 @@ _RESIZE_REJECTED_STATUSES = (400, 422)
 # unnumbered 20->30 attempts/40s->60s raise, then #152's 30->45
 # attempts/60s->90s, then #168's 45->75 attempts/90s->150s) while
 # polling at that same rate the entire time regardless of how close to
-# done the wait actually was. Starting fast and doubling keeps the very
-# first check exactly as fast as the old fixed interval (still 2s) and
-# tracks it closely through the ~11-14s range this issue's own data was
-# drawn from; past that the gap between checks necessarily widens as
+# done the wait actually was. Starting fast and doubling keeps the first
+# retry delay exactly at the old fixed interval (still 2s, so the second
+# check lands at the same t=2s the flat interval always used) and tracks
+# it closely through the ~11-14s range this issue's own data was drawn
+# from; past that the gap between checks necessarily widens as
 # delay grows toward the cap (up to _POLL_MAX_DELAY_SECONDS between
 # checks), trading a longer worst-case detection lag for collapsing how
 # many requests it takes to survive a rare long wait. Bounding total

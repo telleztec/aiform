@@ -453,9 +453,9 @@ class TestPollBackoffSchedule:
     # one taking 303s -- a genuine ~20-25x outlier, not a bug in
     # _poll_until's own logic. A flat 2s-interval poll forced picking one
     # cadence for both regimes, and its total budget had already needed
-    # raising three times in two nights (#152, #168, this) to survive
-    # outliers like that one while polling at the same wasteful constant
-    # rate throughout. This replaces the flat interval with exponential
+    # raising three separate times (#152, #168, this) to survive outliers
+    # like that one while polling at the same wasteful constant rate
+    # throughout. This replaces the flat interval with exponential
     # backoff, bounded by total elapsed time rather than attempt count.
     OBSERVED_WORST_CASE_SECONDS = 303
 
@@ -467,13 +467,14 @@ class TestPollBackoffSchedule:
         # fixed) so a reviewer or future retune can see *why* these
         # values, not just *that* they're these values. The initial delay
         # (2s, unchanged from the old flat interval) is what keeps the
-        # very first check as fast as before, and keeps detection close
-        # to the old cadence through the ~11-14s range this issue's own
-        # data was drawn from -- not "exactly as fast" for every value in
-        # that range (a completion at 15s now waits until the next check
-        # at 30s, a real widened gap right past that range -- flagged
-        # during /code-review), which is the accepted cost of collapsing
-        # how many requests it takes to survive a rare long wait.
+        # first retry -- the second GET -- landing at the same t=2s as
+        # before, and keeps detection close to the old cadence through
+        # the ~11-14s range this issue's own data was drawn from -- not
+        # "exactly as fast" for every value in that range (a completion
+        # at 15s now waits until the next check at t=30s, a real widened
+        # gap right past that range -- flagged during /code-review),
+        # which is the accepted cost of collapsing how many requests it
+        # takes to survive a rare long wait.
         assert compute._POLL_INITIAL_DELAY_SECONDS == 2
         assert compute._POLL_BACKOFF_MULTIPLIER == 2
         assert compute._POLL_MAX_DELAY_SECONDS == 20
@@ -547,12 +548,13 @@ class TestPollBackoffSchedule:
     def test_driver_poll_until_checks_at_2s_4s_on_a_poll_that_converges_fast(
         self, driver, fake_urlopen, _fake_clock
     ):
-        # The concrete version of "the very first checks stay as fast as
+        # The concrete version of "the first retry delay stays as fast as
         # the old flat interval": a predicate that succeeds on the 3rd
         # GET must have slept exactly [2, 4] -- the old flat interval
-        # would have slept [2, 2] for the same case, so this also makes
-        # the (small, accepted) cost visible: the 2nd check already lands
-        # 2s later than the old cadence would have.
+        # would have slept [2, 2] for the same case (GETs at t=0,2,4), so
+        # this also makes the (small, accepted) cost visible: the 3rd
+        # check already lands at t=6 here, 2s later than the old
+        # cadence's t=4 for the same case.
         fake_urlopen.script(
             "GET",
             droplet_url("123"),
@@ -589,6 +591,7 @@ class TestPollBackoffSchedule:
         captured = {}
 
         def spy_poll_until(*args, **kwargs):
+            captured["args"] = args
             captured["kwargs"] = kwargs
             return original_poll_until(*args, **kwargs)
 
@@ -597,8 +600,14 @@ class TestPollBackoffSchedule:
         result = driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert result["status"] == "active"
-        # No per-call override -- create() relies on _poll_until's module
-        # default, identical to every update() call site.
+        # _poll_until takes no override parameters at all (id, credentials,
+        # predicate, step -- nothing else), so create() has no seam left to
+        # pass a per-call budget through even if it wanted to; it reads
+        # _POLL_TIMEOUT_SECONDS directly, identical to every update() call
+        # site. Asserting arity, not just an empty kwargs dict, so this
+        # would still fail if a future change re-added a 5th positional
+        # parameter and create() passed one.
+        assert len(captured["args"]) == 4
         assert captured["kwargs"] == {}
 
 
