@@ -724,6 +724,18 @@ class TestDelete:
 
         assert result is None
 
+    def test_delete_does_not_warn_when_droplet_is_already_gone(self, driver, fake_urlopen, caplog):
+        # A 404 here is the routine "already gone" case every other
+        # delete/read path in this driver treats as quiet success -- it
+        # must not print a warning on an otherwise-successful destroy.
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 404))
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        driver.delete("123", CREDENTIALS)
+
+        assert caplog.records == []
+
     def test_delete_still_succeeds_when_ip_resolution_fails_for_a_non_404_reason(
         self, driver, fake_urlopen
     ):
@@ -736,6 +748,20 @@ class TestDelete:
         result = driver.delete("123", CREDENTIALS)
 
         assert result is None
+
+    def test_delete_warns_with_cause_when_ip_resolution_fails_for_a_non_404_reason(
+        self, driver, fake_urlopen, caplog
+    ):
+        # exc_info=True is a silent no-op in _KeyValueFormatter, so the
+        # cause must be carried in an extra field to actually be visible.
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("123"), http_error(droplet_url("123"), 429))
+        fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
+
+        driver.delete("123", CREDENTIALS)
+
+        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert "429" in record.error
 
 
 class TestUpdateRejectsReplaceForcingDiffs:

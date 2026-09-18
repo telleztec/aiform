@@ -804,18 +804,29 @@ class Driver(ResourceDriver):
         )
 
     def delete(self, id, credentials):
+        # Best-effort only: this lookup exists solely to feed the
+        # known_hosts cleanup below and must never block the DELETE
+        # itself -- a 429, a 5xx, a timeout, or an unexpected payload
+        # shape here must not abort a delete that would otherwise have
+        # succeeded. A 404 is the routine "already gone" case every
+        # other delete/read path in this driver treats as quiet success,
+        # not a warning -- so it alone stays silent; anything else warns
+        # with its cause, since _KeyValueFormatter never renders
+        # exc_info.
         ip = None
         try:
             droplet = self._get_droplet(id, credentials)
             ip = self._flatten(droplet)["ipv4_address"]
-        except Exception:
-            # Best-effort only: this lookup exists solely to feed the
-            # known_hosts cleanup below and must never block the DELETE
-            # itself -- a 429, a 5xx, a timeout, or an unexpected payload
-            # shape here must not abort a delete that would otherwise
-            # have succeeded.
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                logger.warning(
+                    "could not resolve ip for known_hosts cleanup",
+                    extra={"id": id, "error": str(exc)},
+                )
+        except Exception as exc:
             logger.warning(
-                "could not resolve ip for known_hosts cleanup", extra={"id": id}, exc_info=True
+                "could not resolve ip for known_hosts cleanup",
+                extra={"id": id, "error": str(exc)},
             )
 
         try:

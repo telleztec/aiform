@@ -312,12 +312,15 @@ the observed total is a few hundred milliseconds.
 - Best-effort resolves the droplet's IP via `self._get_droplet(id,
   credentials)` / `self._flatten()` before issuing the delete, so it can
   prune that IP's `known_hosts` entry afterward — see below. This lookup
-  is wrapped in a bare `except Exception`, not just a `404` check: it
-  exists only to feed the cleanup step and must never itself abort the
-  delete — a `404` (droplet already gone), a `429`, a `5xx`, a timeout, or
-  an unexpected payload shape from `_flatten()` all leave `ip = None` and
-  fall through to the delete call unaffected, logged at `warning` rather
-  than raised.
+  must never itself abort the delete: a `404` (droplet already gone), a
+  `429`, a `5xx`, a timeout, or an unexpected payload shape from
+  `_flatten()` all leave `ip = None` and fall through to the delete call
+  unaffected. A `404` alone stays silent — the routine "already gone"
+  case every other delete/read path in this driver treats as quiet
+  success, matching the pre-existing convention this spec's test suite
+  already relies on. Anything else logs at `warning` with the exception's
+  text in the `error` extra field (not `exc_info`, which
+  `aiform/log.py`'s `_KeyValueFormatter` never renders).
 - `DELETE /v2/droplets/{id}`.
 - `204` → success, returns `None`.
 - `404` → **also** success, returns `None` — idempotent delete is a
