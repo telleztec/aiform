@@ -466,8 +466,14 @@ class TestPollBackoffSchedule:
         # assertions below (which follow from these once the numbers are
         # fixed) so a reviewer or future retune can see *why* these
         # values, not just *that* they're these values. The initial delay
-        # (2s) is what keeps the common ~11-14s case exactly as fast as
-        # the flat interval it replaces -- unchanged, not just unraised.
+        # (2s, unchanged from the old flat interval) is what keeps the
+        # very first check as fast as before, and keeps detection close
+        # to the old cadence through the ~11-14s range this issue's own
+        # data was drawn from -- not "exactly as fast" for every value in
+        # that range (a completion at 15s now waits until the next check
+        # at 30s, a real widened gap right past that range -- flagged
+        # during /code-review), which is the accepted cost of collapsing
+        # how many requests it takes to survive a rare long wait.
         assert compute._POLL_INITIAL_DELAY_SECONDS == 2
         assert compute._POLL_BACKOFF_MULTIPLIER == 2
         assert compute._POLL_MAX_DELAY_SECONDS == 20
@@ -529,6 +535,38 @@ class TestPollBackoffSchedule:
         assert _fake_clock == expected_sleeps
         get_calls = [c for c in fake_urlopen.calls if c["method"] == "GET"]
         assert len(get_calls) == expected_attempts
+        # Independent of the simulation above -- these follow from
+        # _poll_until's own contract (never sleep past the ceiling, one
+        # extra check after the last sleep) rather than from agreeing
+        # with a second implementation of the same math, which is what
+        # the two assertions above actually check -- flagged during
+        # /code-review as a real drift risk otherwise.
+        assert sum(_fake_clock) == compute._POLL_TIMEOUT_SECONDS
+        assert len(get_calls) == len(_fake_clock) + 1
+
+    def test_driver_poll_until_checks_at_2s_4s_on_a_poll_that_converges_fast(
+        self, driver, fake_urlopen, _fake_clock
+    ):
+        # The concrete version of "the very first checks stay as fast as
+        # the old flat interval": a predicate that succeeds on the 3rd
+        # GET must have slept exactly [2, 4] -- the old flat interval
+        # would have slept [2, 2] for the same case, so this also makes
+        # the (small, accepted) cost visible: the 2nd check already lands
+        # 2s later than the old cadence would have.
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="new")),
+            FakeHTTPResponse(200, make_droplet(status="new")),
+            FakeHTTPResponse(200, make_droplet(status="active")),
+        )
+
+        result = driver._poll_until("123", CREDENTIALS, lambda d: d["status"] == "active", "probe")
+
+        assert result["status"] == "active"
+        assert _fake_clock == [2, 4]
+        get_calls = [c for c in fake_urlopen.calls if c["method"] == "GET"]
+        assert len(get_calls) == 3
 
     def test_create_and_update_share_the_same_schedule(self, driver, fake_urlopen, monkeypatch):
         # create()'s previous separate override (max_attempts=60,

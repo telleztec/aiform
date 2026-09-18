@@ -37,19 +37,35 @@ _RESIZE_REJECTED_STATUSES = (400, 422)
 # loop itself (a plain, correct poll-predicate-sleep loop). A flat
 # interval forced picking one cadence for both regimes: fast enough not
 # to waste requests, slow enough to survive the outlier -- which is why
-# the flat total budget needed raising three times in two nights (from an
-# original 20/40s, then #152's 30/60s, then #168's 45/90s->75/150s) while
+# the flat total budget needed raising three separate times (an
+# unnumbered 20->30 attempts/40s->60s raise, then #152's 30->45
+# attempts/60s->90s, then #168's 45->75 attempts/90s->150s) while
 # polling at that same rate the entire time regardless of how close to
-# done the wait actually was. Starting fast and doubling keeps the common
-# ~11-14s case exactly as fast as before (first retry still at 2s,
-# matching the old fixed interval) while widening the gap for the rare
-# long wait, capped so a check is never more than
-# _POLL_MAX_DELAY_SECONDS behind a completion. Bounding total elapsed
-# time rather than attempt count makes "how long are we willing to wait,
-# total" an explicit number instead of an emergent side effect of
-# attempts * delay -- 420s is ~38% margin over the observed 303s outlier,
-# the same margin #170 used over its own observed worst case (150s over a
-# 108.6s worst case).
+# done the wait actually was. Starting fast and doubling keeps the very
+# first check exactly as fast as the old fixed interval (still 2s) and
+# tracks it closely through the ~11-14s range this issue's own data was
+# drawn from; past that the gap between checks necessarily widens as
+# delay grows toward the cap (up to _POLL_MAX_DELAY_SECONDS between
+# checks), trading a longer worst-case detection lag for collapsing how
+# many requests it takes to survive a rare long wait. Bounding total
+# elapsed time rather than attempt count makes "how long are we willing
+# to wait, total" an explicit number instead of an emergent side effect
+# of attempts * delay -- 420s is ~38% margin over the observed 303s
+# outlier, the same margin #170 used over its own observed worst case
+# (150s over a 108.6s worst case).
+#
+# That ceiling is per _poll_until call, not per operation: update()'s
+# size+backups path chains up to four separate polls (power-off, resize,
+# power-on, backups), so a pathological worst case across all of them is
+# ~4*420s =~ 28 minutes, versus the old design's ~4*150s =~ 10 minutes --
+# larger, because 420s is sized off power_off's own observed outlier and
+# applied uniformly to every step, rather than giving each step its own
+# narrower, separately-hand-tuned budget, which would reintroduce
+# exactly the per-site magic numbers this issue removes. Every poll here
+# hits the same DigitalOcean infrastructure the outlier was observed
+# against, so there is no evidence a shorter ceiling would be safe for
+# the other steps either -- flagged during /code-review, deliberately
+# left as a documented trade-off rather than a per-step override.
 _POLL_INITIAL_DELAY_SECONDS = 2
 _POLL_BACKOFF_MULTIPLIER = 2
 _POLL_MAX_DELAY_SECONDS = 20
@@ -202,7 +218,12 @@ class Driver(ResourceDriver):
             return None
         return data.get("message") if isinstance(data, dict) else None
 
-    def _poll_until(self, id, credentials, predicate, step, timeout_seconds=_POLL_TIMEOUT_SECONDS):
+    def _poll_until(self, id, credentials, predicate, step):
+        # No timeout/delay override parameters -- every call site shares
+        # this one schedule (issue #171 removed create()'s previous
+        # separate override), and CLAUDE.md's "don't add config knobs for
+        # scenarios that can't happen yet" argues against re-adding a seam
+        # nothing currently needs.
         start = time.monotonic()
         delay = _POLL_INITIAL_DELAY_SECONDS
         attempt = 0
@@ -222,7 +243,7 @@ class Driver(ResourceDriver):
                 )
                 return droplet
             elapsed = time.monotonic() - start
-            if elapsed >= timeout_seconds:
+            if elapsed >= _POLL_TIMEOUT_SECONDS:
                 logger.error(
                     "",
                     extra={
@@ -234,7 +255,7 @@ class Driver(ResourceDriver):
                     },
                 )
                 raise TimeoutError(f"timed out waiting for droplet {id} during the {step} step")
-            time.sleep(min(delay, timeout_seconds - elapsed))
+            time.sleep(min(delay, _POLL_TIMEOUT_SECONDS - elapsed))
             delay = min(delay * _POLL_BACKOFF_MULTIPLIER, _POLL_MAX_DELAY_SECONDS)
 
     def _do_action_and_wait(self, id, credentials, body, predicate, step):

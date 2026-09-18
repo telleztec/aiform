@@ -534,9 +534,13 @@ class Driver(ResourceDriver):
         is.
 
         The unattached case costs nothing: it is `succeeded` in the very
-        first read, so this returns on attempt 1 without sleeping. Mirrors
-        compute.py's _poll_until(), including logging the outcome rather
-        than staying silent about a wait the user is sitting through.
+        first read, so this returns on attempt 1 without sleeping. Same
+        general shape as compute.py's _poll_until() -- poll, sleep, log
+        the outcome rather than staying silent about a wait the user is
+        sitting through -- but a fixed attempt count/interval, not that
+        function's exponential backoff (issue #171 kept the backoff local
+        to compute.py rather than generalizing it with only one driver
+        using it so far; see PLAN.md §10's retry/backoff entry).
         """
         start = time.monotonic()
         for attempt in range(ATTACH_POLL_ATTEMPTS):
