@@ -24,13 +24,17 @@ from tests.system.conftest import (
     SYSTEM_TEST_TAG,
     assert_cli_ok,
     count_driver_reads,
+    ensure_system_test_tag,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
     live_token,
+    token_has_firewall_scope,
+    unique_firewall_name,
     unique_name,
     verbose_call_count,
     wait_until_droplet_gone,
     write_aiform_md,
+    write_firewall_aiform_md,
 )
 
 pytestmark = pytest.mark.system
@@ -281,3 +285,118 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
     assert_cli_ok(code, captured, "case 11: unchanged plan create")
     assert "[verbose] 0 Anthropic API call(s) made" in captured.err
     assert f"= {key}: no-op" in captured.out
+
+
+# No inbound rule for port 22 at all -- DigitalOcean firewalls are
+# allow-lists once attached to a droplet, so omitting 22 here cuts SSH
+# off entirely rather than merely narrowing its source. The outbound
+# rule exists only to satisfy firewall.py's "at least one rule across
+# both lists" validation (DO 422s a firewall with both lists empty);
+# outbound connectivity is irrelevant to what this scenario tests.
+_DNS_OUT_RULE = {
+    "protocol": "udp",
+    "ports": "53",
+    "action": "allow",
+    "destinations": {"addresses": ["0.0.0.0/0"]},
+}
+
+
+def _last_power_off_path(records) -> str | None:
+    matches = [r for r in records if getattr(r, "power_off_path", None) is not None]
+    return matches[-1].power_off_path if matches else None
+
+
+class TestSshFirstPowerOffLive:
+    """issue #175: proves the SSH-first power-off split against real
+    DigitalOcean behavior, not mocks -- a droplet aiform itself creates
+    always carries the managed key (drivers/digitalocean/compute.py's
+    create()), so a real resize should exercise the SSH path; a droplet
+    behind a firewall that blocks port 22 should exercise the fallback,
+    with the resize still completing successfully either way. Asserts on
+    the structured `power_off_path` log field (specs/digitalocean_compute.md's
+    "SSH-first power-off" addendum), not on wall-clock timing -- a single
+    fast run does not by itself prove which path fired.
+    """
+
+    def test_resize_uses_the_ssh_path(
+        self, project_dir, teardown_tracked_resources, caplog, capsys
+    ):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        token = live_token()
+        state_path = project_dir / ".aiform" / "state.json"
+        name = unique_name("aiform-system-test-sshpoweroff")
+        key = _resource_key(name)
+
+        write_aiform_md(project_dir, name=name)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh power-off: initial create")
+
+        droplet_id = state.load(state_path).resources[key].id
+
+        caplog.clear()
+        write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh power-off: resize")
+
+        live = get_droplet_or_none(token, droplet_id)
+        assert live is not None
+        assert live["size_slug"] == ALTERNATE_SIZE
+        assert str(live["id"]) == droplet_id  # in-place: id unchanged
+
+        path = _last_power_off_path(caplog.records)
+        assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
+        assert path == "ssh-success", (
+            f"expected the SSH-first power-off path on a droplet aiform itself created "
+            f"(carrying the managed key by default); got power_off_path={path!r} instead -- "
+            "see aiform/ssh.py and drivers/digitalocean/compute.py's _power_off_droplet"
+        )
+
+    def test_resize_falls_back_when_ssh_is_blocked_by_a_firewall(
+        self, project_dir, teardown_tracked_resources, caplog, capsys
+    ):
+        caplog.set_level("INFO", logger="aiform.driver.digitalocean.compute")
+        token = live_token()
+        if not token_has_firewall_scope(token):
+            pytest.skip(
+                "this DIGITALOCEAN_TOKEN cannot read /v2/firewalls -- the SSH-blocked "
+                "fallback scenario needs a token with `firewall` scope"
+            )
+        ensure_system_test_tag(token)
+
+        state_path = project_dir / ".aiform" / "state.json"
+        droplet_name = unique_name("aiform-system-test-sshblocked")
+        droplet_key = _resource_key(droplet_name)
+
+        write_aiform_md(project_dir, name=droplet_name)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: initial create")
+
+        droplet_id = state.load(state_path).resources[droplet_key].id
+
+        firewall_name = unique_firewall_name("sshblock")
+        write_firewall_aiform_md(
+            project_dir,
+            name=firewall_name,
+            inbound_rules=[],
+            outbound_rules=[_DNS_OUT_RULE],
+            droplet_ids=[int(droplet_id)],
+        )
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: attach a port-22-blocking firewall")
+
+        caplog.clear()
+        write_aiform_md(project_dir, name=droplet_name, size=ALTERNATE_SIZE)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: resize with SSH blocked")
+
+        live = get_droplet_or_none(token, droplet_id)
+        assert live is not None
+        assert live["size_slug"] == ALTERNATE_SIZE
+        assert str(live["id"]) == droplet_id  # the API fallback still completed the resize
+
+        path = _last_power_off_path(caplog.records)
+        assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
+        assert path == "ssh-attempted-fallback", (
+            f"expected the port-22-blocking firewall to force the API power_off fallback; "
+            f"got power_off_path={path!r} instead"
+        )
