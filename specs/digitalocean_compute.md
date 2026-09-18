@@ -1119,16 +1119,23 @@ immediately after create (`tests/system/test_cli_digitalocean.py`'s
 `_wait_for_public_ipv4`) rather than changing `create()`'s own poll
 predicate -- a real production fix, if this gap turns out to matter in
 practice beyond this specific "resize seconds after create" pattern, is
-its own follow-up.
+its own follow-up, tracked as issue #178 (which hit the identical race
+independently, the same day, in `tests/system/test_cli_observability.py`'s
+`resource check` run immediately after `plan apply` -- a case with no
+fallback as forgiving as `no-ip-fallback`, since `resource check` has
+nothing to fall back to).
 
 **Explicitly unaffected by this addendum:**
-`tests/system/test_cli_observability.py`'s `_power_off` helper (it
-deliberately simulates an out-of-band console power-off via the raw API
-action, to test aiform's *reaction* to drift -- unrelated to the resize
-path); `delete()` (DO's delete doesn't require power-off first); issue
-#154's separate configurable/persisted/LLM-adjustable timeout table; and
-`resolve_credentials()`'s shape or the `credentials` parameter across the
-`ResourceDriver` contract (not touched).
+`tests/system/test_cli_observability.py`'s `_power_off` helper
+specifically (it deliberately simulates an out-of-band console
+power-off via the raw API action, to test aiform's *reaction* to drift
+-- unrelated to the resize path) -- **not** the rest of that file, which
+is where issue #178's active-with-no-public-v4 race actually lives, in
+a different test entirely; `delete()` (DO's delete doesn't require
+power-off first); issue #154's separate configurable/persisted/LLM-
+adjustable timeout table; and `resolve_credentials()`'s shape or the
+`credentials` parameter across the `ResourceDriver` contract (not
+touched).
 
 **Scope note, straight from the approved plan**: the key-storage design
 (a single local keypair under `.aiform/ssh/`, no real keystore, no
