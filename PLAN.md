@@ -48,6 +48,26 @@ Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` 
 
 Separate from the four roles above: **this project's own build process** (`PROCESS.md`) reviews newly-authored aiform modules — including a curated driver, before it ships as part of the aiform package (see "Driver curation" below) — via Claude Code's `/code-review`, fixed to Opus 5. That's a development-time tool for building aiform itself, not one of the four runtime roles and not configured through `.aiform/config.yaml`; `PROCESS.md` explains why the two are deliberately not the same mechanism even though they reuse the same author/reviewer philosophy.
 
+## Persona and Use Case
+
+aiform's target user, and the use case it's being built for, are described
+in full in [`README.md`](./README.md)'s "Persona" and "Use Case" sections —
+that's their authoritative home, not a duplicate of this document. In
+short: a cost-sensitive solo entrepreneur, hobbyist, small startup, or
+non-profit — usually one person, sometimes a small handful of
+collaborators or volunteers — assembling a small, SaaS-shaped system (a
+handful of VMs, some networking, a database or two) out of open-source
+components rather than a collection of locked-in SaaS products, using
+aiform as the AI-driven IaC layer to build and manage it. README's
+"Persona" section also names a second, later user this project is
+designed to grow toward.
+
+That framing isn't introductory color: it's meant to be checked against
+real scoping decisions — where a credential lives, who's around to review
+something, how much automation to assume — not just read once. Read it
+before making a design or scope call that turns on "who is this actually
+for."
+
 ## MVP scope (locked)
 
 Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §10, "Not Yet Implemented").
