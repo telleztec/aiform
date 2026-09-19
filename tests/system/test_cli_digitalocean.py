@@ -14,6 +14,8 @@ Opus/Sonnet-priced calls; never run this on the default pull_request/push
 CI trigger.
 """
 
+import time
+
 import pytest
 
 from aiform import cli, state
@@ -23,14 +25,19 @@ from tests.system.conftest import (
     ALTERNATE_SIZE,
     SYSTEM_TEST_TAG,
     assert_cli_ok,
+    collect_driver_log_records,
     count_driver_reads,
+    ensure_system_test_tag,
     get_droplet_or_none,
     list_account_ssh_key_fingerprints,
     live_token,
+    token_has_firewall_scope,
+    unique_firewall_name,
     unique_name,
     verbose_call_count,
     wait_until_droplet_gone,
     write_aiform_md,
+    write_firewall_aiform_md,
 )
 
 pytestmark = pytest.mark.system
@@ -281,3 +288,138 @@ def test_ssh_keys_configured_no_op_guarantee_holds(project_dir, teardown_tracked
     assert_cli_ok(code, captured, "case 11: unchanged plan create")
     assert "[verbose] 0 Anthropic API call(s) made" in captured.err
     assert f"= {key}: no-op" in captured.out
+
+
+# No inbound rule for port 22 at all -- DigitalOcean firewalls are
+# allow-lists once attached to a droplet, so omitting 22 here cuts SSH
+# off entirely rather than merely narrowing its source. The outbound
+# rule exists only to satisfy firewall.py's "at least one rule across
+# both lists" validation (DO 422s a firewall with both lists empty);
+# outbound connectivity is irrelevant to what this scenario tests.
+_DNS_OUT_RULE = {
+    "protocol": "udp",
+    "ports": "53",
+    "action": "allow",
+    "destinations": {"addresses": ["0.0.0.0/0"]},
+}
+
+
+def _last_power_off_path(records) -> str | None:
+    matches = [r for r in records if getattr(r, "power_off_path", None) is not None]
+    return matches[-1].power_off_path if matches else None
+
+
+def _wait_for_public_ipv4(token: str, droplet_id: str, *, max_attempts=15, delay_seconds=2.0):
+    """DO can report a droplet `status == "active"` before its public v4
+    network entry is attached -- observed live (a first run of
+    test_resize_uses_the_ssh_path hit this: the immediate resize's own
+    fresh read() got an active droplet with no public network entry at
+    all, correctly triggering _power_off_droplet's no-ip-fallback path
+    rather than the SSH path this test means to exercise). create()'s
+    own convergence poll only waits for status == "active"
+    (drivers/digitalocean/compute.py), not for network attachment, so a
+    resize issued immediately after create() can race this. Not a
+    production bug -- the no-ip-fallback path is the correct, safe
+    thing for a real user to hit here -- but it makes this specific
+    live scenario non-deterministic, so wait it out explicitly rather
+    than let the assertion flake on DO's own timing."""
+    for _ in range(max_attempts):
+        live = get_droplet_or_none(token, droplet_id)
+        if live:
+            for net in live.get("networks", {}).get("v4", []):
+                if net.get("type") == "public" and net.get("ip_address"):
+                    return
+        time.sleep(delay_seconds)
+
+
+class TestSshFirstPowerOffLive:
+    """issue #175: proves the SSH-first power-off split against real
+    DigitalOcean behavior, not mocks -- a droplet aiform itself creates
+    always carries the managed key (drivers/digitalocean/compute.py's
+    create()), so a real resize should exercise the SSH path; a droplet
+    behind a firewall that blocks port 22 should exercise the fallback,
+    with the resize still completing successfully either way. Asserts on
+    the structured `power_off_path` log field (specs/digitalocean_compute.md's
+    "SSH-first power-off" addendum), not on wall-clock timing -- a single
+    fast run does not by itself prove which path fired.
+    """
+
+    def test_resize_uses_the_ssh_path(self, project_dir, teardown_tracked_resources, capsys):
+        token = live_token()
+        state_path = project_dir / ".aiform" / "state.json"
+        name = unique_name("aiform-system-test-sshpoweroff")
+        key = _resource_key(name)
+
+        write_aiform_md(project_dir, name=name)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh power-off: initial create")
+
+        droplet_id = state.load(state_path).resources[key].id
+        _wait_for_public_ipv4(token, droplet_id)
+
+        write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
+        with collect_driver_log_records("aiform.driver.digitalocean.compute") as handler:
+            code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+            assert_cli_ok(code, capsys.readouterr(), "ssh power-off: resize")
+            path = _last_power_off_path(handler.records)
+
+        live = get_droplet_or_none(token, droplet_id)
+        assert live is not None
+        assert live["size_slug"] == ALTERNATE_SIZE
+        assert str(live["id"]) == droplet_id  # in-place: id unchanged
+
+        assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
+        assert path == "ssh-success", (
+            f"expected the SSH-first power-off path on a droplet aiform itself created "
+            f"(carrying the managed key by default); got power_off_path={path!r} instead -- "
+            "see aiform/ssh.py and drivers/digitalocean/compute.py's _power_off_droplet"
+        )
+
+    def test_resize_falls_back_when_ssh_is_blocked_by_a_firewall(
+        self, project_dir, teardown_tracked_resources, capsys
+    ):
+        token = live_token()
+        if not token_has_firewall_scope(token):
+            pytest.skip(
+                "this DIGITALOCEAN_TOKEN cannot read /v2/firewalls -- the SSH-blocked "
+                "fallback scenario needs a token with `firewall` scope"
+            )
+        ensure_system_test_tag(token)
+
+        state_path = project_dir / ".aiform" / "state.json"
+        droplet_name = unique_name("aiform-system-test-sshblocked")
+        droplet_key = _resource_key(droplet_name)
+
+        write_aiform_md(project_dir, name=droplet_name)
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: initial create")
+
+        droplet_id = state.load(state_path).resources[droplet_key].id
+
+        firewall_name = unique_firewall_name("sshblock")
+        write_firewall_aiform_md(
+            project_dir,
+            name=firewall_name,
+            inbound_rules=[],
+            outbound_rules=[_DNS_OUT_RULE],
+            droplet_ids=[int(droplet_id)],
+        )
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+        assert_cli_ok(code, capsys.readouterr(), "ssh fallback: attach a port-22-blocking firewall")
+
+        write_aiform_md(project_dir, name=droplet_name, size=ALTERNATE_SIZE)
+        with collect_driver_log_records("aiform.driver.digitalocean.compute") as handler:
+            code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
+            assert_cli_ok(code, capsys.readouterr(), "ssh fallback: resize with SSH blocked")
+            path = _last_power_off_path(handler.records)
+
+        live = get_droplet_or_none(token, droplet_id)
+        assert live is not None
+        assert live["size_slug"] == ALTERNATE_SIZE
+        assert str(live["id"]) == droplet_id  # the API fallback still completed the resize
+
+        assert path is not None, "no power_off_path field logged -- _power_off_droplet never ran"
+        assert path == "ssh-attempted-fallback", (
+            f"expected the port-22-blocking firewall to force the API power_off fallback; "
+            f"got power_off_path={path!r} instead"
+        )

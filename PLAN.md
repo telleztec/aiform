@@ -48,6 +48,26 @@ Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` 
 
 Separate from the four roles above: **this project's own build process** (`PROCESS.md`) reviews newly-authored aiform modules — including a curated driver, before it ships as part of the aiform package (see "Driver curation" below) — via Claude Code's `/code-review`, fixed to Opus 5. That's a development-time tool for building aiform itself, not one of the four runtime roles and not configured through `.aiform/config.yaml`; `PROCESS.md` explains why the two are deliberately not the same mechanism even though they reuse the same author/reviewer philosophy.
 
+## Persona and Use Case
+
+aiform's target user, and the use case it's being built for, are described
+in full in [`README.md`](./README.md)'s "Persona" and "Use Case" sections —
+that's their authoritative home, not a duplicate of this document. In
+short: a cost-sensitive solo entrepreneur, hobbyist, small startup, or
+non-profit — usually one person, sometimes a small handful of
+collaborators or volunteers — assembling a small, SaaS-shaped system (a
+handful of VMs, some networking, a database or two) out of open-source
+components rather than a collection of locked-in SaaS products, using
+aiform as the AI-driven IaC layer to build and manage it. README's
+"Persona" section also names a second, later user this project is
+designed to grow toward.
+
+That framing isn't introductory color: it's meant to be checked against
+real scoping decisions — where a credential lives, who's around to review
+something, how much automation to assume — not just read once. Read it
+before making a design or scope call that turns on "who is this actually
+for."
+
 ## MVP scope (locked)
 
 Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §10, "Not Yet Implemented").
@@ -898,6 +918,55 @@ class Driver(ResourceDriver):
   recovery on this path — a failed mechanical call fails the apply and
   stops, matching the design goal of the execution being the boring,
   deterministic part.
+
+### Addendum: `aiform/ssh.py` — provider-agnostic SSH mechanics (issue #175)
+
+Not part of the `ResourceDriver` contract itself — a shared, provider-
+agnostic helper module a driver may call into, the same architectural
+role `drivers/digitalocean/_common.py`'s pagination helper plays for
+DigitalOcean specifically, one level up: `aiform/` already holds
+provider-agnostic shared infrastructure (`driver.py`'s contract,
+`config.py`'s credential resolution, `state.py`), while `drivers/<provider>/`
+holds provider-specific code. `aiform/ssh.py` lives in the former because
+SSH mechanics — generate a keypair, connect, run a command — have
+nothing to do with any specific CSP.
+
+**Why it exists.** `drivers/digitalocean/compute.py`'s `update()` resize
+path used to power a droplet off via DigitalOcean's `power_off` API
+action alone, which turned out to attempt a graceful in-guest signal
+first and only force a hard stop after roughly five minutes (issues
+#152, #168 — two consecutive live budget increases chasing the same
+underlying latency). A live diagnostic found that SSHing in and running
+an in-guest `shutdown` bypasses that external-signal latency entirely
+(9/9 successful attempts, 11.3-24.4s) — see `specs/ssh.md` and
+`specs/digitalocean_compute.md`'s "SSH-first power-off" addendum for the
+full mechanism and history. As a deliberate side effect, every droplet
+`drivers/digitalocean/compute.py`'s `create()` provisions now carries
+aiform's own managed SSH key by default (always on, no opt-out), which
+both makes the fast path universally available and closes issue #150 (a
+DigitalOcean-mailed plaintext root password when no `ssh_keys` is given)
+unconditionally.
+
+**Interface** (`ensure_managed_key`, `generate_backup_script`,
+`shutdown_via_ssh`) and full behavior: `specs/ssh.md`. It has zero
+DigitalOcean-specific — or any provider-specific — knowledge: registering
+a public key with a CSP's account API, resolving a resource id to an IP,
+and deciding what "powered off" means for a given provider all stay in
+the calling driver.
+
+**Scoped deliberately, not a general keystore.** The managed keypair
+lives under `.aiform/ssh/` on whichever single machine generated it — the
+same implicit-single-machine assumption `.aiform/state.json` (gitignored,
+never synced) already makes throughout this project. This is a stated
+design decision for this project's actual target user — a cost-sensitive
+solo operator running `aiform` by hand from one persistent machine today,
+not a team with an ephemeral-CI-fleet deployment model — not an
+oversight: a real keystore, cloud KMS, or cross-machine sync mechanism is
+explicitly out of scope for now (same category as the items in §10), and
+the escape hatch for a team is the same one
+`DIGITALOCEAN_TOKEN`/`ANTHROPIC_API_KEY` already have — share the file
+out-of-band, or accept that a second machine's own key only unlocks the
+fast path on droplets *it* created.
 
 ## 5. Plan / apply algorithm
 

@@ -1,8 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import http.client
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -329,6 +331,45 @@ def assert_cli_ok(code: int, captured, step: str) -> None:
     assert code == 0, (
         f"{step} exited {code}\n--- stderr ---\n{captured.err}\n--- stdout ---\n{captured.out}"
     )
+
+
+class _RecordCollector(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def collect_driver_log_records(logger_name: str):
+    """Capture records from `logger_name` regardless of pytest's `caplog`.
+
+    `cli.main()` calls `aiform.log.configure()`, which sets
+    `logging.getLogger("aiform").propagate = False` -- so any log record
+    a driver logger (a child of "aiform") emits never reaches Python's
+    root logger, which is where `caplog`'s own handler lives unless a
+    test attaches it elsewhere. A live test that went through `cli.main()`
+    and then asserted on `caplog.records` would silently see nothing,
+    for a reason that has nothing to do with whether the driver actually
+    logged the field. A handler attached directly to `logger_name` sees
+    every record logged through it regardless of `propagate`, since
+    `propagate` only controls whether a record continues *up* to
+    ancestor loggers, not whether the logger's own directly-attached
+    handlers fire.
+    """
+    logger = logging.getLogger(logger_name)
+    handler = _RecordCollector()
+    handler.setLevel(logging.INFO)
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
 
 
 def count_driver_reads(monkeypatch) -> list[str]:

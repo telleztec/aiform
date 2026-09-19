@@ -311,12 +311,12 @@ or duplicating the same edit in two PRs.
 
 Then:
 
-1. **Put it at the top of the PR description**, as its own section:
+1. **Fold it into the PR description's `## Plan` section, as a bullet** —
+   not a separate section:
 
    ```
-   ## Waiver requested
-   Closes #A, closes #B. One change resolves both because <reason>.
-   Splitting was considered and rejected because <reason>.
+   - Closes #A, closes #B — one change resolves both because <reason>.
+     Splitting was considered and rejected because <reason>.
    ```
 
    Note the repeated keyword. Without it, only the first number closes and
@@ -414,6 +414,24 @@ gh pr create --title "Short, specific title" --body "$(cat <<'EOF'
 - What changed, as 1-3 bullets
 - Why, if not obvious from the summary alone
 
+## Plan
+One lead sentence or short paragraph: what the human approved before this
+was implemented, and how they approved it — see PROCESS.md's "Before the
+loop: plan and get explicit approval". If this change is exempt from that
+gate (only a pure prose/documentation edit with no behavior change
+qualifies — see that section's "does not apply"; there is no other
+exemption and no size exception), keep this section and say so explicitly
+rather than deleting it — don't let leaving the section out be the thing
+that decides the exemption applied.
+- Key point from what was approved
+- Another key point, if needed
+- If this PR closes more than one issue: the waiver, as a bullet — e.g.
+  "Closes #A, closes #B — one change resolves both because <reason>;
+  splitting was considered and rejected because <reason>." (note the
+  repeated closing keyword — see "Closing more than one issue" below)
+- If live/discovery work surfaced something during implementation: one
+  bullet per finding, terse
+
 ## Test plan
 - [ ] How this was or should be verified
 
@@ -429,6 +447,10 @@ EOF
   tested (e.g. this is a docs-only PR, or a piece that can't be verified
   without live cloud credentials), say that plainly rather than padding it
   with checkboxes that weren't really checked.
+- Keep `## Plan` terse and bulleted, not dense prose — one lead
+  sentence/paragraph stating what was approved, then bullets. This applies
+  even when the section is carrying a waiver or discovery findings: fold
+  them in as bullets, don't grow a subsection for them.
 
 ## Before pushing anything
 
