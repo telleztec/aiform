@@ -15,10 +15,10 @@ already named as "not our job, `orchestrator.py`'s job" — `parser.py`
 trash moves, printing), `driver.py`/`driver_gen.py` (dynamic import,
 credential wiring). Everything converges here.
 
-**This module does no CLI I/O beyond one injectable confirmation
-callback** (see judgment call 8). Printing the plan, formatting errors,
-and argument parsing are `cli.py`'s job — this spec defines what
-`cli.py` calls.
+**This module does no CLI I/O beyond two injectable callbacks: one
+confirmation prompt and one review-flags-observed hook** (see judgment
+calls 8 and 9). Printing the plan, formatting errors, and argument
+parsing are `cli.py`'s job — this spec defines what `cli.py` calls.
 
 **Eight judgment calls made explicit here** (`PLAN.md` under-specifies
 each of these at the level needed to implement; resolved now rather than
@@ -176,6 +176,11 @@ left to drift into whatever the first implementation happens to do):
    `confirm` callback is responsible for deciding how to fail (e.g.
    `cli.py`'s default `confirm` raising rather than blocking on `input()`
    forever) — this module doesn't special-case a missing TTY itself.
+   Like the batch case, `on_review_fn` (judgment call 9) is called with
+   this review's own flags immediately before this `confirm_fn(...)`
+   call — the human must see what this specific re-review flagged before
+   answering, for the same reason as the batch case, and this path is
+   never skippable by `--yes` either.
 
 8. **`PlannedResource` and `ApplyResult` are plain `@dataclass`es local
    to this module, not `Pydantic` models in `aiform/models.py`.**
@@ -192,6 +197,28 @@ left to drift into whatever the first implementation happens to do):
    instead, imported directly by `cli.py` the same way it imports this
    module's functions — a deliberate, flagged divergence from the
    established precedent, not an oversight.
+
+9. **`apply_plan()` takes a second injectable callback, `on_review`, rather
+   than folding review flags into `confirm`'s prompt or having this module
+   print them itself (issue #166).** Gate #2's non-blocking flags used to
+   reach the user only inside the returned `ApplyResult`, printed by
+   `cli.py` after `apply_plan()` had already returned — by which point
+   both confirmation prompts this module can ask (the batch one and the
+   single-resource fallback one) had already been answered blind. Two
+   alternatives were rejected: widening `ConfirmFn` to
+   `Callable[[str, list[PlanReviewFlag]], bool]` would touch every existing
+   caller and test that passes a bare `lambda prompt: ...` as `confirm`,
+   for no real gain — "what to tell the user" and "how to get a yes/no
+   answer" are independent concerns; and formatting the flags into the
+   prompt string *inside this module* would mean this module doing display
+   formatting, exactly what this spec's opening line rules out. Instead,
+   `on_review: OnReviewFn | None = None` (default: a no-op, same pattern as
+   `confirm`/`default_confirm`) is called with a review's flags — and only
+   that review's flags, never a running total — immediately after each
+   gate #2 call completes and before the confirmation that follows it, at
+   both review points in `apply_plan()`. Under `yes=True` the call still
+   happens (only the batch confirmation prompt is skippable; the flags
+   that would have justified it are not).
 
 ## Interface
 
@@ -281,6 +308,7 @@ def build_destroy_plan(
 # --- apply (PLAN.md §5 "aiform plan apply", also used by `aiform plan destroy`) ---
 
 ConfirmFn = Callable[[str], bool]
+OnReviewFn = Callable[[list[PlanReviewFlag]], None]
 
 
 @dataclass
@@ -299,6 +327,7 @@ def apply_plan(
     state_path: Path = state.DEFAULT_STATE_PATH,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
+    on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> ApplyResult: ...
@@ -683,7 +712,7 @@ pr.entry.likely_replace} for pr in planned])` — the `plan_summary` string
 `llm.review_plan()` (`PLAN.md` §5 apply step 2) takes as its sole
 argument.
 
-### `apply_plan(planned, *, state_path=..., yes=False, confirm=None, client=None, llm_config=None) -> ApplyResult`
+### `apply_plan(planned, *, state_path=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None) -> ApplyResult`
 
 `PLAN.md` §5 "aiform plan apply" steps 2-4 (step 1, re-running `plan` in
 full, is the caller's job — see Behavior below), shared verbatim by
@@ -706,9 +735,13 @@ full, is the caller's job — see Behavior below), shared verbatim by
    alone as a pass would silently execute a plan the model explicitly
    flagged unsafe. Mirrors `specs/driver_gen.md`'s identical stance on
    `DriverReview.approved` vs. `blocking_issues`. Non-blocking flags are
-   carried into the final `ApplyResult.review_flags`. If `needs_review`
-   is false, gate #2 is never called at all (`PLAN.md` §9 walkthrough
-   step 3) — `review_flags` stays `[]`.
+   carried into the final `ApplyResult.review_flags`, and, before moving on
+   to confirmation, handed to `(on_review or a no-op)(review_flags)`
+   (issue #166, judgment call 9) — **unconditionally, including when
+   `yes=True`**, since `--yes` only skips the prompt in step 2, not the
+   record of what gate #2 said. If `needs_review` is false, gate #2 is
+   never called at all (`PLAN.md` §9 walkthrough step 3) — `review_flags`
+   stays `[]` and `on_review` is not called.
 2. **Confirmation**, unless `yes=True`: `(confirm or default_confirm)(prompt_text)`.
    `False` → return `ApplyResult(executed=[], review_flags=<from step 1>,
    aborted=True)` immediately, nothing executed, state untouched.
@@ -767,8 +800,11 @@ full, is the caller's job — see Behavior below), shared verbatim by
        but this particular entry wasn't flagged `likely_replace`), run a
        **single-resource** gate #2: `review_plan(build_plan_summary([pr
        with entry.likely_replace forced True for the summary's benefit]))`.
-       Block flags halt the same as step 1's batch review. **Unlike**
-       step 1-2's confirmation, this one is never skipped by `yes=True`
+       Block flags halt the same as step 1's batch review. Non-blocking
+       flags are handed to `(on_review or a no-op)(<this review's flags
+       only>)` before confirmation, same as step 1-2, and — like that
+       call — never skipped regardless of `yes`. **Unlike** step 1-2's
+       confirmation, this one is never skipped by `yes=True`
        (judgment call 7) — `confirm(...)` is always called, and a decline
        here ends the loop the same way a top-level decline does (see
        Edge cases below for what `ApplyResult` reports in that case).
