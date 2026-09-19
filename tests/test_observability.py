@@ -3,7 +3,7 @@
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -692,10 +692,35 @@ Runs the app.
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
-        assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+        assert report.deployed_at == datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC)
+        assert report.id == "123456789"
         assert report.live == "present"
-        assert report.config.startswith("in sync with ")
+        assert report.config.in_sync is True
         assert report.health is FAILING_REPORT
+
+    def test_carries_the_resources_provider_and_type(self, tmp_path, stub_environment):
+        # A consumer reading `status` should not have to split
+        # resource_key on '.' to recover what `metrics` hands it outright.
+        driver = StubDriver(
+            health_result=OK_REPORT,
+            read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
+        )
+        path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert report.provider == "digitalocean"
+        assert report.resource_type == "compute"
+        assert report.name == "web-01"
+
+    def test_config_names_the_spec_file_it_diffed_against(self, tmp_path, stub_environment):
+        driver = StubDriver(
+            health_result=OK_REPORT,
+            read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
+        )
+        path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert report.config.spec_file == str(tmp_path / "web.aiform.md")
+        assert report.config.drifted_fields == []
+        assert report.config.detail is None
 
     def test_a_resource_can_be_failing_while_in_sync(self, tmp_path, stub_environment):
         # check and status fail independently; collapsing them into one
@@ -707,7 +732,7 @@ Runs the app.
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
         assert report.health.status is HealthStatus.FAILING
-        assert report.config.startswith("in sync with ")
+        assert report.config.in_sync is True
 
     def test_a_resource_can_be_ok_while_drifted(self, tmp_path, stub_environment):
         driver = StubDriver(
@@ -717,7 +742,8 @@ Runs the app.
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
         assert report.health.status is HealthStatus.OK
-        assert report.config == "1 field drifted: size"
+        assert report.config.in_sync is False
+        assert report.config.drifted_fields == ["size"]
 
     def test_names_every_drifted_field(self, tmp_path, stub_environment):
         driver = StubDriver(
@@ -726,7 +752,7 @@ Runs the app.
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
-        assert report.config == "2 fields drifted: region, size"
+        assert report.config.drifted_fields == ["region", "size"]
 
     def test_a_missing_source_file_reports_no_source_file_found(self, tmp_path, stub_environment):
         # Silence on a drift question reads as no drift, which is the
@@ -737,7 +763,8 @@ Runs the app.
         )
         path = self._setup(tmp_path, stub_environment, driver, source=None)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
-        assert report.config == "no source file found"
+        assert report.config.in_sync is None
+        assert report.config.detail == "no source file found"
         assert report.live == "present"
         assert report.health is OK_REPORT
 
@@ -751,8 +778,10 @@ Runs the app.
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
         assert report.live == "missing on the provider"
-        assert report.config == "not applicable: resource is gone"
-        assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+        assert report.config.in_sync is None
+        assert report.config.detail == "not applicable: resource is gone"
+        assert report.deployed_at == datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC)
+        assert report.id == "123456789"
         assert report.health.status is HealthStatus.FAILING
 
     def test_a_read_failure_is_reported_on_the_live_line(self, tmp_path, stub_environment):
@@ -811,7 +840,24 @@ class TestRenderCheckText:
 
     def test_one_line_per_resource(self):
         text, _ = observability.render_check([self._reading(health=OK_REPORT)], "text")
-        assert text == "ok  digitalocean.compute.web-01  active, public v4 203.0.113.10"
+        assert text == "ok  compute  digitalocean.compute.web-01  active, public v4 203.0.113.10"
+
+    def test_the_resource_type_is_its_own_column(self):
+        # Buried as the middle segment of a dot-joined state key, the type
+        # is only recoverable by a reader who already knows the
+        # convention and parses it out by hand.
+        text, _ = observability.render_check(
+            [
+                self._reading(
+                    key="digitalocean.domain.cloudaiform.com",
+                    name="cloudaiform.com",
+                    resource_type="domain",
+                    health_unsupported="this driver does not implement health()",
+                )
+            ],
+            "text",
+        )
+        assert text.split("  ")[1] == "domain"
 
     def test_observations_are_hidden_when_the_verdict_is_ok(self):
         # An earlier version of this was `A or B` with B always true.
@@ -819,12 +865,12 @@ class TestRenderCheckText:
             status=HealthStatus.OK, summary="fine", observations={"status": "active"}
         )
         text, _ = observability.render_check([self._reading(health=report)], "text")
-        assert text == "ok  digitalocean.compute.web-01  fine"
+        assert text == "ok  compute  digitalocean.compute.web-01  fine"
 
     def test_observations_print_indented_four_spaces_when_the_verdict_is_not_ok(self):
         text, _ = observability.render_check([self._reading(health=FAILING_REPORT)], "text")
         assert text == (
-            'failing  digitalocean.compute.web-01  status is "off"\n'
+            'failing  compute  digitalocean.compute.web-01  status is "off"\n'
             "    status       off\n"
             "    locked       false\n"
             "    last_action  power_off"
@@ -837,14 +883,17 @@ class TestRenderCheckText:
                 self._reading(
                     key="digitalocean.firewall.fw",
                     name="fw",
+                    resource_type="firewall",
                     health=HealthReport(status=HealthStatus.DEGRADED, summary="pending changes"),
                 ),
             ],
             "text",
         )
         lines = text.splitlines()
-        assert lines[0] == ("ok        digitalocean.compute.web-01  active, public v4 203.0.113.10")
-        assert lines[1] == "degraded  digitalocean.firewall.fw     pending changes"
+        assert lines[0] == (
+            "ok        compute   digitalocean.compute.web-01  active, public v4 203.0.113.10"
+        )
+        assert lines[1] == "degraded  firewall  digitalocean.firewall.fw     pending changes"
         assert lines[-1] == "2 of 2 resources report health; 0 unsupported"
 
     def test_no_line_has_trailing_whitespace(self):
@@ -857,7 +906,9 @@ class TestRenderCheckText:
         text, _ = observability.render_check(
             [self._reading(health_unsupported="no status is reported")], "text"
         )
-        assert text.startswith("unsupported  digitalocean.compute.web-01  no status is reported")
+        assert text.startswith(
+            "unsupported  compute  digitalocean.compute.web-01  no status is reported"
+        )
 
     def test_the_coverage_line_is_last_and_unindented_in_the_fleet_form(self):
         text, _ = observability.render_check(
@@ -961,6 +1012,16 @@ class TestRenderCheckJson:
         assert doc["resources"][0]["status"] == "failing"
         assert doc["resources"][0]["summary"] == 'status is "off"'
         assert doc["resources"][0]["observations"]["status"] == "off"
+
+    def test_identity_matches_the_block_metrics_json_emits(self):
+        # A script parsing `metrics --format json` gets provider,
+        # resource_type and id outright; parsing `check --format json` it
+        # had to split resource_key on '.' for the same information.
+        text, _ = observability.render_check([self._reading(health=OK_REPORT)], "json")
+        resource = json.loads(text)["resources"][0]
+        assert resource["provider"] == "digitalocean"
+        assert resource["resource_type"] == "compute"
+        assert resource["id"] == "123"
 
     def test_observations_are_always_present_in_json_even_when_ok(self):
         text, _ = observability.render_check([self._reading(health=OK_REPORT)], "json")
@@ -1191,28 +1252,127 @@ class TestRenderMetricsJson:
         assert doc["resources"][0]["samples"][0]["labels"] == {}
 
 
+def make_status_report(**overrides) -> observability.StatusReport:
+    defaults = dict(
+        resource_key="digitalocean.compute.web-01",
+        provider="digitalocean",
+        resource_type="compute",
+        name="web-01",
+        id="123456789",
+        deployed_at=datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC),
+        live="present",
+        config=observability.ConfigStatus(
+            in_sync=True,
+            spec_file="examples/web.aiform.md",
+            drifted_fields=[],
+            detail=None,
+        ),
+        health=FAILING_REPORT,
+        health_unsupported=None,
+    )
+    defaults.update(overrides)
+    return observability.StatusReport(**defaults)
+
+
 class TestRenderStatus:
     def _report(self, **kwargs):
-        defaults = dict(
-            resource_key="digitalocean.compute.web-01",
-            name="web-01",
-            deployed="2026-09-10T14:02:11Z, id 123456789",
-            live="present",
-            config="in sync with examples/web.aiform.md",
-            health=FAILING_REPORT,
-            health_unsupported=None,
-        )
-        defaults.update(kwargs)
-        return observability.StatusReport(**defaults)
+        return make_status_report(**kwargs)
 
-    def test_single_form_prints_the_four_labelled_rows(self):
+    def test_single_form_prints_the_labelled_rows(self):
         text = observability.render_status([self._report()], "text")
         assert text == (
+            "type      compute\n"
             "deployed  2026-09-10T14:02:11Z, id 123456789\n"
             "live      present\n"
             "config    in sync with examples/web.aiform.md\n"
             'health    failing — status is "off"'
         )
+
+    def test_the_type_row_names_the_kind_of_resource(self):
+        text = observability.render_status(
+            [
+                self._report(
+                    resource_key="digitalocean.domain.cloudaiform.com",
+                    resource_type="domain",
+                    name="cloudaiform.com",
+                )
+            ],
+            "text",
+        )
+        assert text.splitlines()[0] == "type      domain"
+
+    def test_the_deployed_row_is_composed_from_the_structured_fields(self):
+        # The text form keeps its sentence; only the JSON gains structure.
+        text = observability.render_status(
+            [
+                self._report(
+                    deployed_at=datetime(2026, 9, 17, 22, 45, 36, tzinfo=UTC), id="601532562"
+                )
+            ],
+            "text",
+        )
+        assert "deployed  2026-09-17T22:45:36Z, id 601532562" in text
+
+    def test_a_non_utc_deployed_at_is_converted_rather_than_stamped_z(self):
+        text = observability.render_status(
+            [
+                self._report(
+                    deployed_at=datetime(
+                        2026, 9, 10, 14, 2, 11, tzinfo=timezone(timedelta(hours=5))
+                    )
+                )
+            ],
+            "text",
+        )
+        assert "deployed  2026-09-10T09:02:11Z, id 123456789" in text
+
+    def test_the_config_row_composes_the_drift_sentence(self):
+        text = observability.render_status(
+            [
+                self._report(
+                    config=observability.ConfigStatus(
+                        in_sync=False,
+                        spec_file="examples/web.aiform.md",
+                        drifted_fields=["region", "size"],
+                        detail=None,
+                    )
+                )
+            ],
+            "text",
+        )
+        assert "config    2 fields drifted: region, size" in text
+
+    def test_the_config_row_singularises_one_drifted_field(self):
+        text = observability.render_status(
+            [
+                self._report(
+                    config=observability.ConfigStatus(
+                        in_sync=False,
+                        spec_file="examples/web.aiform.md",
+                        drifted_fields=["size"],
+                        detail=None,
+                    )
+                )
+            ],
+            "text",
+        )
+        assert "config    1 field drifted: size" in text
+
+    def test_the_config_row_prints_the_detail_when_nothing_could_be_diffed(self):
+        text = observability.render_status(
+            [
+                self._report(
+                    config=observability.ConfigStatus(
+                        in_sync=None,
+                        spec_file="examples/web.aiform.md",
+                        drifted_fields=[],
+                        detail="not applicable: resource is gone",
+                    )
+                )
+            ],
+            "text",
+        )
+        assert "config    not applicable: resource is gone" in text
 
     def test_fleet_form_heads_each_resource_with_its_key(self):
         text = observability.render_status(
@@ -1220,8 +1380,8 @@ class TestRenderStatus:
         )
         lines = text.splitlines()
         assert lines[0] == "digitalocean.compute.web-01"
-        assert lines[1].startswith("  deployed  ")
-        assert lines[5] == "x.y.z"
+        assert lines[1].startswith("  type      ")
+        assert lines[6] == "x.y.z"
 
     def test_an_unsupported_health_renders_its_reason(self):
         text = observability.render_status(
@@ -1237,10 +1397,18 @@ class TestRenderStatus:
         doc = json.loads(observability.render_status([self._report()], "json"))
         assert doc["resources"][0] == {
             "resource_key": "digitalocean.compute.web-01",
+            "provider": "digitalocean",
+            "resource_type": "compute",
             "name": "web-01",
-            "deployed": "2026-09-10T14:02:11Z, id 123456789",
+            "id": "123456789",
+            "deployed_at": "2026-09-10T14:02:11Z",
             "live": "present",
-            "config": "in sync with examples/web.aiform.md",
+            "config": {
+                "in_sync": True,
+                "spec_file": "examples/web.aiform.md",
+                "drifted_fields": [],
+                "detail": None,
+            },
             "health": {
                 "status": "failing",
                 "summary": 'status is "off"',
@@ -1251,6 +1419,29 @@ class TestRenderStatus:
                 },
             },
             "health_unsupported": None,
+        }
+
+    def test_json_names_the_drifted_fields_rather_than_counting_them_in_prose(self):
+        doc = json.loads(
+            observability.render_status(
+                [
+                    self._report(
+                        config=observability.ConfigStatus(
+                            in_sync=False,
+                            spec_file="examples/web.aiform.md",
+                            drifted_fields=["region", "size"],
+                            detail=None,
+                        )
+                    )
+                ],
+                "json",
+            )
+        )
+        assert doc["resources"][0]["config"] == {
+            "in_sync": False,
+            "spec_file": "examples/web.aiform.md",
+            "drifted_fields": ["region", "size"],
+            "detail": None,
         }
 
     def test_json_health_is_null_when_unsupported(self):
@@ -1294,9 +1485,11 @@ class TestStatusForLoadsTheDriverOnce:
         path = write_state(tmp_path / "state.json", make_state_entry())
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
         assert "no driver found" in report.live
-        assert report.config == "not applicable: the resource could not be read"
+        assert report.config.in_sync is None
+        assert report.config.detail == "not applicable: the resource could not be read"
         assert report.health is None
-        assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+        assert report.deployed_at == datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC)
+        assert report.id == "123456789"
 
 
 class TestRenderMetricsElapsedSeconds:
@@ -1541,7 +1734,7 @@ class TestStatusForRound1Regressions:
             StubDriver(health_result=OK_REPORT, read_exception=RuntimeError("HTTP 503")),
         )
         assert "HTTP 503" in report.live
-        assert report.config == "not applicable: the resource could not be read"
+        assert report.config.detail == "not applicable: the resource could not be read"
 
     def test_a_gone_resource_still_says_gone(self, tmp_path, stub_environment):
         report = self._report(
@@ -1553,7 +1746,7 @@ class TestStatusForRound1Regressions:
             ),
         )
         assert report.live == "missing on the provider"
-        assert report.config == "not applicable: resource is gone"
+        assert report.config.detail == "not applicable: resource is gone"
 
     def test_a_malformed_source_file_is_not_reported_as_missing(self, tmp_path, stub_environment):
         report = self._report(
@@ -1562,7 +1755,8 @@ class TestStatusForRound1Regressions:
             StubDriver(health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)),
             source="not frontmatter at all\n",
         )
-        assert report.config.startswith("source file is malformed")
+        assert report.config.in_sync is None
+        assert report.config.detail.startswith("source file is malformed")
 
     def test_an_undecodable_source_file_is_reported_not_raised(self, tmp_path, stub_environment):
         # read_text(encoding="utf-8-sig") raises UnicodeDecodeError on
@@ -1580,7 +1774,7 @@ class TestStatusForRound1Regressions:
 
         report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
 
-        assert report.config.startswith("source file is malformed")
+        assert report.config.detail.startswith("source file is malformed")
 
     def test_a_repurposed_source_file_is_not_diffed_against_this_resource(
         self, tmp_path, stub_environment
@@ -1595,7 +1789,7 @@ class TestStatusForRound1Regressions:
             StubDriver(health_result=OK_REPORT, read_result=dict(LIVE_ATTRS)),
             source=other,
         )
-        assert "now declares digitalocean.compute.other-01" in report.config
+        assert "now declares digitalocean.compute.other-01" in report.config.detail
 
     def test_a_non_utc_last_applied_at_is_converted_rather_than_stamped_z(
         self, tmp_path, stub_environment
@@ -1610,7 +1804,11 @@ class TestStatusForRound1Regressions:
             make_state_entry(aiform_md_path=str(md), last_applied_at="2026-09-10T14:02:11+05:00"),
         )
         report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
-        assert report.deployed.startswith("2026-09-10T09:02:11Z")
+        # The offset is preserved on the report and normalised where it is
+        # stamped, which is now the renderer rather than status_for().
+        assert report.deployed_at.utcoffset() == timedelta(hours=5)
+        doc = json.loads(observability.render_status([report], "json"))
+        assert doc["resources"][0]["deployed_at"] == "2026-09-10T09:02:11Z"
 
 
 LIVE_ATTRS = {"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"}
@@ -1691,7 +1889,8 @@ params:
             ),
         )
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
-        assert report.config == f"in sync with {md}"
+        assert report.config.in_sync is True
+        assert report.config.drifted_fields == []
 
     def test_unresolvable_credentials_answer_every_live_line_once(
         self, tmp_path, stub_environment, monkeypatch
@@ -1707,9 +1906,10 @@ params:
         path = write_state(tmp_path / "state.json", make_state_entry())
         report = observability.status_for("digitalocean.compute.web-01", state_path=path)
         assert "DIGITALOCEAN_TOKEN" in report.live
-        assert report.config == "not applicable: the resource could not be read"
+        assert report.config.detail == "not applicable: the resource could not be read"
         assert report.health is None
-        assert report.deployed == "2026-09-10T14:02:11Z, id 123456789"
+        assert report.deployed_at == datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC)
+        assert report.id == "123456789"
 
 
 class TestReviewRound2Regressions:
@@ -1776,17 +1976,11 @@ class TestReviewRound2Regressions:
         assert len(text.splitlines()) == 1
 
     def test_a_multi_line_status_health_line_stays_one_line(self):
-        report = observability.StatusReport(
-            resource_key="digitalocean.compute.web-01",
-            name="web-01",
-            deployed="2026-09-10T14:02:11Z, id 1",
-            live="present",
-            config="in sync with web.aiform.md",
-            health=HealthReport(status=HealthStatus.FAILING, summary="a\nb"),
-            health_unsupported=None,
+        report = make_status_report(
+            health=HealthReport(status=HealthStatus.FAILING, summary="a\nb")
         )
         text = observability.render_status([report], "text", fleet=False)
-        assert len(text.splitlines()) == 4
+        assert len(text.splitlines()) == 5
 
     def test_the_family_error_names_the_counter_first(self, tmp_path, stub_environment):
         # The claims are sorted by MetricKind, and "counter" < "gauge" --

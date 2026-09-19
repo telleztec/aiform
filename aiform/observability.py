@@ -93,19 +93,45 @@ class Collection:
 
 
 @dataclass
+class ConfigStatus:
+    """`status`' config answer, structured the way `health` beside it
+    already is: the verdict is a value, and prose appears only where the
+    reason genuinely is free text. `in_sync` is None when aiform could
+    not determine it at all -- gone, unreadable, no source file -- and
+    `detail` then says which of those it was."""
+
+    in_sync: bool | None
+    spec_file: str
+    drifted_fields: list[str]
+    detail: str | None
+
+
+@dataclass
 class StatusReport:
-    """`aiform resource status`. Four independent answers; any one can be
-    the surprising one, so none is folded into another."""
+    """`aiform resource status`. Four independent answers -- deployed,
+    live, config, health -- over the resource's identity; any one of the
+    four can be the surprising one, so none is folded into another.
+
+    `deployed_at`/`id` and `config` are stored as values rather than as
+    the sentences the text form prints: a consumer of `--format json`
+    wanting just the deploy timestamp, just the id, or a plain yes/no "is
+    it in sync" should not have to parse them back out of a string built
+    for a terminal. _status_value() composes those sentences at render
+    time, the way it already did for `health`. `live` is still a string:
+    its error arm is free-form driver text, and #161 did not ask for it."""
 
     resource_key: str
+    provider: str
+    resource_type: str
     name: str
-    # Not `str | None`, as the spec's dataclass declares it: status_for()
-    # raises for an untracked key, so every report has a state entry and
-    # nothing can produce None. A field whose None arm no caller can
-    # reach is error handling for a scenario that cannot happen.
-    deployed: str
+    id: str
+    # Not `| None`: status_for() raises for an untracked key, so every
+    # report has a state entry and nothing can produce None. A field
+    # whose None arm no caller can reach is error handling for a scenario
+    # that cannot happen.
+    deployed_at: datetime
     live: str
-    config: str
+    config: ConfigStatus
     health: HealthReport | None
     health_unsupported: str | None
 
@@ -456,24 +482,45 @@ def _status_for_entry(
         # The four lines are independent, but all three live answers rest
         # on the same driver and credentials, so one failure is the
         # answer to all of them rather than three restatements of it.
-        return StatusReport(
-            resource_key=key,
-            name=entry.name,
-            deployed=f"{_stamp(entry.last_applied_at)}, id {entry.id}",
+        return _report_for(
+            key,
+            entry,
             live="; ".join(errors),
-            config="not applicable: the resource could not be read",
+            config=_undetermined(entry, "not applicable: the resource could not be read"),
             health=None,
             health_unsupported=None,
         )
 
     health, health_unsupported = _health_for(driver, entry, credentials, errors)
     live, attributes, liveness = _live_for(driver, entry, credentials)
-    return StatusReport(
-        resource_key=key,
-        name=entry.name,
-        deployed=f"{_stamp(entry.last_applied_at)}, id {entry.id}",
+    return _report_for(
+        key,
+        entry,
         live=live,
         config=_config_for(driver, entry, attributes, liveness),
+        health=health,
+        health_unsupported=health_unsupported,
+    )
+
+
+def _report_for(
+    key: str,
+    entry: StateEntry,
+    *,
+    live: str,
+    config: ConfigStatus,
+    health: HealthReport | None,
+    health_unsupported: str | None,
+) -> StatusReport:
+    return StatusReport(
+        resource_key=key,
+        provider=entry.provider,
+        resource_type=entry.resource_type,
+        name=entry.name,
+        id=entry.id,
+        deployed_at=entry.last_applied_at,
+        live=live,
+        config=config,
         health=health,
         health_unsupported=health_unsupported,
     )
@@ -515,24 +562,33 @@ def _live_for(
     return "present", attributes, PRESENT
 
 
+def _undetermined(entry: StateEntry, detail: str) -> ConfigStatus:
+    """No yes/no answer to give. `spec_file` is still the path the entry
+    records, which is a fact about the resource rather than about this
+    attempt to diff it."""
+    return ConfigStatus(
+        in_sync=None, spec_file=entry.aiform_md_path, drifted_fields=[], detail=detail
+    )
+
+
 def _config_for(
     driver: ResourceDriver, entry: StateEntry, attributes: dict | None, liveness: str
-) -> str:
+) -> ConfigStatus:
     # Nothing to diff against. Reported rather than left silent: silence
     # on a drift question reads as "no drift", which is the opposite of
     # what is known -- but which of the two it is matters, since only one
     # of them means the resource is actually gone.
     if liveness == GONE:
-        return "not applicable: resource is gone"
+        return _undetermined(entry, "not applicable: resource is gone")
     if attributes is None:
-        return "not applicable: the resource could not be read"
+        return _undetermined(entry, "not applicable: the resource could not be read")
 
     source = Path(entry.aiform_md_path)
     try:
         content = source.read_text(encoding="utf-8-sig")
         spec = parser.parse_frontmatter(content)
     except OSError:
-        return "no source file found"
+        return _undetermined(entry, "no source file found")
     except ValueError as exc:
         # Catches both a malformed-frontmatter ValueError and the
         # UnicodeDecodeError read_text() raises on undecodable bytes --
@@ -540,7 +596,7 @@ def _config_for(
         # OSError's. Distinct from a missing file: `plan` would say
         # "malformed frontmatter" here, and reporting it as absent sends
         # a reader looking for a file that is sitting right there.
-        return _oneline(f"source file is malformed: {exc}")
+        return _undetermined(entry, _oneline(f"source file is malformed: {exc}"))
     if (spec.provider, spec.resource, spec.name) != (
         entry.provider,
         entry.resource_type,
@@ -550,17 +606,20 @@ def _config_for(
         # (orchestrator.build_create_plan), so a file since repurposed to
         # another resource would have `status` and `plan` disagreeing --
         # `status` diffing this droplet against, say, a firewall's params.
-        return (
+        return _undetermined(
+            entry,
             f"{entry.aiform_md_path} now declares "
-            f"{spec.provider}.{spec.resource}.{spec.name}, not this resource"
+            f"{spec.provider}.{spec.resource}.{spec.name}, not this resource",
         )
     drifted = planner.diff_attributes(
         attributes, spec.params, unordered_fields=driver.UNORDERED_FIELDS
     )
-    if not drifted:
-        return f"in sync with {entry.aiform_md_path}"
-    noun = "field" if len(drifted) == 1 else "fields"
-    return f"{len(drifted)} {noun} drifted: {', '.join(sorted(drifted))}"
+    return ConfigStatus(
+        in_sync=not drifted,
+        spec_file=entry.aiform_md_path,
+        drifted_fields=sorted(drifted),
+        detail=None,
+    )
 
 
 def _require_format(fmt: str) -> None:
@@ -619,7 +678,10 @@ def render_check(
             code,
         )
 
-    rows = [[_check_label(r), r.resource_key, _check_summary(r)] for r in readings]
+    # The type gets a column of its own: as the middle segment of the
+    # dot-joined key it is only recoverable by a reader who already knows
+    # that convention and parses it out by hand.
+    rows = [[_check_label(r), r.resource_type, r.resource_key, _check_summary(r)] for r in readings]
     widths = _widths(rows)
     lines: list[str] = []
     for reading, row in zip(readings, rows, strict=True):
@@ -683,7 +745,10 @@ def _observation_lines(reading: ResourceReading) -> list[str]:
 def _check_json(reading: ResourceReading) -> dict:
     return {
         "resource_key": reading.resource_key,
+        "provider": reading.provider,
+        "resource_type": reading.resource_type,
         "name": reading.name,
+        "id": reading.id,
         "status": reading.health.status.value if reading.health is not None else None,
         "summary": reading.health.summary if reading.health is not None else None,
         "observations": reading.health.observations if reading.health is not None else {},
@@ -765,7 +830,9 @@ def _metrics_json(reading: ResourceReading) -> dict:
     }
 
 
-_STATUS_LABELS = ("deployed", "live", "config", "health")
+# `type` leads: it is identity rather than a fifth answer, and the four
+# answers below it read the same as they always have.
+_STATUS_LABELS = ("type", "deployed", "live", "config", "health")
 
 
 def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None = None) -> str:
@@ -788,22 +855,48 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
 
 
 def _status_value(report: StatusReport, label: str) -> str:
-    if label == "health":
-        if report.health is not None:
-            return _oneline(f"{report.health.status.value} — {report.health.summary}")
-        if report.health_unsupported is not None:
-            return _oneline(f"unsupported: {report.health_unsupported}")
-        return "no verdict"
-    return getattr(report, label)
+    """The text form's sentences, composed from the structured fields at
+    render time rather than stored as prose -- which is what `health` has
+    always done and what `deployed`/`config` now do too."""
+    if label == "type":
+        return report.resource_type
+    if label == "deployed":
+        return f"{_stamp(report.deployed_at)}, id {report.id}"
+    if label == "live":
+        return report.live
+    if label == "config":
+        return _config_value(report.config)
+    if report.health is not None:
+        return _oneline(f"{report.health.status.value} — {report.health.summary}")
+    if report.health_unsupported is not None:
+        return _oneline(f"unsupported: {report.health_unsupported}")
+    return "no verdict"
+
+
+def _config_value(config: ConfigStatus) -> str:
+    if config.in_sync is None:
+        return config.detail
+    if config.in_sync:
+        return f"in sync with {config.spec_file}"
+    noun = "field" if len(config.drifted_fields) == 1 else "fields"
+    return f"{len(config.drifted_fields)} {noun} drifted: {', '.join(config.drifted_fields)}"
 
 
 def _status_json(report: StatusReport) -> dict:
     return {
         "resource_key": report.resource_key,
+        "provider": report.provider,
+        "resource_type": report.resource_type,
         "name": report.name,
-        "deployed": report.deployed,
+        "id": report.id,
+        "deployed_at": _stamp(report.deployed_at),
         "live": report.live,
-        "config": report.config,
+        "config": {
+            "in_sync": report.config.in_sync,
+            "spec_file": report.config.spec_file,
+            "drifted_fields": report.config.drifted_fields,
+            "detail": report.config.detail,
+        },
         "health": (
             None
             if report.health is None
