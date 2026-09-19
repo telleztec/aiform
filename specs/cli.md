@@ -533,9 +533,11 @@ any other operational error.
 separate seam for flag visibility (issue #166) — `resource_key: concern
 [severity]`, one `print()` per flag, no other formatting. Passed as
 `apply_plan()`'s `on_review` argument, it is unaffected by the TTY check
-above: it never blocks on input, so it has nothing to fail cleanly from,
-and is called the same way whether or not a prompt follows it (`--yes`
-included).
+above: it never blocks on input and has no TTY dependency (a broken-pipe
+`print()` failure here is the same pre-existing, un-special-cased
+possibility every other `print()` in this module already has, not
+something this function adds), and is called the same way whether or not
+a prompt follows it (`--yes` included).
 
 ### The verbose Anthropic-call counter
 

@@ -20,7 +20,7 @@ confirmation prompt and one review-flags-observed hook** (see judgment
 calls 8 and 9). Printing the plan, formatting errors, and argument
 parsing are `cli.py`'s job — this spec defines what `cli.py` calls.
 
-**Eight judgment calls made explicit here** (`PLAN.md` under-specifies
+**Nine judgment calls made explicit here** (`PLAN.md` under-specifies
 each of these at the level needed to implement; resolved now rather than
 left to drift into whatever the first implementation happens to do):
 
@@ -212,9 +212,12 @@ left to drift into whatever the first implementation happens to do):
    answer" are independent concerns; and formatting the flags into the
    prompt string *inside this module* would mean this module doing display
    formatting, exactly what this spec's opening line rules out. Instead,
-   `on_review: OnReviewFn | None = None` (default: a no-op, same pattern as
-   `confirm`/`default_confirm`) is called with a review's flags — and only
-   that review's flags, never a running total — immediately after each
+   `on_review: OnReviewFn | None = None` (default: `confirm`/`default_confirm`'s
+   pattern of "an injectable with a no-op fallback" — no separate named
+   `default_on_review` exists, since there's nothing for a fallback to do
+   here; `on_review or (lambda flags: None)` inline is the whole of it) is
+   called with a review's flags — and only that review's flags, never a
+   running total — immediately after each
    gate #2 call completes and before the confirmation that follows it, at
    both review points in `apply_plan()`. Under `yes=True` the call still
    happens (only the batch confirmation prompt is skippable; the flags
@@ -735,13 +738,16 @@ full, is the caller's job — see Behavior below), shared verbatim by
    alone as a pass would silently execute a plan the model explicitly
    flagged unsafe. Mirrors `specs/driver_gen.md`'s identical stance on
    `DriverReview.approved` vs. `blocking_issues`. Non-blocking flags are
-   carried into the final `ApplyResult.review_flags`, and, before moving on
-   to confirmation, handed to `(on_review or a no-op)(review_flags)`
-   (issue #166, judgment call 9) — **unconditionally, including when
-   `yes=True`**, since `--yes` only skips the prompt in step 2, not the
-   record of what gate #2 said. If `needs_review` is false, gate #2 is
-   never called at all (`PLAN.md` §9 walkthrough step 3) — `review_flags`
-   stays `[]` and `on_review` is not called.
+   carried into the final `ApplyResult.review_flags` (the machine-readable
+   record of every review this call made), and, before moving on to
+   confirmation, this review's own non-blocking flags — not the
+   accumulator, just what this call just produced — are handed to
+   `(on_review or a no-op)(...)` (issue #166, judgment call 9), the
+   display path — **unconditionally, including when `yes=True`**, since
+   `--yes` only skips the prompt in step 2, not the record of what gate #2
+   said. If `needs_review` is false, gate #2 is never called at all
+   (`PLAN.md` §9 walkthrough step 3) — `review_flags` stays `[]` and
+   `on_review` is not called.
 2. **Confirmation**, unless `yes=True`: `(confirm or default_confirm)(prompt_text)`.
    `False` → return `ApplyResult(executed=[], review_flags=<from step 1>,
    aborted=True)` immediately, nothing executed, state untouched.
