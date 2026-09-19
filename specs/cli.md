@@ -83,11 +83,34 @@ reads or writes state.
 - Appends the standard entries (`PLAN.md` §8) to the repo-root
   `.gitignore` if missing — `.aiform/credentials.env`,
   `.aiform/state.json`, `.aiform/state.json.backup`, `.aiform/logs/`
-  (`specs/log.md`), `.env`, `__pycache__/`, `*.pyc`. Idempotent: a line
-  already present (exact string match) is not duplicated on a second
-  `init` run. Creates `.gitignore` if it doesn't exist yet.
-  Deliberately **excludes** `.aiform/trash/` — `PLAN.md`'s "Trash
-  directory" section states it is "Not gitignored."
+  (`specs/log.md`), `.aiform/ssh/` (issue #175 — see below), `.env`,
+  `__pycache__/`, `*.pyc`. Idempotent: a line already present (exact
+  string match) is not duplicated on a second `init` run. Creates
+  `.gitignore` if it doesn't exist yet. Deliberately **excludes**
+  `.aiform/trash/` — `PLAN.md`'s "Trash directory" section states it is
+  "Not gitignored."
+- **Generates aiform's managed SSH keypair, local-only, no network call
+  (issue #175, `specs/ssh.md`).** Calls
+  `aiform.ssh.ensure_managed_key(aiform.ssh.DEFAULT_SSH_DIR)` — get-or-
+  create, so a second `init` run never regenerates an existing key — and,
+  **only the first time the key is actually generated for this project**,
+  also calls `aiform.ssh.generate_backup_script()` and prints a one-time
+  pointer at it (the path, a one-line explanation of why this key exists
+  and what it's for, and an explicit "read it before running it — aiform
+  never runs this script itself"). A re-run prints neither the pointer
+  nor regenerates anything, matching `credentials.env`'s existing
+  "instruct once, don't nag" treatment. This is deliberately the *one*
+  exception to `init` never writing a secret value itself (see this
+  spec's Edge cases / errors, and `CLAUDE.md`'s Credentials section): the
+  key is an aiform-internal operational credential aiform generates and
+  uses for its own lifecycle calls, not a copy of a user-owned account
+  secret typed in by hand — the terminal-echo/shell-history rationale
+  behind that rule doesn't apply to a keypair the human never types.
+  aiform never registers this key with DigitalOcean at `init` time (no
+  credentials are resolved here) — that's deferred to the first real
+  `create()` call, which is the earliest point real provider credentials
+  are actually needed (`drivers/digitalocean/compute.py`'s
+  `_ensure_do_key_registered()`).
 - Writes `examples/compute.aiform.md` (creating `examples/`) **only**
   when it doesn't already exist — never overwrites a user's edited
   starter file on a repeat `init`. Only written for `--provider
@@ -701,8 +724,21 @@ than papering over it with a generic `except Exception`.
   not whether warnings are surfaced at all.
 - `init` run a second time in the same directory: `.gitignore` entries
   aren't duplicated, `examples/compute.aiform.md` isn't overwritten,
-  `.aiform/` already existing is fine (`exist_ok=True`) — every step is
-  independently idempotent, so re-running `init` is always safe.
+  `.aiform/` already existing is fine (`exist_ok=True`), the managed SSH
+  key isn't regenerated and its backup-script pointer isn't reprinted —
+  every step is independently idempotent, so re-running `init` is always
+  safe.
+- **`init` writing `.aiform/ssh/aiform_managed_key` is a deliberate,
+  named exception to "init never writes a secret value itself"
+  (`CLAUDE.md`'s Credentials section, and the "hand-created
+  `.aiform/credentials.env`" bullet above).** The distinction: a value
+  typed by a human into `credentials.env` risks terminal echo, shell
+  history, or the output of a command an AI agent is driving — none of
+  which applies to a keypair aiform itself generates locally and the
+  human never types. `ANTHROPIC_API_KEY`/`DIGITALOCEAN_TOKEN` stay
+  exactly as strict as before; only this one aiform-internal operational
+  credential is exempt, and only because it's aiform's own, not a copy
+  of a user-owned account secret.
 
 ## Out of scope
 

@@ -87,6 +87,26 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   contract), never a key inside `params`. See the former "Where does the
   droplet's `name` come from?" Edge case below, now resolved rather than
   left open.
+- **`ssh_keys` always carries aiform's own managed key, appended to
+  whatever the user's `params` declared (issue #175).** Before building
+  the request body, `create()` calls `_ensure_do_key_registered()`
+  (get-or-create the DO account registration of the local managed key
+  from `aiform/ssh.py`'s `ensure_managed_key()` — see the "SSH-first
+  power-off" addendum near the end of this spec) and appends the
+  returned DO key id to `body["ssh_keys"]` (or sets it alone if the user
+  gave none), deduplicating if the user already listed it explicitly.
+  **Always on, no opt-out param** — this is a deliberate, human-approved
+  decision: it's what makes `_power_off_droplet()`'s SSH-first path
+  universally available, and closes issue #150 (DO emails a plaintext
+  root password when no `ssh_keys` is given at creation) unconditionally
+  rather than only for a droplet whose `aiform.md` happens to ask for
+  one. **The returned/stored `ssh_keys` attribute is unaffected** — it
+  still echoes exactly `params.get("ssh_keys", [])`, never the injected
+  id. This matters for the same reason `NON_DIFFABLE_FIELDS` carries
+  `ssh_keys` forward at all: if the managed key id leaked into state,
+  `update()`'s plain comparison against a user's `aiform.md`-declared
+  list (which never mentions it) would register as a permanent diff,
+  defeating the zero-Anthropic-call unchanged-run guarantee forever.
 - **One mutating call, plus polling GETs to convergence.** `PLAN.md` §9
   step 3's "one real DO API call" describes this step of the MVP
   walkthrough at the level of "this is a real CSP-side operation, not an
@@ -289,12 +309,34 @@ the observed total is a few hundred milliseconds.
 
 ### `delete(id, credentials)`
 
-- `DELETE /v2/droplets/{id}`. **Exactly one API call.**
+- Best-effort resolves the droplet's IP via `self._get_droplet(id,
+  credentials)` / `self._flatten()` before issuing the delete, so it can
+  prune that IP's `known_hosts` entry afterward — see below. This lookup
+  must never itself abort the delete: a `404` (droplet already gone), a
+  `429`, a `5xx`, a timeout, or an unexpected payload shape from
+  `_flatten()` all leave `ip = None` and fall through to the delete call
+  unaffected. A `404` alone stays silent — the routine "already gone"
+  case every other delete/read path in this driver treats as quiet
+  success, matching the pre-existing convention this spec's test suite
+  already relies on. Anything else logs at `warning` with the exception's
+  text in the `error` extra field (not `exc_info`, which
+  `aiform/log.py`'s `_KeyValueFormatter` never renders).
+- `DELETE /v2/droplets/{id}`.
 - `204` → success, returns `None`.
 - `404` → **also** success, returns `None` — idempotent delete is a
   hard requirement (`aiform/driver.py`'s own docstring: "a 404 from the
   CSP ... is treated as success, not an error"). This is the single
   most important behavior this spec's test suite checks.
+- After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
+  "known_hosts")` if an IP was resolved — best-effort, never raises (see
+  `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete
+  into a failure. **Does not** delete the shared managed SSH key itself:
+  there is exactly one managed key for the whole project, registered once
+  via `_ensure_do_key_registered()` and injected into every droplet
+  `create()` makes, so deleting it because one droplet was destroyed
+  would break every other droplet still using it. The DO account
+  registration and the local keypair under `.aiform/ssh/` both outlive
+  any single droplet's `delete()`.
 
 ### `update(id, current, desired, credentials)`
 
@@ -408,8 +450,12 @@ the observed total is a few hundred milliseconds.
   **low-medium confidence, verify against DO's docs if this fails**:
   requires the droplet to be powered off first. The expected sequence:
   1. If `current["status"] == "off"` already, skip to step 3. If it's
-     `"active"`, `POST .../actions {"type": "power_off"}` and proceed to
-     step 2. **Any other status** (e.g. `"new"` — still provisioning,
+     `"active"`, power off via `_power_off_droplet()` (**superseded by
+     issue #175** — see the "SSH-first power-off" addendum near the end
+     of this spec; this step no longer issues the raw `POST ...
+     {"type": "power_off"}` action directly, though that action is still
+     what `_power_off_droplet()` falls back to) and proceed to step 2.
+     **Any other status** (e.g. `"new"` — still provisioning,
      or `"archive"`) is an unmodeled state for a resize attempt: raise
      `DriverUpdateNotSupported` naming `size`, rather than guessing
      whether power-off applies — DO would likely reject the resize from
@@ -585,9 +631,12 @@ the observed total is a few hundred milliseconds.
      worse, undisclosed version of the refresh-only gap Edge cases
      describes below.
   Alongside `create`'s own convergence-polling (see Behavior above),
-  this is one of the two paths in this driver that make more than one
-  API call — `read`/`delete` remain genuinely single-request. An
-  in-place resize is a multi-step DO operation, not a single request.
+  this is one of the paths in this driver that make more than one API
+  call — `read` remains genuinely single-request, and `delete` makes at
+  most two (a best-effort `GET` to resolve the IP for `known_hosts`
+  cleanup, then the `DELETE` itself; see `delete(id, credentials)`
+  above). An in-place resize is a multi-step DO operation, not a single
+  request.
   **If any polling step (2, 5, or 6) exhausts its bounded attempt
   budget without reaching the target state**, raise a plain
   `TimeoutError` naming which step and the droplet `id` — don't retry
@@ -969,3 +1018,172 @@ small: `update()` only runs once the planner has already produced a non-empty
 diff, and a reordered-but-equal `tags` value reaching `_apply_tag_changes()`
 computes empty add/remove sets, so it issues **zero** API calls. `tags` is in
 `_IN_PLACE_UPDATABLE_FIELDS`, so it can never force a replace either.
+
+## Addendum: SSH-first power-off (issue #175)
+
+**History.** #152 and #168 each raised `_poll_until`'s power-off budget
+(60s -> 90s -> 150s) chasing DigitalOcean's own `power_off` action, which
+turned out to attempt a graceful in-guest signal first and only force a
+hard stop after roughly five minutes -- two live outliers landed at
+~303-304s. #171/PR #172 (a hardcoded exponential backoff) and #174 (a flat
+7-minute widen) were both explicitly rejected as papering over the
+symptom rather than fixing it. A live diagnostic
+(`probes/digitalocean_compute_ssh_shutdown.py`, 10 runs) found a
+different mechanism instead: SSHing into the droplet and running an
+in-guest `shutdown` bypasses whatever's slow about DO's external signal
+delivery entirely -- 9/9 successful attempts completed in 11.3-24.4s. The
+same diagnostic confirmed that a droplet created with `ssh_keys` set from
+creation time gets working key-only access immediately with no
+DO-generated root password, closing issue #150 as a side effect.
+
+**Split: `aiform/ssh.py` (generic) vs. this driver (DigitalOcean-specific).**
+SSH mechanics -- generate a keypair, connect, run a graceful shutdown --
+have nothing to do with DigitalOcean, so they live in `aiform/ssh.py`
+(`specs/ssh.md`), zero DO knowledge. What's genuinely DO-specific stays
+here: registering the local public key with DO's `/v2/account/keys`,
+injecting the returned key id into `create()` (see this spec's `create()`
+section above), and the `power_off` action fallback with its own
+`_poll_until`-based confirmation, since DO's `status` field is a
+DO-specific answer to "is it off."
+
+**`_ensure_do_key_registered(credentials) -> (do_key_id, private_key_path)`
+(get-or-create):**
+
+1. Call `aiform.ssh.ensure_managed_key(aiform.ssh.DEFAULT_SSH_DIR)` for
+   the local keypair half -- pure local file I/O, no network.
+2. If `.aiform/ssh/aiform_managed_key.id` exists **and is non-empty**
+   (after stripping whitespace), its content *is* the DO key id -- return
+   it immediately with **zero** HTTP calls. This is what keeps a repeat
+   `create()` (a fresh droplet in an already-initialized project) from
+   re-registering the same key every time.
+3. Otherwise, compute the local public key's MD5 fingerprint (via
+   `ssh-keygen -E md5 -lf <public_key_path>`, stripping the `MD5:`
+   prefix -- the same colon-hex format DO reports as a listed key's own
+   `fingerprint` field) and list `/v2/account/keys` (paginated via
+   `drivers/digitalocean/_common.py`'s `fetch_all_pages()`, this driver's
+   existing shared pagination helper) looking for a match. A match means
+   the key is already on the account (e.g. `.aiform/ssh/` was reset, or a
+   second machine shares the account) -- cache its id to the sidecar and
+   return it, no upload.
+4. No match: `POST /v2/account/keys` with `{"name": "aiform-managed-key",
+   "public_key": ...}`. **A `422` here means DO already has this exact
+   public key content registered** (observed live in the diagnostic
+   loop, e.g. after a sidecar was deleted but the account-side key
+   wasn't) -- re-run the fingerprint list-match from step 3 to recover
+   the id rather than treating the 422 as a genuine failure; only
+   re-raise if that recovery also finds nothing.
+5. Cache whatever id was obtained (uploaded or recovered) to the sidecar
+   and return it.
+
+**`_power_off_droplet(id, current, credentials)`** replaces the single
+`POST .../actions {"type": "power_off"}` call at `_resize_in_place()`'s
+power-off site:
+
+1. If `current.get("ipv4_address")` is falsy, skip straight to the API
+   path below -- no IP means no SSH target.
+2. Otherwise, if `aiform.ssh.managed_key_exists(aiform.ssh.DEFAULT_SSH_DIR)`
+   is `False`, also skip straight to the API path (`power_off_path =
+   "no-key-fallback"`) rather than calling `ensure_managed_key()`
+   unconditionally -- doing so would mint a brand-new, not-yet-registered
+   keypair on the spot and then spend the entire SSH connect budget
+   authenticating with a key no droplet has ever heard of. In normal
+   operation this never fires: `create()` always calls
+   `_ensure_do_key_registered()` first, so the key already exists by the
+   time any droplet reaches a resize. It's a real path only when
+   `.aiform/ssh/` was deleted or recreated after the droplet existed.
+3. Otherwise resolve the managed private key via
+   `aiform.ssh.ensure_managed_key()` (already registered with DO by the
+   time any droplet exists, from `create()`) and call
+   `aiform.ssh.shutdown_via_ssh(ip, private_key_path, known_hosts_path,
+   connect_timeout_budget=45.0)` -- 45s of **wall-clock-bounded** retrying
+   past the 8.7-23.3s login times the diagnostic observed, with real retry
+   margin rather than a single attempt (`specs/ssh.md`'s `shutdown_via_ssh`
+   bullet has the full wall-clock-bounding mechanism -- an earlier version
+   of this driver passed the same 45.0 but the underlying budget math
+   didn't actually enforce it, worst-casing past 150s; fixed before merge,
+   caught by `/code-review`). `known_hosts_path` is `.aiform/ssh/known_hosts`,
+   project-scoped (not `~/.ssh/known_hosts`), pinned via
+   `StrictHostKeyChecking=accept-new` -- safer than the diagnostic's own
+   throwaway `=no` + `/dev/null`.
+4. If that returns `True` (the command was successfully issued), poll
+   `_poll_until` for `status == "off"` with a **short** bound --
+   `max_attempts=30`, `delay_seconds=2` (60s total), comfortably past the
+   11.3-24.4s observed range for a reachable, cooperating guest, and
+   deliberately nowhere near the API path's own 150s default: a guest
+   that hasn't converged by 60s has stopped cooperating, and the API
+   fallback should take over rather than stacking a second long wait.
+5. If SSH never connects, or connects but the droplet doesn't reach
+   `status == "off"` within that short bound, fall back to the existing
+   API `power_off` + `_poll_until` call **exactly as it was before this
+   addendum** -- the flat 150s default budget from #168, unchanged.
+6. Log which path fired as a structured `power_off_path` field on an
+   otherwise-empty INFO (or, on the SSH-attempted-but-timed-out case,
+   WARNING) record: `"ssh-success"`, `"ssh-attempted-fallback"` (SSH
+   unavailable, or SSH connected but its own short poll timed out),
+   `"no-key-fallback"` (step 2 above), or `"no-ip-fallback"`. This exact
+   "which path fired" question is what made the #152/#168 investigation
+   slow -- the next person debugging a slow resize shouldn't have to
+   re-derive it from timing alone.
+
+**Knowledge-confidence, verified live**: DO can report a droplet
+`status == "active"` before its public `v4` network entry is attached --
+observed on this PR's own live system-test run, where a resize issued
+immediately after `create()` hit step 1's `no-ip-fallback` path because
+`current["ipv4_address"]` came back empty from the fresh `read()`
+`refresh_resource()` always does before a diff, even though the droplet
+had already converged to `active`. `create()`'s own convergence poll
+(`lambda d: d["status"] == "active"`) only waits for status, not for
+network attachment, so this is a real, if apparently brief, gap between
+the two -- not a bug in `_power_off_droplet` or in `read()`'s own
+`_flatten()`, both of which behaved correctly given what DO actually
+returned. `no-ip-fallback` is the correct, safe thing to happen when
+this fires: DO's `power_off` action needs no IP at all, so falling back
+loses nothing but speed. The live test suite works around the race by
+polling for the public network entry before proceeding, in both places
+it was actually observed live: `tests/system/test_cli_digitalocean.py`'s
+`_wait_for_public_ipv4` before issuing a resize immediately after
+create, and `tests/system/test_cli_observability.py`'s helper of the
+same name before a `resource check` run immediately after `plan apply`
+(issue #178 -- a case with no fallback as forgiving as `no-ip-fallback`,
+since `resource check` has nothing to fall back to). Changing
+`create()`'s own poll predicate instead -- a real production fix, if
+this gap turns out to matter in practice beyond "seconds after create"
+patterns like these two -- is its own follow-up, tracked on #178 and
+deliberately not taken here.
+
+**Explicitly unaffected by this addendum:**
+`tests/system/test_cli_observability.py`'s `_power_off` helper
+specifically (it deliberately simulates an out-of-band console
+power-off -- via `aiform.ssh.shutdown_via_ssh()` called directly as a
+bare utility first, falling back to DO's raw `power_off` action only if
+that doesn't pan out [that switch was made for the same #152/#168
+outlier reason as this addendum, but is its own change, not part of
+it], and never through `_power_off_droplet()` -- unrelated to the
+resize path either way); `delete()` (DO's delete doesn't require
+power-off first); issue #154's separate
+configurable/persisted/LLM-adjustable timeout table; and
+`resolve_credentials()`'s shape or the `credentials` parameter across
+the `ResourceDriver` contract (not touched).
+
+**Not** the rest of `test_cli_observability.py`, though: issue #178's
+active-with-no-public-v4 race hit the *same test* `_power_off` is
+called from (`test_the_three_verbs_against_a_real_droplet`, inside
+`TestResourceVerbsAgainstALiveDroplet`), at an earlier step -- the
+`resource check` run immediately after `plan apply`, well before
+`_power_off` runs. That step now polls for the public network entry
+first, via its own `_wait_for_public_ipv4()` (same fix, same
+reasoning, as `tests/system/test_cli_digitalocean.py`'s helper of the
+same name for the SSH-first-power-off live scenario this addendum
+covers -- not an identical implementation: this one takes the
+already-loaded driver and reuses its own `_flatten()` rather than
+re-walking DO's `networks.v4` shape inline) -- added after this exact
+race reproduced 3 of 4 times across this PR's own live runs.
+
+**Scope note, straight from the approved plan**: the key-storage design
+(a single local keypair under `.aiform/ssh/`, no real keystore, no
+cross-machine sync) is deliberately scoped to a cost-sensitive solo
+operator running `aiform` by hand from one persistent machine today, not
+a general multi-machine/team system that doesn't exist in this project
+yet -- see `specs/ssh.md`'s "Out of scope" for the full reasoning and the
+team escape hatch (share `.aiform/ssh/` out-of-band, the same as
+`credentials.env` already relies on).

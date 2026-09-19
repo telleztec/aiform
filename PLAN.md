@@ -919,6 +919,55 @@ class Driver(ResourceDriver):
   stops, matching the design goal of the execution being the boring,
   deterministic part.
 
+### Addendum: `aiform/ssh.py` — provider-agnostic SSH mechanics (issue #175)
+
+Not part of the `ResourceDriver` contract itself — a shared, provider-
+agnostic helper module a driver may call into, the same architectural
+role `drivers/digitalocean/_common.py`'s pagination helper plays for
+DigitalOcean specifically, one level up: `aiform/` already holds
+provider-agnostic shared infrastructure (`driver.py`'s contract,
+`config.py`'s credential resolution, `state.py`), while `drivers/<provider>/`
+holds provider-specific code. `aiform/ssh.py` lives in the former because
+SSH mechanics — generate a keypair, connect, run a command — have
+nothing to do with any specific CSP.
+
+**Why it exists.** `drivers/digitalocean/compute.py`'s `update()` resize
+path used to power a droplet off via DigitalOcean's `power_off` API
+action alone, which turned out to attempt a graceful in-guest signal
+first and only force a hard stop after roughly five minutes (issues
+#152, #168 — two consecutive live budget increases chasing the same
+underlying latency). A live diagnostic found that SSHing in and running
+an in-guest `shutdown` bypasses that external-signal latency entirely
+(9/9 successful attempts, 11.3-24.4s) — see `specs/ssh.md` and
+`specs/digitalocean_compute.md`'s "SSH-first power-off" addendum for the
+full mechanism and history. As a deliberate side effect, every droplet
+`drivers/digitalocean/compute.py`'s `create()` provisions now carries
+aiform's own managed SSH key by default (always on, no opt-out), which
+both makes the fast path universally available and closes issue #150 (a
+DigitalOcean-mailed plaintext root password when no `ssh_keys` is given)
+unconditionally.
+
+**Interface** (`ensure_managed_key`, `generate_backup_script`,
+`shutdown_via_ssh`) and full behavior: `specs/ssh.md`. It has zero
+DigitalOcean-specific — or any provider-specific — knowledge: registering
+a public key with a CSP's account API, resolving a resource id to an IP,
+and deciding what "powered off" means for a given provider all stay in
+the calling driver.
+
+**Scoped deliberately, not a general keystore.** The managed keypair
+lives under `.aiform/ssh/` on whichever single machine generated it — the
+same implicit-single-machine assumption `.aiform/state.json` (gitignored,
+never synced) already makes throughout this project. This is a stated
+design decision for this project's actual target user — a cost-sensitive
+solo operator running `aiform` by hand from one persistent machine today,
+not a team with an ephemeral-CI-fleet deployment model — not an
+oversight: a real keystore, cloud KMS, or cross-machine sync mechanism is
+explicitly out of scope for now (same category as the items in §10), and
+the escape hatch for a team is the same one
+`DIGITALOCEAN_TOKEN`/`ANTHROPIC_API_KEY` already have — share the file
+out-of-band, or accept that a second machine's own key only unlocks the
+fast path on droplets *it* created.
+
 ## 5. Plan / apply algorithm
 
 ### `aiform plan create`

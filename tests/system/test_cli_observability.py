@@ -26,10 +26,11 @@ properties of the live API rather than of the code:
 """
 
 import json
+import time
 
 import pytest
 
-from aiform import cli
+from aiform import cli, ssh
 from tests.system.conftest import (
     assert_cli_ok,
     get_droplet_or_none,
@@ -39,11 +40,46 @@ from tests.system.conftest import (
     write_aiform_md,
 )
 
+# Comfortably past the 11.3-24.4s SSH-initiated-shutdown times observed
+# live in probes/digitalocean_compute_ssh_shutdown.py (issue #175's own
+# diagnostic), the same reasoning
+# drivers/digitalocean/compute.py's _SSH_POWER_OFF_POLL_* constants use
+# for the identical wait.
+_POWER_OFF_POLL_MAX_ATTEMPTS = 30
+_POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
+# Budgeted past the 8.7-23.3s SSH *login* times the same diagnostic
+# observed (a different measurement from the shutdown-convergence one
+# above) -- matches compute.py's own _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS.
+_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
+
 pytestmark = pytest.mark.system
 
 
 def _resource_key(name: str) -> str:
     return f"digitalocean.compute.{name}"
+
+
+def _wait_for_public_ipv4(
+    token, driver, droplet_id: str, *, max_attempts: int = 15, delay_seconds: float = 2.0
+) -> None:
+    """DO can report a droplet `status == "active"` before its public v4
+    network entry is attached (issue #178, root-caused in
+    specs/digitalocean_compute.md's "SSH-first power-off" addendum) --
+    `create()`'s own convergence poll only waits for status, not network
+    attachment. `aiform resource check` immediately after `plan apply`
+    can race this and report `degraded ... active with no public v4
+    address` for a droplet that is, moments later, perfectly healthy.
+    Not a bug in `check`/`health()`, which behaves correctly given what
+    DigitalOcean actually returns -- polls it out here rather than
+    letting the test's own timing race DO's, mirroring
+    tests/system/test_cli_digitalocean.py's identical
+    `_wait_for_public_ipv4` for the SSH-first-power-off live scenario.
+    """
+    for _ in range(max_attempts):
+        live = get_droplet_or_none(token, droplet_id)
+        if live and driver._flatten(live)["ipv4_address"]:
+            return
+        time.sleep(delay_seconds)
 
 
 class TestResourceVerbsAgainstALiveDroplet:
@@ -63,6 +99,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         )
         droplet_id = json.loads(state_path.read_text())["resources"][key]["id"]
         assert get_droplet_or_none(token, droplet_id) is not None
+        _wait_for_public_ipv4(token, _load_compute_driver(), droplet_id)
 
         # State must be byte-identical across every command below. These
         # are inspection commands: one that mutates the record makes the
@@ -226,17 +263,76 @@ class TestResourceVerbsAgainstALiveDroplet:
 
 
 def _power_off(token, droplet_id: str) -> None:
-    """Power the droplet off directly, not through aiform: this is meant
-    to be a change aiform did not make, the way a real operator's console
-    click would be."""
+    """Power the droplet off out-of-band -- a change `aiform` itself did
+    not make, the way a real operator's console click would be -- so this
+    suite's `check`/`status` assertions have a real FAILING droplet to
+    observe.
+
+    Uses `aiform.ssh.shutdown_via_ssh()` directly, as a plain
+    provider-agnostic utility, rather than DigitalOcean's raw
+    `power_off` API action: that action has its own occasional
+    multi-minute outlier, which this helper's job -- inducing an
+    off-state fast and reliably for the test -- can't tolerate. Falls
+    back to the raw action (with its own poll) if SSH never connects or
+    doesn't converge in time, so a flaky SSH path still eventually
+    reaches the same off-state.
+
+    Does not go through `_power_off_droplet()`, the driver's own
+    SSH-then-API-fallback logic: that method's whole job is *deciding*
+    how to power off, and this helper needs a power-off that has already
+    happened, not another call into the thing this suite is testing.
+    """
     driver = _load_compute_driver()
     credentials = {"DIGITALOCEAN_TOKEN": str(token)}
+
+    live = get_droplet_or_none(token, droplet_id)
+    assert live is not None, f"droplet {droplet_id} not found -- expected it to still be live"
+    ip = driver._flatten(live)["ipv4_address"]
+    assert ip, f"droplet {droplet_id} is live but has no public v4 address to power off over SSH"
+
+    ssh_dir = ssh.DEFAULT_SSH_DIR
+    # A precheck, not just a bound on the retry budget: without it, a
+    # regression where create() stops attaching the managed key (exactly
+    # the kind of thing this suite exists to catch) would surface here
+    # only after burning the full connect budget, as a generic "could
+    # not reach droplet" message that points at the network rather than
+    # at the real cause.
+    assert ssh.managed_key_exists(ssh_dir), (
+        f"no local managed key under {ssh_dir} -- create() should have provisioned one "
+        "when this test's own `plan apply` step ran"
+    )
+    issued = ssh.shutdown_via_ssh(
+        ip,
+        ssh_dir / "aiform_managed_key",
+        ssh_dir / "known_hosts",
+        connect_timeout_budget=_SSH_CONNECT_TIMEOUT_BUDGET_SECONDS,
+    )
+    if issued:
+        try:
+            driver._poll_until(
+                droplet_id,
+                credentials,
+                lambda d: d["status"] == "off",
+                "system-test-power-off-ssh",
+                max_attempts=_POWER_OFF_POLL_MAX_ATTEMPTS,
+                delay_seconds=_POWER_OFF_POLL_DELAY_SECONDS,
+            )
+            return
+        except TimeoutError:
+            pass  # fall through to the API action below
+
+    # SSH never connected, or connected but didn't converge within the
+    # short budget above -- fall back to the raw API action exactly as
+    # this helper used to, rather than trading the ~300s outlier this
+    # switch exists to avoid for a new, unconditional flake class of its
+    # own. Still fully out-of-band: neither branch goes through aiform's
+    # own update()/_power_off_droplet().
     driver._do_action_and_wait(
         droplet_id,
         credentials,
         {"type": "power_off"},
         lambda d: d["status"] == "off",
-        "system-test-power-off",
+        "system-test-power-off-api-fallback",
     )
 
 
