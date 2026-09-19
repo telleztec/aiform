@@ -509,6 +509,7 @@ def build_destroy_plan(
 
 
 ConfirmFn = Callable[[str], bool]
+OnReviewFn = Callable[[list[PlanReviewFlag]], None]
 
 
 @dataclass
@@ -573,11 +574,13 @@ def apply_plan(
     state_path: Path = state.DEFAULT_STATE_PATH,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
+    on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> ApplyResult:
     st = state.load(state_path)
     confirm_fn = confirm or default_confirm
+    on_review_fn = on_review or (lambda flags: None)
     review_flags: list[PlanReviewFlag] = []
 
     needs_review = any(
@@ -595,9 +598,13 @@ def apply_plan(
             extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
         )
         _raise_if_review_blocked(review)
-        review_flags.extend(
-            flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK
-        )
+        new_flags = [flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK]
+        review_flags.extend(new_flags)
+        # Unconditional, even under yes=True: --yes skips the prompt below,
+        # not the record of what gate #2 said (#166) -- and the caller must
+        # see this before the confirmation that follows it, not after
+        # apply_plan() has already returned.
+        on_review_fn(new_flags)
 
     if not yes and not confirm_fn("Apply this plan?"):
         return ApplyResult(executed=[], review_flags=review_flags, aborted=True)
@@ -641,11 +648,17 @@ def apply_plan(
                         single_summary, client=client, llm_config=llm_config
                     )
                     _raise_if_review_blocked(single_review)
-                    review_flags.extend(
+                    single_new_flags = [
                         flag
                         for flag in single_review.flags
                         if flag.severity != PlanReviewSeverity.BLOCK
-                    )
+                    ]
+                    review_flags.extend(single_new_flags)
+                    # Just this review's own flags, not review_flags (which
+                    # may already carry an earlier batch review's) -- this
+                    # is a different review, about one resource, and must
+                    # surface as its own thing before its own confirmation.
+                    on_review_fn(single_new_flags)
                     if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
                         return ApplyResult(
                             executed=executed, review_flags=review_flags, aborted=True

@@ -1582,6 +1582,89 @@ class TestApplyPlan:
         saved = state.load(state_path)
         assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "new-2"
 
+    def test_on_review_single_resource_flags_are_not_mixed_with_batch_flags(self, tmp_path: Path):
+        # pr1 triggers the batch review (likely_replace=True); its update()
+        # succeeds normally, so no single-resource re-review happens for it.
+        # pr2's update() raises DriverUpdateNotSupported with
+        # likely_replace=False, triggering its own, separate re-review.
+        # on_review must be called twice, each time with only that review's
+        # own flags -- never the other review's, and never a running total.
+        driver1 = FakeDriver(update_result={"id": "1", "region": "sfo3"})
+        driver2 = FakeDriver(
+            update_exception=DriverUpdateNotSupported("image change", unsupported_fields=["image"]),
+            create_result={"id": "new-2", "region": "sfo3", "image": "new-image"},
+        )
+        existing1 = make_state_entry(id="1", name="app-01")
+        existing2 = make_state_entry(id="123", name="app-02")
+        entry1 = PlanEntry(
+            resource_key="digitalocean.compute.app-01",
+            action=PlanAction.UPDATE,
+            rationale="resize",
+            likely_replace=True,
+        )
+        entry2 = PlanEntry(
+            resource_key="digitalocean.compute.app-02",
+            action=PlanAction.UPDATE,
+            rationale="image change",
+            likely_replace=False,
+        )
+        pr1 = make_planned_resource(
+            entry=entry1,
+            driver=driver1,
+            state_entry=existing1,
+            name="app-01",
+            desired_params={"region": "sfo3"},
+        )
+        pr2 = make_planned_resource(
+            entry=entry2,
+            driver=driver2,
+            state_entry=existing2,
+            name="app-02",
+            desired_params={"region": "sfo3", "image": "new-image"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": existing1,
+                "digitalocean.compute.app-02": existing2,
+            },
+        )
+
+        batch_flag = {
+            "resource_key": "digitalocean.compute.app-01",
+            "concern": "batch concern",
+            "severity": "warning",
+        }
+        single_flag = {
+            "resource_key": "digitalocean.compute.app-02",
+            "concern": "single concern",
+            "severity": "warning",
+        }
+        client = FakeClient(
+            [
+                plan_review_response(safe_to_proceed=True, flags=[batch_flag]),
+                plan_review_response(safe_to_proceed=True, flags=[single_flag]),
+            ]
+        )
+
+        events = []
+        result = orchestrator.apply_plan(
+            [pr1, pr2],
+            state_path=state_path,
+            yes=True,
+            confirm=lambda p: events.append(("confirm", p)) or True,
+            on_review=lambda flags: events.append(("review", list(flags))),
+            client=client,
+        )
+
+        assert result.aborted is False
+        # batch review (pr1) fires before the loop starts; pr2's own
+        # single-resource review + confirm happen when the loop reaches it.
+        assert [kind for kind, _ in events] == ["review", "review", "confirm"]
+        assert [flag.concern for flag in events[0][1]] == ["batch concern"]
+        assert [flag.concern for flag in events[1][1]] == ["single concern"]
+
     def test_single_resource_review_block_flag_raises_plan_blocked_error(self, tmp_path: Path):
         driver = FakeDriver(update_exception=DriverUpdateNotSupported("image change"))
         existing = make_state_entry(id="123")
@@ -1931,6 +2014,120 @@ class TestApplyPlan:
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, confirm=confirm)
 
         assert result.aborted is False
+
+    def test_on_review_called_with_batch_flags_before_top_level_confirm(self, tmp_path: Path):
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.DESTROY,
+                rationale="x",
+            )
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        warning_flag = {
+            "resource_key": pr.entry.resource_key,
+            "concern": "double check",
+            "severity": "warning",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
+
+        events = []
+        result = orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            confirm=lambda p: events.append(("confirm", p)) or False,
+            on_review=lambda flags: events.append(("review", flags)),
+            client=client,
+        )
+
+        assert result.aborted is True
+        assert [kind for kind, _ in events] == ["review", "confirm"]
+        assert [flag.concern for flag in events[0][1]] == ["double check"]
+
+    def test_on_review_called_unconditionally_under_yes(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.DESTROY,
+                rationale="x",
+            ),
+            aiform_md_path=aiform_md,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        warning_flag = {
+            "resource_key": pr.entry.resource_key,
+            "concern": "double check",
+            "severity": "warning",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
+
+        seen = []
+
+        def confirm(prompt):
+            raise AssertionError("should not be called when yes=True")
+
+        result = orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            confirm=confirm,
+            on_review=lambda flags: seen.append(flags),
+            client=client,
+        )
+
+        assert result.aborted is False
+        assert len(seen) == 1
+        assert seen[0][0].concern == "double check"
+
+    def test_on_review_defaults_to_noop(self, tmp_path: Path):
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.DESTROY,
+                rationale="x",
+            )
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        warning_flag = {
+            "resource_key": pr.entry.resource_key,
+            "concern": "double check",
+            "severity": "warning",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
+
+        # No on_review passed -- must default to a no-op rather than
+        # raising, the same contract confirm/default_confirm has.
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, confirm=lambda p: False, client=client
+        )
+
+        assert result.aborted is True
+        assert len(result.review_flags) == 1
+
+    def test_on_review_not_called_when_no_review_needed(self, tmp_path: Path):
+        pr = make_planned_resource()
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        calls = []
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            on_review=lambda flags: calls.append(flags),
+            client=FakeClient([]),
+        )
+
+        assert calls == []
 
     def test_state_saved_after_each_resource_not_batched(self, tmp_path: Path):
         driver1 = FakeDriver(create_result={"id": "id-1", "region": "sfo3"})
