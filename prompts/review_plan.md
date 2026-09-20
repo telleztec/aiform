@@ -46,3 +46,12 @@ flag. A plan with only `"warning"`/`"info"` flags (or none at all) is
 decide, but routine confirmation prompts shouldn't be blocked on
 non-blocking concerns. Don't raise a `"block"` flag just to be cautious;
 a false block trains the user to stop trusting this gate.
+
+**Keep `concern` short.** It's printed on one line, either above a
+confirmation prompt a human answers in the next few seconds or as the
+message when a `block` halts the run — never read at leisure. One or two
+short, plain sentences, not a paragraph. Say what's wrong (or worth
+knowing) and what the human should check or do about it. Don't restate
+the resource_key, action, or rationale already in the plan summary, and
+don't hedge at length about how confident you are — that's what
+`severity` is for.

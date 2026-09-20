@@ -1133,7 +1133,14 @@ once verified.
                    "type": "object",
                    "properties": {
                        "resource_key": {"type": "string"},
-                       "concern": {"type": "string"},
+                       "concern": {
+                           "type": "string",
+                           "description": (
+                               "One or two short, plain sentences a human reads in the few "
+                               "seconds before answering a plan-apply confirmation prompt -- "
+                               "not a paragraph."
+                           ),
+                       },
                        "severity": {"type": "string", "enum": ["info", "warning", "block"]},
                    },
                    "required": ["resource_key", "concern", "severity"],

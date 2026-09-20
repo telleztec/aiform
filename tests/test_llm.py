@@ -868,6 +868,17 @@ class TestReviewPlan:
         assert call["model"] == "claude-opus-5-custom"
         assert call["output_config"]["format"]["schema"] == llm.PLAN_REVIEW_SCHEMA
 
+    def test_plan_review_schema_concern_has_brevity_description(self):
+        # Locks the *content* of the description, not just that the schema
+        # is passed through unchanged (test_uses_configured_review_model_and_plan_review_schema
+        # above trivially passes regardless of what the schema contains,
+        # since it compares the schema to itself). Issue #164.
+        description = llm.PLAN_REVIEW_SCHEMA["properties"]["flags"]["items"]["properties"][
+            "concern"
+        ]["description"]
+        assert "one or two" in description.lower()
+        assert "not a paragraph" in description.lower()
+
     def test_loads_review_plan_prompt_as_system(self, prompts_dir: Path):
         response_text = json.dumps({"safe_to_proceed": True, "flags": []})
         client = FakeClient(response_text)
@@ -898,6 +909,19 @@ class TestRealPromptFiles:
         path = llm.PROMPTS_DIR / "review_plan.md"
         assert path.exists()
         assert len(path.read_text(encoding="utf-8").strip()) > 0
+
+    def test_review_plan_prompt_has_brevity_guidance(self):
+        # Issue #164: nothing constrained concern's length before this --
+        # locks that the shipped file actually carries the instruction, not
+        # just that some plan said it would. Asserts the same substantive
+        # constraint test_plan_review_schema_concern_has_brevity_description
+        # locks in PLAN_REVIEW_SCHEMA, not just this section's heading, so
+        # gutting the paragraph body while keeping the bold lead-in still
+        # fails.
+        text = (llm.PROMPTS_DIR / "review_plan.md").read_text(encoding="utf-8")
+        assert "Keep `concern` short" in text
+        assert "one or two" in text.lower()
+        assert "not a paragraph" in text.lower()
 
 
 class FakeHTTPResponse:
