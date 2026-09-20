@@ -1442,7 +1442,12 @@ class TestPlanApply:
 
         out = capsys.readouterr().out
         assert code == 0
-        assert "(auto-approved via --yes, executing now)" in out
+        # Asserts the marker is appended to the tally line itself, not
+        # printed as a separate line.
+        assert (
+            "Plan: 1 to create, 0 to update, 0 to destroy, 0 no-op."
+            " (auto-approved via --yes, executing now)" in out
+        )
 
     def test_apply_without_yes_and_no_tty_fails_cleanly(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
@@ -1834,7 +1839,12 @@ class TestPlanDestroy:
 
         out = capsys.readouterr().out
         assert code == 0
-        assert "(auto-approved via --yes, executing now)" in out
+        # Asserts the marker is appended to the tally line itself, not
+        # printed as a separate line.
+        assert (
+            "Plan: 0 to create, 0 to update, 1 to destroy, 0 no-op."
+            " (auto-approved via --yes, executing now)" in out
+        )
 
     def test_destroy_blocked_by_gate2_exits_2(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys

@@ -396,9 +396,8 @@ reads or writes state.
   warning" case) each on their own line. `update` entries additionally
   print `(likely replace)` when `entry.likely_replace` is set. This
   command's tally line never carries the `--yes` marker described under
-  `plan apply` below — `create` has no `--yes` flag at all (issue #162):
-  it is always pure preview, and its output correctly needs no marker
-  to say so.
+  `plan apply` below — `create` has no `--yes` flag at all (issue #162),
+  and always is pure preview.
 - `--json`: prints `{"plan": [...], "warnings": [...]}` instead, one
   `{"resource_key", "action", "rationale", "likely_replace"}` object
   per planned resource, `warnings` as given by `build_create_plan`.
@@ -427,13 +426,17 @@ takes an already-built plan):
    what's about to happen before any confirmation prompt — **with one
    difference**: `_print_plan(..., yes=args.yes)` appends
    `" (auto-approved via --yes, executing now)"` to the tally line when
-   `--yes` is set (issue #162). Without `--yes` the tally line is
-   unmarked, same as `plan create`'s — the `[y/N]` prompt that follows
-   it in step 3 already reads unambiguously as a pending decision, so no
-   marker is needed there. With `--yes`, nothing else on screen says a
-   real execution is about to happen with no gate coming; the UAT
-   session this issue cites reproduced someone reflexively waiting for a
-   prompt that was never going to appear.
+   `--yes` is set (issue #162), printed at this step, before step 3 runs
+   gate #2 or executes anything. Without `--yes` the tally line is
+   unmarked, same as `plan create`'s — the `[y/N]` prompt that follows it
+   in step 3 already reads unambiguously as a pending decision, so no
+   marker is needed there. The marker describes one specific fact: the
+   `[y/N]` prompt step 3 would otherwise ask is skipped. It is not a
+   promise that nothing can still stop the run — gate #2's `block` flag
+   (unconditional, even under `--yes`) and judgment call 7's
+   single-resource replace re-review (`specs/orchestrator.md`) can both
+   still halt or pause execution after this line prints, exactly as they
+   could without `--yes`.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
    `_confirm` is this module's own confirmation function (see "Confirmation and
    non-interactive runs" below), always passed regardless of `--yes`,
