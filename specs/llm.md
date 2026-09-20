@@ -493,6 +493,16 @@ Backs the `review-orchestration-model` role, gate #2. Same shape as
 `review_driver()` — model and `max_tokens` resolved from
 `llm_config.review_orchestration` instead.
 
+`PLAN_REVIEW_SCHEMA`'s `concern` property carries a `description` constraining
+it to one or two short, plain sentences (issue #164) — `prompts/review_plan.md`
+gives the same instruction in the system prompt, since a live UAT run showed
+the model defaults to hedged, paragraph-length prose with nothing in either
+place constraining it. Two independent reinforcements of the same constraint,
+not redundant: the system prompt carries the full reasoning (why brevity
+matters, what to still include), the schema description is the terser,
+per-field reminder Anthropic's structured-output API reads as part of what
+it's generating against.
+
 ### `verify_api_key(*, client=None, timeout=10.0) -> KeyCheck`
 
 Not a model call and not a fifth role — a **credential probe**, used
