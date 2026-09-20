@@ -913,9 +913,15 @@ class TestRealPromptFiles:
     def test_review_plan_prompt_has_brevity_guidance(self):
         # Issue #164: nothing constrained concern's length before this --
         # locks that the shipped file actually carries the instruction, not
-        # just that some plan said it would.
-        path = llm.PROMPTS_DIR / "review_plan.md"
-        assert "Keep `concern` short" in path.read_text(encoding="utf-8")
+        # just that some plan said it would. Asserts the same substantive
+        # constraint test_plan_review_schema_concern_has_brevity_description
+        # locks in PLAN_REVIEW_SCHEMA, not just this section's heading, so
+        # gutting the paragraph body while keeping the bold lead-in still
+        # fails.
+        text = (llm.PROMPTS_DIR / "review_plan.md").read_text(encoding="utf-8")
+        assert "Keep `concern` short" in text
+        assert "one or two" in text.lower()
+        assert "not a paragraph" in text.lower()
 
 
 class FakeHTTPResponse:
