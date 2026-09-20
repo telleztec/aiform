@@ -394,7 +394,11 @@ reads or writes state.
   one-line tally (`N to create, N to update, N to destroy, N no-op.`),
   then any warnings (`PLAN.md` §5's "left alone... reported with a
   warning" case) each on their own line. `update` entries additionally
-  print `(likely replace)` when `entry.likely_replace` is set.
+  print `(likely replace)` when `entry.likely_replace` is set. This
+  command's tally line never carries the `--yes` marker described under
+  `plan apply` below — `create` has no `--yes` flag at all (issue #162):
+  it is always pure preview, and its output correctly needs no marker
+  to say so.
 - `--json`: prints `{"plan": [...], "warnings": [...]}` instead, one
   `{"resource_key", "action", "rationale", "likely_replace"}` object
   per planned resource, `warnings` as given by `build_create_plan`.
@@ -420,7 +424,16 @@ takes an already-built plan):
    whole `apply` invocation, not two separate ones).
 2. Prints the plan the same way `plan create` does (no `--json` option
    here — `PLAN.md` §7 doesn't list one for `apply`), so the user sees
-   what's about to happen before any confirmation prompt.
+   what's about to happen before any confirmation prompt — **with one
+   difference**: `_print_plan(..., yes=args.yes)` appends
+   `" (auto-approved via --yes, executing now)"` to the tally line when
+   `--yes` is set (issue #162). Without `--yes` the tally line is
+   unmarked, same as `plan create`'s — the `[y/N]` prompt that follows
+   it in step 3 already reads unambiguously as a pending decision, so no
+   marker is needed there. With `--yes`, nothing else on screen says a
+   real execution is about to happen with no gate coming; the UAT
+   session this issue cites reproduced someone reflexively waiting for a
+   prompt that was never going to appear.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
    `_confirm` is this module's own confirmation function (see "Confirmation and
    non-interactive runs" below), always passed regardless of `--yes`,
@@ -460,7 +473,11 @@ pass, unconditionally subject to gate #2 by construction (every entry
 1. `orchestrator.build_destroy_plan(paths, state_path=...)` — no `client`
    parameter (`build_destroy_plan` never calls an LLM — Mechanism A
    skips categorization entirely, `specs/orchestrator.md`).
-2. Prints the plan the same way `plan create`/`apply` do.
+2. Prints the plan the same way `plan create`/`apply` do, including
+   `plan apply`'s `--yes` tally-line marker (issue #162) — destroy
+   routes through the same `_plan_apply_and_report` call site, so this
+   isn't a separate implementation, just the same behavior reached from
+   a second command.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review
