@@ -314,8 +314,9 @@ whoever ran the command remembered to pass it.
   `flag.concern` text. Call sites log only counts
   (`concerns_count=<n>`, `flags_count=<n>`) and booleans
   (`approved=<bool>`, `safe_to_proceed=<bool>`). The actual text still
-  reaches the human via `cli.py`'s existing `_print_apply_result`
-  `review_flags` print loop — logging doesn't duplicate it.
+  reaches the human via `cli.py`'s `_print_review_flags` (`apply_plan()`'s
+  `on_review` callback, `specs/orchestrator.md` judgment call 9) — logging
+  doesn't duplicate it.
 - **A third `DEBUG` output tier in the product's own level routing.**
   `DEBUG` is a legal `logging_config.level` value (`specs/models.md`'s
   `LoggingConfig`), so a user *can* configure the file handler down to

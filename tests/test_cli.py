@@ -1448,6 +1448,73 @@ class TestPlanApply:
         reloaded = state.load(state_file)
         assert reloaded.resources == {}
 
+    def test_review_flags_are_printed_before_the_confirmation_prompt(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #166: the review flags used to only ever print after the
+        # whole command finished, so the [y/N] prompt was answered blind.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
+        patch_client(
+            monkeypatch,
+            [
+                categorization_response(action="update", likely_replace=True),
+                plan_review_response(
+                    safe_to_proceed=True,
+                    flags=[
+                        {
+                            "resource_key": "digitalocean.compute.telleztec-app-01",
+                            "concern": "double check this replace",
+                            "severity": "warning",
+                        }
+                    ],
+                ),
+            ],
+        )
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
+
+        seen_before_answer = []
+
+        def fake_input(prompt=""):
+            seen_before_answer.append(capsys.readouterr().out)
+            return "y"
+
+        monkeypatch.setattr("builtins.input", fake_input)
+
+        code = cli.main(["plan", "apply", "--state-file", str(state_file)])
+
+        assert code == 0
+        assert len(seen_before_answer) == 1
+        assert "double check this replace" in seen_before_answer[0]
+
+    def test_review_flags_not_printed_twice(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
+        patch_client(
+            monkeypatch,
+            [
+                categorization_response(action="update", likely_replace=True),
+                plan_review_response(
+                    safe_to_proceed=True,
+                    flags=[
+                        {
+                            "resource_key": "digitalocean.compute.telleztec-app-01",
+                            "concern": "double check this replace",
+                            "severity": "warning",
+                        }
+                    ],
+                ),
+            ],
+        )
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert out.count("double check this replace") == 1
+
     def test_apply_verbose_reports_call_count(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):

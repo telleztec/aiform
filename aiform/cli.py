@@ -192,6 +192,11 @@ def _plan_to_json(planned: list[orchestrator.PlannedResource], warnings: list[st
     }
 
 
+def _print_review_flags(flags: list[orchestrator.PlanReviewFlag]) -> None:
+    for flag in flags:
+        print(f"{flag.resource_key}: {flag.concern} [{flag.severity.value}]")
+
+
 def _print_apply_result(result: orchestrator.ApplyResult) -> None:
     for entry in result.executed:
         label = (
@@ -200,8 +205,6 @@ def _print_apply_result(result: orchestrator.ApplyResult) -> None:
             else entry.action.value
         )
         print(f"{entry.resource_key}: {label}")
-    for flag in result.review_flags:
-        print(f"{flag.resource_key}: {flag.concern} [{flag.severity.value}]")
     if result.aborted:
         print("Apply aborted.")
 
@@ -628,7 +631,12 @@ def _plan_apply_and_report(
 ) -> int:
     _print_plan(planned, warnings, color=not args.no_color)
     result = orchestrator.apply_plan(
-        planned, state_path=args.state_file, yes=args.yes, confirm=_confirm, client=client
+        planned,
+        state_path=args.state_file,
+        yes=args.yes,
+        confirm=_confirm,
+        on_review=_print_review_flags,
+        client=client,
     )
     _print_apply_result(result)
     return 1 if result.aborted else 0

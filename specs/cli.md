@@ -421,19 +421,29 @@ takes an already-built plan):
 2. Prints the plan the same way `plan create` does (no `--json` option
    here — `PLAN.md` §7 doesn't list one for `apply`), so the user sees
    what's about to happen before any confirmation prompt.
-3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, client=<same counting client>)` —
+3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
    `_confirm` is this module's own confirmation function (see "Confirmation and
    non-interactive runs" below), always passed regardless of `--yes`,
    since `apply_plan`'s single-resource `DriverUpdateNotSupported`
    fallback confirmation is never skippable by `yes=True`
    (`specs/orchestrator.md` judgment call 7) and needs a sane behavior
-   if that path is hit with no TTY attached.
+   if that path is hit with no TTY attached. `_print_review_flags`
+   (`resource_key: concern [severity]`, one line per flag) is passed as
+   `on_review` (issue #166) so each gate #2 review's non-blocking flags
+   print live, immediately before the confirmation prompt they explain —
+   under `--yes`, in the same spot the (skipped) prompt would have been,
+   since the flags are the record of what the gate said regardless of
+   whether anyone was asked to confirm.
 4. Prints the `ApplyResult`: one line per executed `PlanEntry`
    (`resource_key: action` — a replace is reported as `update (replaced)`
    when `likely_replace` is `True` on the returned entry, distinguishing
-   it from a plain in-place update), then any non-blocking
-   `review_flags` (`resource_key: concern [severity]`), then, if
-   `aborted`, a final `Apply aborted.` line.
+   it from a plain in-place update), then, if `aborted`, a final `Apply
+   aborted.` line. `review_flags` is **not** printed here — step 3's
+   `on_review` callback already printed each review's flags live, before
+   its confirmation; printing them again from the returned `ApplyResult`
+   would duplicate that output and was the ordering bug issue #166
+   describes (flags only ever appeared here, after the prompt they were
+   meant to inform).
 - Exit 0 if `apply_plan` returns `aborted=False`. Exit 1 if
   `aborted=True` (the user declined, or a mid-loop replace confirmation
   declined — a legitimate, non-exceptional outcome, but not "success"
@@ -451,11 +461,13 @@ pass, unconditionally subject to gate #2 by construction (every entry
    parameter (`build_destroy_plan` never calls an LLM — Mechanism A
    skips categorization entirely, `specs/orchestrator.md`).
 2. Prints the plan the same way `plan create`/`apply` do.
-3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, client=<counting client>)` —
+3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review
    always fires for a destroy plan).
-4. Same `ApplyResult` printing as `plan apply`.
+4. Same `ApplyResult` printing as `plan apply`, including `on_review`
+   printing that review's flags live rather than `_print_apply_result`
+   printing them after the fact.
 - Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error).
 
 ### `aiform plan refresh [--state-file <path>]`
@@ -516,6 +528,16 @@ skippable by `--yes`) needs to fail cleanly instead of hanging forever
 on `input()` with no TTY attached to answer it. The `RuntimeError` this
 raises is caught by `main()`'s shared error handling (exit 2), same as
 any other operational error.
+
+`_print_review_flags(flags: list[PlanReviewFlag]) -> None` is the
+separate seam for flag visibility (issue #166) — `resource_key: concern
+[severity]`, one `print()` per flag, no other formatting. Passed as
+`apply_plan()`'s `on_review` argument, it is unaffected by the TTY check
+above: it never blocks on input and has no TTY dependency (a broken-pipe
+`print()` failure here is the same pre-existing, un-special-cased
+possibility every other `print()` in this module already has, not
+something this function adds), and is called the same way whether or not
+a prompt follows it (`--yes` included).
 
 ### The verbose Anthropic-call counter
 
