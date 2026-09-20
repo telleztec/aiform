@@ -177,7 +177,7 @@ def _print_plan(
         f"Plan: {counts[PlanAction.CREATE]} to create, {counts[PlanAction.UPDATE]} to update, "
         f"{counts[PlanAction.DESTROY]} to destroy, {counts[PlanAction.NO_OP]} no-op."
     )
-    if yes:
+    if yes and any(count for action, count in counts.items() if action != PlanAction.NO_OP):
         summary += " (auto-approved via --yes, executing now)"
     print(summary)
     for warning in warnings:

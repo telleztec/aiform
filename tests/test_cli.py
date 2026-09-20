@@ -1449,6 +1449,28 @@ class TestPlanApply:
             " (auto-approved via --yes, executing now)" in out
         )
 
+    def test_apply_with_yes_on_noop_plan_omits_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #162: a repeat `apply --yes` against an unchanged project
+        # produces an all-NO_OP plan, which apply_plan() skips entirely --
+        # the marker must not claim an execution that isn't happening.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+        assert code == 0
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        out = capsys.readouterr().out
+
+        assert code == 0
+        assert "auto-approved" not in out
+
     def test_apply_without_yes_and_no_tty_fails_cleanly(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):

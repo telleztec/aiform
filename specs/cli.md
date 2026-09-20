@@ -426,17 +426,21 @@ takes an already-built plan):
    what's about to happen before any confirmation prompt — **with one
    difference**: `_print_plan(..., yes=args.yes)` appends
    `" (auto-approved via --yes, executing now)"` to the tally line when
-   `--yes` is set (issue #162), printed at this step, before step 3 runs
-   gate #2 or executes anything. Without `--yes` the tally line is
-   unmarked, same as `plan create`'s — the `[y/N]` prompt that follows it
-   in step 3 already reads unambiguously as a pending decision, so no
-   marker is needed there. The marker describes one specific fact: the
-   `[y/N]` prompt step 3 would otherwise ask is skipped. It is not a
-   promise that nothing can still stop the run — gate #2's `block` flag
-   (unconditional, even under `--yes`) and judgment call 7's
-   single-resource replace re-review (`specs/orchestrator.md`) can both
-   still halt or pause execution after this line prints, exactly as they
-   could without `--yes`.
+   `--yes` is set **and the plan has at least one non-`NO_OP` entry**
+   (issue #162), printed at this step, before step 3 runs gate #2 or
+   executes anything. The `NO_OP`-only exception matters on a repeat
+   `apply --yes` against an unchanged project: every entry is skipped by
+   `apply_plan()`, nothing executes, and a marker claiming otherwise
+   would be actively wrong rather than merely premature. Without `--yes`
+   the tally line is unmarked, same as `plan create`'s — the `[y/N]`
+   prompt that follows it in step 3 already reads unambiguously as a
+   pending decision, so no marker is needed there. The marker describes
+   one specific fact: the `[y/N]` prompt step 3 would otherwise ask is
+   skipped. It is not a promise that nothing can still stop the run —
+   gate #2's `block` flag (unconditional, even under `--yes`) and
+   judgment call 7's single-resource replace re-review
+   (`specs/orchestrator.md`) can both still halt or pause execution
+   after this line prints, exactly as they could without `--yes`.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
    `_confirm` is this module's own confirmation function (see "Confirmation and
    non-interactive runs" below), always passed regardless of `--yes`,
