@@ -159,7 +159,11 @@ def _colorize(text: str, action: PlanAction, *, color: bool) -> str:
 
 
 def _print_plan(
-    planned: list[orchestrator.PlannedResource], warnings: list[str], *, color: bool
+    planned: list[orchestrator.PlannedResource],
+    warnings: list[str],
+    *,
+    color: bool,
+    yes: bool = False,
 ) -> None:
     counts = dict.fromkeys(PlanAction, 0)
     for pr in planned:
@@ -169,10 +173,13 @@ def _print_plan(
         line = _colorize(f"{marker} {pr.entry.resource_key}: {label}", pr.entry.action, color=color)
         print(line)
         print(f"    {pr.entry.rationale}")
-    print(
+    summary = (
         f"Plan: {counts[PlanAction.CREATE]} to create, {counts[PlanAction.UPDATE]} to update, "
         f"{counts[PlanAction.DESTROY]} to destroy, {counts[PlanAction.NO_OP]} no-op."
     )
+    if yes and any(count for action, count in counts.items() if action != PlanAction.NO_OP):
+        summary += " (auto-approved via --yes, executing now)"
+    print(summary)
     for warning in warnings:
         print(f"Warning: {warning}")
 
@@ -629,7 +636,7 @@ def _plan_apply_and_report(
     planned: list[orchestrator.PlannedResource],
     warnings: list[str],
 ) -> int:
-    _print_plan(planned, warnings, color=not args.no_color)
+    _print_plan(planned, warnings, color=not args.no_color, yes=args.yes)
     result = orchestrator.apply_plan(
         planned,
         state_path=args.state_file,

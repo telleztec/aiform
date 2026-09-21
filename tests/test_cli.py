@@ -1182,6 +1182,23 @@ class TestPlanCreate:
         assert "digitalocean.compute.telleztec-app-01" in out
         assert "create" in out
 
+    def test_create_never_prints_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #162: plan create has no --yes flag at all and is always
+        # pure preview -- its tally line must never carry apply/destroy
+        # --yes's marker.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "auto-approved" not in out
+
     def test_json_output_is_parseable(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -1412,6 +1429,48 @@ class TestPlanApply:
         reloaded = state.load(state_file)
         assert "digitalocean.compute.telleztec-app-01" in reloaded.resources
 
+    def test_apply_with_yes_prints_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        # Asserts the marker is appended to the tally line itself, not
+        # printed as a separate line.
+        assert (
+            "Plan: 1 to create, 0 to update, 0 to destroy, 0 no-op."
+            " (auto-approved via --yes, executing now)" in out
+        )
+
+    def test_apply_with_yes_on_noop_plan_omits_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #162: a repeat `apply --yes` against an unchanged project
+        # produces an all-NO_OP plan, which apply_plan() skips entirely --
+        # the marker must not claim an execution that isn't happening.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        capsys.readouterr()
+        assert code == 0
+
+        code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_file)])
+        out = capsys.readouterr().out
+
+        assert code == 0
+        assert "auto-approved" not in out
+
     def test_apply_without_yes_and_no_tty_fails_cleanly(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -1447,6 +1506,25 @@ class TestPlanApply:
         assert "abort" in out.lower()
         reloaded = state.load(state_file)
         assert reloaded.resources == {}
+
+    def test_apply_without_yes_omits_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #162: the [y/N] prompt itself already reads unambiguously
+        # as a pending decision when --yes isn't set -- no marker needed.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        state_file = project_dir / ".aiform" / "state.json"
+        patch_client(monkeypatch, [])
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
+        monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+        code = cli.main(["plan", "apply", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "auto-approved" not in out
 
     def test_review_flags_are_printed_before_the_confirmation_prompt(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
@@ -1748,6 +1826,47 @@ class TestPlanDestroy:
         assert not aiform_md.exists()
         trash_dir = project_dir / ".aiform" / "trash"
         assert any(trash_dir.iterdir())
+
+    def test_destroy_with_yes_prints_auto_approved_marker(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Issue #162: destroy routes through the same _plan_apply_and_report
+        # call site as apply, so it gets the same --yes marker.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="abc123",
+        )
+        state.save(
+            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+        )
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        # Asserts the marker is appended to the tally line itself, not
+        # printed as a separate line.
+        assert (
+            "Plan: 0 to create, 0 to update, 1 to destroy, 0 no-op."
+            " (auto-approved via --yes, executing now)" in out
+        )
 
     def test_destroy_blocked_by_gate2_exits_2(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
