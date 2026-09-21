@@ -895,6 +895,10 @@ gate is usable would make it unusable today, when none do. The coverage line
 exists so that leniency is visible: a gate passing because it checked nothing
 is the failure mode to avoid, and that case is exit 2, not exit 0.
 
+With nothing tracked at all, no coverage line's arithmetic would mean
+anything, so `check` prints the plain `no resources tracked` instead — the
+exit code is still 2, unchanged from every other no-verdict case above.
+
 ---
 
 ### `aiform resource metrics [<name>]`

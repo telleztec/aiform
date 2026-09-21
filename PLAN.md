@@ -1364,8 +1364,10 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
     A resource whose driver declines health() is LISTED but does not
     fail the aggregate; requiring every driver to implement health()
     before the gate is usable would make it unusable today. It prints a
-    coverage line ("3 of 5 resources reported a health verdict; 2 unsupported") so
-    the gap is visible rather than silently passing.
+    coverage line ("3 of 5 resources reported a health verdict; 2
+    unsupported") so the gap is visible rather than silently passing.
+    With nothing tracked at all, it prints "no resources tracked"
+    instead (exit 2, unchanged).
 
 aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
