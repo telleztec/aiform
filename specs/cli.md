@@ -931,8 +931,8 @@ directory or unwritable path is an ordinary error.
 again a minute later to watch a number move:
 
 ```
-gauge  memory_bytes  2147483648
-gauge  cpu_percent   41.2
+memory_bytes  2147483648
+cpu_percent   41.2
 ```
 
 `--format json` emits the same data as structured records. There is no

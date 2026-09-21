@@ -1089,7 +1089,7 @@ class TestRenderMetricsText:
             ],
             "text",
         )
-        assert text == ("gauge  memory_bytes  2147483648\ngauge  cpu_percent   41.2")
+        assert text == ("memory_bytes  2147483648\ncpu_percent   41.2")
 
     def test_fleet_form_heads_each_resource_with_its_key_and_indents_two_spaces(self):
         text = observability.render_metrics(
@@ -1113,11 +1113,11 @@ class TestRenderMetricsText:
         )
         assert text == (
             "digitalocean.compute.web-01\n"
-            "  gauge  memory_bytes    2147483648\n"
-            "  gauge  cpu_percent     41.2\n"
+            "  memory_bytes    2147483648\n"
+            "  cpu_percent     41.2\n"
             "digitalocean.firewall.web-fw\n"
-            "  gauge  rule_count      4\n"
-            "  gauge  attached_count  1"
+            "  rule_count      4\n"
+            "  attached_count  1"
         )
 
     def test_widths_span_every_resource_not_each_block(self):
@@ -1137,7 +1137,40 @@ class TestRenderMetricsText:
             "text",
         )
         first_row = text.splitlines()[1]
-        assert first_row == "  gauge  a_b                    1"
+        assert first_row == "  a_b                    1"
+
+    def test_same_name_samples_distinguished_by_bracketed_label_value(self):
+        text = observability.render_metrics(
+            [
+                self._reading(
+                    samples=[
+                        Sample(
+                            name="cpu_seconds_total",
+                            kind=MetricKind.COUNTER,
+                            value=1066.41,
+                            labels={"mode": "idle"},
+                        ),
+                        Sample(
+                            name="cpu_seconds_total",
+                            kind=MetricKind.COUNTER,
+                            value=2.75,
+                            labels={"mode": "iowait"},
+                        ),
+                        Sample(
+                            name="memory_total_bytes",
+                            kind=MetricKind.GAUGE,
+                            value=2063581184.0,
+                        ),
+                    ]
+                )
+            ],
+            "text",
+        )
+        assert text == (
+            "cpu_seconds_total[idle]    1066.41\n"
+            "cpu_seconds_total[iowait]  2.75\n"
+            "memory_total_bytes         2063581184"
+        )
 
     def test_an_integral_float_prints_without_a_decimal_part(self):
         text = observability.render_metrics(

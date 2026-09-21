@@ -50,8 +50,8 @@ ok  compute  digitalocean.compute.web-01  active, public v4 203.0.113.10
 
 $ # ...apply some load...
 $ aiform resource metrics web-01
-gauge  memory_bytes  2147483648
-gauge  cpu_percent   41.2
+memory_bytes  2147483648
+cpu_percent   41.2
 ```
 
 Two things this demands that a fleet sweep does not. **`check` is an
@@ -709,9 +709,15 @@ test has to assert exact output:
 - **`metrics` and `status` print rows.** With a `<name>` given, the rows
   alone; in the fleet form each resource's rows are preceded by a header line
   naming its key and indented two spaces beneath it, since a bare row cannot
-  say which resource it belongs to. `metrics`' rows are
-  `<kind>  <name>  <value>`; `status`' are `<label>  <value>` over `type`
-  and the four answer labels.
+  say which resource it belongs to. `metrics`' rows are `<name>  <value>` --
+  there is no `kind` column in the text form (`--format json` still carries
+  `kind` on every sample). When a sample has labels, its name cell carries
+  their values as a bracketed, comma-separated suffix ordered by label key --
+  `cpu_seconds_total[idle]`, not `cpu_seconds_total` -- since a label's value
+  alone already says what the row is, and the key would only repeat what the
+  bracket position already says. A labelless sample's name cell is the bare
+  name, unchanged. `status`' rows are `<label>  <value>` over `type` and the
+  four answer labels.
 - **Every column is padded to the widest value in that column across the
   whole output**, two spaces between columns, no trailing whitespace. In the
   fleet form that means one alignment for all resources, not per-block.
@@ -738,11 +744,11 @@ no example showed:
 ```
 $ aiform resource metrics
 digitalocean.compute.web-01
-  gauge  memory_bytes    2147483648
-  gauge  cpu_percent     41.2
+  memory_bytes    2147483648
+  cpu_percent     41.2
 digitalocean.firewall.web-fw
-  gauge  rule_count      4
-  gauge  attached_count  1
+  rule_count      4
+  attached_count  1
 ```
 
 The header line sits at column zero and takes no part in the column widths;

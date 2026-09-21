@@ -782,7 +782,7 @@ def render_metrics(
         )
 
     per_resource = [
-        [[s.kind.value, s.name, _number(s.value)] for s in reading.samples] for reading in readings
+        [[_sample_name_cell(s), _number(s.value)] for s in reading.samples] for reading in readings
     ]
     widths = _widths([row for rows in per_resource for row in rows])
     is_fleet = _is_fleet(readings, fleet)
@@ -803,6 +803,17 @@ def _placeholder(reading: ResourceReading) -> str:
     if reading.samples_unsupported is not None:
         return _oneline(f"unsupported: {reading.samples_unsupported}")
     return "no samples"
+
+
+def _sample_name_cell(sample: Sample) -> str:
+    """A label's value, not its key: for the families that carry one today
+    (`cpu_seconds_total`'s `mode`) the value alone -- `idle`, `iowait`, ...
+    -- already tells a human what the row is, and the key would only repeat
+    what the bracket position already says."""
+    if not sample.labels:
+        return sample.name
+    values = ",".join(v for _, v in sorted(sample.labels.items()))
+    return f"{sample.name}[{values}]"
 
 
 def _number(value: float) -> str:

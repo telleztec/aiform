@@ -130,11 +130,8 @@ class TestResourceVerbsAgainstALiveDroplet:
             pass
         else:
             for line in out.splitlines():
-                kind, metric_name, value = line.split()
-                assert kind in ("gauge", "counter")
+                metric_name, value = line.split()
                 assert float(value) == float(value)  # parses
-                if kind == "counter":
-                    assert metric_name.endswith("_total")
 
         # --- status: the verb that actually exercises new code live. Its
         # `live` line is a real read() against DigitalOcean and its
