@@ -524,15 +524,18 @@ def default_confirm(prompt: str) -> bool:
     # keystroke typed during it is already queued in the terminal when the
     # prompt finally appears, and input() would take it as the answer to a
     # prompt the user never saw -- a stray "y" would approve a destroy nobody
-    # agreed to. Discard the queue first, so only an answer typed against the
-    # visible prompt counts. Best-effort by design: a non-tty stdin (piped
-    # input, tests) has no terminal queue and nothing to discard, and a failure
-    # to flush must never be what stops a confirmation from being asked.
-    try:
-        termios.tcflush(sys.stdin, termios.TCIFLUSH)
-    except Exception:
-        pass
+    # agreed to. Discard the queue before every input() call, not just the
+    # first: an unrecognized answer re-prompts, and anything typed while that
+    # unrecognized answer was being read is queued for the *next* prompt the
+    # user hasn't seen yet either (#182) -- the same #163 shape, one prompt
+    # later. Best-effort by design: a non-tty stdin (piped input, tests) has
+    # no terminal queue and nothing to discard, and a failure to flush must
+    # never be what stops a confirmation from being asked.
     while True:
+        try:
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except Exception:
+            pass
         answer = input(f"{prompt} (y/n): ").strip().lower()
         if answer == "y":
             return True

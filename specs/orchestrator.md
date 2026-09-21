@@ -753,15 +753,20 @@ full, is the caller's job — see Behavior below), shared verbatim by
    aborted=True)` immediately, nothing executed, state untouched.
    `default_confirm` reads a `y`/`n` answer via `input()`; injectable
    exactly like `client`/`llm_config` elsewhere in this codebase, for the
-   same off-the-real-I/O testing reason. Before reading, it discards
-   whatever is already queued on the terminal
-   (`termios.tcflush(sys.stdin, TCIFLUSH)`), so that only an answer typed
-   against the visible prompt counts — step 1's review call takes tens of
-   seconds with nothing on screen, and a keystroke typed during it would
-   otherwise be consumed here as the answer to a prompt the user never
-   saw (#163). The flush is best-effort and never raises: a non-tty stdin
-   (piped input, tests) has no terminal queue to discard, and a failed
-   flush must not be what stops the confirmation being asked.
+   same off-the-real-I/O testing reason. Before *every* `input()` call —
+   not just the first — it discards whatever is already queued on the
+   terminal (`termios.tcflush(sys.stdin, TCIFLUSH)`), so that only an
+   answer typed against the visible prompt counts. Step 1's review call
+   takes tens of seconds with nothing on screen, and a keystroke typed
+   during it would otherwise be consumed here as the answer to a prompt
+   the user never saw (#163); re-flushing on every loop iteration closes
+   the same gap one prompt later — an unrecognized answer re-prompts,
+   and anything queued while that unrecognized answer was being typed
+   would otherwise be silently consumed as the answer to the *next*
+   prompt, one the user also hasn't seen yet (#182). The flush is
+   best-effort and never raises: a non-tty stdin (piped input, tests)
+   has no terminal queue to discard, and a failed flush must not be what
+   stops the confirmation being asked.
    The prompt itself reads `{prompt} (y/n): ` — no implied default — and
    `default_confirm` re-prompts in a loop until the answer, stripped and
    lowercased, is exactly `y` or `n`; a blank line or any other answer is
