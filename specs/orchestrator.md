@@ -751,35 +751,23 @@ full, is the caller's job — see Behavior below), shared verbatim by
 2. **Confirmation**, unless `yes=True`: `(confirm or default_confirm)(prompt_text)`.
    `False` → return `ApplyResult(executed=[], review_flags=<from step 1>,
    aborted=True)` immediately, nothing executed, state untouched.
-   `default_confirm` reads a `y`/`n` answer via `input()`; injectable
-   exactly like `client`/`llm_config` elsewhere in this codebase, for the
-   same off-the-real-I/O testing reason. Before *every* `input()` call —
-   not just the first — it discards whatever is already queued on the
-   terminal (`termios.tcflush(sys.stdin, TCIFLUSH)`), so that only an
-   answer typed against the visible prompt counts. Step 1's review call
-   takes tens of seconds with nothing on screen, and a keystroke typed
-   during it would otherwise be consumed here as the answer to a prompt
-   the user never saw (#163); re-flushing on every loop iteration closes
-   the same gap one prompt later — an unrecognized answer re-prompts,
-   and anything queued while that unrecognized answer was being typed
-   would otherwise be silently consumed as the answer to the *next*
-   prompt, one the user also hasn't seen yet (#182). The flush is
-   best-effort and never raises: a non-tty stdin (piped input, tests)
-   has no terminal queue to discard, and a failed flush must not be what
-   stops the confirmation being asked.
-   The prompt itself reads `{prompt} (y/n): ` — no implied default — and
-   `default_confirm` re-prompts in a loop until the answer, stripped and
-   lowercased, is exactly `y` or `n`; a blank line or any other answer is
-   never silently treated as a decision either way (#182). This only ever
-   loops against a real interactive TTY: `aiform/cli.py`'s `_confirm`
-   already raises `RuntimeError` before calling `default_confirm` at all
-   when `sys.stdin` isn't a TTY (see "Confirmation and non-interactive
-   runs" in `specs/cli.md`). A caller that invokes `default_confirm`
-   directly against non-interactive or exhausted stdin — there is no such
-   caller in this codebase today, but the function is public — gets a
-   natural `EOFError` out of `input()` once stdin runs dry, rather than an
-   infinite loop or a silent decision; that propagates uncaught, same as
-   any other unhandled exception from this function.
+   `default_confirm` reads a `y`/`n` answer via `input()`, injectable like
+   `client`/`llm_config` elsewhere in this codebase. Prompt: `{prompt}
+   (y/n): ` — no implied default. It re-prompts until the stripped,
+   lowercased answer is exactly `y` or `n`; a blank line or anything else
+   never counts as a decision (#182). Before each attempt it flushes the
+   terminal's input queue (`termios.tcflush(sys.stdin, TCIFLUSH)`,
+   best-effort), so a keystroke typed during gate #2's tens-of-seconds
+   review call — or while answering wrong the first time — is never
+   mistaken for the answer to a prompt the user hasn't seen yet (#163,
+   #182). A non-tty stdin has nothing to flush, and a failed flush never
+   blocks the confirmation itself.
+   This only ever loops against a real TTY: `aiform/cli.py`'s `_confirm`
+   raises `RuntimeError` before calling `default_confirm` at all when
+   `sys.stdin` isn't one (see "Confirmation and non-interactive runs" in
+   `specs/cli.md`). Called directly against exhausted stdin, it raises
+   `EOFError` from `input()` instead of looping forever or picking a
+   default — left to propagate, deliberately.
    `termios` is POSIX-only, so importing this module — and therefore
    `aiform.cli` — now requires a POSIX platform. That is a deliberate
    narrowing, not an oversight: macOS and Linux are the only platforms
