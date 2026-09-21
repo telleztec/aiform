@@ -240,7 +240,7 @@ class TestCheck:
         code = cli.main(["resource", "check", "--state-file", str(path)])
         assert code == 2
         assert capsys.readouterr().out.splitlines()[-1] == (
-            "0 of 2 resources report health; 2 unsupported"
+            "0 of 2 resources reported a health verdict; 2 unsupported"
         )
 
     def test_a_one_resource_fleet_still_prints_the_coverage_line(self, project, capsys):
@@ -249,13 +249,13 @@ class TestCheck:
         path = project(health=OK_REPORT)
         cli.main(["resource", "check", "--state-file", str(path)])
         assert capsys.readouterr().out.splitlines()[-1] == (
-            "1 of 1 resources report health; 0 unsupported"
+            "1 of 1 resources reported a health verdict"
         )
 
     def test_a_named_resource_never_prints_the_coverage_line(self, project, capsys):
         path = project(health=OK_REPORT)
         cli.main(["resource", "check", "web-01", "--state-file", str(path)])
-        assert "resources report health" not in capsys.readouterr().out
+        assert "resources reported a health verdict" not in capsys.readouterr().out
 
     def test_an_unknown_name_exits_two_naming_what_is_tracked(self, project, capsys):
         path = project(health=OK_REPORT)

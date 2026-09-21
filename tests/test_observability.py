@@ -894,7 +894,7 @@ class TestRenderCheckText:
             "ok        compute   digitalocean.compute.web-01  active, public v4 203.0.113.10"
         )
         assert lines[1] == "degraded  firewall  digitalocean.firewall.fw     pending changes"
-        assert lines[-1] == "2 of 2 resources report health; 0 unsupported"
+        assert lines[-1] == "2 of 2 resources reported a health verdict"
 
     def test_no_line_has_trailing_whitespace(self):
         text, _ = observability.render_check(
@@ -919,15 +919,15 @@ class TestRenderCheckText:
             ],
             "text",
         )
-        assert text.splitlines()[-1] == "2 of 3 resources report health; 1 unsupported"
+        assert text.splitlines()[-1] == "2 of 3 resources reported a health verdict; 1 unsupported"
 
     def test_no_coverage_line_in_the_single_form(self):
         text, _ = observability.render_check([self._reading(health=OK_REPORT)], "text")
-        assert "resources report health" not in text
+        assert "resources reported a health verdict" not in text
 
-    def test_an_empty_fleet_renders_the_coverage_line_only(self):
+    def test_an_empty_fleet_renders_a_no_resources_tracked_line(self):
         text, code = observability.render_check([], "text")
-        assert text == "0 of 0 resources report health; 0 unsupported"
+        assert text == "no resources tracked"
         assert code == 2
 
 
@@ -1622,7 +1622,7 @@ class TestAgainstARealDriverOnDisk:
         # Leniency about some resources declining must not become a gate
         # that passes having assessed nothing.
         assert code == 2
-        assert text.splitlines()[-1] == "0 of 1 resources report health; 1 unsupported"
+        assert text.splitlines()[-1] == "0 of 1 resources reported a health verdict; 1 unsupported"
 
     def test_the_compute_driver_no_longer_declines(self, tmp_path, monkeypatch):
         # The other half of the change above, asserted rather than
@@ -1763,7 +1763,7 @@ class TestReviewRound1Regressions:
         result = observability.collect(state_path=path, want_metrics=False)
         text, code = observability.render_check(result.readings, "text", fleet=True)
         assert text.splitlines()[0].startswith("error  ")
-        assert text.splitlines()[-1] == "0 of 1 resources report health; 0 unsupported"
+        assert text.splitlines()[-1] == "0 of 1 resources reported a health verdict"
         assert code == 2
 
 
