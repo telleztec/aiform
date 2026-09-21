@@ -806,13 +806,15 @@ def _placeholder(reading: ResourceReading) -> str:
 
 
 def _sample_name_cell(sample: Sample) -> str:
-    """A label's value, not its key: for the families that carry one today
-    (`cpu_seconds_total`'s `mode`) the value alone -- `idle`, `iowait`, ...
-    -- already tells a human what the row is, and the key would only repeat
-    what the bracket position already says."""
+    """Values, not keys, sorted by key for determinism: `cpu_seconds_total`'s
+    `mode` values (`idle`, `iowait`, ...) already tell a human what the row
+    is without the key, and the DigitalOcean filesystem families' three
+    labels read the same way -- `/dev/vda1`, `ext4`, `/` are recognizable on
+    sight by their own shape, so the key would only repeat what the
+    bracket's fixed label order already says."""
     if not sample.labels:
         return sample.name
-    values = ",".join(v for _, v in sorted(sample.labels.items()))
+    values = ",".join(sample.labels[key] for key in sorted(sample.labels))
     return f"{sample.name}[{values}]"
 
 

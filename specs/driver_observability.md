@@ -712,10 +712,16 @@ test has to assert exact output:
   say which resource it belongs to. `metrics`' rows are `<name>  <value>` --
   there is no `kind` column in the text form (`--format json` still carries
   `kind` on every sample). When a sample has labels, its name cell carries
-  their values as a bracketed, comma-separated suffix ordered by label key --
-  `cpu_seconds_total[idle]`, not `cpu_seconds_total` -- since a label's value
-  alone already says what the row is, and the key would only repeat what the
-  bracket position already says. A labelless sample's name cell is the bare
+  their values (not the keys) as a bracketed, comma-separated suffix ordered
+  by label key -- `cpu_seconds_total[idle]`, not `cpu_seconds_total`. This
+  is not unique to the single-label `cpu_seconds_total` family: DigitalOcean's
+  `filesystem_free_bytes`/`filesystem_size_bytes` carry three labels each
+  (`device`, `fstype`, `mountpoint` -- see `specs/digitalocean_compute.md`'s
+  endpoint table), rendering e.g. `filesystem_free_bytes[/dev/vda1,ext4,/]`.
+  Every value here
+  is recognizable by its own shape without its key printed alongside it, so
+  the key would only repeat what the bracket's fixed label order already
+  says. A labelless sample's name cell is the bare
   name, unchanged. `status`' rows are `<label>  <value>` over `type` and the
   four answer labels.
 - **Every column is padded to the widest value in that column across the

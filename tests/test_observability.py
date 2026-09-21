@@ -1172,6 +1172,28 @@ class TestRenderMetricsText:
             "memory_total_bytes         2063581184"
         )
 
+    def test_multiple_labels_join_values_ordered_by_key_not_insertion_order(self):
+        # filesystem_free_bytes/filesystem_size_bytes are the real multi-label
+        # case (specs/digitalocean_compute.md): device, fstype, mountpoint.
+        # Insertion order here is deliberately not key order, to prove the
+        # join sorts rather than echoing dict order.
+        text = observability.render_metrics(
+            [
+                self._reading(
+                    samples=[
+                        Sample(
+                            name="filesystem_free_bytes",
+                            kind=MetricKind.GAUGE,
+                            value=19875528704.0,
+                            labels={"mountpoint": "/", "device": "/dev/vda1", "fstype": "ext4"},
+                        )
+                    ]
+                )
+            ],
+            "text",
+        )
+        assert text == "filesystem_free_bytes[/dev/vda1,ext4,/]  19875528704"
+
     def test_an_integral_float_prints_without_a_decimal_part(self):
         text = observability.render_metrics(
             [self._reading(samples=[Sample(name="x_bytes", kind=MetricKind.GAUGE, value=4.0)])],
