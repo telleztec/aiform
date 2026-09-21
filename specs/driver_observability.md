@@ -862,7 +862,7 @@ Three consequences worth pinning, because each is a way a pipeable command
 usually goes wrong:
 
 - **Nothing diagnostic is ever interleaved into stdout.** `check`'s coverage
-  line (`2 of 3 resources report health; 1 unsupported`) is part of the
+  line (`2 of 3 resources reported a health verdict; 1 unsupported`) is part of the
   *report*, so in `--format text` it goes to stdout with the rest; in
   `--format json` it is a field in the document, never a stray line that
   would make the output unparseable. A warning is not part of the report and
@@ -993,7 +993,7 @@ other way:
   of the previous point. Leniency about *some* resources declining must not
   become a gate that passes because it assessed nothing, which is exactly what
   `0` would mean on a fleet where every driver declines. A coverage line
-  (`2 of 3 resources report health; 1 unsupported`) prints either way, so
+  (`2 of 3 resources reported a health verdict; 1 unsupported`) prints either way, so
   partial assessment is visible rather than inferred from an exit code that
   cannot express it.
 - **`UNKNOWN` fails.** A resource aiform could not reach is not a resource

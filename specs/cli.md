@@ -871,7 +871,7 @@ $ aiform resource check
 ok           compute  digitalocean.compute.web-01  active, public v4 203.0.113.10
 failing      compute  digitalocean.compute.db-01   status is "off"
 unsupported  domain   digitalocean.domain.example  no per-domain health signal
-2 of 3 resources report health; 1 unsupported
+2 of 3 resources reported a health verdict; 1 unsupported
 ```
 
 The second column is the resource type. It is a column of its own rather

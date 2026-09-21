@@ -688,10 +688,16 @@ def render_check(
         lines.append(_row(row, widths))
         lines.extend(_observation_lines(reading))
     if _is_fleet(readings, fleet):
-        lines.append(
-            f"{coverage['reporting']} of {coverage['total']} resources report health; "
-            f"{coverage['unsupported']} unsupported"
-        )
+        if coverage["total"] == 0:
+            lines.append("no resources tracked")
+        else:
+            line = (
+                f"{coverage['reporting']} of {coverage['total']} "
+                "resources reported a health verdict"
+            )
+            if coverage["unsupported"] > 0:
+                line += f"; {coverage['unsupported']} unsupported"
+            lines.append(line)
     return "\n".join(lines), code
 
 
