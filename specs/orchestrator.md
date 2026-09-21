@@ -751,7 +751,7 @@ full, is the caller's job — see Behavior below), shared verbatim by
 2. **Confirmation**, unless `yes=True`: `(confirm or default_confirm)(prompt_text)`.
    `False` → return `ApplyResult(executed=[], review_flags=<from step 1>,
    aborted=True)` immediately, nothing executed, state untouched.
-   `default_confirm` reads a `y`/`N` answer via `input()`; injectable
+   `default_confirm` reads a `y`/`n` answer via `input()`; injectable
    exactly like `client`/`llm_config` elsewhere in this codebase, for the
    same off-the-real-I/O testing reason. Before reading, it discards
    whatever is already queued on the terminal
@@ -762,6 +762,19 @@ full, is the caller's job — see Behavior below), shared verbatim by
    saw (#163). The flush is best-effort and never raises: a non-tty stdin
    (piped input, tests) has no terminal queue to discard, and a failed
    flush must not be what stops the confirmation being asked.
+   The prompt itself reads `{prompt} (y/n): ` — no implied default — and
+   `default_confirm` re-prompts in a loop until the answer, stripped and
+   lowercased, is exactly `y` or `n`; a blank line or any other answer is
+   never silently treated as a decision either way (#182). This only ever
+   loops against a real interactive TTY: `aiform/cli.py`'s `_confirm`
+   already raises `RuntimeError` before calling `default_confirm` at all
+   when `sys.stdin` isn't a TTY (see "Confirmation and non-interactive
+   runs" in `specs/cli.md`). A caller that invokes `default_confirm`
+   directly against non-interactive or exhausted stdin — there is no such
+   caller in this codebase today, but the function is public — gets a
+   natural `EOFError` out of `input()` once stdin runs dry, rather than an
+   infinite loop or a silent decision; that propagates uncaught, same as
+   any other unhandled exception from this function.
    `termios` is POSIX-only, so importing this module — and therefore
    `aiform.cli` — now requires a POSIX platform. That is a deliberate
    narrowing, not an oversight: macOS and Linux are the only platforms

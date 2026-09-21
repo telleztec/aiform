@@ -532,7 +532,12 @@ def default_confirm(prompt: str) -> bool:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
-    return input(f"{prompt} [y/N]: ").strip().lower() == "y"
+    while True:
+        answer = input(f"{prompt} (y/n): ").strip().lower()
+        if answer == "y":
+            return True
+        if answer == "n":
+            return False
 
 
 def build_plan_summary(planned: list[PlannedResource]) -> str:

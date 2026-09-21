@@ -1154,7 +1154,7 @@ once verified.
    ```
    - Any `severity: "block"` flag halts `apply` unconditionally — this
      cannot be bypassed by `--yes`. Non-blocking flags are printed,
-     then the user is asked for final `y/N` confirmation (`--yes`
+     then the user is asked for final `y/n` confirmation (`--yes`
      skips only this prompt, never a `block`).
 
 3. **Execute**, in file order (trivial for MVP's
@@ -1503,7 +1503,7 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    statement of the project's cost claim: a first `plan create` on a
    brand-new project costs nothing.
 3. **`aiform plan apply`** — no destroy/likely-replace actions present → gate #2
-   is skipped entirely, straight to y/N prompt (or `--yes`). Executes
+   is skipped entirely, straight to y/n prompt (or `--yes`). Executes
    `driver.create(name, params, credentials)` — a real DO operation, as
    opposed to the deterministic steps around it (not a literal one-HTTP-request
    budget: `create()` itself makes one mutating `POST` plus bounded
