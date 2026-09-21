@@ -155,7 +155,7 @@ class TestResourceVerbsAgainstALiveDroplet:
         code = cli.main(["resource", "check", "--state-file", str(state_path)])
         out = capsys.readouterr().out
         assert code == 0, out
-        assert out.splitlines()[-1] == "1 of 1 resources report health; 0 unsupported"
+        assert out.splitlines()[-1] == "1 of 1 resources reported a health verdict"
 
         # --- json stays a single parseable document on the live path.
         code = cli.main(
