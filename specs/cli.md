@@ -432,10 +432,10 @@ takes an already-built plan):
    `apply --yes` against an unchanged project: every entry is skipped by
    `apply_plan()`, nothing executes, and a marker claiming otherwise
    would be actively wrong rather than merely premature. Without `--yes`
-   the tally line is unmarked, same as `plan create`'s — the `[y/N]`
+   the tally line is unmarked, same as `plan create`'s — the `(y/n)`
    prompt that follows it in step 3 already reads unambiguously as a
    pending decision, so no marker is needed there. The marker describes
-   one specific fact: the `[y/N]` prompt step 3 would otherwise ask is
+   one specific fact: the `(y/n)` prompt step 3 would otherwise ask is
    skipped. It is not a promise that nothing can still stop the run —
    gate #2's `block` flag (unconditional, even under `--yes`) and
    judgment call 7's single-resource replace re-review
@@ -540,9 +540,10 @@ It checks `sys.stdin.isatty()` first: if `False`, raises `RuntimeError`
 naming the prompt and telling the user `--yes` is required for
 non-interactive runs, **without ever calling `input()`**. If `True`, it
 calls `orchestrator.default_confirm(prompt)` — the no-TTY check is the
-only thing it adds, so the `y`/`N` prompt and the pre-prompt input flush
-that makes the answer trustworthy (`specs/orchestrator.md` step 2, #163)
-live in one implementation rather than two copies that can drift. The
+only thing it adds, so the `y`/`n` prompt (re-asked until the answer is
+exactly `y` or `n`, no implied default — #182) and the pre-prompt input
+flush that makes the answer trustworthy (`specs/orchestrator.md` step 2,
+#163) live in one implementation rather than two copies that can drift. The
 raise-on-no-TTY behaviour stays this module's, which is why `_confirm` —
 not `default_confirm` — is still what `apply_plan()` is handed.
 This exists specifically for `specs/orchestrator.md` judgment call

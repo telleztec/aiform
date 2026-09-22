@@ -1510,7 +1510,7 @@ class TestPlanApply:
     def test_apply_without_yes_omits_auto_approved_marker(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
-        # Issue #162: the [y/N] prompt itself already reads unambiguously
+        # Issue #162: the (y/n) prompt itself already reads unambiguously
         # as a pending decision when --yes isn't set -- no marker needed.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         write_driver(drivers_dir, "digitalocean", "compute")
@@ -1530,7 +1530,7 @@ class TestPlanApply:
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
         # Issue #166: the review flags used to only ever print after the
-        # whole command finished, so the [y/N] prompt was answered blind.
+        # whole command finished, so the (y/n) prompt was answered blind.
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
         state_file = write_tracked_resource_forcing_categorization(project_dir, drivers_dir)
         patch_client(
