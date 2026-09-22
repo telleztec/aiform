@@ -129,12 +129,19 @@ class TestResourceVerbsAgainstALiveDroplet:
         if out.strip() == "no samples":
             pass
         else:
-            for line in out.splitlines():
-                kind, metric_name, value = line.split()
-                assert kind in ("gauge", "counter")
+            # rsplit, not split: a labeled name cell's bracket suffix is one
+            # token with the metric name, but nothing guarantees a label
+            # value itself never contains whitespace.
+            names = [line.rsplit(None, 1)[0] for line in out.splitlines()]
+            for line, metric_name in zip(out.splitlines(), names, strict=True):
+                value = line.rsplit(None, 1)[1]
                 assert float(value) == float(value)  # parses
-                if kind == "counter":
-                    assert metric_name.endswith("_total")
+                if "[" in metric_name:
+                    assert metric_name.endswith("]") and not metric_name.endswith("[]")
+            # The defect #160 fixes: distinct series sharing one metric name
+            # (DigitalOcean's per-mode cpu_seconds_total) must render as
+            # distinguishable rows, not identical duplicates.
+            assert len(names) == len(set(names)), f"duplicate metric name rows: {names}"
 
         # --- status: the verb that actually exercises new code live. Its
         # `live` line is a real read() against DigitalOcean and its

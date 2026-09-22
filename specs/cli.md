@@ -936,9 +936,15 @@ directory or unwritable path is an ordinary error.
 again a minute later to watch a number move:
 
 ```
-gauge  memory_bytes  2147483648
-gauge  cpu_percent   41.2
+memory_bytes  2147483648
+cpu_percent   41.2
 ```
+
+A sample carrying labels (e.g. DigitalOcean's per-mode `cpu_seconds_total`)
+gets its label values folded into the name cell as a bracketed,
+comma-separated suffix instead of a separate column: `cpu_seconds_total[idle]`,
+`cpu_seconds_total[iowait]`, and so on — see
+`specs/driver_observability.md`'s rendering rules for the full format.
 
 `--format json` emits the same data as structured records. There is no
 exposition format: it has no consumer until `PLAN.md` §10's "Metrics pipeline

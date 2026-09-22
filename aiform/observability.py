@@ -788,7 +788,7 @@ def render_metrics(
         )
 
     per_resource = [
-        [[s.kind.value, s.name, _number(s.value)] for s in reading.samples] for reading in readings
+        [[_sample_name_cell(s), _number(s.value)] for s in reading.samples] for reading in readings
     ]
     widths = _widths([row for rows in per_resource for row in rows])
     is_fleet = _is_fleet(readings, fleet)
@@ -809,6 +809,19 @@ def _placeholder(reading: ResourceReading) -> str:
     if reading.samples_unsupported is not None:
         return _oneline(f"unsupported: {reading.samples_unsupported}")
     return "no samples"
+
+
+def _sample_name_cell(sample: Sample) -> str:
+    """Values, not keys, sorted by key for determinism: `cpu_seconds_total`'s
+    `mode` values (`idle`, `iowait`, ...) already tell a human what the row
+    is without the key, and the DigitalOcean filesystem families' three
+    labels read the same way -- `/dev/vda1`, `ext4`, `/` are recognizable on
+    sight by their own shape, so the key would only repeat what the
+    bracket's fixed label order already says."""
+    if not sample.labels:
+        return sample.name
+    values = ",".join(sample.labels[key] for key in sorted(sample.labels))
+    return f"{sample.name}[{values}]"
 
 
 def _number(value: float) -> str:

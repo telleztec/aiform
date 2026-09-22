@@ -307,9 +307,7 @@ class TestMetrics:
         )
         code = cli.main(["resource", "metrics", "web-01", "--state-file", str(path)])
         assert code == 0
-        assert capsys.readouterr().out == (
-            "gauge  memory_bytes  2147483648\ngauge  cpu_percent   41.2\n"
-        )
+        assert capsys.readouterr().out == ("memory_bytes  2147483648\ncpu_percent   41.2\n")
 
     def test_a_declining_driver_exits_zero(self, project, capsys):
         # metrics reports no verdict, so there is nothing for its exit
@@ -334,7 +332,7 @@ class TestMetrics:
         cli.main(["resource", "metrics", "--state-file", str(path)])
         lines = capsys.readouterr().out.splitlines()
         assert lines[0] == "digitalocean.compute.web-01"
-        assert lines[1] == "  gauge  memory_bytes  1"
+        assert lines[1] == "  memory_bytes  1"
         assert lines[2] == "digitalocean.compute.db-01"
 
     def test_no_tracked_resources_prints_nothing_and_exits_zero(self, project, capsys):
@@ -378,7 +376,7 @@ class TestMetricsOutput:
         out = project.dir / "metrics.log"
         assert self._run(project, out) == 0
         assert self._run(project, out) == 0
-        assert out.read_text().count("gauge  memory_bytes  1") == 2
+        assert out.read_text().count("memory_bytes  1") == 2
 
     def test_each_run_is_preceded_by_a_utc_delimiter_naming_the_invocation(self, project):
         out = project.dir / "metrics.log"
