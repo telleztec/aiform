@@ -2466,7 +2466,7 @@ class TestDefaultConfirm:
             # child is past it -- no sleep, no timing window. An empty read
             # means the child exited instead, which the final assert catches.
             seen = ""
-            while not seen.endswith("[y/N]: "):
+            while not seen.endswith("(y/n): "):
                 char = proc.stdout.read(1)
                 if not char:
                     break
@@ -2486,3 +2486,36 @@ class TestDefaultConfirm:
                 proc.communicate()
 
         assert "ANSWER False" in out
+
+    def test_blank_or_unrecognized_answer_reprompts_instead_of_defaulting(self, monkeypatch):
+        answers = iter(["", "maybe", "yy", "n"])
+        seen_prompts = []
+
+        def fake_input(prompt=""):
+            seen_prompts.append(prompt)
+            return next(answers)
+
+        monkeypatch.setattr("builtins.input", fake_input)
+
+        result = orchestrator.default_confirm("Apply this plan?")
+
+        assert result is False
+        with pytest.raises(StopIteration):
+            next(answers)
+        assert seen_prompts == ["Apply this plan? (y/n): "] * 4
+
+    def test_eventual_y_answer_is_returned_true(self, monkeypatch):
+        answers = iter(["", "Y"])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+        result = orchestrator.default_confirm("Apply this plan?")
+
+        assert result is True
+
+    def test_whitespace_padded_answer_is_stripped(self, monkeypatch):
+        answers = iter([" n "])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+        result = orchestrator.default_confirm("Apply this plan?")
+
+        assert result is False
