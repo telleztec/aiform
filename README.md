@@ -1,39 +1,39 @@
 # aiform
 
-An AI-driven alternative to Terraform.
+An Agentic Infrastructure as Code Framework for the cost conscious. 
+
+## Persona
+
+Who this is for: 
+
+* A cost-sensitive solo entrepreneur, a hobbyist, or a small startup who
+wants to write the code of the application, but does not want to spend time
+building and running the infrastructure that contains the website and/or SaaS
+that runs the application.
+
+* A non technical business owner or non-profit — usually one person, sometimes
+a small handful of collaborators or volunteers, who doesn't really want to think
+about their website and the needs of the infrastructure.
+
+* A non technical business owner who has procured a closed system with a website
+builder, a shopping site and found limitations of plugins, options and support.  
+
+* A startup that has built the application, deployed to the web using IAC (Terraform),
+but does not want to invest on an infrastructure team and use those funds to instead
+continue to build the application that generates the revenue. 
 
 ## The pitch
 
-The origin of this idea comes from the experience working on two different DBaaS
-implementations. What came out of that work was the recognition that Terraform code
-generation is doable with AI but still more expensive than it should be, and that
-the result is a somewhat brittle, mostly-works outcome. Customers still struggle
-with timeouts, retries, resource scarcity at the CSP side, and other issues that
-often require minor judgments from developers or SREs. Enter AI: the AI running in
-the orchestration can make an educated guess that an additional retry is warranted,
-or that perhaps we should quit immediately because the error is catastrophic.
+The origin of this idea comes from the experience working on on Kubernetes precursor and 
+two different DBaaS implementations. What came out of that work was the recognition 
+that running terraform code is great for simple problems, and combine with AI code generation
+is easy, but the terraform itself is brittle and the infrastructure it creates needs a team
+to monitor and maintain it. 
 
-Moreover, infrastructure as code (IaC) simply builds the infrastructure up: it does
-not run it, alert when it fails, or adjust as the needs require. This project
-explores the premise that an LLM will be a better orchestrator than the Terraform
-engine, and that once the infrastructure is stood up, a set of skills can maintain the
-system — doing software upgrades, rotating certs, performing white-hat security probes,
-alerting when something goes wrong, and using AI techniques to resolve incidents and
-propose fixes.
-
-Terraform's plan/apply engine is powerful but rigid: every resource attribute is
-statically flagged by the provider author as either updatable-in-place or
-`ForceNew` (destroy + recreate), with no room for "it depends on the actual
-diff." Real-world consequences include unnecessary destroy/recreate cycles
-(e.g. AWS security-group description edits, Azure `zone_redundant`), and
-`count`/`for_each` index-shift bugs that destroy unrelated resources.
-
-The side-effects of the project are numerous. One of them is that we will provide an
-agent to help create the drivers that implement resource deployment, update, deletion,
-and query, and anyone will be able to use that agent to generate a new driver. That
-matters because it removes the ceiling on how much of a system can be managed as code:
-a project no longer has to stop at the 80% its provider happens to cover, and can go to
-100%.
+Generation of new resources is doable with AI but still more expensive than it should be, 
+making modifying of the system hard for non infra experts.  So the goal is to combine
+deterministic approaches with AI generation to improve the tool, and to extend IAC into
+the running of the infrastructure.  
 
 aiform replaces Terraform's *planning and diffing* logic with an LLM that
 reasons about the actual diff each time — while keeping the mechanical,
@@ -52,38 +52,6 @@ support ongoing deployment and monitoring, designed so that end users deploy
 that monitoring and running infrastructure with the tool themselves, and then
 use it to deploy and run their own SaaS application.
 
-## Persona
-
-Who this is for: a cost-sensitive solo entrepreneur, hobbyist, small
-startup, or non-profit — usually one person, sometimes a small handful
-of collaborators or volunteers.
-
-As aiform's own state, credentials, and locking grow to live in a real
-database or vault reachable by distributed runners, rather than on one
-operator's machine, a second user comes into focus: someone who already
-relies on infrastructure-as-code and has hit its limits elsewhere. They
-want IaC that's easy to extend with new resource types, and that treats
-each SaaS subscription as optional rather than assumed — replacing the
-ones that only sell convenience, not real value, with something
-AI-built and self-managed instead.
-
-## Use Case
-
-That first user wants to build a small system with simple SaaS-like
-properties — a handful of VMs, some networking, a database or two — by
-assembling open-source components themselves, rather than paying for
-and getting locked into a pile of separate SaaS products, or a single
-one-size-fits-all platform like Shopify or Square. Assembling instead of
-subscribing is cheaper (a few VMs beat several SaaS bills) and keeps you
-in control (no vendor lock-in, no feature ceiling set by someone else's
-roadmap) — at the cost of now being on the hook for standing the system
-up and keeping it running yourself, which is exactly the part
-Terraform-style IaC has never covered (see "The pitch" above): it builds
-infrastructure up, it doesn't run it, alert when it fails, or adjust as
-needs change.
-
-aiform is the AI-driven IaC layer this person uses to build and manage
-that assembled system.
 
 ## Status
 
