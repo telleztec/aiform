@@ -43,17 +43,25 @@ first one that's met**, since safety wins ties:
    ```sh
    gh issue view <n> --json labels --jq '.labels[].name | select(startswith("priority: "))'
    ```
-4. Set the label in **one** `gh issue edit` call — a `--remove-label` per
-   stale label step 3 printed (if any), plus `--add-label` for the chosen
-   tier, using the full label name every time:
-   ```sh
-   gh issue edit <n> \
-     --remove-label "priority: <stale-tier, if any>" \
-     --add-label "priority: P0-safety"   # or "priority: P1-correctness" / "priority: P2-usability" / "priority: P3-cosmetic"
-   ```
-   One call, not two — a remove followed by a separate add leaves a window
-   where the issue briefly has no priority label at all if the second call
-   fails.
+4. Act on what step 3 printed. `gh issue edit` resolves `--remove-label`
+   and `--add-label` into a single final label set rather than applying
+   them as ordered operations, so passing both for the **same** label nets
+   to no label at all — don't do that:
+   - **Nothing printed** — add the chosen tier:
+     ```sh
+     gh issue edit <n> --add-label "priority: P0-safety"   # full name, matching one of the four labels above
+     ```
+   - **The chosen tier was already printed** — nothing to do; already
+     correctly labeled.
+   - **A different tier was printed** — remove it and add the chosen one
+     in one call, using full label names for both, so there's never a
+     window with no priority label at all (unlike two separate calls,
+     where the issue is briefly unlabeled if the second call fails):
+     ```sh
+     gh issue edit <n> \
+       --remove-label "priority: <the different tier step 3 printed>" \
+       --add-label "priority: P0-safety"   # full name, matching one of the four labels above
+     ```
 
 For a newly-filed issue, do this immediately after `gh issue create` — as
 part of filing, not a separate later pass.
