@@ -52,6 +52,23 @@ support ongoing deployment and monitoring, designed so that end users deploy
 that monitoring and running infrastructure with the tool themselves, and then
 use it to deploy and run their own SaaS application.
 
+## Use Case
+
+That first user wants to build a small system with simple SaaS-like
+properties — a handful of VMs, some networking, a database or two — by
+assembling open-source components themselves, rather than paying for
+and getting locked into a pile of separate SaaS products, or a single
+one-size-fits-all platform like Shopify or Square. Assembling instead of
+subscribing is cheaper (a few VMs beat several SaaS bills) and keeps you
+in control (no vendor lock-in, no feature ceiling set by someone else's
+roadmap) — at the cost of now being on the hook for standing the system
+up and keeping it running yourself, which is exactly the part
+Terraform-style IaC has never covered (see "The pitch" above): it builds
+infrastructure up, it doesn't run it, alert when it fails, or adjust as
+needs change.
+
+aiform is the AI-driven IaC layer this person uses to build and manage
+that assembled system.
 
 ## Status
 
