@@ -18,20 +18,27 @@ issue rather than trying to shortcut it across all of them at once.
 Four tiers. Walk the tests **in this order — P0 first — and stop at the
 first one that's met**, since safety wins ties:
 
-- **P0 — Safety**: can cause an unintended destructive/irreversible action,
-  real ongoing cost, or resource/data loss *without the user's informed
-  consent* — regardless of how it was triggered (a bug, a race, an external
-  kill). Test: *if this fires unnoticed, does something bad and
-  hard-to-reverse happen, or does money/data leak silently?*
-- **P1 — Correctness / process integrity**: not immediately destructive, but
-  the tool's output, or a gate meant to catch mistakes, is provably wrong or
-  non-functional. Test: *could someone make a bad decision trusting this, or
-  does a safety mechanism not actually do its job?*
-- **P2 — Usability**: confusing or misleading output that costs time/trust
-  but doesn't risk a wrong action or bad data. Test: *does a human get
-  confused or annoyed, without anything actually going wrong?*
-- **P3 — Cosmetic / deferred**: documentation drift, nits, anything already
-  explicitly deferred during a review round as non-blocking.
+- **P0 — Safety** (`priority: P0-safety`): can cause an unintended
+  destructive/irreversible action, real ongoing cost, or resource/data loss
+  *without the user's informed consent* — regardless of how it was triggered
+  (a bug, a race, an external kill). Test: *if this fires unnoticed, does
+  something bad and hard-to-reverse happen, or does money/data leak
+  silently?*
+- **P1 — Correctness / process integrity** (`priority: P1-correctness`): not
+  immediately destructive, but the tool's output, or a gate meant to catch
+  mistakes, is provably wrong or non-functional. Test: *could someone make a
+  bad decision trusting this, or does a safety mechanism not actually do its
+  job?*
+- **P2 — Usability** (`priority: P2-usability`): confusing or misleading
+  output that costs time/trust but doesn't risk a wrong action or bad data.
+  Test: *does a human get confused or annoyed, without anything actually
+  going wrong?*
+- **P3 — Cosmetic / deferred** (`priority: P3-cosmetic`): documentation
+  drift, nits, anything already explicitly deferred during a review round as
+  non-blocking.
+
+The parenthesized text after each tier is that tier's **exact, full** GitHub
+label name — the only four `priority: *` labels this skill ever adds.
 
 ## Procedure
 
@@ -43,24 +50,29 @@ first one that's met**, since safety wins ties:
    ```sh
    gh issue view <n> --json labels --jq '.labels[].name | select(startswith("priority: "))'
    ```
-4. Act on what step 3 printed. `gh issue edit` resolves `--remove-label`
-   and `--add-label` into a single final label set rather than applying
-   them as ordered operations, so passing both for the **same** label nets
-   to no label at all — don't do that:
-   - **Nothing printed** — add the chosen tier:
+4. Compare the chosen tier's label (from the rubric above) against
+   everything step 3 printed, and act in **one** `gh issue edit` call —
+   never two, which leaves the issue briefly (or, done wrong, permanently)
+   without any priority label between calls:
+   - **Nothing printed** — add only:
      ```sh
-     gh issue edit <n> --add-label "priority: P0-safety"   # full name, matching one of the four labels above
+     gh issue edit <n> --add-label "priority: P2-usability"
      ```
-   - **The chosen tier was already printed** — nothing to do; already
-     correctly labeled.
-   - **A different tier was printed** — remove it and add the chosen one
-     in one call, using full label names for both, so there's never a
-     window with no priority label at all (unlike two separate calls,
-     where the issue is briefly unlabeled if the second call fails):
+   - **Exactly the chosen tier's label, and nothing else** — already
+     correctly labeled; nothing to do.
+   - **Anything else** — a different tier, more than one label, or the
+     chosen tier alongside another — `--remove-label` every printed label
+     that is **not** the chosen tier (repeat the flag once per such label),
+     plus `--add-label` for the chosen tier if it wasn't already among them.
+     Never pass `--remove-label` and `--add-label` for the *same* label:
+     `gh issue edit` resolves them into one final set rather than ordered
+     operations, so removing and adding the same label nets to no label at
+     all.
      ```sh
      gh issue edit <n> \
-       --remove-label "priority: <the different tier step 3 printed>" \
-       --add-label "priority: P0-safety"   # full name, matching one of the four labels above
+       --remove-label "priority: P1-correctness" \
+       --remove-label "priority: P3-cosmetic" \
+       --add-label "priority: P2-usability"
      ```
 
 For a newly-filed issue, do this immediately after `gh issue create` — as
