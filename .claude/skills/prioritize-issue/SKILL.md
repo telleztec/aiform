@@ -37,18 +37,23 @@ first one that's met**, since safety wins ties:
 
 1. Read the issue: `gh issue view <n>` (title and body — for a not-yet-filed
    issue, use the drafted title/body directly).
-2. Walk the four tests above in order; the first one that's met decides the
-   tier. Don't skip ahead to a tier that "feels right" — the order is the
-   point, and P0's test is deliberately cheap to check first.
-3. If the issue already carries a different `priority: *` label, remove it
-   so exactly one tier label is ever present:
+2. Apply the rubric above and settle on exactly one tier.
+3. Check for any `priority: *` label the issue already carries — there
+   should be at most one, but check rather than assume:
    ```sh
-   gh issue edit <n> --remove-label "priority: <old-tier>"
+   gh issue view <n> --json labels --jq '.labels[].name | select(startswith("priority: "))'
    ```
-4. Apply the label:
+4. Set the label in **one** `gh issue edit` call — a `--remove-label` per
+   stale label step 3 printed (if any), plus `--add-label` for the chosen
+   tier, using the full label name every time:
    ```sh
-   gh issue edit <n> --add-label "priority: P0-safety"       # or P1-correctness / P2-usability / P3-cosmetic
+   gh issue edit <n> \
+     --remove-label "priority: <stale-tier, if any>" \
+     --add-label "priority: P0-safety"   # or "priority: P1-correctness" / "priority: P2-usability" / "priority: P3-cosmetic"
    ```
+   One call, not two — a remove followed by a separate add leaves a window
+   where the issue briefly has no priority label at all if the second call
+   fails.
 
 For a newly-filed issue, do this immediately after `gh issue create` — as
 part of filing, not a separate later pass.
