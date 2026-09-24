@@ -422,6 +422,16 @@ def build_create_plan(
                 "for it and it has not drifted missing"
             )
 
+        # The toll for a text-only edit is spent by `plan`, so `plan` is
+        # what clears it. apply_plan() skips NO_OP before any state write,
+        # so without this a reworded Intent section left state's hash
+        # stale forever and every later plan re-paid for a categorization
+        # that could only answer no-op -- issue #195. Safe because the
+        # short-circuit also requires an empty diff, so a real params
+        # change still falls through however the hash compares.
+        if entry.action == PlanAction.NO_OP and state_entry is not None:
+            state_entry.aiform_md_sha256 = parsed.aiform_md_sha256
+
         planned.append(
             PlannedResource(
                 entry=entry,

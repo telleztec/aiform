@@ -664,7 +664,40 @@ next time `plan create` runs against that resource, not here.
      check here — `NO_OP` is only ever returned when the no-op
      short-circuit already confirmed `current_attributes`/`desired_params`
      agree, and `plan_resource()` cannot return `DESTROY` at all.
-  9. `PlannedResource(entry=entry, provider=spec.provider,
+  9. **Record the file hash on a `NO_OP`** (issue &#35;195): when
+     `entry.action == PlanAction.NO_OP` and `state_entry is not None`,
+     `state_entry.aiform_md_sha256 = parsed.aiform_md_sha256`.
+
+     This is the sha half of the zero-call guarantee, and without it the
+     guarantee held only for files nobody ever edited. A change to a
+     tracked file that is *not* a `params` value — reworded Intent prose,
+     a new frontmatter key — moves `parser.compute_sha256()`'s
+     whole-file digest, so `plan_resource()`'s short-circuit
+     (`specs/planner.md`, three conjuncts) fails on the sha comparison
+     even though the diff is empty, and the plan pays for an
+     `extract_intent_notes()` call (when the Intent section is non-empty)
+     plus a `categorize_diff()` call whose only available answer is
+     `no-op`. Nothing then recorded the new digest: `apply_plan()` skips
+     `NO_OP` before any state write, and its only writes to
+     `aiform_md_sha256` are `_new_state_entry()` and the `UPDATE`
+     branch. So the resource re-paid that toll on **every** subsequent
+     plan, indefinitely — a standing violation of `CLAUDE.md`'s
+     zero-calls-on-unchanged-input rule rather than a one-time cost.
+
+     Writing it here rather than in `apply_plan()` is deliberate: the
+     toll is spent by `plan`, so `plan` is what must clear it. A user who
+     edits prose and re-plans without ever applying is exactly the case
+     that was broken, and routing the fix through `apply` would leave it
+     broken.
+
+     It cannot mask a real change. The short-circuit also requires an
+     empty diff, so a resource whose `params` genuinely differ still
+     falls through on the next run no matter what the sha says — the
+     hash is a cheap pre-filter, never the authority on whether work is
+     needed. Guarded on `state_entry is not None` because an untracked
+     resource is never `NO_OP` (step 7 plans it `CREATE`) and has no
+     entry to write to.
+  10. `PlannedResource(entry=entry, provider=spec.provider,
      resource_type=spec.resource, name=spec.name,
      desired_params=spec.params, aiform_md_path=path,
      current_aiform_md_sha256=parsed.aiform_md_sha256, driver=driver,
@@ -674,7 +707,9 @@ next time `plan create` runs against that resource, not here.
 After every file: `state.save(state, state_path)` — once, matching
 `refresh_state()`'s "no destructive side effects to protect, batch the
 write" reasoning above (`build_create_plan()` never creates, updates, or
-destroys anything itself; it only refreshes cached attributes). Returns
+destroys anything itself; it only refreshes cached attributes,
+`last_refreshed_at`, and — per step 9 — a no-op resource's
+`aiform_md_sha256`). Returns
 `(planned, warnings)`; `warnings` is populated **only** when `paths` was
 falsy (default, discover-all mode): every `state.resources` key not
 covered by any `PlannedResource` built this run (including ones targeted
@@ -778,7 +813,9 @@ full, is the caller's job — see Behavior below), shared verbatim by
 3. **Execute**, in `planned`'s given order (`PLAN.md`: "trivial for
    MVP's single-resource-per-file model"):
    - `NO_OP` → skip; nothing to persist (`build_create_plan()` already
-     persisted its refreshed attributes).
+     persisted its refreshed attributes, and — since issue &#35;195 — its
+     `aiform_md_sha256`, which is why that write lives in the planning
+     pass and not here).
    - `CREATE` → `raw = pr.driver.create(pr.name, pr.desired_params,
      pr.credentials)`. `create()`'s contract gained a `name` parameter,
      passed positionally first (`aiform/driver.py`, `PLAN.md` §4), after
