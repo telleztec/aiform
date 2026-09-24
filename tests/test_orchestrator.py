@@ -1767,6 +1767,31 @@ class TestBuildCreatePlanDependencyOrdering:
         assert actions["digitalocean.compute.old-01"] == PlanAction.DESTROY
         assert len(client.messages.calls) == 0
 
+    def test_live_files_precede_delete_marked_files_in_returned_order(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # Names chosen so alphabetical order disagrees with the expected
+        # order -- a plain sort-by-name implementation would put alpha-01
+        # (delete-marked) before zeta-01 (live) and fail this.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        live_path = tmp_path / "zeta.aiform.md"
+        write_aiform_md(live_path, name="zeta-01")
+        delete_path = tmp_path / "AIFORM-DELETE-alpha.aiform.md"
+        write_aiform_md(delete_path, name="alpha-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path, **{"digitalocean.compute.alpha-01": make_state_entry(name="alpha-01")}
+        )
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [delete_path, live_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.zeta-01", "digitalocean.compute.alpha-01"]
+
     def test_live_depends_on_same_run_delete_marked_raises(
         self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
@@ -2063,6 +2088,43 @@ class TestBuildDestroyPlan:
 
         with pytest.raises(PlanBlockedError):
             orchestrator.build_destroy_plan(None, state_path=state_path)
+
+    def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
+        # Pins that with no depends_on anywhere, destroy order inverts the
+        # order the user typed on the command line -- `plan destroy a b`
+        # returns b, a -- rather than preserving it.
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01")
+        write_aiform_md(b_path, name="b-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(name="a-01"),
+                "digitalocean.compute.b-01": make_state_entry(name="b-01"),
+            },
+        )
+
+        planned = orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
+
+    def test_zero_edge_destroy_order_from_state_is_reverse_alphabetical(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(name="a-01"),
+                "digitalocean.compute.b-01": make_state_entry(name="b-01"),
+            },
+        )
+
+        planned = orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
 
 
 class TestBuildPlanSummary:
