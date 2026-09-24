@@ -33,7 +33,13 @@ trigger it.
 declared*. It deliberately does **not** make reordering your own `.aiform.md`
 free: that changes the file's sha256, and `plan_resource()` requires an
 unchanged sha to short-circuit. One categorization call after a real file edit
-is correct behavior, and `apply` then persists the new sha.
+is correct behavior. Since issue &#35;195, **`plan` itself** persists the new
+sha once that call comes back `no-op` over an empty diff — which is exactly
+what a reorder-only edit produces here, since `diff_attributes()` compares
+declared `unordered_fields` with `unordered_equal()`. Previously this line
+said `apply` persisted it, which left a reorder-only edit re-paying for that
+same categorization on every subsequent plan, because a no-op has no apply to
+perform.
 
 ## Interface
 
@@ -78,7 +84,10 @@ def diff_attributes(
 ) -> dict[str, dict[str, Any]]: ...
 
 
-def plan_resource(..., unordered_fields: Sequence[str] = (), ...) -> PlanEntry: ...
+# Returns (entry, params_agree) since #195 -- see specs/planner.md.
+def plan_resource(
+    ..., unordered_fields: Sequence[str] = (), ...
+) -> tuple[PlanEntry, bool]: ...
 ```
 
 Keyword-only with a default, so every existing caller and test keeps working
@@ -91,7 +100,7 @@ One added keyword argument in `build_create_plan()`'s existing
 `likely_replace_fields=driver.LIKELY_REPLACE_FIELDS` already there:
 
 ```python
-entry = planner.plan_resource(
+entry, params_agree = planner.plan_resource(  # tuple return since #195
     key,
     current_attributes,
     resource_spec.params,

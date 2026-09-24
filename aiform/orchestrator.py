@@ -365,6 +365,7 @@ def build_create_plan(
             # `and` short-circuits before reading it on this path, but
             # leaving it unbound would be a trap for the next edit.
             drifted_missing = False
+            params_agree = False
             entry = planner.create_entry(
                 key, rationale="no state entry is tracked for this resource yet"
             )
@@ -384,11 +385,12 @@ def build_create_plan(
                 # resource, so a wrong answer reached apply_plan() and
                 # called driver.update() against an id that no longer
                 # exists, failing mid-apply rather than at plan time.
+                params_agree = False
                 entry = planner.create_entry(
                     key, rationale="tracked resource no longer exists on the provider side"
                 )
             else:
-                entry = planner.plan_resource(
+                entry, params_agree = planner.plan_resource(
                     key,
                     current_attributes,
                     resource_spec.params,
@@ -421,6 +423,25 @@ def build_create_plan(
                 f"{key}: categorization returned 'create' but a state entry is already tracked "
                 "for it and it has not drifted missing"
             )
+
+        # The toll for a text-only edit is spent by `plan`, so `plan` is
+        # what clears it. apply_plan() skips NO_OP before any state write,
+        # so without this a reworded Intent section left state's hash stale
+        # forever and every later plan re-paid for a categorization it had
+        # already run -- issue #195.
+        #
+        # `params_agree` is load-bearing, not belt-and-braces: a NO_OP whose
+        # diff is NON-empty is legal (prompts/diff_plan.md lets the model
+        # call a cosmetic difference semantically identical), and recording
+        # the hash there is actively harmful. The diff would stay non-empty,
+        # so the next run still fails plan_resource()'s `not diff` conjunct
+        # and still calls the model -- but parse_file() would now see a
+        # matching hash and skip intent extraction, feeding that call
+        # `intent_notes=[]` forever. The user's Intent guidance would be
+        # silently dropped from every subsequent categorization, and the
+        # answer can flip from no-op to update/likely_replace.
+        if entry.action == PlanAction.NO_OP and state_entry is not None and params_agree:
+            state_entry.aiform_md_sha256 = parsed.aiform_md_sha256
 
         planned.append(
             PlannedResource(

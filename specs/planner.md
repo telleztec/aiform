@@ -107,7 +107,7 @@ def plan_resource(
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
-) -> PlanEntry: ...
+) -> tuple[PlanEntry, bool]: ...  # (entry, params_agree)
 ```
 
 `intent_notes` is a plain list of `{"concerns_field": str, "guidance":
@@ -182,13 +182,13 @@ model). `PlanEntry`'s own validator normalizes `likely_replace` to
 `False` whenever `action != update`, so this function does not
 duplicate that check.
 
-### `plan_resource(...) -> PlanEntry`
+### `plan_resource(...) -> tuple[PlanEntry, bool]`
 
 The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
 
 1. `diff = diff_attributes(current_attributes, desired_params,
-   unordered_fields=unordered_fields)`.
-2. If `diff` is empty, **and** `state_aiform_md_sha256 ==
+   unordered_fields=unordered_fields)`; `params_agree = not diff`.
+2. If `params_agree`, **and** `state_aiform_md_sha256 ==
    current_aiform_md_sha256`, **and** `drifted_missing` is `False` →
    return `PlanEntry(action=PlanAction.NO_OP, ...)` directly. **Zero
    Anthropic API calls** on this path — this is the entire reason the
@@ -196,6 +196,22 @@ The no-op short-circuit plus dispatch, per `PLAN.md` §5 steps 5–6:
 3. Otherwise, delegate to `categorize_diff()` with the same
    `resource_key`/`intent_notes`/`param_schema`/`likely_replace_fields`/
    `drifted_missing`, and return its result.
+
+Both paths return `(entry, params_agree)`. **The second element is not
+derivable from the first**, which is why it is returned at all: a
+`PlanAction.NO_OP` can come from step 2 *or* from step 3, and
+`prompts/diff_plan.md` explicitly permits the model to answer `no-op` for
+a diff that is "cosmetically different but semantically identical", i.e. a
+**non-empty** one. `orchestrator.build_create_plan()` needs to tell those
+apart to decide whether recording the new `.aiform.md` hash is sound
+(issue &#35;195, and `specs/orchestrator.md`'s step 9): on the non-empty-diff
+`no-op` it is not, because the diff persists while a matching hash would
+suppress intent extraction on every later run.
+
+Reporting the flag rather than having the orchestrator recompute the diff
+is deliberate — two independent diff computations, each needing the same
+`unordered_fields`, is a silent-divergence hazard for a value that gates a
+state write.
 
 **`plan_resource()` is only ever called for a resource that is already
 tracked and still live.** `orchestrator.py` calls `create_entry()`

@@ -740,6 +740,160 @@ class TestBuildCreatePlan:
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(client.messages.calls) == 0
 
+    def test_no_op_records_the_new_aiform_md_hash_in_state(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # Issue #195. A prose-only edit moves the whole-file hash
+        # (parser.compute_sha256 hashes the entire file), so the sha
+        # conjunct of planner.py's zero-call short circuit fails and the
+        # plan pays for a categorization that can only answer 'no-op'.
+        # Nothing then recorded the new hash -- apply_plan() skips NO_OP
+        # before any state write, and the only writes to
+        # aiform_md_sha256 are the CREATE and UPDATE paths -- so the
+        # resource paid that toll on *every* later plan, forever.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        old_content = write_aiform_md(aiform_md, intent="Runs the app tier.")
+        old_hash = hashlib.sha256(old_content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)), aiform_md_sha256=old_hash
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        # Same params, different prose: the diff is empty, only the hash moved.
+        new_content = write_aiform_md(aiform_md, intent="Runs the primary app tier.")
+        new_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        assert new_hash != old_hash
+
+        client = FakeClient(
+            [
+                json.dumps({"intent_notes": [{"concerns_field": "general", "guidance": "n/a"}]}),
+                categorization_response(action="no-op", rationale="params unchanged"),
+            ]
+        )
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.compute.telleztec-app-01"].aiform_md_sha256 == new_hash
+
+    def test_second_plan_after_a_prose_only_edit_makes_zero_calls(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # Issue #195, stated as the guarantee a user actually relies on:
+        # the toll for a prose edit is paid once, not on every run. The
+        # second FakeClient is empty, so any call raises IndexError rather
+        # than passing on an unconsumed scripted response.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        old_content = write_aiform_md(aiform_md, intent="Runs the app tier.")
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=hashlib.sha256(old_content.encode("utf-8")).hexdigest(),
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+        write_aiform_md(aiform_md, intent="Runs the primary app tier.")
+
+        first_client = FakeClient(
+            [
+                json.dumps({"intent_notes": []}),
+                categorization_response(action="no-op", rationale="params unchanged"),
+            ]
+        )
+        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=first_client)
+
+        # Pin the first run too, so this test distinguishes "the toll was
+        # paid once and then cleared" from "the toll was never charged" --
+        # the vacuous shape that let #125 through.
+        assert len(first_client.messages.calls) == 2
+
+        second_client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=second_client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert len(second_client.messages.calls) == 0
+
+    def test_model_no_op_on_a_non_empty_diff_does_not_record_the_hash(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # prompts/diff_plan.md lets the model answer "no-op" for a diff that
+        # is cosmetically different but semantically identical, so a
+        # model-returned NO_OP can carry a NON-empty diff. Recording the
+        # hash there would be actively harmful: the diff stays non-empty, so
+        # every later run still fails plan_resource()'s `not diff` conjunct
+        # and still calls the model -- but parse_file() would see a matching
+        # hash, skip intent extraction, and feed that call intent_notes=[]
+        # forever, silently dropping the user's guidance. Caught in review of
+        # the first cut of #195, which gated only on the NO_OP action.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        # read() returns size s-1vcpu-2gb, so this desired size is a real diff.
+        write_aiform_md(
+            aiform_md,
+            params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            intent="Prefer an in-place resize over a recreate.",
+        )
+        stale_hash = "0" * 64
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)), aiform_md_sha256=stale_hash
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        first_client = FakeClient(
+            [
+                json.dumps(
+                    {
+                        "intent_notes": [
+                            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+                        ]
+                    }
+                ),
+                categorization_response(action="no-op", rationale="semantically identical"),
+            ]
+        )
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=first_client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        saved = state.load(state_path)
+        assert (
+            saved.resources["digitalocean.compute.telleztec-app-01"].aiform_md_sha256 == stale_hash
+        )
+
+        # The guidance must still reach the model on the next run.
+        second_client = FakeClient(
+            [
+                json.dumps(
+                    {
+                        "intent_notes": [
+                            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+                        ]
+                    }
+                ),
+                categorization_response(action="no-op", rationale="semantically identical"),
+            ]
+        )
+        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=second_client)
+
+        assert len(second_client.messages.calls) == 2
+        categorization_payload = json.loads(
+            second_client.messages.calls[1]["messages"][0]["content"]
+        )
+        assert categorization_payload["intent_notes"] == [
+            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+        ]
+
     def test_non_diffable_field_mismatch_does_not_break_no_op(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
