@@ -337,14 +337,42 @@ three are covered:
 
 ### `StateEntry.depends_on`
 
-Written by `_new_state_entry()` and by `_record_update()`'s in-place branch,
-both from `PlannedResource.depends_on`.
+Written at **three** sites, and all three are needed:
 
-**Known limitation, documented rather than fixed:** it records dependencies *as
-of the last apply*. Editing `depends_on` and then destroying without applying
-orders by the stale edges. That is the correct trade — state is a record of
-what was built, and the alternative (reading files during a destroy that
-explicitly ignores files) is worse.
+- `_new_state_entry()` and `_record_update()`'s in-place branch, at apply time,
+  from `PlannedResource.depends_on`.
+- **`_plan_one()`, at plan time**, from `ResourceSpec.depends_on`, whenever the
+  resource is already tracked — unconditionally, regardless of the action
+  decided below it.
+
+That third write is not redundant, and an earlier draft of this spec omitted it
+and shipped the bug it exists to prevent. Adding `depends_on:` to an
+already-tracked `.aiform.md` changes no `params`, so the action is **NO_OP** —
+and `apply_plan()` skips NO_OP before any state write. NO_OP is therefore the
+one action that never reaches either apply-time write. Without the plan-time
+write, adopting `depends_on` on an existing resource never reached `state.json`
+at all, so `aiform plan destroy` with no arguments kept ordering by empty
+edges — *permanently*, since there is nothing non-NO_OP to apply and no way to
+repair it but hand-editing state. For the canonical `app`-depends-on-`db` case
+that was **worse than not having the feature**: the prior code iterated state
+in insertion order and happened to be right, while reverse-topological over
+zero edges is reverse-alphabetical and is wrong.
+
+It is kept separate from the `aiform_md_sha256` write beside it rather than
+folded into that guard. The sha write is gated on `params_agree` for a reason
+specific to intent notes (see the comment there); `depends_on` is ordering
+metadata, not resource config, and its correctness does not depend on whether
+params agree.
+
+**The remaining limitation, stated accurately:** state records the edges as of
+the last **plan**, not the last apply. So a `plan` the user then declines to
+apply still updates the recorded edges. This is the right direction — the edges
+describe declared ordering intent rather than what was built, a later `plan`
+re-syncs them from the file, and it is what makes the adopt-only case work at
+all. What state cannot do is reflect an edit that has never been planned;
+`plan destroy` on a file edited since the last `plan` orders by the older
+edges. Reading files during a destroy that explicitly ignores files remains the
+worse alternative.
 
 ### CLI output
 
