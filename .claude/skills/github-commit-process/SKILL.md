@@ -423,6 +423,9 @@ qualifies — see that section's "does not apply"; there is no other
 exemption and no size exception), keep this section and say so explicitly
 rather than deleting it — don't let leaving the section out be the thing
 that decides the exemption applied.
+- The author/reviewer model pairing the plan named, and why (see "Choosing
+  who authors the diff also chooses who reviews it" below) — skip this
+  bullet only when the plan section above is itself the exemption note
 - Key point from what was approved
 - Another key point, if needed
 - If this PR closes more than one issue: the waiver, as a bullet — e.g.
@@ -478,27 +481,63 @@ neither waits on the other:
    The one exception is `/code-review ultra`, which is user-triggered and
    billed — never launch that.
 
-The reviewer must be **Opus 5 or newer, and never you**. An author reviewing
-its own diff satisfies the letter of the gate and none of its purpose. The
-mechanism: launch it as a subagent with an explicit `model` override rather
-than inheriting yours. If you cannot select a different model, say so on the
-PR instead of reviewing yourself.
+The reviewer must be **Opus 5 or newer, and never the model that authored
+the diff**. An author reviewing its own diff satisfies the letter of the
+gate and none of its purpose. The mechanism: launch it as a subagent with
+an explicit `model` override rather than inheriting yours. If you cannot
+select a different model, say so on the PR instead of reviewing yourself.
 
-**Choosing who authors the diff also chooses who reviews it.** A reviewer
-must both clear the bar above and differ from the author, so exactly two
-pairings satisfy the gate:
+**Choosing who authors the diff also chooses who reviews it — but the rule
+constrains only the reviewer.** "Opus 5 or newer" currently means Opus 5 or
+Fable 5.1, out of the roster this repo's subagents launch from today —
+Sonnet, Opus, Haiku and Fable. That roster is the most perishable fact in
+this document; treat it as current as of this writing, not as fixed, and
+prefer pointing at this table over copying it elsewhere (`PROCESS.md`'s
+"What counts as a plan" does). The reviewer must also differ from
+the author, and that's what makes authoring the one lever: authoring with
+Opus is the sole choice that *forces* the reviewer, to Fable 5.1, because
+Opus can't review itself and Fable is the only other model clearing the
+bar. Authoring with Sonnet or Haiku leaves both Opus and Fable legal as
+reviewer, and Opus gets picked from there on cost, not because the gate
+requires it.
+
+Of the pairings the rule allows, this repo defaults to two:
 
 | Author | Reviewer | Cost |
 |---|---|---|
 | Sonnet | Opus 5 | cheap — the default |
-| Opus | Fable 5.1 | the only non-colliding reviewer ≥ Opus 5 — expensive |
+| Opus 5 | Fable 5.1 | forced by the rule above — expensive |
 
-Picking Opus to author a diff therefore commits whoever approved the plan
-to a Fable review, whether or not anyone said so out loud — and the repo
-owner said on 2026-09-21 to stop defaulting to Fable, it's too expensive.
-That's why `PROCESS.md`'s "What counts as a plan" requires the pairing to
-be named in the plan itself: it makes the cost tradeoff something the
-human chose, not something this rule quietly chose for them.
+This is a convention, not the exhaustive set the gate permits — Haiku
+authoring with either Opus or Fable reviewing, and Sonnet authoring with
+Fable reviewing, all satisfy the rule too; this repo just doesn't default
+to them. The distinction matters because getting it wrong pushes cost the
+wrong way: a coordinator with a risky Sonnet-authored diff who wants the
+stronger Fable review, but believes only two pairings are legal, concludes
+Sonnet→Fable is forbidden — so it re-authors with Opus purely to unlock
+Fable, paying more for the same review, or settles for a review it
+believes is inadequate. The same mistake also silently forbids Haiku from
+authoring anything, which the rule never said.
+
+Picking Opus to author a diff therefore forces a Fable review, whether or
+not anyone said so out loud — and the repo owner said on 2026-09-21 to
+stop defaulting to Fable, it's too expensive. That's why `PROCESS.md`'s
+"What counts as a plan" requires the pairing to be named in the plan
+itself: it makes the cost tradeoff something the human chose, not
+something this rule quietly chose for them.
+
+A PR exempt from the plan gate (a pure prose edit — see PROCESS.md's "When
+it applies") has no plan and therefore no pairing named in one. `llm-review`
+still has no skip path, so an author and reviewer get picked anyway;
+default to Sonnet→Opus unless the change itself is why you'd reach for
+something stronger.
+
+Cost in the table above is per review pass, not per PR: "Satisfying
+`llm-review`" below re-reviews every round of fix commits until head is
+covered, so whichever pairing is chosen pays its cost once per round, not
+once total. That cuts against the Opus→Fable pairing twice over — it's
+picked for the harder changes, which are also the ones likelier to need
+several rounds, and its reviewer is the pricier one to begin with.
 
 ### Satisfying `llm-review`
 

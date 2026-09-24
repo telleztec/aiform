@@ -13,9 +13,10 @@ aiform's *runtime* behavior (`intent-orchestration-model`,
 plans) — that's a separate concern about what the shipped tool does, and
 those four roles are independently configurable per `.aiform/config.yaml`.
 This document happens to reuse the same author/reviewer split (Sonnet
-writes, Opus reviews, both fixed, not configurable) for building the tool
-itself, because it's the same philosophy at a different level, not
-because the two are the same mechanism.
+writes, Opus reviews by default, chosen per change per "What counts as a
+plan" below) for building the tool itself, because it's the same
+philosophy at a different level, not because the two are the same
+mechanism.
 
 ## Before the loop: plan and get explicit approval
 
@@ -95,14 +96,22 @@ file is written:
   `_poll_until`" and "introduce a config-driven, LLM-adjustable timeout
   policy store" are two different plans even though both respond to the
   same timeout report — proposing one is not proposing the other.
-- **which author/reviewer model pairing it will use, and why.** Only two
-  pairings satisfy `llm-review`'s "Opus 5 or newer, and never you" rule
-  (`.claude/skills/github-commit-process/SKILL.md`): Sonnet authoring with
-  Opus reviewing (the default), or Opus authoring with Fable 5.1 reviewing
-  (expensive — the repo owner's 2026-09-21 standing instruction is to stop
-  defaulting to Fable). Naming the pairing here is what makes it the
-  human's choice instead of one the coordinating session makes for them by
-  picking who to spawn.
+- **which author/reviewer model pairing it will use, and why.**
+  `llm-review`'s rule is "Opus 5 or newer, and never the model that
+  authored the diff" — that constrains the reviewer, not the author, so it
+  doesn't reduce to a fixed pair of choices. `.claude/skills/github-commit-process/SKILL.md`'s
+  "Choosing who authors the diff also chooses who reviews it" has the
+  current roster and the two pairings this repo defaults to — cite that
+  table rather than restating it here, since the roster is the most
+  perishable fact in either document. What matters for this bullet:
+  authoring with Opus is the one choice that *forces* the reviewer, to the
+  more expensive Fable 5.1 (the repo owner's 2026-09-21 standing
+  instruction is to stop defaulting to Fable), so naming the pairing here
+  is what makes that cost the human's choice instead of one the
+  coordinating session makes for them by picking who to spawn. A
+  Sonnet-or-Haiku-authored change still names a pairing — usually the
+  cheap default — because that's also where the human would object if the
+  change warrants a stronger reviewer than the default.
 
 A chat message counts if it is specific enough to satisfy those four
 bullets. Plan mode's own output, or a short scratch doc, is preferable for
@@ -167,8 +176,9 @@ skipping this gate.
 ### If implementation already started without this gate
 
 Stop adding commits. Write the plan now — covering what's already been
-done and what remains, using the "what/why/how" bar above — and get the
-human's explicit approval on it before any further implementation work,
+done and what remains, using the "what/why/how/pairing" bar above — and
+get the human's explicit approval on it before any further implementation
+work,
 exactly as if no code existed yet. Work already merged or already shipped
 isn't undone by this gate retroactively; it's simply a reason the
 *remaining* work on that change needs a plan before it continues, not a
