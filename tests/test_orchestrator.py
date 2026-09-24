@@ -1697,6 +1697,36 @@ class TestBuildCreatePlanDependencyOrdering:
         assert "no driver found" not in reason
         assert "DIGITALOCEAN_TOKEN" not in reason
 
+    def test_symlink_and_its_target_raise_duplicate_key_not_silently_dedupe(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        # A symlink and its target are two distinct directory entries for
+        # the same content -- unlike `./app.aiform.md` vs `app.aiform.md`,
+        # which are one file spelled two ways, there is no single path to
+        # keep here. Collapsing them (Path.resolve() follows symlinks)
+        # would silently pick one spelling to plan and leave the other
+        # nameless, which is the ambiguity _check_duplicate_keys() exists
+        # to refuse.
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        real_path = tmp_path / "app.aiform.md"
+        write_aiform_md(real_path, name="app-01")
+        link_path = tmp_path / "link.aiform.md"
+        try:
+            os.symlink(real_path, link_path)
+        except (OSError, NotImplementedError):
+            pytest.skip("platform cannot create symlinks")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [real_path, link_path], state_path=state_path, client=FakeClient([])
+            )
+
+        reason = exc_info.value.reason
+        assert str(real_path) in reason
+        assert str(link_path) in reason
+
     def test_unresolvable_target_names_the_offending_target_among_several(
         self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
@@ -1972,6 +2002,25 @@ class TestBuildDestroyPlan:
 
         assert len(planned) == 1
         assert planned[0].entry.resource_key == "digitalocean.compute.app-01"
+
+    def test_symlink_and_its_target_raise_duplicate_key_not_silently_dedupe(self, tmp_path: Path):
+        real_path = tmp_path / "app.aiform.md"
+        write_aiform_md(real_path, name="app-01")
+        link_path = tmp_path / "link.aiform.md"
+        try:
+            os.symlink(real_path, link_path)
+        except (OSError, NotImplementedError):
+            pytest.skip("platform cannot create symlinks")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([link_path, real_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert str(real_path) in reason
+        assert str(link_path) in reason
 
     def test_untracked_file_produces_destroy_entry_with_no_state_entry(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"

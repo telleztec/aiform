@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import shutil
 import sys
 import termios
@@ -286,19 +287,28 @@ def _discover_one(path: Path) -> _DiscoveredFile:
     )
 
 
-def _dedupe_resolved_paths(paths: list[Path]) -> list[Path]:
+def _dedupe_normalized_paths(paths: list[Path]) -> list[Path]:
     # The same file handed twice under different spellings (`app.aiform.md`
     # and `./app.aiform.md`) is not a genuine duplicate declaration -- it is
-    # one file read twice. Collapsing by resolved path here, before
+    # one file read twice. Collapsing by normalized path here, before
     # _check_duplicate_keys() ever sees it, keeps that error for its real
     # case: two *different* files declaring the same resource key.
-    seen: set[Path] = set()
+    #
+    # os.path.abspath(), not Path.resolve(): abspath only makes the path
+    # absolute and folds `.`/`..` via normpath, so it still collapses
+    # `./app.aiform.md` into `app.aiform.md`. resolve() additionally
+    # follows symlinks, which would collapse a symlink and its target into
+    # one entry and silently pick whichever spelling came first -- exactly
+    # the ambiguity _check_duplicate_keys() exists to refuse, since trashing
+    # the symlink's spelling on destroy would leave the target file behind
+    # to resurrect the resource on the next `plan create`.
+    seen: set[str] = set()
     deduped: list[Path] = []
     for path in paths:
-        resolved = path.resolve()
-        if resolved in seen:
+        normalized = os.path.abspath(path)
+        if normalized in seen:
             continue
-        seen.add(resolved)
+        seen.add(normalized)
         deduped.append(path)
     return deduped
 
@@ -361,7 +371,7 @@ def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str
 
 
 def _order_files(files: list[Path], st: State) -> list[Path]:
-    files = _dedupe_resolved_paths(files)
+    files = _dedupe_normalized_paths(files)
     discovered = [_discover_one(path) for path in files]
     _check_duplicate_keys(discovered)
     edges = _resolve_dependency_edges(discovered, st)
@@ -699,7 +709,7 @@ def build_destroy_plan(
 
 
 def _build_destroy_plan_from_paths(paths: list[Path], st: State) -> list[PlannedResource]:
-    paths = _dedupe_resolved_paths(paths)
+    paths = _dedupe_normalized_paths(paths)
     discovered = [_discover_one(path) for path in paths]
     _check_duplicate_keys(discovered)
 
