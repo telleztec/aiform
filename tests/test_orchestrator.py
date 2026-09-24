@@ -1591,15 +1591,16 @@ class TestBuildCreatePlanDependencyOrdering:
         assert len(client.messages.calls) == 0
 
     def test_duplicate_key_live_file_and_its_own_delete_marked_copy_raises(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
         # The nastiest variant named in specs/resource_dependencies.md: a
         # user copies x.aiform.md to AIFORM-DELETE-x.aiform.md and leaves
-        # the original -- same key, one live and one destroy. No driver
-        # written and no credential set, same as the sibling duplicate-key
-        # test above: if the check did not fire first, this would fail
-        # with a missing-driver or missing-credential error instead, and
-        # the reason assertions below would catch that.
+        # the original -- same key, one live and one destroy. drivers_dir
+        # is patched to an empty directory and no credential is set, same
+        # as the sibling duplicate-key test above: if the check did not
+        # fire first, this would fail with a missing-driver or
+        # missing-credential error instead, and the reason assertions
+        # below would catch that.
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
         live_path = tmp_path / "app.aiform.md"
         delete_path = tmp_path / "AIFORM-DELETE-app.aiform.md"
@@ -1620,7 +1621,7 @@ class TestBuildCreatePlanDependencyOrdering:
         assert "DIGITALOCEAN_TOKEN" not in reason
 
     def test_unresolvable_target_names_the_offending_target_among_several(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
         db_path = tmp_path / "db.aiform.md"
@@ -1689,7 +1690,9 @@ class TestBuildCreatePlanDependencyOrdering:
         assert actions["digitalocean.compute.old-01"] == PlanAction.DESTROY
         assert len(client.messages.calls) == 0
 
-    def test_live_depends_on_same_run_delete_marked_raises(self, tmp_path: Path, monkeypatch):
+    def test_live_depends_on_same_run_delete_marked_raises(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
         delete_path = tmp_path / "AIFORM-DELETE-db.aiform.md"
         write_aiform_md(delete_path, name="db-01")
@@ -1712,7 +1715,7 @@ class TestBuildCreatePlanDependencyOrdering:
         assert len(client.messages.calls) == 0
 
     def test_cycle_raises_plan_blocked_error_before_driver_load_or_llm_call(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
         a_path = tmp_path / "a.aiform.md"
@@ -1733,17 +1736,24 @@ class TestBuildCreatePlanDependencyOrdering:
         assert "DIGITALOCEAN_TOKEN" not in reason
         assert len(client.messages.calls) == 0
 
-    def test_self_dependency_raises_as_a_cycle(self, tmp_path: Path, monkeypatch):
+    def test_self_dependency_raises_as_a_cycle(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
         monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
         a_path = tmp_path / "a.aiform.md"
         write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.a-01"])
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
+        client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([a_path], state_path=state_path, client=FakeClient([]))
+            orchestrator.build_create_plan([a_path], state_path=state_path, client=client)
 
-        assert "digitalocean.compute.a-01" in exc_info.value.reason
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.a-01" in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
 
 
 class TestBuildDestroyPlan:
