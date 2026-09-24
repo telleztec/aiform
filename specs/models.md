@@ -342,6 +342,15 @@ convention (`PLAN.md` §1) just as much as `ResourceSpec.resource` is —
 the validation gap between the two was a review finding on the first
 implementation pass, not a deliberate asymmetry.
 
+`aiform_md_sha256` is **not** "the hash as of the last apply", despite
+sitting next to `last_applied_at`. Since issue &#35;195 it is also written by
+`plan` on a `no-op` whose params diff was empty — a file whose text moved
+but whose desired resource did not — so an entry can legitimately carry a
+hash newer than `last_applied_at`. `PLAN.md` §3 carries the full
+definition and the reason the original wording made the short-circuit
+unreachable for any edited file; `specs/orchestrator.md`'s step 9 carries
+the condition, which is narrower than the action alone.
+
 ### `HealthStatus`, `HealthReport`, `MetricKind`, `Sample`
 
 The four types `specs/driver_observability.md` adds for the day-2

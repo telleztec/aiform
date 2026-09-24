@@ -661,42 +661,83 @@ next time `plan create` runs against that resource, not here.
      model's categorization of the recreate path.
      `NO_OP`/`DESTROY` (the latter never actually
      returned by `plan_resource()`, per `specs/planner.md`) need no
-     check here — `NO_OP` is only ever returned when the no-op
-     short-circuit already confirmed `current_attributes`/`desired_params`
-     agree, and `plan_resource()` cannot return `DESTROY` at all.
-  9. **Record the file hash on a `NO_OP`** (issue &#35;195): when
-     `entry.action == PlanAction.NO_OP` and `state_entry is not None`,
+     check here: neither can contradict this module's records about
+     whether the resource is tracked, and `plan_resource()` cannot return
+     `DESTROY` at all.
+
+     **Corrected:** this paragraph used to say `NO_OP` "is only ever
+     returned when the no-op short-circuit already confirmed
+     `current_attributes`/`desired_params` agree." That is false, and
+     `prompts/diff_plan.md` says so directly — the model may answer
+     `no-op` for a diff that is "cosmetically different but semantically
+     identical", so a `NO_OP` can arrive from `categorize_diff()` with a
+     **non-empty** diff. The conclusion above survives (a `NO_OP` still
+     needs no tracked-vs-untracked cross-check), but the reason did not,
+     and step 9 below depends on not believing it.
+  9. **Record the file hash on an empty-diff `NO_OP`** (issue &#35;195):
+     when `entry.action == PlanAction.NO_OP`, `state_entry is not None`,
+     **and** `plan_resource()` reported `params_agree`,
      `state_entry.aiform_md_sha256 = parsed.aiform_md_sha256`.
 
      This is the sha half of the zero-call guarantee, and without it the
      guarantee held only for files nobody ever edited. A change to a
      tracked file that is *not* a `params` value — reworded Intent prose,
-     a new frontmatter key — moves `parser.compute_sha256()`'s
-     whole-file digest, so `plan_resource()`'s short-circuit
-     (`specs/planner.md`, three conjuncts) fails on the sha comparison
-     even though the diff is empty, and the plan pays for an
-     `extract_intent_notes()` call (when the Intent section is non-empty)
-     plus a `categorize_diff()` call whose only available answer is
-     `no-op`. Nothing then recorded the new digest: `apply_plan()` skips
-     `NO_OP` before any state write, and its only writes to
-     `aiform_md_sha256` are `_new_state_entry()` and the `UPDATE`
-     branch. So the resource re-paid that toll on **every** subsequent
-     plan, indefinitely — a standing violation of `CLAUDE.md`'s
+     a new frontmatter key — moves `parser.compute_sha256()`'s whole-file
+     digest, so `plan_resource()`'s short-circuit (`specs/planner.md`,
+     three conjuncts) fails on the sha comparison even though the diff is
+     empty, and the plan pays for an `extract_intent_notes()` call (when
+     the Intent section is non-empty) plus a `categorize_diff()` call
+     whose expected answer is `no-op`. Nothing then recorded the new
+     digest: `apply_plan()` skips `NO_OP` before any state write, and its
+     only writes to `aiform_md_sha256` are `_new_state_entry()` and the
+     `UPDATE` branch. So the resource re-paid that toll on **every**
+     subsequent plan, indefinitely — a standing violation of `CLAUDE.md`'s
      zero-calls-on-unchanged-input rule rather than a one-time cost.
 
-     Writing it here rather than in `apply_plan()` is deliberate: the
-     toll is spent by `plan`, so `plan` is what must clear it. A user who
-     edits prose and re-plans without ever applying is exactly the case
-     that was broken, and routing the fix through `apply` would leave it
-     broken.
+     Writing it here rather than in `apply_plan()` is deliberate: the toll
+     is spent by `plan`, so `plan` is what must clear it. A user who edits
+     prose and re-plans without ever applying is exactly the case that was
+     broken, and routing the fix through `apply` would leave it broken.
 
-     It cannot mask a real change. The short-circuit also requires an
-     empty diff, so a resource whose `params` genuinely differ still
-     falls through on the next run no matter what the sha says — the
-     hash is a cheap pre-filter, never the authority on whether work is
-     needed. Guarded on `state_entry is not None` because an untracked
-     resource is never `NO_OP` (step 7 plans it `CREATE`) and has no
-     entry to write to.
+     **`params_agree` is the load-bearing condition, and the action alone
+     is not sufficient.** Per the correction under step 8, a `NO_OP` may
+     arrive from `categorize_diff()` over a non-empty diff. Recording the
+     hash on *that* path is actively harmful rather than merely useless:
+     the diff stays non-empty, so every later run still fails the
+     `not diff` conjunct and still spends the categorization call — but
+     `parser.parse_file()` would now see a matching hash, skip
+     `extract_intent_notes()`, and hand that call `intent_notes=[]`
+     permanently. The user's Intent guidance would be silently dropped
+     from every subsequent categorization, and since
+     `prompts/diff_plan.md` instructs the model to honor those notes over
+     its own judgment, the answer can flip from `no-op` to
+     `update`/`likely_replace` — so `plan create` and `apply`'s re-plan
+     could disagree on identical inputs. Caught in review of this change's
+     first cut, which gated on the action only.
+
+     Note what this means about the fix's reach: where the deterministic
+     short-circuit fires, the two hashes are already equal and the write
+     is a no-op, so **every** case this step actually changes is a
+     model-returned `NO_OP`. The `params_agree` half is what separates the
+     two kinds of those.
+
+     It cannot mask a real change, for a reason independent of the above:
+     `diff_attributes()` recomputes against freshly-`read()` attributes on
+     every run, so a resource whose `params` genuinely differ produces a
+     diff and falls through regardless of what the sha says. The hash is a
+     cheap pre-filter, never the authority on whether work is needed.
+     Guarded on `state_entry is not None` because an untracked resource is
+     never `NO_OP` (step 7 plans it `CREATE`) and has no entry to write to.
+
+     **Known limitation, inherited not introduced:** the write is
+     persisted by the single trailing `state.save()` below, so if a *later*
+     file in the same run raises (`PlanBlockedError` from step 8, a
+     `DriverExecutionError` from a refresh), this resource's recorded hash
+     is discarded along with every other in-memory change from the run, and
+     the toll is paid again next time. That is the pre-existing cost of the
+     batched write, which the attribute refresh already had; making it
+     per-resource would trade it for partial-write semantics this function
+     deliberately does not have.
   10. `PlannedResource(entry=entry, provider=spec.provider,
      resource_type=spec.resource, name=spec.name,
      desired_params=spec.params, aiform_md_path=path,

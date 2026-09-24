@@ -547,11 +547,24 @@ A file's *absence* from the discovered set is never itself meaningful to the par
   mechanism any more** — issue #119 removed gate #1's review from this
   path entirely, so a mismatch gates nothing and blocks nothing; it is
   bookkeeping, not a control.
-- `aiform_md_sha256` — hash of the source file at last successful
-  apply. Used by the planner as a cheap short-circuit: if this matches
-  the current file's hash *and* a refresh shows no live drift, the
-  diff step can skip its `intent-orchestration-model` call entirely
-  and report `no-op` deterministically.
+- `aiform_md_sha256` — hash of the source file as of the last run that
+  established there was nothing to apply from it. Used by the planner as a
+  cheap short-circuit: if this matches the current file's hash *and* a
+  refresh shows no live drift, the diff step can skip its
+  `intent-orchestration-model` call entirely and report `no-op`
+  deterministically.
+
+  Written by `apply` on a successful create/update, and — since issue
+  &#35;195 — also by `plan` when it concludes `no-op` **and** the params
+  diff was empty, i.e. when the file's text changed but nothing about the
+  desired resource did. Revised from "at last successful apply", which was
+  the original intent but made the short-circuit unreachable for any file
+  anyone had edited: a prose-only change moves the hash, and with no apply
+  to perform there was no event that would ever record the new one, so the
+  resource re-paid for a categorization on every subsequent plan forever.
+  The narrower "diff was empty" condition matters — a `no-op` the model
+  returns over a *non-empty* diff must not record the hash, or later runs
+  keep re-categorizing with `intent_notes` silently emptied.
 
 **Refresh mechanism** (`driver.read()` before diffing):
 

@@ -808,6 +808,11 @@ class TestBuildCreatePlan:
         )
         orchestrator.build_create_plan([aiform_md], state_path=state_path, client=first_client)
 
+        # Pin the first run too, so this test distinguishes "the toll was
+        # paid once and then cleared" from "the toll was never charged" --
+        # the vacuous shape that let #125 through.
+        assert len(first_client.messages.calls) == 2
+
         second_client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
             [aiform_md], state_path=state_path, client=second_client
@@ -815,6 +820,79 @@ class TestBuildCreatePlan:
 
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(second_client.messages.calls) == 0
+
+    def test_model_no_op_on_a_non_empty_diff_does_not_record_the_hash(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # prompts/diff_plan.md lets the model answer "no-op" for a diff that
+        # is cosmetically different but semantically identical, so a
+        # model-returned NO_OP can carry a NON-empty diff. Recording the
+        # hash there would be actively harmful: the diff stays non-empty, so
+        # every later run still fails plan_resource()'s `not diff` conjunct
+        # and still calls the model -- but parse_file() would see a matching
+        # hash, skip intent extraction, and feed that call intent_notes=[]
+        # forever, silently dropping the user's guidance. Caught in review of
+        # the first cut of #195, which gated only on the NO_OP action.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        # read() returns size s-1vcpu-2gb, so this desired size is a real diff.
+        write_aiform_md(
+            aiform_md,
+            params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            intent="Prefer an in-place resize over a recreate.",
+        )
+        stale_hash = "0" * 64
+        entry = make_state_entry(
+            driver=make_driver_info(driver_sha256(driver_file)), aiform_md_sha256=stale_hash
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        first_client = FakeClient(
+            [
+                json.dumps(
+                    {
+                        "intent_notes": [
+                            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+                        ]
+                    }
+                ),
+                categorization_response(action="no-op", rationale="semantically identical"),
+            ]
+        )
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=first_client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        saved = state.load(state_path)
+        assert (
+            saved.resources["digitalocean.compute.telleztec-app-01"].aiform_md_sha256 == stale_hash
+        )
+
+        # The guidance must still reach the model on the next run.
+        second_client = FakeClient(
+            [
+                json.dumps(
+                    {
+                        "intent_notes": [
+                            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+                        ]
+                    }
+                ),
+                categorization_response(action="no-op", rationale="semantically identical"),
+            ]
+        )
+        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=second_client)
+
+        assert len(second_client.messages.calls) == 2
+        categorization_payload = json.loads(
+            second_client.messages.calls[1]["messages"][0]["content"]
+        )
+        assert categorization_payload["intent_notes"] == [
+            {"concerns_field": "size", "guidance": "prefer in-place resize"}
+        ]
 
     def test_non_diffable_field_mismatch_does_not_break_no_op(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch

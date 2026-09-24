@@ -126,6 +126,12 @@ def categorize_diff(
     return entry
 
 
+# The second return value reports whether the params diff was empty, which
+# a NO_OP action alone does not tell the caller: prompts/diff_plan.md lets
+# the model answer "no-op" for a diff that is cosmetically different but
+# semantically identical, so a model-returned NO_OP can carry a non-empty
+# diff. orchestrator.build_create_plan() needs the distinction to decide
+# whether recording the new .aiform.md hash is sound -- issue #195.
 def plan_resource(
     resource_key: str,
     current_attributes: dict[str, Any],
@@ -140,15 +146,16 @@ def plan_resource(
     drifted_missing: bool = False,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
-) -> PlanEntry:
+) -> tuple[PlanEntry, bool]:
     diff = diff_attributes(current_attributes, desired_params, unordered_fields=unordered_fields)
+    params_agree = not diff
 
-    if not diff and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
+    if params_agree and state_aiform_md_sha256 == current_aiform_md_sha256 and not drifted_missing:
         logger.info(
             "",
             extra={"resource_key": resource_key, "action": "no-op", "reason": "zero-diff"},
         )
-        return PlanEntry(
+        entry = PlanEntry(
             resource_key=resource_key,
             action=PlanAction.NO_OP,
             rationale=(
@@ -157,8 +164,9 @@ def plan_resource(
             ),
             likely_replace=False,
         )
+        return entry, params_agree
 
-    return categorize_diff(
+    entry = categorize_diff(
         resource_key,
         diff,
         intent_notes=intent_notes,
@@ -168,3 +176,4 @@ def plan_resource(
         client=client,
         llm_config=llm_config,
     )
+    return entry, params_agree

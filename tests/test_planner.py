@@ -357,7 +357,7 @@ class TestPlanResource:
     def test_no_op_when_diff_empty_hash_matches_and_not_drifted(self, prompts_dir: Path):
         client = FakeClient([])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3"},
             {"region": "sfo3"},
@@ -403,7 +403,7 @@ class TestPlanResource:
         # and .envrc exports a real key into pytest, so on a regression
         # this made a real billed call and then passed anyway. See the
         # fixture's docstring in tests/conftest.py.
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3"},
             {"region": "sfo3"},
@@ -418,7 +418,7 @@ class TestPlanResource:
     def test_categorizes_when_diff_is_nonempty(self, prompts_dir: Path):
         client = FakeClient([categorization_response(action="update")])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3", "size": "s-1vcpu-2gb"},
             {"region": "sfo3", "size": "s-2vcpu-4gb"},
@@ -453,7 +453,7 @@ class TestPlanResource:
     def test_categorizes_when_drifted_missing_despite_empty_diff(self, prompts_dir: Path):
         client = FakeClient([categorization_response(action="create")])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3"},
             {"region": "sfo3"},
@@ -493,7 +493,7 @@ class TestPlanResource:
         # a mismatched hash makes the hash the only reason the call goes
         # out.
         params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             dict(params),
             params,
@@ -509,7 +509,7 @@ class TestPlanResource:
         assert len(client.messages.calls) == 1
 
     def test_no_op_rationale_is_deterministic_not_llm_authored(self, prompts_dir: Path):
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3"},
             {"region": "sfo3"},
@@ -531,7 +531,7 @@ class TestPlanResource:
         # run" guarantee. This variant passes no client, asserting the
         # short-circuit fires before one is even needed; the
         # forbid_llm_client fixture is what makes that assertion real.
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"tags": ["aiform", "production"]},
             {"tags": ["production", "aiform"]},
@@ -550,7 +550,7 @@ class TestPlanResource:
     ):
         client = FakeClient([])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"tags": ["aiform", "production"]},
             {"tags": ["production", "aiform"]},
@@ -569,7 +569,7 @@ class TestPlanResource:
     def test_reordered_field_not_declared_unordered_still_categorizes(self, prompts_dir: Path):
         client = FakeClient([categorization_response(action="update")])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"tags": ["aiform", "production"]},
             {"tags": ["production", "aiform"]},
@@ -587,7 +587,7 @@ class TestPlanResource:
     def test_default_unordered_fields_leaves_existing_callers_unaffected(self, prompts_dir: Path):
         client = FakeClient([])
 
-        entry = planner.plan_resource(
+        entry, _ = planner.plan_resource(
             RESOURCE_KEY,
             {"region": "sfo3"},
             {"region": "sfo3"},
