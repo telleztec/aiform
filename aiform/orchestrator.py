@@ -286,6 +286,23 @@ def _discover_one(path: Path) -> _DiscoveredFile:
     )
 
 
+def _dedupe_resolved_paths(paths: list[Path]) -> list[Path]:
+    # The same file handed twice under different spellings (`app.aiform.md`
+    # and `./app.aiform.md`) is not a genuine duplicate declaration -- it is
+    # one file read twice. Collapsing by resolved path here, before
+    # _check_duplicate_keys() ever sees it, keeps that error for its real
+    # case: two *different* files declaring the same resource key.
+    seen: set[Path] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
 def _check_duplicate_keys(discovered: list[_DiscoveredFile]) -> None:
     seen: dict[str, Path] = {}
     for entry in discovered:
@@ -344,6 +361,7 @@ def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str
 
 
 def _order_files(files: list[Path], st: State) -> list[Path]:
+    files = _dedupe_resolved_paths(files)
     discovered = [_discover_one(path) for path in files]
     _check_duplicate_keys(discovered)
     edges = _resolve_dependency_edges(discovered, st)
@@ -681,16 +699,13 @@ def build_destroy_plan(
 
 
 def _build_destroy_plan_from_paths(paths: list[Path], st: State) -> list[PlannedResource]:
-    records: list[tuple[str, Path, ResourceSpec]] = []
-    for path in paths:
-        content = path.read_text(encoding="utf-8-sig")
-        resource_spec = parser.parse_frontmatter(content)
-        key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
-        records.append((key, path, resource_spec))
+    paths = _dedupe_resolved_paths(paths)
+    discovered = [_discover_one(path) for path in paths]
+    _check_duplicate_keys(discovered)
 
-    edges = {key: set(spec.depends_on) for key, _, spec in records}
-    order = _reverse_topological({key for key, _, _ in records}, edges)
-    by_key = {key: (path, spec) for key, path, spec in records}
+    edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
+    order = _reverse_topological({entry.key for entry in discovered}, edges)
+    by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}
 
     planned: list[PlannedResource] = []
     for key in order:

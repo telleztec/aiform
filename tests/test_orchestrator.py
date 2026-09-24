@@ -1621,6 +1621,25 @@ class TestBuildCreatePlanDependencyOrdering:
             "digitalocean.compute.db-01",
         ]
 
+    def test_same_path_given_twice_via_different_spellings_is_not_a_duplicate_key_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+        differently_spelled = tmp_path / "." / "app.aiform.md"
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [differently_spelled, aiform_md], state_path=state_path, client=client
+        )
+
+        assert len(planned) == 1
+        assert planned[0].entry.resource_key == "digitalocean.compute.app-01"
+
     def test_duplicate_key_across_two_files_raises_naming_both_paths(
         self, tmp_path: Path, drivers_dir: Path, monkeypatch
     ):
@@ -1888,6 +1907,46 @@ class TestBuildDestroyPlan:
             "digitalocean.compute.app-01",
             "digitalocean.compute.app-02",
         }
+
+    def test_paths_declaring_the_same_key_twice_raises_instead_of_silently_dropping_one(
+        self, tmp_path: Path
+    ):
+        # specs/resource_dependencies.md rule 1's "nastiest variant":
+        # app.aiform.md copied to copy.aiform.md, both still declaring
+        # app-01. A dict-keyed-by-resource-key collapse here means
+        # _apply_destroy() only trashes one of the two files, and the
+        # survivor recreates the resource on the very next `plan create`.
+        first_path = tmp_path / "app.aiform.md"
+        second_path = tmp_path / "copy.aiform.md"
+        write_aiform_md(first_path, name="app-01")
+        write_aiform_md(second_path, name="app-01")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([first_path, second_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert str(first_path) in reason
+        assert str(second_path) in reason
+
+    def test_same_path_given_twice_via_different_spellings_is_deduped_not_an_error(
+        self, tmp_path: Path
+    ):
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+        differently_spelled = tmp_path / "." / "app.aiform.md"
+
+        planned = orchestrator.build_destroy_plan(
+            [aiform_md, differently_spelled], state_path=state_path
+        )
+
+        assert len(planned) == 1
+        assert planned[0].entry.resource_key == "digitalocean.compute.app-01"
 
     def test_untracked_file_produces_destroy_entry_with_no_state_entry(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
