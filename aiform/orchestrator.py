@@ -30,6 +30,7 @@ from aiform.models import (
     PlanReview,
     PlanReviewFlag,
     PlanReviewSeverity,
+    ResourceSpec,
     StateEntry,
 )
 from aiform.state import State
@@ -285,182 +286,269 @@ def build_create_plan(
 
     for path in files:
         if is_delete_marked(path):
-            content = path.read_text(encoding="utf-8-sig")
-            resource_spec = parser.parse_frontmatter(content)
-            key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
-            covered_keys.add(key)
-            state_entry = st.resources.get(key)
-            entry = planner.destroy_entry(key, rationale=f"marked for deletion via {path.name}")
-            planned.append(
-                PlannedResource(
-                    entry=entry,
-                    provider=resource_spec.provider,
-                    resource_type=resource_spec.resource,
-                    name=resource_spec.name,
-                    desired_params={},
-                    aiform_md_path=path,
-                    current_aiform_md_sha256=None,
-                    driver=None,
-                    driver_info=None,
-                    credentials=None,
-                    state_entry=state_entry,
-                )
-            )
-            continue
-
-        content = path.read_text(encoding="utf-8-sig")
-        resource_spec = parser.parse_frontmatter(content)
-        key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
-        covered_keys.add(key)
-        state_entry = st.resources.get(key)
-        previous_hash = state_entry.aiform_md_sha256 if state_entry else None
-
-        # Only when a state entry exists. parse_file() does three things:
-        # read the file, parse the frontmatter, and -- if the hash moved
-        # -- spend one intent_orchestration_call on extract_intent_notes().
-        # The first two are already done above, and the third feeds
-        # `intent_notes`, which is consumed only by plan_resource() in the
-        # tracked branch below. On an untracked resource that call was
-        # bought and thrown away, which is what made PLAN.md §9's "a first
-        # plan create makes zero Anthropic calls" false (#125): the parse
-        # cost one every time, and a second read of the same file with it.
-        if state_entry is None:
-            parsed = ParsedResource(
-                spec=resource_spec,
-                intent_notes=[],
-                aiform_md_sha256=parser.compute_sha256(content),
-            )
+            pr = _plan_delete_marked(path, st)
         else:
-            parsed = parser.parse_file(
-                path, previous_aiform_md_sha256=previous_hash, client=client, llm_config=llm_config
+            pr = _plan_one(
+                path,
+                st,
+                driver_cache,
+                credentials_cache,
+                client=client,
+                llm_config=llm_config,
             )
-
-        driver_key = (resource_spec.provider, resource_spec.resource)
-        if driver_key not in driver_cache:
-            driver = load_driver(resource_spec.provider, resource_spec.resource)
-            driver_info = driver_info_for(resource_spec.provider, resource_spec.resource, st)
-            driver_cache[driver_key] = (driver, driver_info)
-        driver, driver_info = driver_cache[driver_key]
-
-        if resource_spec.provider not in credentials_cache:
-            try:
-                credentials_cache[resource_spec.provider] = config.resolve_credentials(
-                    resource_spec.provider
-                )
-            except RuntimeError as exc:
-                raise PlanBlockedError(str(exc)) from exc
-        credentials = credentials_cache[resource_spec.provider]
-
-        # The model is asked to categorize only when the answer is
-        # genuinely open. Both `create` cases below are settled by this
-        # module's own records, so asking about them means asking a
-        # question whose answer is already held -- issue #117, where the
-        # model answered 'update' for a brand-new resource and the
-        # cross-check below then blocked a user's first `plan apply` on
-        # an internal invariant they could not act on.
-        if state_entry is None:
-            # Nothing to refresh and no diff to build: create_entry()
-            # takes only the key and a rationale. drifted_missing is
-            # still bound because the cross-check below names it -- the
-            # `and` short-circuits before reading it on this path, but
-            # leaving it unbound would be a trap for the next edit.
-            drifted_missing = False
-            params_agree = False
-            entry = planner.create_entry(
-                key, rationale="no state entry is tracked for this resource yet"
-            )
-        else:
-            current_attributes, drifted_missing = refresh_resource(driver, state_entry, credentials)
-            state_entry.attributes = current_attributes
-            state_entry.last_refreshed_at = datetime.now(UTC)
-
-            if drifted_missing:
-                # Tracked, but gone from the CSP: it must be recreated,
-                # whatever the diff says. prompts/diff_plan.md already
-                # told the model this answer was forced ("always means the
-                # resource needs to be created again, regardless of what
-                # `diff` contains") -- a forced answer is not a question.
-                # Left asked, this was the sharper half of #117: neither
-                # cross-check below fires for `update` on a drifted
-                # resource, so a wrong answer reached apply_plan() and
-                # called driver.update() against an id that no longer
-                # exists, failing mid-apply rather than at plan time.
-                params_agree = False
-                entry = planner.create_entry(
-                    key, rationale="tracked resource no longer exists on the provider side"
-                )
-            else:
-                entry, params_agree = planner.plan_resource(
-                    key,
-                    current_attributes,
-                    resource_spec.params,
-                    intent_notes=parsed.intent_notes,
-                    param_schema=driver.PARAM_SCHEMA,
-                    likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
-                    unordered_fields=driver.UNORDERED_FIELDS,
-                    state_aiform_md_sha256=previous_hash,
-                    current_aiform_md_sha256=parsed.aiform_md_sha256,
-                    drifted_missing=drifted_missing,
-                    client=client,
-                    llm_config=llm_config,
-                )
-
-        # The first check is unreachable by construction since the branch
-        # above -- an untracked resource is never categorized, so there is
-        # no model answer to disagree with. Kept rather than deleted
-        # because it costs nothing and states the invariant plainly; note
-        # it is NOT what would catch a regression here, since unreachable
-        # code cannot fail a test. The call-count assertions in
-        # tests/test_orchestrator.py are what actually guard the branch.
-        # The second check is still live and still reachable: the model
-        # can answer 'create' for a resource that IS tracked and present.
-        if entry.action == PlanAction.UPDATE and state_entry is None:
-            raise PlanBlockedError(
-                f"{key}: categorization returned 'update' but no state entry is tracked for it"
-            )
-        if entry.action == PlanAction.CREATE and state_entry is not None and not drifted_missing:
-            raise PlanBlockedError(
-                f"{key}: categorization returned 'create' but a state entry is already tracked "
-                "for it and it has not drifted missing"
-            )
-
-        # The toll for a text-only edit is spent by `plan`, so `plan` is
-        # what clears it. apply_plan() skips NO_OP before any state write,
-        # so without this a reworded Intent section left state's hash stale
-        # forever and every later plan re-paid for a categorization it had
-        # already run -- issue #195.
-        #
-        # `params_agree` is load-bearing, not belt-and-braces: a NO_OP whose
-        # diff is NON-empty is legal (prompts/diff_plan.md lets the model
-        # call a cosmetic difference semantically identical), and recording
-        # the hash there is actively harmful. The diff would stay non-empty,
-        # so the next run still fails plan_resource()'s `not diff` conjunct
-        # and still calls the model -- but parse_file() would now see a
-        # matching hash and skip intent extraction, feeding that call
-        # `intent_notes=[]` forever. The user's Intent guidance would be
-        # silently dropped from every subsequent categorization, and the
-        # answer can flip from no-op to update/likely_replace.
-        if entry.action == PlanAction.NO_OP and state_entry is not None and params_agree:
-            state_entry.aiform_md_sha256 = parsed.aiform_md_sha256
-
-        planned.append(
-            PlannedResource(
-                entry=entry,
-                provider=resource_spec.provider,
-                resource_type=resource_spec.resource,
-                name=resource_spec.name,
-                desired_params=resource_spec.params,
-                aiform_md_path=path,
-                current_aiform_md_sha256=parsed.aiform_md_sha256,
-                driver=driver,
-                driver_info=driver_info,
-                credentials=credentials,
-                state_entry=state_entry,
-            )
-        )
+        covered_keys.add(pr.entry.resource_key)
+        planned.append(pr)
 
     state.save(st, state_path)
 
+    return planned, _warnings_for_uncovered(st, covered_keys, paths)
+
+
+def _plan_delete_marked(path: Path, st: State) -> PlannedResource:
+    content = path.read_text(encoding="utf-8-sig")
+    resource_spec = parser.parse_frontmatter(content)
+    key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
+    state_entry = st.resources.get(key)
+    entry = planner.destroy_entry(key, rationale=f"marked for deletion via {path.name}")
+    return PlannedResource(
+        entry=entry,
+        provider=resource_spec.provider,
+        resource_type=resource_spec.resource,
+        name=resource_spec.name,
+        desired_params={},
+        aiform_md_path=path,
+        current_aiform_md_sha256=None,
+        driver=None,
+        driver_info=None,
+        credentials=None,
+        state_entry=state_entry,
+    )
+
+
+def _plan_one(
+    path: Path,
+    st: State,
+    driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]],
+    credentials_cache: dict[str, dict[str, str]],
+    *,
+    client: anthropic.Anthropic | None,
+    llm_config: LLMConfig | None,
+) -> PlannedResource:
+    content = path.read_text(encoding="utf-8-sig")
+    resource_spec = parser.parse_frontmatter(content)
+    key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
+    state_entry = st.resources.get(key)
+    previous_hash = state_entry.aiform_md_sha256 if state_entry else None
+
+    parsed = _parsed_resource(
+        path,
+        content,
+        resource_spec,
+        state_entry,
+        previous_hash=previous_hash,
+        client=client,
+        llm_config=llm_config,
+    )
+    driver, driver_info = _driver_for(
+        resource_spec.provider, resource_spec.resource, st, driver_cache
+    )
+    credentials = _credentials_for(resource_spec.provider, credentials_cache)
+
+    entry, params_agree = _decide_action(
+        key,
+        resource_spec,
+        parsed,
+        state_entry,
+        driver=driver,
+        credentials=credentials,
+        previous_hash=previous_hash,
+        client=client,
+        llm_config=llm_config,
+    )
+
+    # The toll for a text-only edit is spent by `plan`, so `plan` is
+    # what clears it. apply_plan() skips NO_OP before any state write,
+    # so without this a reworded Intent section left state's hash stale
+    # forever and every later plan re-paid for a categorization it had
+    # already run -- issue #195.
+    #
+    # `params_agree` is load-bearing, not belt-and-braces: a NO_OP whose
+    # diff is NON-empty is legal (prompts/diff_plan.md lets the model
+    # call a cosmetic difference semantically identical), and recording
+    # the hash there is actively harmful. The diff would stay non-empty,
+    # so the next run still fails plan_resource()'s `not diff` conjunct
+    # and still calls the model -- but parse_file() would now see a
+    # matching hash and skip intent extraction, feeding that call
+    # `intent_notes=[]` forever. The user's Intent guidance would be
+    # silently dropped from every subsequent categorization, and the
+    # answer can flip from no-op to update/likely_replace.
+    if entry.action == PlanAction.NO_OP and state_entry is not None and params_agree:
+        state_entry.aiform_md_sha256 = parsed.aiform_md_sha256
+
+    return PlannedResource(
+        entry=entry,
+        provider=resource_spec.provider,
+        resource_type=resource_spec.resource,
+        name=resource_spec.name,
+        desired_params=resource_spec.params,
+        aiform_md_path=path,
+        current_aiform_md_sha256=parsed.aiform_md_sha256,
+        driver=driver,
+        driver_info=driver_info,
+        credentials=credentials,
+        state_entry=state_entry,
+    )
+
+
+def _parsed_resource(
+    path: Path,
+    content: str,
+    resource_spec: ResourceSpec,
+    state_entry: StateEntry | None,
+    *,
+    previous_hash: str | None,
+    client: anthropic.Anthropic | None,
+    llm_config: LLMConfig | None,
+) -> ParsedResource:
+    # parse_file() only when a state entry exists. It does three things:
+    # read the file, parse the frontmatter, and -- if the hash moved --
+    # spend one intent_orchestration_call on extract_intent_notes(). The
+    # first two are already done by the caller, and the third feeds
+    # `intent_notes`, which is consumed only by plan_resource() in
+    # _decide_action()'s tracked branch. On an untracked resource that call
+    # was bought and thrown away, which is what made PLAN.md §9's "a first
+    # plan create makes zero Anthropic calls" false (#125): the parse cost
+    # one every time, and a second read of the same file with it.
+    if state_entry is None:
+        return ParsedResource(
+            spec=resource_spec,
+            intent_notes=[],
+            aiform_md_sha256=parser.compute_sha256(content),
+        )
+    return parser.parse_file(
+        path, previous_aiform_md_sha256=previous_hash, client=client, llm_config=llm_config
+    )
+
+
+def _driver_for(
+    provider: str,
+    resource_type: str,
+    st: State,
+    cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]],
+) -> tuple[ResourceDriver, DriverInfo]:
+    driver_key = (provider, resource_type)
+    if driver_key not in cache:
+        driver = load_driver(provider, resource_type)
+        driver_info = driver_info_for(provider, resource_type, st)
+        cache[driver_key] = (driver, driver_info)
+    return cache[driver_key]
+
+
+def _credentials_for(provider: str, cache: dict[str, dict[str, str]]) -> dict[str, str]:
+    if provider not in cache:
+        try:
+            cache[provider] = config.resolve_credentials(provider)
+        except RuntimeError as exc:
+            raise PlanBlockedError(str(exc)) from exc
+    return cache[provider]
+
+
+# Refreshes the tracked entry's `attributes`/`last_refreshed_at` in place as
+# a side effect, which is what build_create_plan()'s single trailing
+# state.save() then persists. The structural cross-checks live here rather
+# than at the call site so `drifted_missing` -- which only the checks read --
+# does not have to escape as a third return value.
+def _decide_action(
+    key: str,
+    resource_spec: ResourceSpec,
+    parsed: ParsedResource,
+    state_entry: StateEntry | None,
+    *,
+    driver: ResourceDriver,
+    credentials: dict[str, str],
+    previous_hash: str | None,
+    client: anthropic.Anthropic | None,
+    llm_config: LLMConfig | None,
+) -> tuple[PlanEntry, bool]:
+    # The model is asked to categorize only when the answer is
+    # genuinely open. Both `create` cases below are settled by this
+    # module's own records, so asking about them means asking a
+    # question whose answer is already held -- issue #117, where the
+    # model answered 'update' for a brand-new resource and the
+    # cross-check below then blocked a user's first `plan apply` on
+    # an internal invariant they could not act on.
+    if state_entry is None:
+        # Nothing to refresh and no diff to build: create_entry()
+        # takes only the key and a rationale. drifted_missing is
+        # still bound because the cross-check below names it -- the
+        # `and` short-circuits before reading it on this path, but
+        # leaving it unbound would be a trap for the next edit.
+        drifted_missing = False
+        params_agree = False
+        entry = planner.create_entry(
+            key, rationale="no state entry is tracked for this resource yet"
+        )
+    else:
+        current_attributes, drifted_missing = refresh_resource(driver, state_entry, credentials)
+        state_entry.attributes = current_attributes
+        state_entry.last_refreshed_at = datetime.now(UTC)
+
+        if drifted_missing:
+            # Tracked, but gone from the CSP: it must be recreated,
+            # whatever the diff says. prompts/diff_plan.md already
+            # told the model this answer was forced ("always means the
+            # resource needs to be created again, regardless of what
+            # `diff` contains") -- a forced answer is not a question.
+            # Left asked, this was the sharper half of #117: neither
+            # cross-check below fires for `update` on a drifted
+            # resource, so a wrong answer reached apply_plan() and
+            # called driver.update() against an id that no longer
+            # exists, failing mid-apply rather than at plan time.
+            params_agree = False
+            entry = planner.create_entry(
+                key, rationale="tracked resource no longer exists on the provider side"
+            )
+        else:
+            entry, params_agree = planner.plan_resource(
+                key,
+                current_attributes,
+                resource_spec.params,
+                intent_notes=parsed.intent_notes,
+                param_schema=driver.PARAM_SCHEMA,
+                likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
+                unordered_fields=driver.UNORDERED_FIELDS,
+                state_aiform_md_sha256=previous_hash,
+                current_aiform_md_sha256=parsed.aiform_md_sha256,
+                drifted_missing=drifted_missing,
+                client=client,
+                llm_config=llm_config,
+            )
+
+    # The first check is unreachable by construction since the branch
+    # above -- an untracked resource is never categorized, so there is
+    # no model answer to disagree with. Kept rather than deleted
+    # because it costs nothing and states the invariant plainly; note
+    # it is NOT what would catch a regression here, since unreachable
+    # code cannot fail a test. The call-count assertions in
+    # tests/test_orchestrator.py are what actually guard the branch.
+    # The second check is still live and still reachable: the model
+    # can answer 'create' for a resource that IS tracked and present.
+    if entry.action == PlanAction.UPDATE and state_entry is None:
+        raise PlanBlockedError(
+            f"{key}: categorization returned 'update' but no state entry is tracked for it"
+        )
+    if entry.action == PlanAction.CREATE and state_entry is not None and not drifted_missing:
+        raise PlanBlockedError(
+            f"{key}: categorization returned 'create' but a state entry is already tracked "
+            "for it and it has not drifted missing"
+        )
+
+    return entry, params_agree
+
+
+def _warnings_for_uncovered(
+    st: State, covered_keys: set[str], paths: list[Path] | None
+) -> list[str]:
     warnings: list[str] = []
     if not paths:
         for key in st.resources:
@@ -469,8 +557,7 @@ def build_create_plan(
                     f"resource {key!r} is tracked in state but has no corresponding "
                     ".aiform.md file this run; left unchanged"
                 )
-
-    return planned, warnings
+    return warnings
 
 
 def build_destroy_plan(
