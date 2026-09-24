@@ -394,13 +394,28 @@ reads or writes state.
   one-line tally (`N to create, N to update, N to destroy, N no-op.`),
   then any warnings (`PLAN.md` §5's "left alone... reported with a
   warning" case) each on their own line. `update` entries additionally
-  print `(likely replace)` when `entry.likely_replace` is set. This
+  print `(likely replace)` when `entry.likely_replace` is set. A
+  resource with declared dependencies gets **one** further indented
+  line after its rationale, `    depends on: <key>, <key>`, listing
+  every target comma-separated in declared order — one line per
+  resource, not one per edge, so a fan-in doesn't bury the rationale.
+  A resource with none gets no such line, so a project not using
+  `depends_on` prints exactly as it did before the feature existed.
+  The resources themselves are listed in execution order, which is now
+  topological rather than filename order; there is deliberately no
+  separate `Order:` footer, since the `depends on:` lines already
+  convey it (`specs/resource_dependencies.md`). This
   command's tally line never carries the `--yes` marker described under
   `plan apply` below — `create` has no `--yes` flag at all (issue #162),
   and always is pure preview.
 - `--json`: prints `{"plan": [...], "warnings": [...]}` instead, one
-  `{"resource_key", "action", "rationale", "likely_replace"}` object
-  per planned resource, `warnings` as given by `build_create_plan`.
+  `{"resource_key", "action", "rationale", "likely_replace",
+  "depends_on"}` object per planned resource, `warnings` as given by
+  `build_create_plan`. `depends_on` is the declared list verbatim, in
+  declared order, `[]` when there are none. The **array order of
+  `plan` itself is execution order** — that is documented rather than
+  duplicated into a second key, so a consumer reads the list in order
+  rather than reconstructing a sort from the edges.
   Nothing else is printed to stdout in this mode (the verbose call
   count, if requested, still goes to stderr — see below — so `--json
   --verbose` output stays parseable).

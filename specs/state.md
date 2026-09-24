@@ -117,6 +117,13 @@ otherwise silently misaddress a resource.
   back. Recovering from a corrupted primary file using the backup is a
   manual, human-driven action (per `PLAN.md` §10), not an `aiform`
   command.
+- A `state.json` written **before `StateEntry.depends_on` existed**
+  loads unchanged: the field is `Field(default_factory=list)`, so an
+  entry lacking it validates and comes back with `[]`. This is what
+  keeps the addition from needing the migration story `PLAN.md` §10
+  still defers — `aiform_state_version` stays `1`, because nothing about
+  reading an older file changed. See
+  `specs/resource_dependencies.md`.
 
 ## Out of scope
 

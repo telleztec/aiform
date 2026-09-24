@@ -70,7 +70,7 @@ for."
 
 ## MVP scope (locked)
 
-Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §10, "Not Yet Implemented").
+Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). Resources may declare *ordering* dependencies on one another (`depends_on:`, `specs/resource_dependencies.md`), but not yet reference each other's attribute *values* — see §10, "Not Yet Implemented", and `MULTI_RESOURCE_PRD.md` for the phasing.
 
 ## Driver curation: two permanent mechanisms
 
@@ -483,7 +483,7 @@ intent_notes = json.loads(response_text)["intent_notes"]
 
 `intent_orchestration_call()` (`aiform/llm.py`, `specs/llm.md`) is what actually talks to the model — which model, and which model source/vendor, is resolved at call time from `.aiform/config.yaml`'s `llm.intent_orchestration` entry (default `claude-sonnet-5` via Anthropic), not hardcoded here. `intent_notes` is passed into the **diff/plan step** (§5) as context for the `intent-orchestration-model`'s create/update/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance. (Note: `destroy` is deliberately not one of the values the `intent-orchestration-model`'s categorization call can return — see "Resource deletion" above and §5's note on `PLAN_CATEGORIZATION_SCHEMA`.)
 
-One `.aiform.md` file describes exactly one resource in the MVP (no dependency graph). Multiple resources = multiple files, planned/applied independently in sequence. This is the natural extension point for a future graph, deliberately not built now.
+One `.aiform.md` file describes exactly one resource. Multiple resources = multiple files, planned and applied in sequence — no longer in whatever order the filename glob produced, but in a deterministic topological order derived from each file's optional `depends_on:` key (`specs/resource_dependencies.md`). The ordering is total and execution remains strictly sequential; what a file still cannot do is reference another resource's attribute *values*, which is §10's remaining gap.
 
 A file's *absence* from the discovered set is never itself meaningful to the parser or anything downstream of it (see "Resource deletion" above — no implicit deletion). The only filename-level convention this format recognizes at all is the `AIFORM-DELETE-` prefix marking a *present* file for destruction; nothing else about a file's name or location changes how it's parsed.
 
@@ -1594,20 +1594,40 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   deprecation just fails loudly at apply time, requiring a maintainer
   to fix and re-release it. No driver versioning or migration story
   exists yet.
-- **No dependency graph.** MVP supports only independent resources
-  planned/applied one file at a time — there's no way for one resource's
-  output (e.g. a compute resource's IP) to feed into another's `params`
-  (a DNS record referencing that IP is the canonical out-of-scope
-  example). This needs a fuller design pass beyond this one-line scoping
-  note: open questions include how a `.aiform.md` file would reference
-  another resource's attributes (a new frontmatter field? implicit by
-  resource type?), how the planner would need to sequence
-  create/update/destroy across files respecting those references
-  (topological ordering, cycle detection), how a single destroy or
-  failure mid-graph should propagate to dependents, and whether this
-  stays file-per-resource or introduces a multi-resource file format.
-  None of this is designed yet — named here as a real gap to revisit,
-  not a decision already made.
+- **Dependency graph: ordering exists, value flow does not.** This entry
+  used to say the whole area was undesigned. It has since had a
+  requirements pass and a phased delivery plan —
+  `MULTI_RESOURCE_PRD.md` at the repo root is the durable record, and
+  what remains deferred is now deferred *per phase* rather than
+  wholesale.
+
+  **Delivered (Phase 1, `specs/resource_dependencies.md`):** an optional
+  `depends_on:` frontmatter key naming any number of other resources by
+  their fully-qualified `provider.resource_type.name` key; a
+  deterministic topological order over the plan, so dependencies are
+  created before dependents; reverse order on destroy, through all three
+  destroy producers including the no-argument destroy-all-from-state
+  path; cycle detection as a plan-time `PlanBlockedError`, never a
+  silent wrong-order apply; and `plan` output showing each resource's
+  edges, so a reordering is reviewable. The ordering pass is pure YAML
+  and string work and costs zero Anthropic calls.
+
+  **Still deferred, and why each is its own phase:** cross-resource
+  *attribute* references — a DNS record's `data` reading a droplet's
+  `ipv4_address`, the canonical example — are Phase 2, and are the half
+  of this gap that actually needs a reference syntax. *Automatic*
+  detection of edges from driver-declared metadata is Phase 3; it
+  produces the same edges Phase 1 already consumes, so the ordering
+  engine won't change. Refusing a destroy that would orphan a
+  still-tracked dependent, and recovering cleanly from a failure
+  mid-graph, are Phase 4 — deliberately after ordering, because failure
+  semantics are hard enough to get right serially. Concurrency-safe
+  state is Phase 5 and parallel execution is Phase 6; until then the
+  order Phase 1 produces is *total* and applied strictly sequentially.
+
+  The file-per-resource question is still genuinely open — see the PRD's
+  "Open questions", which carries it along with the Phase 2 reference
+  syntax and the Phase 5 durable-store decision.
 - **Only one resource kind is implemented.** `network` and `load_balancer` are
   named in Terminology as resource kinds the vocabulary already
   accommodates, but no `ResourceDriver` subclass exists for either yet —
@@ -1786,8 +1806,11 @@ entry's own note below.
   and retried on the next interval. This is a real risk today only at
   the margins (a single resource's poll loop stays well under DO's
   per-token rate limit on its own), but becomes materially sharper once
-  the "no dependency graph" gap above is closed and multiple resources
-  can be created/updated concurrently — N concurrent poll loops multiply
+  multiple resources can be created/updated **concurrently** — Phase 6 of
+  `MULTI_RESOURCE_PRD.md`, and still deferred. Phase 1's dependency
+  ordering does not sharpen it: that order is total and applied strictly
+  sequentially, so exactly one poll loop runs at a time, as today. When
+  concurrency does land, N concurrent poll loops multiply
   the aggregate request rate, and this loop's current all-or-nothing
   behavior means a single rate-limit hit anywhere kills that resource's
   entire operation rather than just slowing it down.

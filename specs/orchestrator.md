@@ -1230,10 +1230,14 @@ Returns the destination path.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.
-- **A dependency graph / multi-resource sequencing** — `PLAN.md` §10,
-  unchanged; this module processes `planned` in the literal order it was
-  built, one resource at a time, with no notion of one resource
-  depending on another.
+- **Cross-resource attribute references, automatic edge detection,
+  orphan refusal, and parallel execution** — Phases 2, 3, 4 and 6 of
+  `MULTI_RESOURCE_PRD.md`. Dependency *ordering* is no longer out of
+  scope here: see the `resource_dependencies` addendum below. What
+  remains true is that this module applies `planned` one resource at a
+  time, in the literal order the list carries — it is the plan
+  *builders* that now decide that order, and `apply_plan()` is unchanged
+  and unaware of the graph.
 
 ## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
 
@@ -1243,3 +1247,38 @@ Returns the destination path.
 module's involvement -- it reads the declaration off the driver and forwards
 it, exactly as it already does for the other per-field lists, and makes no
 decision of its own about it. See `specs/unordered_fields.md`.
+
+## Addendum: `resource_dependencies` (`specs/resource_dependencies.md`)
+
+This module owns the ordering half of Phase 1. `specs/resource_dependencies.md`
+is the full spec; what belongs here is which of this module's functions
+changed and which deliberately did not.
+
+- **`build_create_plan()`** gains a private discovery/validation pass ahead of
+  its existing loop. The pass reads each discovered file once, parses its
+  frontmatter, and performs four checks in order -- duplicate resource key,
+  per-target resolution (live files only), same-run destroy conflict, and
+  topological ordering via `aiform/graph.py`. It makes **zero LLM calls, zero
+  driver loads and zero credential resolutions**, which is the point of doing
+  it first: a plan that is going to be refused must not first spend money and
+  hit a provider's API. The loop then iterates those records in the computed
+  order, calling `_plan_one()` / `_plan_delete_marked()` unchanged.
+- **`build_destroy_plan()`** orders **both** of its paths in reverse
+  topological order -- the file-driven one from frontmatter, the state-driven
+  destroy-all one from `StateEntry.depends_on`. The second matters more: it is
+  the invocation a user actually types.
+- **`PlannedResource.depends_on`** carries the declared list through to the
+  CLI and into state, defaulted so every existing construction site and test
+  helper keeps working.
+- **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
+  it, so a destroy-all can order by it later.
+- **`apply_plan()` is unchanged.** It applies the list in the order it is
+  given and has no notion of a graph. Everything about ordering lives in the
+  two plan builders.
+- **`build_plan_summary()` is deliberately unchanged.** Adding `depends_on`
+  would inject an unexplained key into gate #2's review prompt with no
+  corresponding `prompts/review_plan.md` change and no test that the reviewer
+  uses it. Deferred to Phase 4, where orphan reasoning needs it.
+
+All four new failure modes raise the existing `PlanBlockedError`; no new
+exception type was added, and `graph.CycleError` never escapes this module.

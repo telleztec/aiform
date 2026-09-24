@@ -311,6 +311,15 @@ response.
 - **Validating `params` against a driver's `PARAM_SCHEMA`** (`PLAN.md`
   §2) — `orchestrator.py`, once a driver is resolved for `(provider,
   resource)`; this module has no notion of drivers at all.
+- **Resolving `depends_on` targets, ordering resources, and detecting
+  cycles** — `orchestrator.py` and `aiform/graph.py`. This module's
+  only involvement is that `parse_frontmatter()` now returns a
+  `ResourceSpec` carrying `depends_on`, validated for *shape* by the
+  model itself (`specs/models.md`) and surfacing as a `ValidationError`
+  like any other frontmatter schema error. Whether a well-formed key
+  names anything that exists needs files and state, which this module
+  deliberately knows nothing about. See
+  `specs/resource_dependencies.md`.
 - **Reading/writing `.aiform/state.json`**, and resolving
   `previous_aiform_md_sha256` from it — `orchestrator.py` /
   `aiform/state.py`.

@@ -186,9 +186,14 @@ to make something easier to build.
   narrate what the code does — identifiers should do that.
 - Don't add abstractions, config knobs, or error handling for scenarios
   that can't happen yet. The MVP is single-provider, single-resource-kind,
-  no dependency graph — build for that, not for a hypothetical future
-  multi-cloud graph engine. `PLAN.md` §10 already names what's deferred and
-  why; don't quietly start building toward it early.
+  with an *ordering-only* dependency graph — build for that, not for a
+  hypothetical future multi-cloud graph engine. Resources can declare
+  `depends_on:` and are sequenced topologically
+  (`specs/resource_dependencies.md`); they still cannot reference each
+  other's attribute values, nothing runs in parallel, and nothing refuses
+  to orphan a dependent. `PLAN.md` §10 and `MULTI_RESOURCE_PRD.md` name
+  what's deferred, phase by phase, and why; don't quietly start building
+  toward a later phase early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
   names, argument order, both exception types and their fields
   (`DriverUpdateNotSupported`'s `reason`/`unsupported_fields`, and
