@@ -1755,6 +1755,44 @@ class TestBuildCreatePlanDependencyOrdering:
         assert "DIGITALOCEAN_TOKEN" not in reason
         assert len(client.messages.calls) == 0
 
+    def test_delete_marked_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
+        # The third destroy producer named in specs/resource_dependencies.md:
+        # build_create_plan()'s own delete-marked branch, not just the two
+        # build_destroy_plan() paths covered in TestBuildDestroyPlan below.
+        db_path = tmp_path / "AIFORM-DELETE-db.aiform.md"
+        cache_path = tmp_path / "AIFORM-DELETE-cache.aiform.md"
+        app_path = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(cache_path, name="cache-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.cache-01": make_state_entry(name="cache-01"),
+                "digitalocean.compute.app-01": make_state_entry(name="app-01"),
+            },
+        )
+
+        # Given in dependency (create) order, to prove destroy reverses it.
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [db_path, cache_path, app_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert keys.index("digitalocean.compute.app-01") < keys.index(
+            "digitalocean.compute.cache-01"
+        )
+        assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
+        assert len(client.messages.calls) == 0
+
 
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
