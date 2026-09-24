@@ -460,6 +460,20 @@ def _plan_one(
         llm_config=llm_config,
     )
 
+    # depends_on is ordering metadata, not resource config, so it is kept
+    # in sync with the file on every plan run regardless of the action
+    # decided below -- unlike aiform_md_sha256 just below, its correctness
+    # never depends on params_agree. This matters specifically for NO_OP:
+    # apply_plan() skips NO_OP before any state write, so a NO_OP is the
+    # only action that never reaches _record_update()/_new_state_entry()'s
+    # own depends_on writes. Retrofitting depends_on: onto an
+    # already-tracked resource with unchanged params would otherwise never
+    # reach state.json, leaving `plan destroy` ordering by stale (empty)
+    # edges forever -- no apply can repair it, since there is nothing
+    # non-NO_OP to apply.
+    if state_entry is not None:
+        state_entry.depends_on = resource_spec.depends_on
+
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
     # so without this a reworded Intent section left state's hash stale

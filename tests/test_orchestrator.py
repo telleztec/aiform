@@ -1483,6 +1483,64 @@ class TestBuildCreatePlanDependencyOrdering:
         assert planned[1].entry.action == PlanAction.CREATE
         assert len(client.messages.calls) == 0
 
+    def test_no_op_retrofit_of_depends_on_onto_a_tracked_resource_reaches_state(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # A resource that was already tracked with no depends_on gets one
+        # added, with params otherwise unchanged. The diff is empty
+        # (params_agree), so plan_resource() still has to ask the model to
+        # categorize an empty diff because the .aiform.md hash moved --
+        # only the state write is what's under test here.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        driver_info = make_driver_info(driver_sha256(driver_file))
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        old_app_content = write_aiform_md(app_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(
+                    name="db-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(db_content.encode("utf-8")).hexdigest(),
+                ),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(old_app_content.encode("utf-8")).hexdigest(),
+                    depends_on=[],
+                ),
+            },
+        )
+
+        # Retrofit: add depends_on to the already-tracked app-01 file,
+        # params unchanged.
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+
+        client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
+        planned, _ = orchestrator.build_create_plan(
+            [db_path, app_path], state_path=state_path, client=client
+        )
+
+        app_pr = next(
+            pr for pr in planned if pr.entry.resource_key == "digitalocean.compute.app-01"
+        )
+        assert app_pr.entry.action == PlanAction.NO_OP
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.compute.app-01"].depends_on == [
+            "digitalocean.compute.db-01"
+        ]
+
+        destroy_plan = orchestrator.build_destroy_plan(None, state_path=state_path)
+        destroy_keys = [pr.entry.resource_key for pr in destroy_plan]
+        assert destroy_keys.index("digitalocean.compute.app-01") < destroy_keys.index(
+            "digitalocean.compute.db-01"
+        )
+
     def test_unchanged_dependency_graph_makes_zero_llm_calls(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
