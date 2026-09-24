@@ -525,7 +525,18 @@ next time `plan create` runs against that resource, not here.
 ### `build_create_plan(paths=None, *, cwd=Path("."), state_path=..., client=None, llm_config=None) -> (list[PlannedResource], list[str])`
 
 `PLAN.md` §5 "aiform plan create" steps 1-7, per file discovered by
-`discover_files(paths, cwd=cwd)`:
+`discover_files(paths, cwd=cwd)`.
+
+The steps below are the contract; since &#35;198 they are *located* across
+`build_create_plan()` itself (state load, discovery, the loop, the trailing
+save) and a set of module-private helpers it delegates each per-file stage to
+— `_plan_delete_marked()`, `_plan_one()`, and `_plan_one()`'s own callees
+`_parsed_resource()`, `_driver_for()`, `_credentials_for()` and
+`_decide_action()`. That factoring is not part of the contract and this spec
+does not track it per helper (private structure is deliberately out of scope
+here — see `specs/README.md`'s "Functions/classes **exposed**"); the note
+exists only so a reader looking for a step knows it is one call away rather
+than missing:
 
 - **`is_delete_marked(path)` is true** (Mechanism B): read the file,
   `spec = parser.parse_frontmatter(content)` only — no `parse_file()`
@@ -797,6 +808,18 @@ argument.
 full, is the caller's job — see Behavior below), shared verbatim by
 `aiform plan destroy`'s "plans and applies in one pass."
 `state = state.load(state_path)` fresh at the start.
+
+As with `build_create_plan()` above, since &#35;198 the steps below are located
+across `apply_plan()` and private helpers — `_batch_plan_review()`,
+`_apply_create()`, `_replace_review()`, `_replace_resource()`,
+`_record_update()`, `_apply_destroy()`, and `_extend_and_notify()` shared by the
+two review paths. **What deliberately did not move** is the UPDATE arm's
+`try`/`except DriverUpdateNotSupported`/`except Exception` skeleton and both
+abort returns. The two handlers are siblings, so the delete/create calls made
+from inside the first are not covered by the second (see the Logging bullet in
+`## Behavior`); flattening them would silently relabel those failures
+`"update"`. The abort returns stay because a helper cannot return `ApplyResult`
+for its caller.
 
 1. **Gate #2, conditionally**: `needs_review = any(pr.entry.action ==
    PlanAction.DESTROY or (pr.entry.action == PlanAction.UPDATE and
