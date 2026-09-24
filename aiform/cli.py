@@ -173,6 +173,8 @@ def _print_plan(
         line = _colorize(f"{marker} {pr.entry.resource_key}: {label}", pr.entry.action, color=color)
         print(line)
         print(f"    {pr.entry.rationale}")
+        if pr.depends_on:
+            print(f"    depends on: {', '.join(pr.depends_on)}")
     summary = (
         f"Plan: {counts[PlanAction.CREATE]} to create, {counts[PlanAction.UPDATE]} to update, "
         f"{counts[PlanAction.DESTROY]} to destroy, {counts[PlanAction.NO_OP]} no-op."
@@ -192,6 +194,7 @@ def _plan_to_json(planned: list[orchestrator.PlannedResource], warnings: list[st
                 "action": pr.entry.action.value,
                 "rationale": pr.entry.rationale,
                 "likely_replace": pr.entry.likely_replace,
+                "depends_on": list(pr.depends_on),
             }
             for pr in planned
         ],

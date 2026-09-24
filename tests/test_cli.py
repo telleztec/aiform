@@ -109,10 +109,15 @@ def write_aiform_md(
     resource: str = "compute",
     name: str = "telleztec-app-01",
     params: dict | None = None,
+    depends_on: list[str] | None = None,
 ) -> None:
     if params is None:
         params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
-    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}", "params:"]
+    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}"]
+    if depends_on:
+        lines.append("depends_on:")
+        lines += [f"  - {target}" for target in depends_on]
+    lines.append("params:")
     lines += [f"  {key}: {json.dumps(value)}" for key, value in params.items()]
     lines.append("---")
     path.write_text("\n".join(lines) + "\n")
@@ -1216,6 +1221,66 @@ class TestPlanCreate:
         assert payload["plan"][0]["resource_key"] == "digitalocean.compute.telleztec-app-01"
         assert payload["plan"][0]["action"] == "create"
         assert payload["warnings"] == []
+
+    def test_multi_dependency_resource_prints_all_targets_on_one_comma_separated_line(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "db.aiform.md", name="db-01")
+        write_aiform_md(project_dir / "cache.aiform.md", name="cache-01")
+        write_aiform_md(
+            project_dir / "app.aiform.md",
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "depends on: digitalocean.compute.db-01, digitalocean.compute.cache-01" in out
+        # Exactly one such line -- not one per edge, which would bury the
+        # rationale under a fan-in.
+        assert out.count("depends on:") == 1
+
+    def test_resource_without_dependencies_has_no_depends_on_line(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "depends on:" not in out
+
+    def test_json_output_carries_the_full_depends_on_list(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "db.aiform.md", name="db-01")
+        write_aiform_md(
+            project_dir / "app.aiform.md",
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01"],
+        )
+        patch_client(monkeypatch, [])
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(["plan", "create", "--state-file", str(state_file), "--json"])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        by_key = {entry["resource_key"]: entry for entry in payload["plan"]}
+        assert by_key["digitalocean.compute.app-01"]["depends_on"] == ["digitalocean.compute.db-01"]
+        assert by_key["digitalocean.compute.db-01"]["depends_on"] == []
 
     def test_missing_driver_exits_2_with_clean_error(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
