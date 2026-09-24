@@ -179,14 +179,40 @@ class TestTopologicalOrderCycles:
     def test_cycle_path_is_deterministic_across_differently_ordered_input(self):
         edges_a = {"a": {"b"}, "b": {"c"}, "c": {"b"}}
         edges_b = {"c": {"b"}, "a": {"b"}, "b": {"c"}}
-        first = None
-        try:
+
+        with pytest.raises(CycleError) as first_info:
             topological_order({"a", "b", "c"}, edges_a)
-        except CycleError as exc:
-            first = exc.path
-        second = None
-        try:
+        with pytest.raises(CycleError) as second_info:
             topological_order({"c", "b", "a"}, edges_b)
-        except CycleError as exc:
-            second = exc.path
-        assert first == second
+
+        assert first_info.value.path == second_info.value.path
+
+    def _assert_genuine_cycle(self, path, edges):
+        assert path[0] == path[-1]
+        for source, target in zip(path, path[1:], strict=False):
+            assert target in edges[source]
+        interior = path[:-1]
+        assert len(interior) == len(set(interior))
+
+    def test_two_disjoint_cycles_plus_a_node_depending_on_both_report_a_genuine_cycle(self):
+        # a<->b and c<->d are two unrelated cycles; e depends on one node
+        # from each but is in neither -- its in-degree never reaches 0, so
+        # Kahn's leaves the whole tangle (a, b, c, d, e) in `remaining`,
+        # not just one cycle.
+        edges = {
+            "a": {"b"},
+            "b": {"a"},
+            "c": {"d"},
+            "d": {"c"},
+            "e": {"a", "c"},
+        }
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a", "b", "c", "d", "e"}, edges)
+        self._assert_genuine_cycle(exc_info.value.path, edges)
+
+    def test_two_cycles_sharing_a_node_report_a_genuine_cycle(self):
+        # a<->b and b<->c share b: b depends on both a and c.
+        edges = {"a": {"b"}, "b": {"a", "c"}, "c": {"b"}}
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a", "b", "c"}, edges)
+        self._assert_genuine_cycle(exc_info.value.path, edges)
