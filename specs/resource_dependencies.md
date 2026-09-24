@@ -194,9 +194,23 @@ params:
   concurrently is Phase 6's problem, and nothing here anticipates it.
 - `edges[k]` is a **set**, so a node with several dependencies is just an
   in-degree above one. Fan-in needs no special case in the algorithm.
-- **No separate cycle detector.** After Kahn's terminates, the leftover set
-  *is* the cycle; walking it yields the path for the error message. A separate
-  `find_cycle()` would be a second implementation of the same traversal.
+- **No separate cycle detector**, but the leftover set needs care. An earlier
+  draft of this spec said "after Kahn's terminates, the leftover set *is* the
+  cycle." **That is false**, and it shipped a bug before being caught: the
+  leftover set is the cycle(s) **plus every node that transitively depends on
+  one**, because such a node's in-degree never reaches zero either. With
+  `a → b`, `b → c`, `c → b`, all three survive Kahn's, yet `a` is not in the
+  cycle and its only edge is legitimate.
+
+  So the reported path is the walk **trimmed to its cycle**: walk dependency
+  edges from `min(leftover)` until a node repeats, then return the suffix
+  beginning at that node's first occurrence. The guarantee callers rely on is
+  `path[0] == path[-1]`, which the untrimmed walk does not provide. Reporting
+  a lead-in node would send a user hunting for a bad edge on a resource whose
+  edges are all correct.
+
+  A separate `find_cycle()` is still not needed — this is the same traversal,
+  trimmed.
 - A key in `edges` that is not in `keys` is ignored — the orchestrator
   restricts edges before calling, and `graph.py` does not second-guess it.
 
@@ -229,23 +243,41 @@ compute the key, note whether it is delete-marked. Then, in this order:
    dependent through silently while blocking an UPDATE one.
 4. **Ordering.** `graph.topological_order()` over the live keys, with edges
    restricted to keys in this run. `CycleError` becomes `PlanBlockedError`
-   carrying the path (`a → b → c → a`).
+   carrying the path, rendered ASCII (`a -> b -> c -> a`) — plan output is
+   terminal text, and this is the one string in it a user may paste into an
+   issue.
 
 The existing loop then iterates those records **in the computed order**,
 calling `_plan_one()` / `_plan_delete_marked()` unchanged.
 
 ### Which targets contribute an edge
 
-Per target, not per resource — one resource may legally have a mix:
+**The generating principle, from which the whole table follows:** the run is
+sorted as **two separate node sets** — the live keys, ordered topologically,
+and the delete-marked keys, ordered reverse-topologically — with edges
+restricted to keys *within* each set. So an edge exists only when the
+declaring file and its target are in the **same** group. A target outside the
+declarer's group may still be perfectly *resolvable*; it just contributes no
+ordering constraint.
 
-| Target is | Resolvable | Contributes an edge |
-|---|---|---|
-| A live file in this run | yes | **yes** |
-| A live file in this run that turns out NO_OP | yes | **yes** |
-| In state, not in this run | yes | **no** |
-| Delete-marked in this run, declared by a live file | — | rejected (rule 3) |
-| Delete-marked in this run, declared by a delete-marked file | yes | **yes** (ordering the destroys) |
-| Nowhere | no (live) / yes (delete-marked) | no |
+Resolution and edges are both decided **per target**, not per resource, so one
+resource may legally have a mix.
+
+An earlier draft of this table omitted the declaring file's kind, which made
+its first rows read as though they applied to any declarer — contradicting the
+prose below it for one combination. Both columns are now explicit:
+
+| Declaring file | Target is | Resolvable | Edge |
+|---|---|---|---|
+| live | a live file in this run | yes | **yes** |
+| live | a live file in this run that turns out NO_OP | yes | **yes** |
+| live | in state, not in this run | yes | no |
+| live | delete-marked in this run | — | **rejected** (rule 3) |
+| live | nowhere | **no — raises** | — |
+| delete-marked | delete-marked in this run | yes | **yes** (orders the destroys) |
+| delete-marked | a live file in this run | yes | no |
+| delete-marked | in state, not in this run | yes | no |
+| delete-marked | nowhere | yes (exempt, rule 2) | no |
 
 - **In state but not in this run contributes no edge** — it already exists and
   nothing is happening to it. This is precisely what keeps
