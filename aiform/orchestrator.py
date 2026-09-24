@@ -802,10 +802,17 @@ def _batch_plan_review(
 # Notifies with only *this* review's non-BLOCK flags, never the accumulated
 # `review_flags` -- a later single-resource review is a different review about
 # one resource and must surface as its own thing before its own confirmation.
-# The notification is unconditional, even under yes=True: --yes skips the
-# prompt, not the record of what a gate #2 review said (#166), and the caller
-# must see it before the confirmation that follows rather than after
-# apply_plan() has returned.
+# The notification is unconditional for both callers, including under yes=True:
+# --yes suppresses a *prompt*, never the record of what a gate #2 review said
+# (#166), and the caller must see it before whatever confirmation follows
+# rather than after apply_plan() has returned.
+#
+# Which prompt --yes actually suppresses differs by caller, so do not read a
+# general rule out of this: it skips _batch_plan_review()'s "Apply this plan?",
+# but the "Replace <key>?" confirmation after _replace_review() is deliberately
+# NOT gated on yes (specs/orchestrator.md's judgment call on the stricter
+# single-resource gate). Anyone "fixing" that asymmetry removes a safety
+# prompt.
 def _extend_and_notify(
     review: PlanReview, review_flags: list[PlanReviewFlag], on_review_fn: OnReviewFn
 ) -> None:

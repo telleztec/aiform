@@ -532,11 +532,12 @@ The steps below are the contract; since &#35;198 they are *located* across
 save) and a set of module-private helpers it delegates each per-file stage to
 — `_plan_delete_marked()`, `_plan_one()`, and `_plan_one()`'s own callees
 `_parsed_resource()`, `_driver_for()`, `_credentials_for()` and
-`_decide_action()`. That factoring is not part of the contract and this spec
-does not track it per helper (private structure is deliberately out of scope
-here — see `specs/README.md`'s "Functions/classes **exposed**"); the note
-exists only so a reader looking for a step knows it is one call away rather
-than missing:
+`_decide_action()`, plus `_warnings_for_uncovered()` for the trailing
+"tracked in state but has no `.aiform.md` this run" step. That factoring is
+not part of the contract and this spec does not track it per helper (private
+structure is deliberately out of scope here — see `specs/README.md`'s
+"Functions/classes **exposed**"); the note exists only so a reader looking for
+a step knows it is one call away rather than missing:
 
 - **`is_delete_marked(path)` is true** (Mechanism B): read the file,
   `spec = parser.parse_frontmatter(content)` only — no `parse_file()`
@@ -1087,9 +1088,9 @@ Returns the destination path.
   success and logs nothing at the `DriverUpdateNotSupported` catch
   itself (an expected, handled fallback signal, not an error — the
   delete+create that follows produces its own two
-  `_call_driver()`-driven lines). A third outcome — the shared `except
-  Exception` covering the whole `update()`-or-replace attempt, reached
-  when `pr.driver.update()` itself raises anything other than
+  `_call_driver()`-driven lines). A third outcome — the `except
+  Exception` handler, which covers **only** the `pr.driver.update()` call
+  and is reached when it raises anything other than
   `DriverUpdateNotSupported` — calls
   `_log_driver_outcome(..., operation="update", outcome="error")`
   before re-raising (matching the `operation="update"` label the
@@ -1105,6 +1106,22 @@ Returns the destination path.
   one helper — exactly the kind of drift that let the first gap happen
   in the first place — which is what `_log_driver_outcome()` now
   prevents structurally rather than by vigilance.
+
+  **That `except Exception` does not cover the replace path.** The
+  `delete()`/`create()` calls `_replace_resource()` makes run inside the
+  sibling `except DriverUpdateNotSupported` block, and Python never
+  re-enters a sibling handler, so a failure there surfaces through
+  `_call_driver()` as `operation="delete"` or `"create"` — never
+  relabelled `"update"`. Corrected here (&#35;198): this bullet previously
+  described the handler as "covering the whole `update()`-or-replace
+  attempt", which contradicted its own next clause and would tell a
+  maintainer it is safe to flatten the two handlers. It is not:
+  `tests/test_orchestrator.py`'s
+  `test_replace_create_failure_reports_create_not_update_as_the_operation`
+  and its `delete` twin pin the labels, because the older
+  `test_replace_removes_stale_state_entry_before_attempting_create`
+  asserts only the exception *type* and stays green through a relabel.
+
   `driver_info_for()` logs whether the sha256 matched an existing state
   entry — `reused=true` on a hash-match, `reused=false` when a new
   `DriverInfo` had to be built (a first resolution, or a hand-edited
