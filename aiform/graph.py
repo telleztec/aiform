@@ -7,9 +7,11 @@ import heapq
 class CycleError(Exception):
     """Raised by topological_order() when the graph is not acyclic.
 
-    `path` is the cycle as a walkable sequence -- path[i+1] is always in
-    edges[path[i]] -- with path[0] == path[-1], so callers can render it
-    directly (e.g. "a -> b -> c -> a") without re-deriving the walk.
+    `path` is the cycle itself, as a walkable sequence -- path[i+1] is
+    always in edges[path[i]] -- with path[0] == path[-1], so callers can
+    render it directly (e.g. "a -> b -> c -> a") without re-deriving the
+    walk. A node that merely depends on the cycle without being part of
+    it never appears in `path`.
     """
 
     def __init__(self, path: list[str]):
@@ -55,12 +57,14 @@ def topological_order(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
 
 
 def _walk_cycle(remaining: set[str], edges: dict[str, set[str]]) -> list[str]:
-    # No separate cycle detector: after Kahn's terminates, `remaining` IS
-    # the cycle (possibly with more than one cycle tangled together), and
-    # every node left in it still has at least one dependency inside it --
-    # otherwise Kahn's would have drained it. Walking dependency edges
-    # from any starting node inside `remaining` is guaranteed to loop back
-    # on itself.
+    # No separate cycle detector: after Kahn's terminates, `remaining` is
+    # the cycle(s) plus every node that transitively depends on one --
+    # not the cycle itself. But every node left in it still has at least
+    # one dependency inside it (otherwise Kahn's would have drained it),
+    # so walking dependency edges from any starting node inside
+    # `remaining` is guaranteed to loop back on some node eventually. The
+    # walk may pass through lead-in nodes before it does; the genuine
+    # cycle is the suffix starting at the first repeated node.
     start = min(remaining)
     path = [start]
     visited = {start}
@@ -70,5 +74,5 @@ def _walk_cycle(remaining: set[str], edges: dict[str, set[str]]) -> list[str]:
         current = min(candidates)
         path.append(current)
         if current in visited:
-            return path
+            return path[path.index(current) :]
         visited.add(current)
