@@ -258,16 +258,22 @@ compute the key, note whether it is delete-marked. Then, in this order:
    issue.
 
 The existing loop then iterates **the computed order**, calling `_plan_one()` /
-`_plan_delete_marked()` unchanged — which means each file is read and parsed a
-second time, since the loop re-derives from the path rather than reusing the
-pass's records. An earlier draft said the loop "iterates those records"; it does
-not. The cost is one extra `read_text()` plus a pure-YAML parse, no LLM call
-either way, so this is wasted IO rather than a spent toll — but it does leave a
-narrow TOCTOU window, where a file edited between the two reads was validated
-and ordered on content that is not what gets planned. Not fixed here: the
-redundant double read on the tracked path predates this change and PR #199
-already filed it out of scope, and closing it means changing `parse_file()`'s
-interface. See `specs/orchestrator.md`.
+`_plan_delete_marked()` unchanged — which means the loop re-derives each record
+from its path rather than reusing the pass's, so every file is read and parsed
+again. An earlier draft said the loop "iterates those records"; it does not.
+
+Counting honestly, a **tracked** file is now read three times: once by the
+discovery pass, once by the loop, and once more by `parse_file()` inside it. The
+third is pre-existing and is the one PR #199 filed out of scope, because closing
+it means changing `parse_file()`'s interface. The second is new here, and
+closing *it* is a different job — threading the pass's records into
+`_plan_one()` rather than re-deriving — not a `parse_file()` change. Neither is
+fixed in this phase.
+
+The cost is `read_text()` plus a pure-YAML parse, with no LLM call either way,
+so this is wasted IO rather than a spent toll. It does leave a narrow TOCTOU
+window: a file edited between two reads was validated and ordered on content
+that is not what gets planned. See `specs/orchestrator.md`.
 
 ### Which targets contribute an edge
 
@@ -348,12 +354,27 @@ three are covered:
   above.
 - **`build_destroy_plan()`'s file-driven path** — files exist, so `depends_on`
   is readable from frontmatter; reverse topological. It also now runs **rule 1's
-  duplicate-key check**, which it did not before: two files declaring the same
-  key used to collapse into one destroy entry attributed to whichever came
-  last, so `_apply_destroy()` trashed that one path and left the other on disk
-  to recreate the resource on the next `plan create`. That is rule 1's "nastiest
-  variant" reached through a second door, so it raises here for the same reason
-  it raises there.
+  duplicate-key check**, which it did not before.
+
+  What actually happened before, verified against the merge base rather than
+  reasoned from this tree: two files declaring one key produced **two**
+  `PlannedResource` entries with the same `resource_key`, both listed in the
+  plan. Nothing was silently collapsed. The damage was at apply time:
+  `_apply_destroy()` ran twice for one key, the first deleting the resource,
+  dropping it from state and trashing file 1, and the second calling
+  `driver.delete()` with a now-stale id — so the provider 404s into a
+  `DriverExecutionError`, or `_require_tracked()` raises because the key is
+  already gone. **Either way the apply aborts part-way through and file 2 stays
+  on disk**, ready to recreate the resource on the next `plan create`.
+
+  So the conclusion rule 1 draws still holds, and the pre-PR behavior was if
+  anything worse than a collapse: a half-completed destroy that fails mid-apply.
+  Refusing at plan time is the same answer for the same reason.
+
+  (An earlier draft of this paragraph said the entries "used to collapse into
+  one, attributed to whichever came last." That described *this* tree with the
+  check removed, not the history — there was no `by_key` dict before this PR.
+  Corrected after review caught it.)
 - **`build_destroy_plan()`'s state-driven destroy-all path** — reads
   `StateEntry.depends_on` and orders in reverse topological. This is the
   invocation a user actually types (`aiform plan destroy`, no arguments), so

@@ -1277,9 +1277,13 @@ changed and which deliberately did not.
   topological order -- the file-driven one from frontmatter, the state-driven
   destroy-all one from `StateEntry.depends_on`. The second matters more: it is
   the invocation a user actually types. The file-driven path additionally gained
-  the duplicate-key check, which it previously lacked; two files declaring one
-  key used to collapse silently into a single destroy, trashing one file and
-  leaving the other to recreate the resource.
+  the duplicate-key check, which it previously lacked. Before this PR, two files
+  declaring one key produced **two** plan entries rather than collapsing into
+  one -- the failure was at apply time, where the second `_apply_destroy()` hit
+  a stale id and aborted the apply part-way, leaving the second file on disk to
+  recreate the resource. See `specs/resource_dependencies.md` for the mechanism;
+  an earlier draft here described a silent collapse, which was the current code
+  minus the check rather than the actual history.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.

@@ -1622,13 +1622,26 @@ config files, or secret managers Tokens rotate automatically and expire in minut
 
   And it is cheaper to reach than "several applies" suggests: because
   `plan` persists `depends_on` for an already-tracked resource
-  regardless of the action it decides, **two NO_OP plans are enough** —
-  no apply, no provider call, nothing to undo but hand-editing
-  `state.json`. That persistence is itself necessary (without it,
-  adopting `depends_on` on an existing resource never reaches state at
-  all), so this is a trade rather than an oversight. Tracked as #206,
-  which owns the refuse-versus-degrade decision and now has a stronger
-  case for refusing at the `plan` that closes the cycle.
+  regardless of the action it decides, **two NO_OP plans can be enough**
+  — no `apply`, no *mutating* provider call, nothing to undo but
+  hand-editing `state.json`. (Each of those plans does still call
+  `driver.read()` per tracked resource, since refresh-before-diff is
+  unconditional, and spends one categorization call because adding
+  `depends_on` moves the file hash. "No provider call" would be false.)
+
+  The qualifier is load-bearing: each plan has to name **one side of the
+  cycle at a time**. A whole-directory `aiform plan create` — the
+  ordinary invocation — discovers both files, builds both edges, and
+  raises `PlanBlockedError` from the ordering pass *before* the
+  per-resource loop and before the single trailing `state.save()`, so
+  state is left untouched. Reaching this state takes deliberately
+  planning one file at a time.
+
+  That persistence is itself necessary (without it, adopting
+  `depends_on` on an existing resource never reaches state at all), so
+  this is a trade rather than an oversight. Tracked as #206, which owns
+  the refuse-versus-degrade decision and now has a stronger case for
+  refusing at the `plan` that closes the cycle.
 
   **Still deferred, and why each is its own phase:** cross-resource
   *attribute* references — a DNS record's `data` reading a droplet's
