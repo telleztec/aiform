@@ -484,6 +484,22 @@ mechanism: launch it as a subagent with an explicit `model` override rather
 than inheriting yours. If you cannot select a different model, say so on the
 PR instead of reviewing yourself.
 
+**Choosing who authors the diff also chooses who reviews it.** A reviewer
+must both clear the bar above and differ from the author, so exactly two
+pairings satisfy the gate:
+
+| Author | Reviewer | Cost |
+|---|---|---|
+| Sonnet | Opus 5 | cheap — the default |
+| Opus | Fable 5.1 | the only non-colliding reviewer ≥ Opus 5 — expensive |
+
+Picking Opus to author a diff therefore commits whoever approved the plan
+to a Fable review, whether or not anyone said so out loud — and the repo
+owner said on 2026-09-21 to stop defaulting to Fable, it's too expensive.
+That's why `PROCESS.md`'s "What counts as a plan" requires the pairing to
+be named in the plan itself: it makes the cost tradeoff something the
+human chose, not something this rule quietly chose for them.
+
 ### Satisfying `llm-review`
 
 The status means the SHA's content **has been read by a reviewer**. Never post
