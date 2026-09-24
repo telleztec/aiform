@@ -2235,6 +2235,56 @@ class TestApplyPlan:
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
         assert entry.depends_on == ["digitalocean.compute.new-dep-01"]
 
+    def test_update_without_replace_stores_a_copy_of_depends_on_not_an_alias(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # _new_state_entry() already copies with list(pr.depends_on);
+        # _record_update()'s in-place branch assigned the ResourceSpec's own
+        # list by reference instead. Caught by spying on state.save() to
+        # read the in-memory StateEntry before it round-trips through JSON
+        # -- a JSON round trip would produce a fresh list either way and
+        # hide the aliasing.
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.old-dep-01"],
+        )
+        shared_depends_on = ["digitalocean.compute.new-dep-01"]
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=shared_depends_on,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        captured: list[state.State] = []
+        original_save = state.save
+
+        def spy_save(st, path):
+            captured.append(st)
+            return original_save(st, path)
+
+        monkeypatch.setattr(state, "save", spy_save)
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        in_memory_depends_on = (
+            captured[-1].resources["digitalocean.compute.telleztec-app-01"].depends_on
+        )
+        assert in_memory_depends_on == ["digitalocean.compute.new-dep-01"]
+        assert in_memory_depends_on is not shared_depends_on
+
+        shared_depends_on.append("digitalocean.compute.mutated-01")
+        assert in_memory_depends_on == ["digitalocean.compute.new-dep-01"]
+
     def test_update_without_replace_logs_success(self, tmp_path: Path, caplog):
         caplog.set_level("INFO", logger="aiform.orchestrator")
         driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})

@@ -1042,7 +1042,7 @@ def _record_update(
         existing.last_applied_at = now
         existing.last_refreshed_at = now
         existing.aiform_md_sha256 = pr.current_aiform_md_sha256
-        existing.depends_on = pr.depends_on
+        existing.depends_on = list(pr.depends_on)
     # entry.likely_replace reflects the plan-time prediction; report what
     # actually happened instead, in both directions -- a predicted replace that
     # update() handled in place must not be reported as a replace just because
