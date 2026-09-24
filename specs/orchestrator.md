@@ -525,7 +525,19 @@ next time `plan create` runs against that resource, not here.
 ### `build_create_plan(paths=None, *, cwd=Path("."), state_path=..., client=None, llm_config=None) -> (list[PlannedResource], list[str])`
 
 `PLAN.md` §5 "aiform plan create" steps 1-7, per file discovered by
-`discover_files(paths, cwd=cwd)`:
+`discover_files(paths, cwd=cwd)`.
+
+The steps below are the contract; since &#35;198 they are *located* across
+`build_create_plan()` itself (state load, discovery, the loop, the trailing
+save) and a set of module-private helpers it delegates each per-file stage to
+— `_plan_delete_marked()`, `_plan_one()`, and `_plan_one()`'s own callees
+`_parsed_resource()`, `_driver_for()`, `_credentials_for()` and
+`_decide_action()`, plus `_warnings_for_uncovered()` for the trailing
+"tracked in state but has no `.aiform.md` this run" step. That factoring is
+not part of the contract and this spec does not track it per helper (private
+structure is deliberately out of scope here — see `specs/README.md`'s
+"Functions/classes **exposed**"); the note exists only so a reader looking for
+a step knows it is one call away rather than missing:
 
 - **`is_delete_marked(path)` is true** (Mechanism B): read the file,
   `spec = parser.parse_frontmatter(content)` only — no `parse_file()`
@@ -798,6 +810,18 @@ full, is the caller's job — see Behavior below), shared verbatim by
 `aiform plan destroy`'s "plans and applies in one pass."
 `state = state.load(state_path)` fresh at the start.
 
+As with `build_create_plan()` above, since &#35;198 the steps below are located
+across `apply_plan()` and private helpers — `_batch_plan_review()`,
+`_apply_create()`, `_replace_review()`, `_replace_resource()`,
+`_record_update()`, `_apply_destroy()`, and `_extend_and_notify()` shared by the
+two review paths. **What deliberately did not move** is the UPDATE arm's
+`try`/`except DriverUpdateNotSupported`/`except Exception` skeleton and both
+abort returns. The two handlers are siblings, so the delete/create calls made
+from inside the first are not covered by the second (see the Logging bullet in
+`## Behavior`); flattening them would silently relabel those failures
+`"update"`. The abort returns stay because a helper cannot return `ApplyResult`
+for its caller.
+
 1. **Gate #2, conditionally**: `needs_review = any(pr.entry.action ==
    PlanAction.DESTROY or (pr.entry.action == PlanAction.UPDATE and
    pr.entry.likely_replace) for pr in planned)`. If true:
@@ -1064,9 +1088,9 @@ Returns the destination path.
   success and logs nothing at the `DriverUpdateNotSupported` catch
   itself (an expected, handled fallback signal, not an error — the
   delete+create that follows produces its own two
-  `_call_driver()`-driven lines). A third outcome — the shared `except
-  Exception` covering the whole `update()`-or-replace attempt, reached
-  when `pr.driver.update()` itself raises anything other than
+  `_call_driver()`-driven lines). A third outcome — the `except
+  Exception` handler, which covers **only** the `pr.driver.update()` call
+  and is reached when it raises anything other than
   `DriverUpdateNotSupported` — calls
   `_log_driver_outcome(..., operation="update", outcome="error")`
   before re-raising (matching the `operation="update"` label the
@@ -1082,6 +1106,22 @@ Returns the destination path.
   one helper — exactly the kind of drift that let the first gap happen
   in the first place — which is what `_log_driver_outcome()` now
   prevents structurally rather than by vigilance.
+
+  **That `except Exception` does not cover the replace path.** The
+  `delete()`/`create()` calls `_replace_resource()` makes run inside the
+  sibling `except DriverUpdateNotSupported` block, and Python never
+  re-enters a sibling handler, so a failure there surfaces through
+  `_call_driver()` as `operation="delete"` or `"create"` — never
+  relabelled `"update"`. Corrected here (&#35;198): this bullet previously
+  described the handler as "covering the whole `update()`-or-replace
+  attempt", which contradicted its own next clause and would tell a
+  maintainer it is safe to flatten the two handlers. It is not:
+  `tests/test_orchestrator.py`'s
+  `test_replace_create_failure_reports_create_not_update_as_the_operation`
+  and its `delete` twin pin the labels, because the older
+  `test_replace_removes_stale_state_entry_before_attempting_create`
+  asserts only the exception *type* and stays green through a relabel.
+
   `driver_info_for()` logs whether the sha256 matched an existing state
   entry — `reused=true` on a hash-match, `reused=false` when a new
   `DriverInfo` had to be built (a first resolution, or a hand-edited

@@ -2423,6 +2423,72 @@ class TestApplyPlan:
         saved = state.load(state_path)
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
 
+    # The next two pin which `operation` a failure on the replace path
+    # reports. They pass against the code as it stands -- they are
+    # characterization tests, not red-first ones, and exist because the
+    # UPDATE arm's two exception handlers are siblings: `except Exception`
+    # does NOT cover the delete()/create() calls inside `except
+    # DriverUpdateNotSupported`, since Python never re-enters a sibling
+    # handler. So those failures surface as "delete"/"create", unwrapped by
+    # the update handler. Flattening the two handlers, or pulling those
+    # calls under a broader try, would relabel both as "update" -- and
+    # test_replace_removes_stale_state_entry_before_attempting_create above
+    # would not catch it, because it only asserts the exception *type*.
+    def test_replace_create_failure_reports_create_not_update_as_the_operation(
+        self, tmp_path: Path
+    ):
+        driver = FakeDriver(update_exception=DriverUpdateNotSupported("image change"))
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("CSP create quota exceeded")
+
+        driver.create = boom
+        existing = make_state_entry(id="123")
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.UPDATE,
+            rationale="image change",
+            likely_replace=True,
+        )
+        pr = make_planned_resource(entry=entry, driver=driver, state_entry=existing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        assert exc_info.value.operation == "create"
+        assert "during create" in str(exc_info.value)
+
+    def test_replace_delete_failure_reports_delete_not_update_as_the_operation(
+        self, tmp_path: Path
+    ):
+        driver = FakeDriver(
+            update_exception=DriverUpdateNotSupported("image change"),
+            delete_exception=RuntimeError("CSP delete refused"),
+        )
+        existing = make_state_entry(id="123")
+        entry = PlanEntry(
+            resource_key="digitalocean.compute.telleztec-app-01",
+            action=PlanAction.UPDATE,
+            rationale="image change",
+            likely_replace=True,
+        )
+        pr = make_planned_resource(entry=entry, driver=driver, state_entry=existing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+
+        assert exc_info.value.operation == "delete"
+        # delete() failed, so the entry must still be tracked: the
+        # checkpoint save only runs once the CSP resource is verifiably gone.
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "123"
+
     def test_batch_review_safe_to_proceed_false_with_no_block_flag_still_raises(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
