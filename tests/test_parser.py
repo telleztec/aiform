@@ -188,6 +188,45 @@ class TestParseFrontmatter:
         assert spec.params["user_data"] == "#!/bin/bash\n---\necho hi\n"
         assert spec.params["region"] == "sfo3"
 
+    def test_depends_on_survives_single_entry(self):
+        content = (
+            "---\nresource: compute\nname: app-01\nprovider: digitalocean\nparams: {}\n"
+            "depends_on:\n  - digitalocean.compute.db-01\n---\n"
+        )
+        spec = parser.parse_frontmatter(content)
+        assert spec.depends_on == ["digitalocean.compute.db-01"]
+
+    def test_depends_on_survives_multi_entry(self):
+        content = (
+            "---\nresource: compute\nname: app-01\nprovider: digitalocean\nparams: {}\n"
+            "depends_on:\n  - digitalocean.compute.db-01\n  - digitalocean.compute.cache-01\n---\n"
+        )
+        spec = parser.parse_frontmatter(content)
+        assert spec.depends_on == ["digitalocean.compute.db-01", "digitalocean.compute.cache-01"]
+
+    def test_depends_on_survives_alongside_a_block_scalar(self):
+        # The `---`-in-user_data case from
+        # test_dashes_line_inside_block_scalar_does_not_truncate_frontmatter,
+        # with depends_on present too -- proving the two features compose.
+        content = (
+            "---\n"
+            "resource: compute\n"
+            "name: app-01\n"
+            "provider: digitalocean\n"
+            "depends_on:\n"
+            "  - digitalocean.compute.db-01\n"
+            "params:\n"
+            "  user_data: |\n"
+            "    #!/bin/bash\n"
+            "    ---\n"
+            "    echo hi\n"
+            "  region: sfo3\n"
+            "---\n"
+        )
+        spec = parser.parse_frontmatter(content)
+        assert spec.depends_on == ["digitalocean.compute.db-01"]
+        assert spec.params["user_data"] == "#!/bin/bash\n---\necho hi\n"
+
     def test_bareword_boolean_key_raises_value_error_not_type_error(self):
         # PyYAML's "Norway problem": an unquoted yes/no/on/off/true/false
         # key resolves to a Python bool, and dict(**data) with a non-str
