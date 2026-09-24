@@ -100,7 +100,7 @@ One added keyword argument in `build_create_plan()`'s existing
 `likely_replace_fields=driver.LIKELY_REPLACE_FIELDS` already there:
 
 ```python
-entry = planner.plan_resource(
+entry, params_agree = planner.plan_resource(  # tuple return since #195
     key,
     current_attributes,
     resource_spec.params,

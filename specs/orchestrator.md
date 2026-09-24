@@ -622,7 +622,7 @@ next time `plan create` runs against that resource, not here.
      enough that removing it is its own decision, not a side effect of
      this one.
 
-     **Otherwise**: `entry = planner.plan_resource(key,
+     **Otherwise**: `entry, params_agree = planner.plan_resource(key,
      current_attributes, spec.params, intent_notes=parsed.intent_notes,
      param_schema=driver.PARAM_SCHEMA,
      likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
