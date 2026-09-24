@@ -1541,6 +1541,76 @@ class TestBuildCreatePlanDependencyOrdering:
             "digitalocean.compute.db-01"
         )
 
+    def test_no_op_retrofit_of_depends_on_stores_a_copy_not_an_alias(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # _new_state_entry() gets its copy for free from ResourceSpec's own
+        # pydantic constructor validation on the field it was parsed into
+        # (list[str] fields are copied on construction, not on assignment).
+        # The retrofit branch at the bottom of _plan_one() instead assigns
+        # resource_spec.depends_on straight onto an existing StateEntry,
+        # which has no validate_assignment, so no copy happens there.
+        #
+        # Caught by memoizing parser.parse_frontmatter() so every call
+        # against the same file content returns the identical ResourceSpec
+        # object no matter how many internal call sites re-parse it, then
+        # spying on state.save() to compare identities before anything
+        # round-trips through JSON, which would produce a fresh list either
+        # way and hide the aliasing.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        driver_info = make_driver_info(driver_sha256(driver_file))
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        old_app_content = write_aiform_md(app_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(
+                    name="db-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(db_content.encode("utf-8")).hexdigest(),
+                ),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(old_app_content.encode("utf-8")).hexdigest(),
+                    depends_on=[],
+                ),
+            },
+        )
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+
+        parse_cache = {}
+        original_parse = orchestrator.parser.parse_frontmatter
+
+        def memo_parse(content):
+            if content not in parse_cache:
+                parse_cache[content] = original_parse(content)
+            return parse_cache[content]
+
+        monkeypatch.setattr(orchestrator.parser, "parse_frontmatter", memo_parse)
+
+        captured_states = []
+        original_save = state.save
+
+        def spy_save(st, path):
+            captured_states.append(st)
+            return original_save(st, path)
+
+        monkeypatch.setattr(state, "save", spy_save)
+
+        client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
+        orchestrator.build_create_plan([db_path, app_path], state_path=state_path, client=client)
+
+        app_content = app_path.read_text(encoding="utf-8-sig")
+        app_spec = parse_cache[app_content]
+        saved_entry = captured_states[-1].resources["digitalocean.compute.app-01"]
+        assert saved_entry.depends_on == ["digitalocean.compute.db-01"]
+        assert saved_entry.depends_on is not app_spec.depends_on
+
     def test_unchanged_dependency_graph_makes_zero_llm_calls(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
     ):
@@ -2349,12 +2419,16 @@ class TestApplyPlan:
     def test_update_without_replace_stores_a_copy_of_depends_on_not_an_alias(
         self, tmp_path: Path, monkeypatch
     ):
-        # _new_state_entry() already copies with list(pr.depends_on);
-        # _record_update()'s in-place branch assigned the ResourceSpec's own
-        # list by reference instead. Caught by spying on state.save() to
-        # read the in-memory StateEntry before it round-trips through JSON
-        # -- a JSON round trip would produce a fresh list either way and
-        # hide the aliasing.
+        # _new_state_entry() already gets a copy for free: it passes
+        # pr.depends_on into StateEntry(...)'s constructor, and pydantic's
+        # constructor validation of a list[str] field copies it.
+        # _record_update()'s in-place branch instead assigned the
+        # ResourceSpec's own list onto an existing StateEntry by plain
+        # attribute assignment, which pydantic does not validate (no
+        # validate_assignment), so no copy happened there. Caught by
+        # spying on state.save() to read the in-memory StateEntry before
+        # it round-trips through JSON -- a JSON round trip would produce a
+        # fresh list either way and hide the aliasing.
         driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
         existing = make_state_entry(
             id="123",

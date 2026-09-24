@@ -500,7 +500,7 @@ def _plan_one(
     # edges forever -- no apply can repair it, since there is nothing
     # non-NO_OP to apply.
     if state_entry is not None:
-        state_entry.depends_on = resource_spec.depends_on
+        state_entry.depends_on = list(resource_spec.depends_on)
 
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
