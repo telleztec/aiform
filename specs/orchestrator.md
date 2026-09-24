@@ -1255,14 +1255,24 @@ is the full spec; what belongs here is which of this module's functions
 changed and which deliberately did not.
 
 - **`build_create_plan()`** gains a private discovery/validation pass ahead of
-  its existing loop. The pass reads each discovered file once, parses its
-  frontmatter, and performs four checks in order -- duplicate resource key,
+  its existing loop. The pass reads and parses each discovered file's
+  frontmatter, then performs four checks in order -- duplicate resource key,
   per-target resolution (live files only), same-run destroy conflict, and
   topological ordering via `aiform/graph.py`. It makes **zero LLM calls, zero
   driver loads and zero credential resolutions**, which is the point of doing
   it first: a plan that is going to be refused must not first spend money and
-  hit a provider's API. The loop then iterates those records in the computed
-  order, calling `_plan_one()` / `_plan_delete_marked()` unchanged.
+  hit a provider's API.
+
+  The loop then iterates the computed **order**, calling `_plan_one()` /
+  `_plan_delete_marked()` unchanged -- which means each file is read and parsed
+  a second time. An earlier draft of this line claimed the loop "iterates those
+  records"; it does not, it re-derives them from the path. The cost is one extra
+  `read_text()` plus a pure-YAML parse, no LLM call either way, so this is
+  wasted IO rather than a spent toll. It does leave a narrow TOCTOU window: a
+  file edited between the two reads was validated and ordered on content that
+  is not what gets planned. Not fixed here -- the redundant double read on the
+  tracked path predates this change and was already filed out of scope by
+  PR #199, and closing it means changing `parse_file()`'s interface.
 - **`build_destroy_plan()`** orders **both** of its paths in reverse
   topological order -- the file-driven one from frontmatter, the state-driven
   destroy-all one from `StateEntry.depends_on`. The second matters more: it is

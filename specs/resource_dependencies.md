@@ -271,7 +271,7 @@ prose below it for one combination. Both columns are now explicit:
 |---|---|---|---|
 | live | a live file in this run | yes | **yes** |
 | live | a live file in this run that turns out NO_OP | yes | **yes** |
-| live | in state, not in this run | yes | no |
+| live | in state, not in this run | yes | no ¹ |
 | live | delete-marked in this run | — | **rejected** (rule 3) |
 | live | nowhere | **no — raises** | — |
 | delete-marked | delete-marked in this run | yes | **yes** (orders the destroys) |
@@ -283,19 +283,42 @@ prose below it for one combination. Both columns are now explicit:
   nothing is happening to it. This is precisely what keeps
   `aiform plan create one-file.aiform.md` working when that file declares a
   dependency on something already deployed.
+
+  **¹ This row has no observable consequence, and no test can prove it.** Said
+  plainly rather than left as a claim a reader assumes is pinned: `_order_files`
+  restricts the node set to the live keys, and `graph.topological_order()`
+  ignores any target outside that set. So "resolved, no edge added" and "edge
+  added to a key that isn't a node" are behaviorally identical. The row
+  documents intent — that such a target is *resolvable* rather than an error,
+  which is genuinely observable — not a distinction the code makes.
 - **A NO_OP target keeps its edge.** Ordering it costs nothing, and dropping it
   would need information the pass does not have yet — the action isn't known
   until the loop runs, which is after ordering.
 - **A delete-marked file depending on a live one is allowed and contributes no
-  edge.** Destroys already run last, after every live action, so the constraint
-  is satisfied by construction. This is the mirror of rule 3 and is deliberately
-  *not* an error.
+  edge**, because the two are in different node sets. The ordering constraint
+  is then satisfied by the returned order below, which puts every destroy after
+  every live action. This is the mirror of rule 3 and is deliberately *not* an
+  error.
 
 ### Returned order
 
 Live entries in topological order, then delete-marked destroys in **reverse**
-topological order. Destroys-last is the conservative choice and is safe
-precisely because rule 3 guarantees no edge crosses between the two groups.
+topological order.
+
+**Destroys-last is a behavior change this phase makes, not a pre-existing
+invariant.** An earlier draft of this spec said destroys "already" ran last;
+they did not. `discover_files()` returns `sorted(cwd.glob(...))`, and
+`AIFORM-DELETE-` sorts *before* any lowercase name (`'A'` is 65, `'a'` is 97),
+so a delete-marked file was previously planned and applied **first**. The
+change is deliberate and is the better order — destroying a resource before
+its replacement exists opens a capacity gap that destroying afterwards does
+not — but it is a change, and a reader comparing against `main` should not be
+told otherwise. A test pins it.
+
+Note the two claims here are independent, not mutually supporting: rule 3
+guarantees no *live* resource depends on a same-run destroy, and the returned
+order guarantees destroys follow live actions. An earlier draft justified each
+by the other, which is circular; both are separately true of the ordering code.
 
 ### Destroy ordering, all three producers
 
@@ -405,7 +428,10 @@ and never escapes the orchestrator.
 ## Verification
 
 - **`tests/test_graph.py`** (new), modeled on `tests/test_compare.py` — pure
-  imports, behavior-named `Test*` classes, strict `is True`/`is False`:
+  imports, behavior-named `Test*` classes, each docstring stating its
+  invariant. (Not `test_compare.py`'s strict `is True`/`is False` style —
+  `topological_order()` returns a list and raises; it has no boolean result to
+  assert on. An earlier draft of this line claimed otherwise.)
   - order correct, and **deterministic across input permutations**;
   - **fan-in**: one node with several dependencies, all of which precede it;
   - fan-out; diamond; disconnected components;
@@ -451,6 +477,19 @@ and never escapes the orchestrator.
   re-run makes zero Anthropic calls, and that `plan destroy` **with no file
   arguments** destroys `app-01` before either target. Smallest droplet size,
   `aiform`-tagged, destroyed immediately.
+
+  Name the files so that **alphabetical order contradicts the required order**
+  (`app-01` sorts before `cache-01` and `db-01`). Otherwise the check passes
+  against the old filename-glob behavior and proves nothing.
+
+- **Live, the retrofit case** — added after review found the check above cannot
+  see it. Apply the three files *without* `depends_on`, then add `depends_on`
+  to the already-tracked `app-01` and run `plan` again, then `plan destroy`
+  with no arguments. Every resource in the first check is brand new, so it
+  reaches state through `_new_state_entry()`; adopting `depends_on` on a
+  tracked file is a NO_OP and takes an entirely different path, which is
+  exactly where it was found broken. A check that only ever creates fresh
+  resources cannot distinguish the two.
 
 ## Out of scope
 

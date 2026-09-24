@@ -499,7 +499,13 @@ pass, unconditionally subject to gate #2 by construction (every entry
    `plan apply`'s `--yes` tally-line marker (issue #162) — destroy
    routes through the same `_plan_apply_and_report` call site, so this
    isn't a separate implementation, just the same behavior reached from
-   a second command.
+   a second command. That sameness includes the `depends on:` line
+   described under `plan create`: it prints here too, and for a destroy
+   it is load-bearing rather than incidental, because it is what
+   explains why the teardown is in the order shown. Its source differs
+   by invocation — frontmatter when files were named, `StateEntry`'s
+   recorded edges for the no-argument destroy-all form
+   (`specs/resource_dependencies.md`).
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review

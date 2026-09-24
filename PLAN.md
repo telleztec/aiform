@@ -1607,10 +1607,19 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   deterministic topological order over the plan, so dependencies are
   created before dependents; reverse order on destroy, through all three
   destroy producers including the no-argument destroy-all-from-state
-  path; cycle detection as a plan-time `PlanBlockedError`, never a
-  silent wrong-order apply; and `plan` output showing each resource's
-  edges, so a reordering is reviewable. The ordering pass is pure YAML
-  and string work and costs zero Anthropic calls.
+  path; cycle detection over the edges a run declares, as a plan-time
+  `PlanBlockedError` rather than a silent wrong-order apply; and `plan`
+  output showing each resource's edges, so a reordering is reviewable.
+  The ordering pass is pure YAML and string work and costs zero
+  Anthropic calls.
+
+  One honest limit on that cycle claim, since an earlier draft of this
+  entry stated it without qualification: detection covers **the edges a
+  single run declares.** A target that exists only in state resolves
+  with no edge, so a cycle assembled across several runs into
+  `StateEntry.depends_on` is not caught at plan time — and then blocks
+  `plan destroy` for the whole deployment, acyclic resources included.
+  Tracked as #206, which owns the refuse-versus-degrade decision.
 
   **Still deferred, and why each is its own phase:** cross-resource
   *attribute* references — a DNS record's `data` reading a droplet's
