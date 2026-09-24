@@ -139,3 +139,54 @@ class TestTopologicalOrderCycles:
         with pytest.raises(CycleError) as exc_info:
             topological_order({"a", "b", "x"}, edges)
         assert "x" not in exc_info.value.path
+
+    def test_a_node_that_only_depends_on_a_cycle_is_not_reported_as_part_of_it(self):
+        # a -> b -> c -> b: b and c form the cycle, a merely depends on it.
+        # a's in-degree never reaches 0 (its dependency b never resolves),
+        # so Kahn's leaves it in `remaining` alongside the real cycle -- the
+        # reported path must not include it.
+        edges = {"a": {"b"}, "b": {"c"}, "c": {"b"}}
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a", "b", "c"}, edges)
+        path = exc_info.value.path
+        assert path == ["b", "c", "b"]
+        assert path[0] == path[-1]
+        assert "a" not in path
+
+    def test_a_long_lead_in_chain_into_a_cycle_is_entirely_trimmed(self):
+        # a -> b -> c -> d -> c: c and d form the cycle; a and b are both
+        # lead-in nodes that merely depend on it, none of them in it.
+        edges = {"a": {"b"}, "b": {"c"}, "c": {"d"}, "d": {"c"}}
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a", "b", "c", "d"}, edges)
+        path = exc_info.value.path
+        assert path == ["c", "d", "c"]
+        assert path[0] == path[-1]
+        assert "a" not in path
+        assert "b" not in path
+
+    def test_self_dependency_path_starts_and_ends_on_the_same_node(self):
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a"}, {"a": {"a"}})
+        assert exc_info.value.path[0] == exc_info.value.path[-1]
+
+    def test_three_node_cycle_with_no_lead_in_path_starts_and_ends_on_the_same_node(self):
+        edges = {"a": {"b"}, "b": {"c"}, "c": {"a"}}
+        with pytest.raises(CycleError) as exc_info:
+            topological_order({"a", "b", "c"}, edges)
+        assert exc_info.value.path[0] == exc_info.value.path[-1]
+
+    def test_cycle_path_is_deterministic_across_differently_ordered_input(self):
+        edges_a = {"a": {"b"}, "b": {"c"}, "c": {"b"}}
+        edges_b = {"c": {"b"}, "a": {"b"}, "b": {"c"}}
+        first = None
+        try:
+            topological_order({"a", "b", "c"}, edges_a)
+        except CycleError as exc:
+            first = exc.path
+        second = None
+        try:
+            topological_order({"c", "b", "a"}, edges_b)
+        except CycleError as exc:
+            second = exc.path
+        assert first == second
