@@ -1269,9 +1269,14 @@ changed and which deliberately did not.
   those records"; it does not.
 
   Counted honestly, a **tracked** file is now read three times: the discovery
-  pass, the loop, and `parse_file()` inside the loop. An untracked or
-  delete-marked file is read twice, since `_parsed_resource()` returns early
-  without `parse_file()` when there is no state entry. The third read is
+  pass, the loop, and `parse_file()` inside the loop. Two other cases read
+  twice, for two different reasons -- an **untracked** file because
+  `_parsed_resource()` returns early without `parse_file()` when there is no
+  state entry, and a **delete-marked** one because `_plan_delete_marked()` never
+  goes through `_parsed_resource()` at all: it does its own `read_text()` plus
+  `parse_frontmatter()` and returns. (Not because a delete-marked file lacks a
+  state entry -- it normally has one, and that branch looks it up.) The third
+  read is
   pre-existing and is the one PR #199 filed out of scope, because closing it
   means changing `parse_file()`'s interface; the discovery-pass read is what
   this phase adds, and closing *that* is a different job -- threading the
@@ -1289,11 +1294,18 @@ changed and which deliberately did not.
   the invocation a user actually types. The file-driven path additionally gained
   the duplicate-key check, which it previously lacked. Before this PR, two files
   declaring one key produced **two** plan entries rather than collapsing into
-  one -- the failure was at apply time, where the second `_apply_destroy()` hit
-  a stale id and aborted the apply part-way, leaving the second file on disk to
-  recreate the resource. See `specs/resource_dependencies.md` for the mechanism;
-  an earlier draft here described a silent collapse, which was the current code
-  minus the check rather than the actual history.
+  one -- the failure was at apply time, where the second `_apply_destroy()`
+  raised `PlanBlockedError` from `_require_tracked()`, the first having already
+  dropped the key from state, so the apply aborted part-way and the second file
+  stayed on disk to recreate the resource. See
+  `specs/resource_dependencies.md` for the full mechanism.
+
+  Two earlier drafts of this line were wrong in different ways, both recorded
+  because the corrections are the useful part: the first described a silent
+  collapse, which was the current code minus the check rather than the actual
+  history; the second blamed the abort on the second delete hitting a stale id,
+  which every shipped driver swallows as success (they treat a 404 on DELETE as
+  "already gone"), so it never raises.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.
