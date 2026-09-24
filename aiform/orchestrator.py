@@ -699,28 +699,7 @@ def apply_plan(
     on_review_fn = on_review or (lambda flags: None)
     review_flags: list[PlanReviewFlag] = []
 
-    needs_review = any(
-        pr.entry.action == PlanAction.DESTROY
-        or (pr.entry.action == PlanAction.UPDATE and pr.entry.likely_replace)
-        for pr in planned
-    )
-    if needs_review:
-        review = llm.review_plan(build_plan_summary(planned), client=client, llm_config=llm_config)
-        blocked = not review.safe_to_proceed or any(
-            flag.severity == PlanReviewSeverity.BLOCK for flag in review.flags
-        )
-        (logger.warning if blocked else logger.info)(
-            "",
-            extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
-        )
-        _raise_if_review_blocked(review)
-        new_flags = [flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK]
-        review_flags.extend(new_flags)
-        # Unconditional, even under yes=True: --yes skips the prompt below,
-        # not the record of what gate #2 said (#166) -- and the caller must
-        # see this before the confirmation that follows it, not after
-        # apply_plan() has already returned.
-        on_review_fn(new_flags)
+    _batch_plan_review(planned, review_flags, on_review_fn, client=client, llm_config=llm_config)
 
     if not yes and not confirm_fn("Apply this plan?"):
         return ApplyResult(executed=[], review_flags=review_flags, aborted=True)
@@ -732,21 +711,18 @@ def apply_plan(
             continue
 
         if pr.entry.action == PlanAction.CREATE:
-            raw = _call_driver(
-                pr.driver.create,
-                pr.provider,
-                pr.resource_type,
-                "create",
-                pr.name,
-                pr.desired_params,
-                pr.credentials,
-            )
-            new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, "create")
-            now = datetime.now(UTC)
-            st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
+            _apply_create(pr, st)
             executed.append(pr.entry)
 
         elif pr.entry.action == PlanAction.UPDATE:
+            # The two handlers below are siblings on purpose. Python never
+            # re-enters a sibling handler, so the delete()/create() calls
+            # _replace_resource() makes from inside the first one are NOT
+            # covered by `except Exception` -- they surface as "delete"/
+            # "create" rather than being relabelled "update". Flattening
+            # these, or moving those calls under a broader try, changes
+            # which exceptions get wrapped; see the two
+            # test_replace_*_failure_reports_* tests.
             replaced = False
             update_start = time.monotonic()
             try:
@@ -756,56 +732,14 @@ def apply_plan(
             except DriverUpdateNotSupported:
                 replaced = True
                 if not pr.entry.likely_replace:
-                    modified_entry = pr.entry.model_copy(update={"likely_replace": True})
-                    single_summary = build_plan_summary(
-                        [dataclasses.replace(pr, entry=modified_entry)]
+                    _replace_review(
+                        pr, review_flags, on_review_fn, client=client, llm_config=llm_config
                     )
-                    single_review = llm.review_plan(
-                        single_summary, client=client, llm_config=llm_config
-                    )
-                    _raise_if_review_blocked(single_review)
-                    single_new_flags = [
-                        flag
-                        for flag in single_review.flags
-                        if flag.severity != PlanReviewSeverity.BLOCK
-                    ]
-                    review_flags.extend(single_new_flags)
-                    # Just this review's own flags, not review_flags (which
-                    # may already carry an earlier batch review's) -- this
-                    # is a different review, about one resource, and must
-                    # surface as its own thing before its own confirmation.
-                    on_review_fn(single_new_flags)
                     if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
                         return ApplyResult(
                             executed=executed, review_flags=review_flags, aborted=True
                         )
-                _call_driver(
-                    pr.driver.delete,
-                    pr.provider,
-                    pr.resource_type,
-                    "delete",
-                    pr.state_entry.id,
-                    pr.credentials,
-                )
-                # The old resource is now verifiably gone on the CSP side --
-                # drop it from state and save immediately, before attempting
-                # create(). If create() then fails, state.json correctly
-                # reflects "not tracked" rather than stale id/attributes for
-                # a resource that no longer exists (the same drifted_missing
-                # self-healing this checkpoint pre-empts would otherwise be
-                # needed to detect it on the next refresh).
-                _require_tracked(st, pr.entry.resource_key)
-                del st.resources[pr.entry.resource_key]
-                state.save(st, state_path)
-                raw = _call_driver(
-                    pr.driver.create,
-                    pr.provider,
-                    pr.resource_type,
-                    "create",
-                    pr.name,
-                    pr.desired_params,
-                    pr.credentials,
-                )
+                raw = _replace_resource(pr, st, state_path=state_path)
             except Exception as exc:
                 _log_driver_outcome(
                     pr.provider,
@@ -825,52 +759,163 @@ def apply_plan(
                     outcome="success",
                 )
 
-            operation = "create" if replaced else "update"
-            new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, operation)
-            now = datetime.now(UTC)
-            if replaced:
-                st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
-            else:
-                existing = _require_tracked(st, pr.entry.resource_key)
-                existing.id = new_id
-                existing.attributes = attrs
-                existing.driver = pr.driver_info
-                existing.last_applied_at = now
-                existing.last_refreshed_at = now
-                existing.aiform_md_sha256 = pr.current_aiform_md_sha256
-            # entry.likely_replace reflects the plan-time prediction; report
-            # what actually happened instead, in both directions -- a
-            # predicted replace that update() handled in place must not be
-            # reported as a replace just because the prediction said so, the
-            # same way an unpredicted replace (the `replaced` branch above)
-            # must not be under-reported.
-            executed.append(pr.entry.model_copy(update={"likely_replace": replaced}))
+            executed.append(_record_update(pr, st, raw, replaced=replaced))
 
         elif pr.entry.action == PlanAction.DESTROY:
-            if pr.state_entry is not None:
-                driver = load_driver(pr.provider, pr.resource_type)
-                try:
-                    credentials = config.resolve_credentials(pr.provider)
-                except RuntimeError as exc:
-                    raise PlanBlockedError(str(exc)) from exc
-                _call_driver(
-                    driver.delete,
-                    pr.provider,
-                    pr.resource_type,
-                    "delete",
-                    pr.state_entry.id,
-                    credentials,
-                )
-                _require_tracked(st, pr.entry.resource_key)
-                del st.resources[pr.entry.resource_key]
-            state.save(st, state_path)
-            move_to_trash(pr.aiform_md_path)
+            _apply_destroy(pr, st, state_path=state_path)
             executed.append(pr.entry)
             continue
 
         state.save(st, state_path)
 
     return ApplyResult(executed=executed, review_flags=review_flags, aborted=False)
+
+
+def _batch_plan_review(
+    planned: list[PlannedResource],
+    review_flags: list[PlanReviewFlag],
+    on_review_fn: OnReviewFn,
+    *,
+    client: anthropic.Anthropic | None,
+    llm_config: LLMConfig | None,
+) -> None:
+    needs_review = any(
+        pr.entry.action == PlanAction.DESTROY
+        or (pr.entry.action == PlanAction.UPDATE and pr.entry.likely_replace)
+        for pr in planned
+    )
+    if not needs_review:
+        return
+
+    review = llm.review_plan(build_plan_summary(planned), client=client, llm_config=llm_config)
+    blocked = not review.safe_to_proceed or any(
+        flag.severity == PlanReviewSeverity.BLOCK for flag in review.flags
+    )
+    (logger.warning if blocked else logger.info)(
+        "",
+        extra={"safe_to_proceed": review.safe_to_proceed, "flags_count": len(review.flags)},
+    )
+    _raise_if_review_blocked(review)
+    _extend_and_notify(review, review_flags, on_review_fn)
+
+
+# Notifies with only *this* review's non-BLOCK flags, never the accumulated
+# `review_flags` -- a later single-resource review is a different review about
+# one resource and must surface as its own thing before its own confirmation.
+# The notification is unconditional, even under yes=True: --yes skips the
+# prompt, not the record of what a gate #2 review said (#166), and the caller
+# must see it before the confirmation that follows rather than after
+# apply_plan() has returned.
+def _extend_and_notify(
+    review: PlanReview, review_flags: list[PlanReviewFlag], on_review_fn: OnReviewFn
+) -> None:
+    new_flags = [flag for flag in review.flags if flag.severity != PlanReviewSeverity.BLOCK]
+    review_flags.extend(new_flags)
+    on_review_fn(new_flags)
+
+
+def _apply_create(pr: PlannedResource, st: State) -> None:
+    raw = _call_driver(
+        pr.driver.create,
+        pr.provider,
+        pr.resource_type,
+        "create",
+        pr.name,
+        pr.desired_params,
+        pr.credentials,
+    )
+    new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, "create")
+    now = datetime.now(UTC)
+    st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
+
+
+def _replace_review(
+    pr: PlannedResource,
+    review_flags: list[PlanReviewFlag],
+    on_review_fn: OnReviewFn,
+    *,
+    client: anthropic.Anthropic | None,
+    llm_config: LLMConfig | None,
+) -> None:
+    modified_entry = pr.entry.model_copy(update={"likely_replace": True})
+    single_summary = build_plan_summary([dataclasses.replace(pr, entry=modified_entry)])
+    single_review = llm.review_plan(single_summary, client=client, llm_config=llm_config)
+    _raise_if_review_blocked(single_review)
+    _extend_and_notify(single_review, review_flags, on_review_fn)
+
+
+def _replace_resource(pr: PlannedResource, st: State, *, state_path: Path) -> dict[str, Any]:
+    _call_driver(
+        pr.driver.delete,
+        pr.provider,
+        pr.resource_type,
+        "delete",
+        pr.state_entry.id,
+        pr.credentials,
+    )
+    # The old resource is now verifiably gone on the CSP side -- drop it from
+    # state and save immediately, before attempting create(). If create() then
+    # fails, state.json correctly reflects "not tracked" rather than stale
+    # id/attributes for a resource that no longer exists (the same
+    # drifted_missing self-healing this checkpoint pre-empts would otherwise be
+    # needed to detect it on the next refresh).
+    _require_tracked(st, pr.entry.resource_key)
+    del st.resources[pr.entry.resource_key]
+    state.save(st, state_path)
+    return _call_driver(
+        pr.driver.create,
+        pr.provider,
+        pr.resource_type,
+        "create",
+        pr.name,
+        pr.desired_params,
+        pr.credentials,
+    )
+
+
+def _record_update(
+    pr: PlannedResource, st: State, raw: dict[str, Any], *, replaced: bool
+) -> PlanEntry:
+    operation = "create" if replaced else "update"
+    new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, operation)
+    now = datetime.now(UTC)
+    if replaced:
+        st.resources[pr.entry.resource_key] = _new_state_entry(pr, new_id, attrs, now)
+    else:
+        existing = _require_tracked(st, pr.entry.resource_key)
+        existing.id = new_id
+        existing.attributes = attrs
+        existing.driver = pr.driver_info
+        existing.last_applied_at = now
+        existing.last_refreshed_at = now
+        existing.aiform_md_sha256 = pr.current_aiform_md_sha256
+    # entry.likely_replace reflects the plan-time prediction; report what
+    # actually happened instead, in both directions -- a predicted replace that
+    # update() handled in place must not be reported as a replace just because
+    # the prediction said so, the same way an unpredicted replace must not be
+    # under-reported.
+    return pr.entry.model_copy(update={"likely_replace": replaced})
+
+
+def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
+    if pr.state_entry is not None:
+        driver = load_driver(pr.provider, pr.resource_type)
+        try:
+            credentials = config.resolve_credentials(pr.provider)
+        except RuntimeError as exc:
+            raise PlanBlockedError(str(exc)) from exc
+        _call_driver(
+            driver.delete,
+            pr.provider,
+            pr.resource_type,
+            "delete",
+            pr.state_entry.id,
+            credentials,
+        )
+        _require_tracked(st, pr.entry.resource_key)
+        del st.resources[pr.entry.resource_key]
+    state.save(st, state_path)
+    move_to_trash(pr.aiform_md_path)
 
 
 def _split_aiform_md_suffix(name: str) -> tuple[str, str]:
