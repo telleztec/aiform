@@ -221,6 +221,16 @@ zero driver loads, zero credential resolution** — it is YAML and string work
 only. Per discovered file: read the text, one `parser.parse_frontmatter()`,
 compute the key, note whether it is delete-marked. Then, in this order:
 
+0. **Path normalization, before the duplicate check.** Explicitly-named paths
+   are deduplicated by normalized absolute path (`os.path.abspath`, which folds
+   `.` and `..`), so `plan create ./a.aiform.md a.aiform.md` is one file rather
+   than a duplicate-key error. Normalization deliberately does **not** follow
+   symlinks: a symlink and its target stay two distinct paths and therefore
+   still raise, because which of the two to trash on a destroy is genuinely
+   ambiguous, and silently trashing one leaves the other to recreate the
+   resource. Case is not folded either, so on a case-insensitive filesystem
+   `App.aiform.md` and `app.aiform.md` also still raise. Both are the safe
+   direction: refuse rather than guess.
 1. **Duplicate-key check.** Two files in one run declaring the same
    `provider.resource_type.name` raise `PlanBlockedError` naming both paths.
    This is undetected today — both get planned and both create — and a graph
@@ -247,8 +257,17 @@ compute the key, note whether it is delete-marked. Then, in this order:
    terminal text, and this is the one string in it a user may paste into an
    issue.
 
-The existing loop then iterates those records **in the computed order**,
-calling `_plan_one()` / `_plan_delete_marked()` unchanged.
+The existing loop then iterates **the computed order**, calling `_plan_one()` /
+`_plan_delete_marked()` unchanged — which means each file is read and parsed a
+second time, since the loop re-derives from the path rather than reusing the
+pass's records. An earlier draft said the loop "iterates those records"; it does
+not. The cost is one extra `read_text()` plus a pure-YAML parse, no LLM call
+either way, so this is wasted IO rather than a spent toll — but it does leave a
+narrow TOCTOU window, where a file edited between the two reads was validated
+and ordered on content that is not what gets planned. Not fixed here: the
+redundant double read on the tracked path predates this change and PR #199
+already filed it out of scope, and closing it means changing `parse_file()`'s
+interface. See `specs/orchestrator.md`.
 
 ### Which targets contribute an edge
 
@@ -328,7 +347,13 @@ three are covered:
 - **`build_create_plan()`'s delete-marked branch** — reverse topological, per
   above.
 - **`build_destroy_plan()`'s file-driven path** — files exist, so `depends_on`
-  is readable from frontmatter; reverse topological.
+  is readable from frontmatter; reverse topological. It also now runs **rule 1's
+  duplicate-key check**, which it did not before: two files declaring the same
+  key used to collapse into one destroy entry attributed to whichever came
+  last, so `_apply_destroy()` trashed that one path and left the other on disk
+  to recreate the resource on the next `plan create`. That is rule 1's "nastiest
+  variant" reached through a second door, so it raises here for the same reason
+  it raises there.
 - **`build_destroy_plan()`'s state-driven destroy-all path** — reads
   `StateEntry.depends_on` and orders in reverse topological. This is the
   invocation a user actually types (`aiform plan destroy`, no arguments), so
@@ -369,10 +394,20 @@ the last **plan**, not the last apply. So a `plan` the user then declines to
 apply still updates the recorded edges. This is the right direction — the edges
 describe declared ordering intent rather than what was built, a later `plan`
 re-syncs them from the file, and it is what makes the adopt-only case work at
-all. What state cannot do is reflect an edit that has never been planned;
-`plan destroy` on a file edited since the last `plan` orders by the older
-edges. Reading files during a destroy that explicitly ignores files remains the
-worse alternative.
+all.
+
+The consequence lands on exactly one invocation: **`aiform plan destroy` with
+no file arguments.** That form reads `StateEntry.depends_on`, so a
+`depends_on` edit made since the last `plan` is not reflected — run `plan`
+first and it is. Every other producer reads the current frontmatter and is
+never stale: `plan destroy <files>` builds its edges from
+`entry.spec.depends_on`, and `build_create_plan`'s delete-marked branch does
+the same. An earlier draft of this paragraph attached the staleness to
+`plan destroy <files>`, which was wrong in a way that contradicted this spec's
+own "Destroy ordering, all three producers" section three paragraphs above.
+
+Reading files during a destroy that explicitly ignores files remains the worse
+alternative, so destroy-all keeps reading state.
 
 ### CLI output
 
@@ -456,10 +491,13 @@ and never escapes the orchestrator.
 ## Verification
 
 - **`tests/test_graph.py`** (new), modeled on `tests/test_compare.py` — pure
-  imports, behavior-named `Test*` classes, each docstring stating its
-  invariant. (Not `test_compare.py`'s strict `is True`/`is False` style —
-  `topological_order()` returns a list and raises; it has no boolean result to
-  assert on. An earlier draft of this line claimed otherwise.)
+  imports and behavior-named `Test*` classes, with the reason for each case
+  stated inline. (Two style claims in earlier drafts of this line were both
+  wrong and are not worth a third guess: it is not `test_compare.py`'s strict
+  `is True`/`is False` — `topological_order()` returns a list and raises, so
+  there is no boolean to assert on — and the cases carry `#` comments rather
+  than docstrings. Read the file for its conventions; this spec pins the
+  coverage below, not the prose style.)
   - order correct, and **deterministic across input permutations**;
   - **fan-in**: one node with several dependencies, all of which precede it;
   - fan-out; diamond; disconnected components;

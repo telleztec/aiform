@@ -1276,7 +1276,10 @@ changed and which deliberately did not.
 - **`build_destroy_plan()`** orders **both** of its paths in reverse
   topological order -- the file-driven one from frontmatter, the state-driven
   destroy-all one from `StateEntry.depends_on`. The second matters more: it is
-  the invocation a user actually types.
+  the invocation a user actually types. The file-driven path additionally gained
+  the duplicate-key check, which it previously lacked; two files declaring one
+  key used to collapse silently into a single destroy, trashing one file and
+  leaving the other to recreate the resource.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.

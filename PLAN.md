@@ -1619,7 +1619,16 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   with no edge, so a cycle assembled across several runs into
   `StateEntry.depends_on` is not caught at plan time — and then blocks
   `plan destroy` for the whole deployment, acyclic resources included.
-  Tracked as #206, which owns the refuse-versus-degrade decision.
+
+  And it is cheaper to reach than "several applies" suggests: because
+  `plan` persists `depends_on` for an already-tracked resource
+  regardless of the action it decides, **two NO_OP plans are enough** —
+  no apply, no provider call, nothing to undo but hand-editing
+  `state.json`. That persistence is itself necessary (without it,
+  adopting `depends_on` on an existing resource never reaches state at
+  all), so this is a trade rather than an oversight. Tracked as #206,
+  which owns the refuse-versus-degrade decision and now has a stronger
+  case for refusing at the `plan` that closes the cycle.
 
   **Still deferred, and why each is its own phase:** cross-resource
   *attribute* references — a DNS record's `data` reading a droplet's
