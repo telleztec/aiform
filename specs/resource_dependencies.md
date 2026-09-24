@@ -361,11 +361,18 @@ three are covered:
   `PlannedResource` entries with the same `resource_key`, both listed in the
   plan. Nothing was silently collapsed. The damage was at apply time:
   `_apply_destroy()` ran twice for one key, the first deleting the resource,
-  dropping it from state and trashing file 1, and the second calling
-  `driver.delete()` with a now-stale id — so the provider 404s into a
-  `DriverExecutionError`, or `_require_tracked()` raises because the key is
-  already gone. **Either way the apply aborts part-way through and file 2 stays
-  on disk**, ready to recreate the resource on the next `plan create`.
+  dropping it from state, saving, and trashing file 1. The second then hit
+  `_require_tracked()`, which raised `PlanBlockedError` because the key was
+  already gone — so **the apply aborted part-way through and file 2 stayed on
+  disk**, ready to recreate the resource on the next `plan create`.
+
+  An earlier draft offered a second possible failure here, the provider 404ing
+  into a `DriverExecutionError`. **That arm is unreachable with any shipped
+  driver**: all three DigitalOcean drivers deliberately swallow a 404 on DELETE
+  as "already gone" (`compute.py`, `domain.py`, `firewall.py` — the last of
+  which notes "Verified live: a second delete 404s. Idempotent by ..."), so
+  `_call_driver()` never sees an exception to wrap. The `_require_tracked()`
+  path is the only one that fires.
 
   So the conclusion rule 1 draws still holds, and the pre-PR behavior was if
   anything worse than a collapse: a half-completed destroy that fails mid-apply.

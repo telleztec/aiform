@@ -1264,15 +1264,25 @@ changed and which deliberately did not.
   hit a provider's API.
 
   The loop then iterates the computed **order**, calling `_plan_one()` /
-  `_plan_delete_marked()` unchanged -- which means each file is read and parsed
-  a second time. An earlier draft of this line claimed the loop "iterates those
-  records"; it does not, it re-derives them from the path. The cost is one extra
-  `read_text()` plus a pure-YAML parse, no LLM call either way, so this is
-  wasted IO rather than a spent toll. It does leave a narrow TOCTOU window: a
-  file edited between the two reads was validated and ordered on content that
-  is not what gets planned. Not fixed here -- the redundant double read on the
-  tracked path predates this change and was already filed out of scope by
-  PR #199, and closing it means changing `parse_file()`'s interface.
+  `_plan_delete_marked()` unchanged -- re-deriving each record from its path
+  rather than reusing the pass's. An earlier draft claimed the loop "iterates
+  those records"; it does not.
+
+  Counted honestly, a **tracked** file is now read three times: the discovery
+  pass, the loop, and `parse_file()` inside the loop. An untracked or
+  delete-marked file is read twice, since `_parsed_resource()` returns early
+  without `parse_file()` when there is no state entry. The third read is
+  pre-existing and is the one PR #199 filed out of scope, because closing it
+  means changing `parse_file()`'s interface; the discovery-pass read is what
+  this phase adds, and closing *that* is a different job -- threading the
+  pass's records into `_plan_one()` -- **not** a `parse_file()` change. Neither
+  is fixed here.
+
+  The cost is `read_text()` plus a pure-YAML parse, with no LLM call either
+  way, so this is wasted IO rather than a spent toll. It does leave a narrow
+  TOCTOU window: a file edited between two reads was validated and ordered on
+  content that is not what gets planned. `specs/resource_dependencies.md`
+  carries the same account -- keep the two in step.
 - **`build_destroy_plan()`** orders **both** of its paths in reverse
   topological order -- the file-driven one from frontmatter, the state-driven
   destroy-all one from `StateEntry.depends_on`. The second matters more: it is
