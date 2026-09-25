@@ -35,6 +35,15 @@ shutdown would leave the remainder to be paid inside the resize poll.
 The measurements below refute that -- a fast shutdown is followed by a
 fast resize, so the two are independent.
 
+**Provenance, stated precisely because the numbers below carry weight.**
+They were produced by two ad-hoc scripts run against the live account on
+2026-09-25 -- one per shutdown path -- which this file consolidates into a
+single reproducible entry point. The consolidated form measures the same
+clocks against the same sizes and region, but **this exact script has not
+itself been run**; re-running it should reproduce the ranges, and a
+material divergence is worth a fresh look at the budget rather than an
+assumption that this file is wrong.
+
 Observed (sfo3, `disk: false`, ubuntu-24-04-x64, smallest sizes):
 
   * (B) size_slug flip: 12.2 / 21.5 / 22.6 / 23.3 / 23.9s  (n=5)
