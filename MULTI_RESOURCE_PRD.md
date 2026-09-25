@@ -114,12 +114,9 @@ the reviewable default inside `plan` output.
   on the graph path, in any phase. When UC1's automatic detection lands
   in Phase 3 it must derive edges from driver-declared metadata, not from
   a model call on the hot path.
-- **Backward compatibility — not P0.** There are no customers on this
-  system yet, so breaking the existing single-resource `.aiform.md`
-  format is acceptable if the multi-resource design calls for it. If a
-  change is incompatible, update the system-test generator and unit-test
-  generator to match rather than preserving the old format for its own
-  sake.
+- **Backward compatibility — not required at all.** See
+  "Non-requirements" below; it is stated there rather than here because
+  it governs what we deliberately will *not* spend effort on.
 - **Concurrency scope — decided.** This phase addresses only concurrency
   *within a single `aiform` process on a single machine* (e.g. threads/
   tasks inside one `apply` invocation). It explicitly does **not** support
@@ -148,14 +145,74 @@ the reviewable default inside `plan` output.
   `aiform plan destroy` with no file arguments, run from the wrong
   directory, looks exactly like the run the user intended. Out of scope for
   the phase sequence below, and tracked separately.
-- **Explicit non-goals for v1.** Following this project's existing
-  scoping discipline (`PLAN.md` §10, `CLAUDE.md`'s "don't build for a
-  hypothetical future" rule): multi-cloud dependency graphs, remote/shared
-  state backends, and — per the concurrency-scope decision above —
-  **concurrent `aiform` invocations**, whether two processes on one machine
-  or invocations spread across machines. That coordination problem is
-  anticipated for a later phase, not rejected; it's just explicitly not
-  this phase's problem.
+- **Explicit non-goals for v1** — moved to "Non-requirements" below.
+
+## Non-requirements
+
+Things this project deliberately will **not** spend effort on. They are
+listed as first-class requirements because a non-requirement is a decision
+with the same force as a requirement: it licenses work being left undone,
+and without it written down someone re-derives the obligation and pays for
+it.
+
+Distinguish two kinds. A **non-requirement** is something we will never
+owe. A **deferred item** is something we will owe later — those live in
+"Delivery phasing" and "Open questions", not here.
+
+### Backward compatibility, in every form
+
+**There are zero resources in production and no users but the repo owner,
+so nothing in this project owes compatibility with anything it shipped
+earlier.** That covers, non-exhaustively:
+
+- **The `.aiform.md` file format.** Breaking it is acceptable if the design
+  calls for it. Update the system-test and unit-test generators to match
+  rather than preserving the old format for its own sake.
+- **The `.aiform/state.json` schema.** A phase may change the shape of
+  state, rename or remove a field, or change what a field means, without
+  providing a migration. `aiform_state_version` exists and is round-tripped
+  but nothing reads it, and that stays true until there is a reason it
+  should not be. Phase 5's durable-store question (R4) is the most likely
+  place this matters — it does **not** owe a migration from today's JSON
+  file.
+- **CLI flags, output shape and exit codes.** `--json` output in particular
+  is the closest thing `aiform` has to an API, and it is still free to
+  change.
+
+**What this does not license.** Two distinctions worth keeping sharp,
+because conflating them is how a real defect gets waved through:
+
+1. **A resource already tracked in state is not a legacy artifact.** The
+   common case is a resource created *by the current version*, whose
+   `.aiform.md` is then edited. Handling an edit to a tracked resource is
+   ordinary forward behavior, not a migration, even though both involve
+   reading a state entry written by an earlier run.
+2. **"No migration owed" is not "state may be silently wrong."** A change
+   may require the user to destroy and recreate, or to delete
+   `.aiform/state.json` and start over — those are acceptable costs. A
+   change that leaves state *quietly disagreeing* with the files, and
+   therefore produces a wrong plan, is a defect regardless of this section.
+
+### Concurrent `aiform` invocations
+
+Two or more separate `aiform` processes against the same state — whether
+two terminals on one machine or a CI job overlapping a local run — are
+**undefined**, not guarded against and not guaranteed to fail loudly. This
+is the one item here that is *also* anticipated as a later phase, so it sits
+on the boundary: not required now, not rejected forever. See the
+concurrency-scope decision above.
+
+### Multi-cloud dependency graphs, and remote or shared state backends
+
+Per `PLAN.md` §10 and `CLAUDE.md`'s "don't build for a hypothetical future"
+rule. A single-provider graph on a local state file is the target.
+
+### Cross-deployment dependencies
+
+Not deferred — **the model has no such concept.** A graph lives inside one
+directory's state file; see the deployment-scope decision above. There is no
+ordering `aiform` could enforce between two separate invocations, so this is
+not a capability being postponed.
 
 ## Delivery phasing
 

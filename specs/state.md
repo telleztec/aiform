@@ -119,11 +119,16 @@ otherwise silently misaddress a resource.
   command.
 - A `state.json` written **before `StateEntry.depends_on` existed**
   loads unchanged: the field is `Field(default_factory=list)`, so an
-  entry lacking it validates and comes back with `[]`. This is what
-  keeps the addition from needing the migration story `PLAN.md` §10
-  still defers — `aiform_state_version` stays `1`, because nothing about
-  reading an older file changed. See
-  `specs/resource_dependencies.md`.
+  entry lacking it validates and comes back with `[]`.
+
+  **This is a free side effect, not a requirement being met.**
+  `MULTI_RESOURCE_PRD.md`'s "Non-requirements" section is explicit that
+  backward compatibility is not owed in any form, state schema included —
+  there are zero resources in production, so a field addition that *did*
+  break old files would have been acceptable too. The default is there
+  because a resource with no declared dependencies needs `[]` anyway; that
+  it also reads pre-feature files costs nothing. Don't infer from this
+  bullet that a future state-shape change owes a migration. It does not.
 
 ## Out of scope
 

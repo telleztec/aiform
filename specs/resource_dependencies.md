@@ -399,9 +399,23 @@ Written at **three** sites, and all three are needed:
   decided below it.
 
 That third write is not redundant, and an earlier draft of this spec omitted it
-and shipped the bug it exists to prevent. Adding `depends_on:` to an
-already-tracked `.aiform.md` changes no `params`, so the action is **NO_OP** —
-and `apply_plan()` skips NO_OP before any state write. NO_OP is therefore the
+and shipped the bug it exists to prevent.
+
+**This is not a migration case, and the wording matters because it was read as
+one.** `MULTI_RESOURCE_PRD.md`'s "Non-requirements" section says backward
+compatibility is not owed in any form — correctly, since there are zero
+resources in production. That rule does **not** cover this. "Already tracked"
+means "has a state entry", which the *current* version writes on every apply;
+it does not mean "created by an older version". The ordinary path is:
+
+1. Write `db.aiform.md` and `app.aiform.md`, neither declaring `depends_on`.
+2. `aiform plan apply` — both created by this version, state records `[]`.
+3. Realize `app` needs `db` first, and add `depends_on` to `app.aiform.md`.
+
+Step 3 is the most likely way a user reaches for this feature at all — you
+learn the ordering matters *after* deploying without it — and nothing in it
+involves a legacy artifact. Adding `depends_on:` changes no `params`, so the
+action is **NO_OP**, and `apply_plan()` skips NO_OP before any state write. NO_OP is therefore the
 one action that never reaches either apply-time write. Without the plan-time
 write, adopting `depends_on` on an existing resource never reached `state.json`
 at all, so `aiform plan destroy` with no arguments kept ordering by empty
