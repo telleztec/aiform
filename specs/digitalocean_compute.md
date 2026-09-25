@@ -123,7 +123,12 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `delay_seconds=2` (150s) — because full provisioning from scratch
   commonly takes longer than reconciling an already-existing droplet;
   either way, exhaustion raises `TimeoutError` naming the droplet `id`)
-  until `status == "active"`, discarding the transient POST body in
+  until `status == "active"`. Those two are not the only budgets: the
+  in-place resize's own convergence poll overrides the default again, at
+  `max_attempts=210`, `delay_seconds=2` (420s) — see "Why the resize poll
+  gets 420s" under `update()` below. Three budgets, one shared default,
+  and the default itself belongs to nothing but the remaining callers.
+  `create()` discards the transient POST body in
   favor of the converged GET response. **Corrected here**: this
   paragraph previously claimed `create()` was "bounded the same way" as
   `update()`'s default budget — stale relative to the code, which has
@@ -617,9 +622,50 @@ the observed total is a few hundred milliseconds.
        there's no genuine ambiguity for a body-content heuristic to
        resolve.
   5. On success, poll until the resize action (or the droplet's
-     `size_slug`) shows the new size.
+     `size_slug`) shows the new size — with **its own explicit budget,
+     `max_attempts=210`, `delay_seconds=2` (420s)**, not `update()`'s
+     shared default. See "Why the resize poll gets 420s" below; the number
+     is a tail guard, not an estimate of how long a resize takes.
   6. `POST .../actions {"type": "power_on"}`, poll until `status ==
      "active"`.
+
+  **Why the resize poll gets 420s** (issue #207). Two live system-test runs
+  nine minutes apart both exhausted the shared 75-attempt/2s default at
+  ~182.6s and ~183.4s, failing the gate for every runtime-path PR. A probe
+  session against real DigitalOcean measured what a resize normally costs,
+  and the answer reframed the fix:
+
+  - **`size_slug` flips in 12–24s** (n=5, sfo3, `disk: false`). This is the
+    predicate step 5 actually polls.
+  - **The resize *action* reaches `completed` in ~46s** (n=3, clustered
+    inside 1.4s). Distinct from the above — DigitalOcean reports the new
+    size on the droplet resource *before* the action completes.
+  - **Power-off is not implicated.** Backing the power-off time out of the
+    orchestrator's own `operation=update` duration for both failures gives
+    ~21.9s and ~51.5s, so both had finished powering off long before the
+    resize poll started.
+
+  So the old budget was never set below typical latency — 150s was already
+  ~6x the median. It simply did not absorb a provider-side stall, and the
+  failures are a tail roughly 8x the median.
+
+  **The honest limit on this number: neither failure ever completed**, so
+  the measurements cannot say what budget *would* have sufficed — only that
+  183s did not. 420s is therefore a policy choice about tail coverage
+  (~9x the action clock, ~17x the median), deliberately sized as a
+  "something is genuinely wrong" threshold rather than derived. Do not read
+  it as a claim that resizes take seven minutes. `#154`'s centralized,
+  data-driven timeout manager remains the real answer; this is the bounded
+  unblock, and the same hand-tuning pattern has now recurred on three
+  separate steps (`#152`, `#168`, `#207`).
+
+  Two adjacent things a future retune must not do. **Do not raise
+  `_poll_until`'s shared default instead** — every other call site,
+  including power-off, inherits it, and widening all of them to fix one
+  hides genuine hangs elsewhere. **Do not "fix" a resize timeout by
+  flipping `disk` to `true`** — a disk-growing resize copies the disk and
+  is genuinely far slower; the `disk: false` form keeps the droplet's id,
+  IP and disk and is what every measurement above describes.
   7. Return the final attributes (equivalent to a `read()`), **including
      `ssh_keys`/`backups`/`monitoring` echoed from `desired`** — per
      `aiform/driver.py`'s `update()` docstring, the return must be "same
