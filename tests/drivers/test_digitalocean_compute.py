@@ -569,6 +569,15 @@ class TestPollBudgets:
         # future retune edits this line the same way it edits the driver.
         assert by_step["resize"] == (210, 2)
 
+        # ...and it really is the driver's constant being passed through, not
+        # a literal that happens to match today. Without this, editing the
+        # constants would leave the pin above failing with no indication that
+        # the call site is still wired to them.
+        assert by_step["resize"] == (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS,
+            compute_module._RESIZE_POLL_DELAY_SECONDS,
+        )
+
         # power-on deliberately keeps inheriting the shared default -- #207
         # widened one step, not the whole driver, and a caller that quietly
         # started passing its own budget here would be a silent scope creep.
@@ -577,10 +586,19 @@ class TestPollBudgets:
         # The property the override exists for, checked against the live
         # default rather than a second literal so it survives a retune of
         # either constant alone.
-        assert 210 * 2 > default_max_attempts * default_delay_seconds
+        assert (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS * compute_module._RESIZE_POLL_DELAY_SECONDS
+            > default_max_attempts * default_delay_seconds
+        )
 
     def test_resize_budget_clears_the_207_observed_timeout_with_real_margin(self, driver):
-        budget_seconds = 210 * 2
+        # Read off the module, not restated as a literal: a margin assertion
+        # computed from its own copy of the number would keep passing after a
+        # retune shrank the driver's, which is the one thing it exists to
+        # catch. Same reason test_update_default_budget_* reads __defaults__.
+        budget_seconds = (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS * compute_module._RESIZE_POLL_DELAY_SECONDS
+        )
 
         # Clears what actually failed, and not just barely -- #152's own bump
         # landed ~23% over its observed cluster and still needed raising.
