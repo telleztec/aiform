@@ -19,12 +19,26 @@ class CycleError(Exception):
         super().__init__("dependency cycle: " + " -> ".join(path))
 
 
+class UnknownDependencyError(Exception):
+    """Raised by topological_order() when an edge names a target outside
+    `keys`. `key` is the node declaring the edge, `target` the unresolved
+    dependency it names.
+    """
+
+    def __init__(self, key: str, target: str):
+        self.key = key
+        self.target = target
+        super().__init__(f"{key!r} depends on {target!r}, which is not in keys")
+
+
 def topological_order(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
     """Kahn's algorithm, ready set drained in sorted() order.
 
-    `edges[k]` is the set of keys `k` depends on. A key in `edges` that is
-    not in `keys` is ignored -- callers restrict edges to the keys under
-    consideration before calling, and this does not second-guess them.
+    `edges[k]` is the set of keys `k` depends on. Every target in every
+    `edges[k]` must itself be in `keys` -- callers restrict edges to the
+    keys under consideration before calling this, and that precondition is
+    enforced here, not merely assumed: a target outside `keys` raises
+    `UnknownDependencyError` rather than being dropped.
 
     Determinism is a requirement, not an accident: identical input must
     always produce identical output, since both the unit tests and
@@ -35,7 +49,7 @@ def topological_order(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
     for key in keys:
         for dependency in edges.get(key, set()):
             if dependency not in keys:
-                continue
+                raise UnknownDependencyError(key, dependency)
             in_degree[key] += 1
             dependents[dependency].add(key)
 

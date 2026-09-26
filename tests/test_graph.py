@@ -3,7 +3,7 @@
 
 import pytest
 
-from aiform.graph import CycleError, topological_order
+from aiform.graph import CycleError, UnknownDependencyError, topological_order
 
 
 class TestTopologicalOrderBasicShapes:
@@ -103,10 +103,13 @@ class TestTopologicalOrderDeterminism:
         assert all(result == results[0] for result in results)
 
 
-class TestTopologicalOrderIgnoresEdgesOutsideKeys:
-    def test_an_edge_target_not_in_keys_is_ignored(self):
+class TestTopologicalOrderRejectsEdgesOutsideKeys:
+    def test_an_edge_target_not_in_keys_raises(self):
         edges = {"a": {"b", "not-in-this-run"}}
-        assert topological_order({"a", "b"}, edges) == ["b", "a"]
+        with pytest.raises(UnknownDependencyError) as exc_info:
+            topological_order({"a", "b"}, edges)
+        assert exc_info.value.key == "a"
+        assert exc_info.value.target == "not-in-this-run"
 
 
 class TestTopologicalOrderCycles:
