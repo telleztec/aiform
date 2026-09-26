@@ -238,6 +238,64 @@ class TestParseFrontmatter:
             parser.parse_frontmatter(content)
 
 
+class TestReferenceYamlHint:
+    """A reference takes no space after its colon, and must be quoted inside a
+    flow sequence. Both mistakes fail in PyYAML before aiform sees the file,
+    with a message that names neither -- so the hint is appended where the
+    source looks like it was trying to write one."""
+
+    def _frontmatter(self, params_line: str) -> str:
+        return (
+            "---\nresource: domain\nname: example.com\nprovider: digitalocean\n"
+            f"params:\n  {params_line}\n---\n"
+        )
+
+    def test_space_after_the_colon_gets_the_hint(self):
+        content = self._frontmatter("data: ${digitalocean.compute.web: ipv4_address}")
+        with pytest.raises(ValueError) as excinfo:
+            parser.parse_frontmatter(content)
+        message = str(excinfo.value)
+        assert "colon" in message.lower()
+
+    def test_unquoted_reference_in_a_flow_sequence_gets_the_hint(self):
+        content = self._frontmatter("ids: [${digitalocean.compute.web:id}]")
+        with pytest.raises(ValueError) as excinfo:
+            parser.parse_frontmatter(content)
+        assert "quote" in str(excinfo.value).lower()
+
+    def test_yaml_error_with_no_reference_syntax_gets_no_hint(self):
+        # The hint must not attach itself to every YAML error in the repo --
+        # only to a source that contains "${" at all.
+        content = "---\nresource: [broken yaml\n---\n"
+        with pytest.raises(ValueError) as excinfo:
+            parser.parse_frontmatter(content)
+        message = str(excinfo.value).lower()
+        assert "colon" not in message
+        assert "quote" not in message
+
+    def test_a_wellformed_reference_parses_and_is_left_as_written(self):
+        # parse_frontmatter() does not resolve; it only has to not mangle.
+        content = self._frontmatter("data: ${digitalocean.compute.web:ipv4_address}")
+        spec = parser.parse_frontmatter(content)
+        assert spec.params["data"] == "${digitalocean.compute.web:ipv4_address}"
+
+    def test_a_reference_survives_alongside_a_block_scalar(self):
+        content = (
+            "---\nresource: domain\nname: example.com\nprovider: digitalocean\n"
+            "params:\n"
+            "  data: ${digitalocean.compute.web:ipv4_address}\n"
+            "  user_data: |\n    #!/bin/bash\n    echo ${HOME}\n"
+            "---\n"
+        )
+        spec = parser.parse_frontmatter(content)
+        assert spec.params["data"] == "${digitalocean.compute.web:ipv4_address}"
+        # The shell expansion inside the block scalar survives verbatim --
+        # asserting containment rather than the whole value, because whether
+        # PyYAML clips the final newline before a closing '---' is its
+        # business, not this feature's.
+        assert "echo ${HOME}" in spec.params["user_data"]
+
+
 class TestExtractIntentProse:
     def test_raises_value_error_when_no_frontmatter_delimiters(self):
         # extract_intent_prose() assumes well-formed frontmatter, same as
