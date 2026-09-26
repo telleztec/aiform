@@ -364,6 +364,15 @@ def _topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
         return graph.topological_order(keys, edges)
     except graph.CycleError as exc:
         raise PlanBlockedError("dependency cycle: " + " -> ".join(exc.path)) from exc
+    except graph.UnknownDependencyError as exc:
+        # Every caller of _topological/_reverse_topological restricts edges
+        # to `keys` before calling, so this is defense-in-depth, not the
+        # expected path -- graph.UnknownDependencyError must never escape
+        # this module (specs/resource_dependencies.md).
+        raise PlanBlockedError(
+            f"{exc.key}: depends on {exc.target!r}, which is neither a file in this "
+            "run nor a resource tracked in state"
+        ) from exc
 
 
 def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
@@ -697,24 +706,79 @@ def _warnings_for_uncovered(
     return warnings
 
 
+# Both destroy producers pass raw, unfiltered depends_on lists (unlike
+# _order_files' _resolve_dependency_edges above, which restricts edges to
+# the run's own keys before calling _topological). A target is either an
+# edge (it's one of this producer's own nodes), silently resolvable (it
+# exists elsewhere and nothing here needs to order against it), or
+# dangling (it resolves nowhere at all). Collapsing "silently resolvable"
+# and "dangling" into one case would either warn on the everyday case --
+# `plan destroy one-file.aiform.md` naming a dependency tracked in state
+# but not in this run -- or silently proceed on a genuinely broken
+# reference; the distinction is the whole point.
+def _classify_destroy_edges(
+    raw_edges: dict[str, set[str]], node_keys: set[str], *, resolvable_elsewhere: set[str]
+) -> tuple[dict[str, set[str]], list[tuple[str, str]]]:
+    edges: dict[str, set[str]] = {}
+    dangling: list[tuple[str, str]] = []
+    for key, targets in raw_edges.items():
+        kept = set()
+        for target in targets:
+            if target in node_keys:
+                kept.add(target)
+            elif target not in resolvable_elsewhere:
+                dangling.append((key, target))
+        edges[key] = kept
+    return edges, dangling
+
+
+def _dangling_targets_reason(dangling: list[tuple[str, str]]) -> str:
+    pairs = "; ".join(f"{key} depends on {target!r}" for key, target in sorted(dangling))
+    return (
+        f"cannot destroy: {pairs} -- neither in this run nor tracked in state; "
+        "pass --force to drop these edges and destroy anyway"
+    )
+
+
+def _resolve_dangling_targets(dangling: list[tuple[str, str]], *, force: bool) -> list[str]:
+    if not dangling:
+        return []
+    if not force:
+        raise PlanBlockedError(_dangling_targets_reason(dangling))
+    return [
+        f"{key}: depends on {target!r}, which is neither in this run nor tracked in "
+        "state -- dropping the edge (--force)"
+        for key, target in sorted(dangling)
+    ]
+
+
 def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-) -> list[PlannedResource]:
+    force: bool = False,
+) -> tuple[list[PlannedResource], list[str]]:
     st = state.load(state_path)
     if paths:
-        return _build_destroy_plan_from_paths(paths, st)
-    return _build_destroy_plan_from_state(st)
+        return _build_destroy_plan_from_paths(paths, st, force=force)
+    return _build_destroy_plan_from_state(st, force=force)
 
 
-def _build_destroy_plan_from_paths(paths: list[Path], st: State) -> list[PlannedResource]:
+def _build_destroy_plan_from_paths(
+    paths: list[Path], st: State, *, force: bool
+) -> tuple[list[PlannedResource], list[str]]:
     paths = _dedupe_normalized_paths(paths)
     discovered = [_discover_one(path) for path in paths]
     _check_duplicate_keys(discovered)
 
-    edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
-    order = _reverse_topological({entry.key for entry in discovered}, edges)
+    node_keys = {entry.key for entry in discovered}
+    raw_edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
+    edges, dangling = _classify_destroy_edges(
+        raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
+    )
+    warnings = _resolve_dangling_targets(dangling, force=force)
+
+    order = _reverse_topological(node_keys, edges)
     by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}
 
     planned: list[PlannedResource] = []
@@ -738,12 +802,18 @@ def _build_destroy_plan_from_paths(paths: list[Path], st: State) -> list[Planned
                 depends_on=resource_spec.depends_on,
             )
         )
-    return planned
+    return planned, warnings
 
 
-def _build_destroy_plan_from_state(st: State) -> list[PlannedResource]:
-    edges = {key: set(entry.depends_on) for key, entry in st.resources.items()}
-    order = _reverse_topological(set(st.resources), edges)
+def _build_destroy_plan_from_state(
+    st: State, *, force: bool
+) -> tuple[list[PlannedResource], list[str]]:
+    node_keys = set(st.resources)
+    raw_edges = {key: set(entry.depends_on) for key, entry in st.resources.items()}
+    edges, dangling = _classify_destroy_edges(raw_edges, node_keys, resolvable_elsewhere=set())
+    warnings = _resolve_dangling_targets(dangling, force=force)
+
+    order = _reverse_topological(node_keys, edges)
 
     planned: list[PlannedResource] = []
     for key in order:
@@ -769,7 +839,7 @@ def _build_destroy_plan_from_state(st: State) -> list[PlannedResource]:
                 depends_on=state_entry.depends_on,
             )
         )
-    return planned
+    return planned, warnings
 
 
 ConfirmFn = Callable[[str], bool]

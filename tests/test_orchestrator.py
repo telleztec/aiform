@@ -1535,7 +1535,7 @@ class TestBuildCreatePlanDependencyOrdering:
             "digitalocean.compute.db-01"
         ]
 
-        destroy_plan = orchestrator.build_destroy_plan(None, state_path=state_path)
+        destroy_plan, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
         destroy_keys = [pr.entry.resource_key for pr in destroy_plan]
         assert destroy_keys.index("digitalocean.compute.app-01") < destroy_keys.index(
             "digitalocean.compute.db-01"
@@ -2004,7 +2004,7 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        planned = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
         assert len(planned) == 1
         pr = planned[0]
@@ -2026,7 +2026,7 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
 
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.app-01",
@@ -2066,7 +2066,7 @@ class TestBuildDestroyPlan:
         save_state(state_path, **{"digitalocean.compute.app-01": entry})
         differently_spelled = tmp_path / "." / "app.aiform.md"
 
-        planned = orchestrator.build_destroy_plan(
+        planned, _ = orchestrator.build_destroy_plan(
             [aiform_md, differently_spelled], state_path=state_path
         )
 
@@ -2098,7 +2098,7 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        planned = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
         assert planned[0].state_entry is None
 
@@ -2137,7 +2137,7 @@ class TestBuildDestroyPlan:
 
         # Given in dependency (create) order, to prove destroy reverses it
         # rather than merely preserving whatever order it was handed.
-        planned = orchestrator.build_destroy_plan(
+        planned, _ = orchestrator.build_destroy_plan(
             [db_path, cache_path, app_path], state_path=state_path
         )
 
@@ -2182,7 +2182,7 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
@@ -2225,7 +2225,7 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned = orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
@@ -2240,10 +2240,120 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
+
+    def test_paths_driven_target_resolved_only_in_state_is_silent(self, tmp_path: Path):
+        # The everyday case: `plan destroy one-file.aiform.md` naming a
+        # dependency this run doesn't include as a file, but which is
+        # still tracked in state. Must neither warn nor block.
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.app-01": make_state_entry(name="app-01"),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan([app_path], state_path=state_path)
+
+        assert warnings == []
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
+
+    def test_paths_driven_target_resolving_nowhere_raises(self, tmp_path: Path):
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.ghost-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": make_state_entry(name="app-01")})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([app_path], state_path=state_path)
+
+        assert "digitalocean.compute.ghost-01" in exc_info.value.reason
+
+    def test_state_driven_target_resolving_nowhere_raises(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01", depends_on=["digitalocean.compute.ghost-01"]
+                )
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        assert "digitalocean.compute.ghost-01" in exc_info.value.reason
+
+    def test_dangling_error_names_every_offending_target(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01", depends_on=["digitalocean.compute.ghost-01"]
+                ),
+                "digitalocean.compute.other-01": make_state_entry(
+                    name="other-01", depends_on=["digitalocean.compute.ghost-02"]
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.ghost-01" in reason
+        assert "digitalocean.compute.ghost-02" in reason
+
+    def test_force_drops_dangling_edge_and_warns_per_pair(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    depends_on=[
+                        "digitalocean.compute.ghost-01",
+                        "digitalocean.compute.ghost-02",
+                    ],
+                )
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
+        assert len(warnings) == 2
+        assert any("digitalocean.compute.ghost-01" in w for w in warnings)
+        assert any("digitalocean.compute.ghost-02" in w for w in warnings)
+
+    def test_force_drops_only_the_dangling_edge_and_keeps_real_ordering(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    depends_on=["digitalocean.compute.db-01", "digitalocean.compute.ghost-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert len(warnings) == 1
+        assert "digitalocean.compute.ghost-01" in warnings[0]
 
 
 class TestBuildPlanSummary:
