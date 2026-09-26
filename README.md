@@ -135,7 +135,7 @@ configurable model roles to the flow it drives.
 
 ## Not yet implemented
 
-Beyond the MVP's narrow scope (one CSP, one resource kind, and a dependency
+Beyond the MVP's narrow scope (one CSP, a handful of resource kinds, and a dependency
 graph that orders resources but does not yet let one read another's
 attribute values — see [`PLAN.md`](./PLAN.md) §10 for the full list and
 [`MULTI_RESOURCE_PRD.md`](./MULTI_RESOURCE_PRD.md) for the phasing), two
