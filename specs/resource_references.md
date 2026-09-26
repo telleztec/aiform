@@ -108,7 +108,24 @@ def resolve(
     target key is absent from `available`. Every other failure raises
     ReferenceError. An unresolved path keeps its literal text in the returned
     tree."""
+
+
+def describe(
+    params: dict[str, Any], resolved: dict[str, Any]
+) -> list[tuple[str, list[Reference], Any]]:
+    """(path, the references at it, what that path resolved to), sorted by
+    path -- what the plan display and --json render from."""
 ```
+
+`describe()`'s walk is driven by the **raw** tree's shape, not the resolved
+tree's, because the resolved side alone is ambiguous: `{"t": "${...:tags}"}`
+resolves to a list at path `t`, while `{"ids": ["${...:id}"]}` has its reference
+at `ids[0]`. Walking the resolved tree would have to guess which list came
+*from* a reference and which merely *contains* one — a first attempt did exactly
+that and got it wrong.
+
+Its value is per *path*, not per reference: several references embedded in one
+string share the single string they produced.
 
 `params` is never mutated; `resolve()` returns a new tree.
 
@@ -118,7 +135,11 @@ def resolve(
   `unresolved_references`; `_resolve_dependency_edges()` unions
   reference-derived targets with `depends_on` ones; `_plan_one()` resolves
   before `_decide_action()`; `_decide_action()` gains the unresolved branch;
-  `apply_plan()` re-resolves before each driver call.
+  `apply_plan()` re-resolves before each driver call. It also gains a **public**
+  `referenceable(st)` returning the `attributes`-plus-`id` namespace — public
+  because `observability.py` needs the same mapping, and keeping this
+  State-aware adapter here is what lets `references.py` stay free of a `State`
+  import.
 - **`aiform/planner.py`** — `unresolved_entry()`, a third deterministic
   zero-LLM `PlanEntry` producer alongside `create_entry()`/`destroy_entry()`.
 - **`aiform/parser.py`** — `parse_frontmatter()` appends a hint to a YAML
@@ -275,6 +296,15 @@ means concretely:
 
 - A resource referencing another **needs no `depends_on:` entry**. The edge is
   derived from the reference.
+- **The derived edge is persisted to `StateEntry.depends_on`**, alongside any
+  declared ones. This is not cosmetic: Phase 1's destroy-all-from-state path
+  orders purely by what state records, so an edge that existed only in the
+  `.aiform.md` would let `aiform plan destroy` tear a droplet down before the
+  DNS record pointing at it — and no apply could repair it, since the ordering
+  is read from state. Phase 1's third write site in `_plan_one()` already
+  writes `depends_on` on every plan run regardless of action, including
+  `NO_OP`, so adopting a reference on an otherwise-unchanged resource reaches
+  state the same way retrofitting `depends_on:` does.
 - Declaring both is legal and collapses to one edge, exactly as two identical
   `depends_on` entries already do.
 - A reference to a target **delete-marked in this run** is a

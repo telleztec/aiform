@@ -219,12 +219,15 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   billing. Cleanup is guaranteed twice over: the `throwaway_droplet`
   fixture destroys it in a `finally`, and a session sweep catches one a
   crash left behind.
-- **`droplet_ids` can only hold literal integers.** There is no
-  cross-resource reference mechanism — `PLAN.md` §10, "No dependency
-  graph" — so a firewall cannot say "the droplet aiform just created".
-  Note also the type asymmetry: `compute.py` stringifies a droplet id
-  (`"id": str(droplet["id"])`) while this API takes and returns
-  integers.
+- **`droplet_ids` can only hold literal integers.** A cross-resource
+  reference mechanism now exists (`specs/resource_references.md`, Phase 2)
+  and works for this driver's string-valued edges, but **not** for this
+  one, because of the type asymmetry: `compute.py` stringifies a droplet
+  id (`"id": str(droplet["id"])`) while this API takes and returns
+  integers, so a reference here resolves to a string
+  `_validate_scalar_list(params, "droplet_ids", int)` correctly rejects.
+  So a firewall still cannot say "the droplet aiform just created". Filed
+  separately; see the addendum at the end of this file.
 - **Pagination is not used.** Rules and `droplet_ids` are embedded in the
   single firewall object rather than being separate paginated
   collections, and `read()` is one GET, so
@@ -334,3 +337,20 @@ wait is silent until it ends.
 - **Rejecting empty `sources: {}` is a judgment call**, not an API
   constraint — DigitalOcean accepts it. Worth confirming the stricter
   behavior is wanted.
+
+## Addendum: cross-resource references (`specs/resource_references.md`)
+
+This spec's "Resource graph" section noted that a cross-resource reference
+mechanism did not exist. Phase 2 added one
+(`specs/resource_references.md`), and it works for this driver's
+**string-valued** edges — `tags`, `sources.tags`, `destinations.tags` — including
+nested ones, since resolution walks the whole params tree.
+
+**It does not yet work for `droplet_ids` or `sources.droplet_ids`.** Those are
+`{"type": "integer"}` here, while `compute`'s `id` attribute is
+`str(droplet["id"])`, so `droplet_ids: ["${digitalocean.compute.web-01:id}"]`
+resolves to a string that `_validate_scalar_list(params, "droplet_ids", int)`
+correctly rejects. Phase 2's acceptance case was the string-valued DNS one; this
+is a documented limitation with its own issue, deliberately not solved by adding
+a cast syntax to the reference grammar or by changing `compute`'s attribute
+types.

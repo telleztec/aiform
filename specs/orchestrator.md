@@ -1373,3 +1373,48 @@ from here; if it ever did, that would mean an orchestrator caller has a
 bug, not that a user's declaration is wrong, and an uncaught exception
 naming the real cause is the correct outcome for that case, not a
 `PlanBlockedError` phrased as a dependency problem.
+
+## Addendum: `resource_references` (`specs/resource_references.md`)
+
+Phase 2's value flow. `specs/resource_references.md` is the full spec; what
+belongs here is which of this module's functions changed.
+
+- **`referenceable(st)`** — new, and public rather than private because
+  `observability.py` needs the same namespace: a tracked resource's
+  `attributes` plus its `id`, merged back in because `_pop_id()` moved it to
+  `StateEntry.id`. Keeping this State-aware adapter here is what lets
+  `aiform/references.py` stay free of a `State` import.
+- **`_dependency_targets(spec, key)`** — new. Unions reference-derived targets
+  with declared `depends_on` ones *before* the per-target classification runs,
+  so a reference adds targets to that table rather than rules to it. Declared
+  order is preserved and reference-only targets appended sorted, so which
+  target a `PlanBlockedError` names first is unchanged from Phase 1 and still
+  deterministic.
+- **`_resolve_dependency_edges()`** iterates `_dependency_targets()` instead of
+  `spec.depends_on`. Every classification rule is Phase 1's, untouched.
+- **`_plan_one()`** resolves params before `_decide_action()`, and stores three
+  things on `PlannedResource`: `desired_params` (resolved as far as plan time
+  could), `raw_params` (references intact), `unresolved_references`. It writes
+  the **unioned** target list to `StateEntry.depends_on`, not just the declared
+  one — otherwise `plan destroy` from state alone would tear a target down
+  before the resource pointing at it, and no apply could repair it.
+- **`_decide_action()`** gains an `unresolved` branch between the
+  `drifted_missing` arm and `plan_resource()`. It fires in a narrower case than
+  it first appears: a target that is tracked but drifted missing is **still in
+  state**, so a reference to it resolves from stored attributes. Only a target
+  absent from state entirely is unknown.
+- **`_apply_params(pr, st)`** — new. Re-resolves the whole raw tree immediately
+  before each `create`/`update`/replace-create, rather than reusing plan time's
+  answer, so the value handed to a driver is the one live at that moment —
+  correct precisely when a target was replaced earlier in the same apply. It
+  raises `PlanBlockedError` on a path still unresolved; topological ordering
+  means that cannot happen, and the guard exists because the alternative to
+  raising is sending a literal `${...}` to the provider.
+- **`_replace_resource()`** takes the already-computed `desired` rather than
+  re-resolving: the resource has just been dropped from state, and re-resolving
+  would differ only if it referenced itself, which is a cycle and already
+  refused.
+
+Unchanged on purpose: `graph.py`, `build_plan_summary()` (adding references to
+gate #2's prompt is Phase 4, same reasoning as `depends_on`), and every
+`PlanBlockedError` reason Phase 1 defined.

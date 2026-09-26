@@ -25,10 +25,13 @@ extending them rather than silently ignoring one. Three entries apply:
   flagged, not a change to make quietly.
 - **"No dependency graph."** That entry's canonical example is *"a DNS record
   referencing that IP"* — precisely this resource kind. This spec **implements
-  the narrowed version**: record `data` is always a literal the user types.
-  There is no way to reference a `compute` resource's `ipv4_address`, and this
-  spec does not add one. Changing a droplet's address means editing the A
-  record's `data` by hand. That entry is also why zone and records are one
+  the narrowed version**: record `data` is a literal as far as *this driver*
+  is concerned. It was originally also a literal the user typed by hand, with
+  no way to reference a `compute` resource's `ipv4_address` — **Phase 2 changed
+  that** (`specs/resource_references.md`, and the addendum at the end of this
+  file). Nothing in this driver changed: resolution happens in
+  `orchestrator.py` before `create()`/`update()` are called, so the driver
+  still receives a plain string. That entry is also why zone and records are one
   resource rather than two kinds — see "Why one resource kind" below.
 - **"Resource tagging convention"** / `specs/resource_tagging.md`. DigitalOcean
   domains have **no tagging API at all**, so this driver adopts neither
@@ -609,9 +612,10 @@ per-record cleanup is needed.
 
 ## Out of scope
 
-- **Referencing another resource's attributes** — e.g. an A record pointing at
-  a `compute` resource's `ipv4_address`. `PLAN.md` §10's "No dependency graph",
-  quoted above; this driver implements the narrowed, literal-value version.
+- **Referencing another resource's attributes** — no longer out of scope. An A
+  record's `data` can read a `compute` resource's `ipv4_address` as of Phase 2;
+  see the addendum at the end of this file. This driver still handles only
+  literal strings, because resolution happens upstream of it.
 - **A live system test.** No longer deferred — it exists, as
   `tests/system/test_cli_domain.py`, specced in `specs/system_test_domain.md`
   and built as its own `PROCESS.md` pass after this driver shipped. It is what
@@ -632,3 +636,26 @@ per-record cleanup is needed.
 - **Tolerating a non-canonical record order or a bare `data` value** by
   normalizing the user's file. The driver validates and rejects; it never
   rewrites the user's input, and never edits `.aiform.md`.
+
+## Addendum: cross-resource references (`specs/resource_references.md`)
+
+This spec's "Relationship to PLAN.md §10" and "Out of scope" both stated that
+record `data` "is always a literal the user types" and that "there is no way to
+reference a `compute` resource's `ipv4_address`". **Phase 2 retired that**, and
+this driver is its canonical use case:
+
+```yaml
+params:
+  records:
+    - {type: A, name: www, ttl: 3600, data: ${digitalocean.compute.web-01:ipv4_address}}
+```
+
+Nothing in this driver changed to make that work, which is the point:
+resolution is driver-agnostic and happens in `orchestrator.py` before
+`create()`/`update()` are ever called, so the driver still receives a plain
+string in `data` and still validates it the same way. What changed is that the
+string no longer has to be typed by hand, and no longer goes stale when the
+droplet is replaced.
+
+`records` remains in `UNORDERED_FIELDS`, and a resolved reference diffs through
+`unordered_equal()` exactly as a literal does.

@@ -1352,3 +1352,22 @@ be designed against real requirements rather than guessed ones.
 offers `text` and `json`; `Sample` still constrains names, kinds and units,
 because those are properties of what a driver returns and the exporter will
 have no chance to renegotiate them.
+
+## Addendum: `resource_references` (`specs/resource_references.md`)
+
+`aiform resource status`' config answer resolves cross-resource references
+before diffing. `_config_for()` re-parses the `.aiform.md` and diffs
+`spec.params` against the attributes read back from the provider; since
+`diff_attributes()` iterates `desired`, an unresolved literal `${...}` can never
+equal what the provider echoed back, and without resolving first **every**
+referencing resource would report drift forever.
+
+An unresolvable target makes the answer **undetermined** (`in_sync=None`) and
+names the untracked target, rather than reporting drift: answering "drifted"
+would blame this resource for a missing dependency instead of naming the
+dependency. This reuses the existing `_undetermined()` arm rather than inventing
+a state, since `in_sync=None` already means "aiform could not determine it".
+
+`_config_for()` therefore takes the whole `State`. `_status_for_entry()` already
+had it, so nothing new is plumbed. `health()`/`metrics()` are untouched —
+references are a `params` concern and neither method reads params.
