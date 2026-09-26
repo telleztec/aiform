@@ -484,18 +484,15 @@ neither waits on the other:
    billed — never launch that.
 
 The reviewer must be **Opus 5 or newer, and never the model that authored
-the diff**. This constrains the model that wrote the diff, not the session
-that delegated it — an Opus coordinator may review a Sonnet subagent's
+the diff**, unless the human provides a waiver explicitly. 
+This constrains the model that wrote the diff, not the session that 
+delegated it — an Opus coordinator may review a Sonnet subagent's
 diff. What it does not permit is a model reviewing lines it wrote itself.
-That's a deliberate widening from an earlier version of this rule, which
-read "never you" and bound the reviewing session rather than the diff's
-author — say so plainly rather than treat the rule as having always read
-this way. An author reviewing its own diff satisfies the letter of the
-gate and none of its purpose. The mechanism: launch the review as a
-subagent, passing an explicit `model` override whenever the model you
-would otherwise inherit is the one that authored the diff. If you authored
-the diff yourself and cannot select a different model, say so on the PR
-instead of reviewing yourself.
+The mechanism: launch the review as a subagent, passing an explicit `model` 
+override whenever the model you would otherwise inherit is the one 
+that authored the diff. If you authored the diff yourself and cannot select 
+a different model, say so on the PR instead of reviewing yourself and 
+request a waiver from the human. 
 
 ### Choosing who authors the diff also chooses who reviews it
 
@@ -524,14 +521,7 @@ Of the pairings the rule allows, this repo defaults to two:
 This is a convention, not the exhaustive set the gate permits — Haiku
 authoring with either Opus or Fable reviewing, Sonnet authoring with
 Fable reviewing, and Fable authoring with Opus reviewing, all satisfy the
-rule too; this repo just doesn't default to them. The distinction matters
-because getting it wrong pushes cost the
-wrong way: a coordinator with a risky Sonnet-authored diff who wants the
-stronger Fable review, but believes only two pairings are legal, concludes
-Sonnet→Fable is forbidden — so it re-authors with Opus purely to unlock
-Fable, paying more for the same review, or settles for a review it
-believes is inadequate. The same mistake also silently forbids Haiku from
-authoring anything, which the rule never said.
+rule too; this repo just doesn't default to them. 
 
 Picking Opus to author a diff therefore forces a Fable review, whether or
 not anyone said so out loud — and the repo owner said on 2026-09-21 to
@@ -550,10 +540,7 @@ Cost in the table above is per review pass, not per PR: "Satisfying
 `llm-review`" below re-reviews every round of fix commits until head is
 covered, so whichever pairing is chosen pays its cost once per round —
 and less after the first, since `/code-review-since` scopes later rounds
-to only what's new rather than the whole diff. That still cuts against the
-Opus→Fable pairing twice over — it's picked for the harder changes, which
-are also the ones likelier to need several rounds, and its reviewer is the
-pricier one to begin with.
+to only what's new rather than the whole diff. 
 
 ### Satisfying `llm-review`
 
