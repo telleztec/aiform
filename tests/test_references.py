@@ -6,6 +6,7 @@ import pytest
 from aiform.references import (
     Reference,
     ReferenceError,
+    describe,
     find_references,
     reference_targets,
     resolve,
@@ -255,6 +256,66 @@ class TestFindReferencesAndTargets:
 
     def test_find_references_of_empty_params_is_empty(self):
         assert find_references({}) == {}
+
+
+class TestDescribe:
+    """What the plan display and --json are built from: each path that holds
+    references, the references there, and what that path resolved to."""
+
+    def test_pairs_each_path_with_its_references_and_resolved_value(self):
+        params = {"records": [{"data": f"${{{WEB}:ipv4_address}}"}]}
+        resolved, _ = resolve(params, AVAILABLE)
+        assert describe(params, resolved) == [
+            (
+                "records[0].data",
+                [Reference(target_key=WEB, attribute="ipv4_address")],
+                "203.0.113.5",
+            )
+        ]
+
+    def test_an_unresolved_path_carries_the_literal_as_its_value(self):
+        params = ref(f"${{{WEB}:ipv4_address}}")
+        resolved, unresolved = resolve(params, {})
+        assert unresolved == ["data"]
+        assert describe(params, resolved) == [
+            (
+                "data",
+                [Reference(target_key=WEB, attribute="ipv4_address")],
+                f"${{{WEB}:ipv4_address}}",
+            )
+        ]
+
+    def test_a_non_string_resolved_value_is_reported_as_itself(self):
+        # A whole-value reference to an int resolves to an int, so the walk
+        # behind describe() has to yield non-string leaves too.
+        params = {"n": f"${{{WEB}:port_count}}"}
+        resolved, _ = resolve(params, AVAILABLE)
+        assert describe(params, resolved) == [
+            ("n", [Reference(target_key=WEB, attribute="port_count")], 2)
+        ]
+
+    def test_several_references_at_one_path_share_that_path_s_resolved_value(self):
+        params = ref(f"${{{WEB}:ipv4_address}}/${{{DB}:ipv4_address}}")
+        resolved, _ = resolve(params, AVAILABLE)
+        rows = describe(params, resolved)
+        assert len(rows) == 1
+        path, refs, value = rows[0]
+        assert path == "data"
+        assert [r.attribute for r in refs] == ["ipv4_address", "ipv4_address"]
+        assert value == "203.0.113.5/203.0.113.9"
+
+    def test_paths_without_references_are_absent(self):
+        params = {"plain": "x", "data": f"${{{WEB}:id}}"}
+        resolved, _ = resolve(params, AVAILABLE)
+        assert [path for path, _, _ in describe(params, resolved)] == ["data"]
+
+    def test_rows_are_sorted_by_path(self):
+        params = {"b": f"${{{WEB}:id}}", "a": f"${{{DB}:id}}"}
+        resolved, _ = resolve(params, AVAILABLE)
+        assert [path for path, _, _ in describe(params, resolved)] == ["a", "b"]
+
+    def test_no_references_gives_no_rows(self):
+        assert describe({"plain": "x"}, {"plain": "x"}) == []
 
 
 class TestResolveDoesNotMutate:

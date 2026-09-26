@@ -126,6 +126,45 @@ def reference_targets(params: dict[str, Any]) -> set[str]:
     }
 
 
+def _walk_pairs(raw: Any, resolved: Any, path: str):
+    """Walk the raw and resolved trees together, keyed on the raw tree's
+    shape, yielding (path, resolved value) for every string in `raw`.
+
+    Driven by `raw` rather than by `resolved` because the resolved side alone
+    is ambiguous: `{"t": "${...:tags}"}` resolves to a list at path `t`, while
+    `{"ids": ["${...:id}"]}` has its reference at `ids[0]`. Walking the
+    resolved tree would have to guess which list came *from* a reference and
+    which merely *contains* one.
+    """
+    if isinstance(raw, dict):
+        for key, child in raw.items():
+            child_resolved = resolved.get(key) if isinstance(resolved, dict) else None
+            yield from _walk_pairs(child, child_resolved, f"{path}.{key}" if path else str(key))
+    elif isinstance(raw, list):
+        for index, child in enumerate(raw):
+            child_resolved = (
+                resolved[index] if isinstance(resolved, list) and index < len(resolved) else None
+            )
+            yield from _walk_pairs(child, child_resolved, f"{path}[{index}]")
+    elif isinstance(raw, str):
+        yield path, resolved
+
+
+def describe(
+    params: dict[str, Any], resolved: dict[str, Any]
+) -> list[tuple[str, list[Reference], Any]]:
+    """(path, the references at it, what that path resolved to), sorted by
+    path -- what the plan display and --json are rendered from.
+
+    The value is per *path*, not per reference: several references embedded in
+    one string share the single string they produced. An unresolved path
+    carries its literal text, since that is what `resolve()` left there.
+    """
+    found = find_references(params)
+    values = dict(_walk_pairs(params, resolved, ""))
+    return [(path, found[path], values.get(path)) for path in sorted(found)]
+
+
 def _attribute_value(reference: Reference, attributes: Mapping[str, Any], path: str) -> Any:
     try:
         value = attributes[reference.attribute]
