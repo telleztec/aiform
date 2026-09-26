@@ -364,15 +364,6 @@ def _topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
         return graph.topological_order(keys, edges)
     except graph.CycleError as exc:
         raise PlanBlockedError("dependency cycle: " + " -> ".join(exc.path)) from exc
-    except graph.UnknownDependencyError as exc:
-        # Every caller of _topological/_reverse_topological restricts edges
-        # to `keys` before calling, so this is defense-in-depth, not the
-        # expected path -- graph.UnknownDependencyError must never escape
-        # this module (specs/resource_dependencies.md).
-        raise PlanBlockedError(
-            f"{exc.key}: depends on {exc.target!r}, which is neither a file in this "
-            "run nor a resource tracked in state"
-        ) from exc
 
 
 def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:

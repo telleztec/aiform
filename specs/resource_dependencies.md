@@ -237,14 +237,21 @@ params:
   (which ignored it) after review found two of `graph.py`'s four call
   sites — `build_destroy_plan()`'s two producers, below — did not
   actually restrict edges first, contradicting the docstring's claim.
-  `_order_files`' `_resolve_dependency_edges` still does the restricting
-  itself before calling in, so this exception is defense-in-depth there;
-  the two destroy producers now do the same restricting explicitly (see
-  "Destroy ordering, all three producers" below) rather than relying on
-  `graph.py` to filter for them. `graph.UnknownDependencyError` is
-  `graph.py`-internal and never escapes the orchestrator, converted to
-  `PlanBlockedError` in `_topological()` the same way `graph.CycleError`
-  already is.
+  `_order_files`' `_resolve_dependency_edges` already did the restricting
+  itself before calling in; the two destroy producers now do the same
+  restricting explicitly (see "Destroy ordering, all three producers"
+  below) rather than relying on `graph.py` to filter for them. With all
+  four call sites restricting correctly, `graph.UnknownDependencyError`
+  cannot actually reach `graph.topological_order()` from the
+  orchestrator — and `_topological()` deliberately does **not** catch it.
+  This is not the same posture as `graph.CycleError`, which *is* caught
+  and converted to `PlanBlockedError`: a cycle is genuinely reachable from
+  a user's own `depends_on` declarations, while an `UnknownDependencyError`
+  reaching `_topological()` would mean an orchestrator caller has a bug —
+  converting that into a user-facing "your dependency doesn't resolve"
+  message would misdirect whoever investigates it toward the wrong files
+  entirely. See `specs/orchestrator.md`'s `_topological()` entry for the
+  full reasoning.
 
 ### The discovery/validation pass
 
@@ -589,8 +596,15 @@ cannot proceed" and already has CLI exit-code handling. It gains five reasons:
 duplicate resource key, unresolvable target, live-depends-on-same-run-destroy,
 a cycle with its path, and a destroy path's dangling dependency target(s)
 (naming every one, see "Dangling dependency targets on a destroy path, and
-`--force`" above). `graph.CycleError` and `graph.UnknownDependencyError` are
-internal to the graph module and never escape the orchestrator.
+`--force`" above). `graph.CycleError` is caught in `_topological()` and
+converted to one of those `PlanBlockedError`s, since a cycle is genuinely
+reachable from a user's own `depends_on` declarations.
+`graph.UnknownDependencyError` is not caught anywhere in the orchestrator —
+every call site restricts its edges before calling in, so it cannot
+actually reach `graph.topological_order()` from there; if it ever did,
+that would be an orchestrator caller's bug rather than a bad user
+declaration, and it is deliberately left uncaught rather than relabeled as
+one.
 
 - **Malformed `depends_on` shape** — a non-list, a non-string element, a key
   with too few segments, or a segment violating

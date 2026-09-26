@@ -1333,12 +1333,21 @@ changed and which deliberately did not.
   node set, and, for the file-driven producer, not in `st.resources`
   either -- blocks the plan with `PlanBlockedError` naming every dangling
   pair, unless `force=True`, which drops the edge and returns one warning
-  per pair instead. `graph.UnknownDependencyError` never actually reaches
-  `graph.py` from either producer, since dangling targets are excluded
-  from the edge sets before ordering runs; `_topological()`'s `except
-  graph.UnknownDependencyError` clause is defense-in-depth for a path that
-  should be unreachable, same posture as its existing `CycleError`
-  conversion. Full rule in `specs/resource_dependencies.md`.
+  per pair instead. Both producers exclude every dangling target from the
+  edge sets *before* calling `_topological()`, so
+  `graph.UnknownDependencyError` cannot reach `graph.topological_order()`
+  from the orchestrator at all -- there is no remaining call site that
+  passes it an unrestricted edge set. `_topological()` deliberately does
+  **not** catch `graph.UnknownDependencyError`: unlike `CycleError`, which
+  is genuinely user-reachable (a user's own files can declare a cycle,
+  and `tests/test_orchestrator.py` exercises that conversion), an
+  `UnknownDependencyError` surfacing here would mean an orchestrator
+  caller failed to restrict its edges -- a bug in this module, not a bad
+  `depends_on` declaration. Converting it into a `PlanBlockedError` phrased
+  as "your dependency doesn't resolve" would misdirect a future reader
+  investigating that bug toward the user's `.aiform.md` files instead of
+  the actual defect; an uncaught exception's traceback names the real
+  cause. Full rule in `specs/resource_dependencies.md`.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.
@@ -1354,6 +1363,13 @@ changed and which deliberately did not.
 
 All five new failure modes -- the original four plus the destroy paths'
 dangling-target refusal -- raise the existing `PlanBlockedError`; no new
-exception type was added on the orchestrator side, and neither
-`graph.CycleError` nor `graph.UnknownDependencyError` ever escapes this
-module.
+exception type was added on the orchestrator side. `graph.CycleError` is
+converted to `PlanBlockedError` in `_topological()`, since a cycle is
+genuinely reachable from a user's own `depends_on` declarations.
+`graph.UnknownDependencyError` is not caught anywhere in this module --
+every call site restricts its edges to its own node set before calling
+in, so the exception cannot actually reach `graph.topological_order()`
+from here; if it ever did, that would mean an orchestrator caller has a
+bug, not that a user's declaration is wrong, and an uncaught exception
+naming the real cause is the correct outcome for that case, not a
+`PlanBlockedError` phrased as a dependency problem.
