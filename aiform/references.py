@@ -51,23 +51,33 @@ class ReferenceResolutionError(Exception):
         super().__init__(f"{path}: {message}")
 
 
-def _looks_like_a_key(key: str) -> bool:
-    """Whether the text left of the colon was *trying* to be a resource key.
+def _looks_like_a_key(content: str) -> bool:
+    """Whether a `${...}` body was *trying* to be a resource reference.
 
-    This is the line between "literal text, leave it alone" and "a reference
-    the user got wrong, refuse it", and it has to be drawn on intent rather
-    than validity -- a shell expansion is also `${...:...}`. One dot is the
-    whole test, because a shell variable name cannot contain one: `${PORT:-8080}`,
-    `${var:1:3}` and `${VERSION:-1.2.3}` all leave a dotless key and stay
-    literal, while anything dotted is not valid shell syntax to begin with.
+    The test is a dot in the segment before the **first** colon, which for a
+    reference is the provider -- `digitalocean` in
+    `digitalocean.compute.web-01:ipv4_address`. It has to be intent rather than
+    validity, because a shell expansion is also `${...:...}`, and it has to key
+    on the first colon rather than the last because in shell everything after
+    the first colon is a *default value*, which routinely contains both dots and
+    colons:
 
-    Deliberately *not* also checking that the first segment is a well-formed
+        ${BIND:-0.0.0.0:8080}      ${HOST:-db.internal:5432}
+        ${IMAGE:-ghcr.io/org/app:latest}
+
+    An earlier version tested the text left of the last colon, which for those
+    is `BIND:-0.0.0.0` -- dotted -- so every one of them raised and blocked
+    `plan` outright on a droplet whose `user_data` contained ordinary
+    cloud-init. A shell *variable name* cannot contain a dot; a shell default
+    very much can.
+
+    Deliberately *not* also checking that the segment is a well-formed
     provider: `${Digitalocean.compute.web-01:ipv4_address}` is plainly an
     attempted reference with a capitalised provider, and treating it as literal
     text would send it to the provider verbatim -- the exact failure this check
     exists to prevent. It is validated below instead, so it raises.
     """
-    return "." in key
+    return "." in content.partition(":")[0]
 
 
 def _as_reference(content: str, path: str) -> Reference | None:
@@ -78,9 +88,12 @@ def _as_reference(content: str, path: str) -> Reference | None:
     `${digitalocean.compute.web:ipv4_address}` to the provider as a DNS
     record's value, which is the failure this whole check exists to prevent.
     """
-    # rpartition, not partition: `name` may contain a colon, so the LAST one
-    # separates. A name containing dots is the reason the attribute is not a
-    # fourth dotted segment in the first place.
+    # Intent is judged on the FIRST colon (see _looks_like_a_key) but the split
+    # is on the LAST, because `name` may itself contain a colon. A name
+    # containing dots is the reason the attribute is not a fourth dotted
+    # segment in the first place.
+    if not _looks_like_a_key(content):
+        return None
     key, separator, attribute = content.rpartition(":")
     if not separator:
         if _KEYLIKE_RE.match(content):
@@ -91,8 +104,6 @@ def _as_reference(content: str, path: str) -> Reference | None:
             )
         return None
 
-    if not _looks_like_a_key(key):
-        return None
     try:
         parse_dependency_key(key)
     except ValueError as exc:
@@ -187,16 +198,19 @@ def describe(
     return [(path, found[path], values.get(path)) for path in sorted(found)]
 
 
-def _attribute_value(reference: Reference, attributes: Mapping[str, Any], path: str) -> Any:
-    try:
-        value = attributes[reference.attribute]
-    except KeyError:
+def _require_attribute(reference: Reference, attributes: Mapping[str, Any], path: str) -> None:
+    if reference.attribute not in attributes:
         available = ", ".join(sorted(attributes)) or "(none)"
         raise ReferenceResolutionError(
             path,
             f"{reference.target_key} has no attribute {reference.attribute!r}; "
             f"available: {available}",
-        ) from None
+        )
+
+
+def _attribute_value(reference: Reference, attributes: Mapping[str, Any], path: str) -> Any:
+    _require_attribute(reference, attributes, path)
+    value = attributes[reference.attribute]
     if value is None:
         # compute._flatten() returns ipv4_address: None before a public v4
         # attaches (#178). A DNS record whose data is the string "None" is
@@ -210,7 +224,10 @@ def _attribute_value(reference: Reference, attributes: Mapping[str, Any], path: 
 
 
 def _resolve_text(
-    text: str, path: str, available: Mapping[str, Mapping[str, Any]]
+    text: str,
+    path: str,
+    available: Mapping[str, Mapping[str, Any]],
+    volatile: frozenset[str] | set[str],
 ) -> tuple[Any, bool]:
     """Returns (value, resolved). `value` is `text` unchanged when not
     resolved, so an unresolved path keeps something a user recognises."""
@@ -218,7 +235,25 @@ def _resolve_text(
     if not references:
         return text, True
 
-    if any(reference.target_key not in available for reference in references):
+    deferred = False
+    for reference in references:
+        attributes = available.get(reference.target_key)
+        if attributes is None:
+            # Nothing exists to check an attribute name against yet.
+            deferred = True
+        elif reference.target_key in volatile:
+            # The value is not final -- this run will give the target a new one
+            # -- but the target's *shape* is known, so the attribute name is
+            # still checked now. Deferring that check to apply time would let a
+            # typo survive until after the target had already been created,
+            # leaving the apply half-done.
+            #
+            # Only key presence, not the None check: a value that is about to be
+            # replaced is allowed to be None right now, which is exactly the
+            # state a drifted droplet's ipv4_address is in.
+            _require_attribute(reference, attributes, path)
+            deferred = True
+    if deferred:
         return text, False
 
     whole = _BRACED_RE.fullmatch(text)
@@ -246,20 +281,26 @@ def _resolve_text(
 
 
 def _resolve_value(
-    value: Any, path: str, available: Mapping[str, Mapping[str, Any]], unresolved: list[str]
+    value: Any,
+    path: str,
+    available: Mapping[str, Mapping[str, Any]],
+    volatile: frozenset[str] | set[str],
+    unresolved: list[str],
 ) -> Any:
     if isinstance(value, dict):
         return {
-            key: _resolve_value(child, f"{path}.{key}" if path else str(key), available, unresolved)
+            key: _resolve_value(
+                child, f"{path}.{key}" if path else str(key), available, volatile, unresolved
+            )
             for key, child in value.items()
         }
     if isinstance(value, list):
         return [
-            _resolve_value(child, f"{path}[{index}]", available, unresolved)
+            _resolve_value(child, f"{path}[{index}]", available, volatile, unresolved)
             for index, child in enumerate(value)
         ]
     if isinstance(value, str):
-        resolved, ok = _resolve_text(value, path, available)
+        resolved, ok = _resolve_text(value, path, available, volatile)
         if not ok:
             unresolved.append(path)
         return resolved
@@ -267,8 +308,15 @@ def _resolve_value(
 
 
 def resolve(
-    params: dict[str, Any], available: Mapping[str, Mapping[str, Any]]
+    params: dict[str, Any],
+    available: Mapping[str, Mapping[str, Any]],
+    *,
+    volatile: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[dict[str, Any], list[str]]:
+    """`volatile` names targets that are present in `available` but whose values
+    this run is about to change. They resolve as *unresolved*, so the caller
+    resolves them again later against the real value -- but their attribute
+    names are still validated now, while there is still a plan to refuse."""
     unresolved: list[str] = []
-    resolved = _resolve_value(params, "", available, unresolved)
+    resolved = _resolve_value(params, "", available, volatile, unresolved)
     return resolved, sorted(unresolved)

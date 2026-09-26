@@ -1405,10 +1405,15 @@ belongs here is which of this module's functions changed.
   absent from state entirely is unknown.
 - **`referenceable()` takes an `exclude` set, and `build_create_plan()` threads
   a `volatile` set through its loop.** A key joins `volatile` when
-  `_will_get_new_attributes()` holds — action `CREATE` (including the recreate
-  of a drifted resource, which is still sitting in `st.resources` with its old
-  attributes) or `UPDATE` with `likely_replace`. Those keys are withheld from
-  the namespace a later dependent resolves against. Without it, a dependent
+  `_will_get_new_attributes()` holds — any `CREATE` (including the recreate of a
+  drifted resource, which is still sitting in `st.resources` with its old
+  attributes) or any `UPDATE`. Not only `UPDATE` with `likely_replace`: that
+  field is the model's advisory guess, and gating on it missed both an update
+  `driver.update()` refuses at apply time and the middle of a dependency chain,
+  whose own action is the deterministic `UPDATE` this mechanism produces. Those
+  keys are passed to `references.resolve()` as `volatile` — present in the
+  namespace, so their attribute names are still validated at plan time, but
+  reported unresolved so the real value is read during the apply. Without it, a dependent
   resolves to the doomed value, diffs clean, plans `NO_OP`, and is skipped by
   `apply_plan()` before the apply-time re-resolve can correct it — leaving a DNS
   record pointing at a host the same apply just destroyed. Accumulating the set

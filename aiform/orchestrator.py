@@ -101,14 +101,8 @@ def _pop_id(
 # `id` is not in `attributes` -- _pop_id() above moves it to StateEntry.id --
 # but it is the most useful cross-resource value, so it is merged back in here
 # rather than every caller remembering to.
-def referenceable(
-    st: State, *, exclude: frozenset[str] | set[str] = frozenset()
-) -> dict[str, dict[str, Any]]:
-    return {
-        key: {**entry.attributes, "id": entry.id}
-        for key, entry in st.resources.items()
-        if key not in exclude
-    }
+def referenceable(st: State) -> dict[str, dict[str, Any]]:
+    return {key: {**entry.attributes, "id": entry.id} for key, entry in st.resources.items()}
 
 
 # `volatile` holds the keys this run is about to give new attribute values --
@@ -124,20 +118,26 @@ def _resolve_params(
     key: str, params: dict[str, Any], st: State, volatile: set[str]
 ) -> tuple[dict[str, Any], list[str]]:
     try:
-        return references.resolve(params, referenceable(st, exclude=volatile))
+        return references.resolve(params, referenceable(st), volatile=volatile)
     except references.ReferenceResolutionError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
 
 
-# UPDATE counts only when likely_replace is set, and that field is advisory --
-# driver.update() is the real arbiter, so this errs toward treating a target as
-# volatile when it might not be. The asymmetry is deliberate: a needless
-# dependent update rewrites the same value at no LLM cost, while a missed one
-# leaves a record pointing at a dead host.
+# Any CREATE or UPDATE, deliberately -- not only an UPDATE flagged
+# likely_replace. "This target's attributes may differ after the apply" is the
+# question, and an update is by definition an answer of yes; likely_replace only
+# describes *how* the value changes, and it is the model's advisory guess rather
+# than a fact, so gating on it missed two real cases: an update the model called
+# in-place that driver.update() then refuses (delete + create, new address), and
+# the middle of a chain, whose own action is the deterministic UPDATE this
+# mechanism produces and which therefore has likely_replace=False by
+# construction. Both left a dependent pointing at a dead host for a plan cycle.
+#
+# The cost of being broad is a dependent update that rewrites an identical
+# value, at zero LLM cost, and it converges: once the target is applied its next
+# plan is NO_OP, so nothing is volatile and the dependent is NO_OP too.
 def _will_get_new_attributes(entry: PlanEntry) -> bool:
-    return entry.action == PlanAction.CREATE or (
-        entry.action == PlanAction.UPDATE and entry.likely_replace
-    )
+    return entry.action in (PlanAction.CREATE, PlanAction.UPDATE)
 
 
 def _require_tracked(st: State, key: str) -> StateEntry:
@@ -1153,7 +1153,14 @@ def _extend_and_notify(
 # still worth its two lines, because the alternative to raising is sending a
 # literal "${...}" to the provider as a real resource value.
 def _apply_params(pr: PlannedResource, st: State) -> dict[str, Any]:
-    resolved, unresolved = references.resolve(pr.raw_params, referenceable(st))
+    try:
+        resolved, unresolved = references.resolve(pr.raw_params, referenceable(st))
+    except references.ReferenceResolutionError as exc:
+        # Wrapped, not left to escape: cli.py handles PlanBlockedError and does
+        # not handle this, so a reference that only becomes checkable at apply
+        # time -- a brand-new target's attribute name -- would otherwise reach
+        # the user as a traceback with the apply half-done.
+        raise PlanBlockedError(f"{pr.entry.resource_key}: {exc}") from exc
     if unresolved:
         raise PlanBlockedError(
             f"{pr.entry.resource_key}: references are still unresolved at apply time: "

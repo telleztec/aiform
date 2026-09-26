@@ -135,8 +135,8 @@ class TestLiteralsPassThroughUntouched:
     """parser.py already anticipates a cloud-init `user_data: |` block scalar
     in params, and compute's PARAM_SCHEMA is additionalProperties: True, so
     shell parameter expansion in a params value is an anticipated case. A
-    ${...} is a reference only when it holds a colon whose left side parses
-    as a valid resource key."""
+    ${...} is an attempted reference only when the segment before its FIRST
+    colon contains a dot."""
 
     @pytest.mark.parametrize(
         "text",
@@ -148,6 +148,18 @@ class TestLiteralsPassThroughUntouched:
             "${digitalocean.compute.web-01:ipv4_address",
             "#!/bin/sh\necho ${HOME}/bin\n",
             "plain text with no dollar brace",
+            # Shell defaults routinely hold BOTH a dot and a colon. An earlier
+            # gate tested the text left of the LAST colon, which for these is
+            # dotted ("BIND:-0.0.0.0"), so every one of them raised and blocked
+            # `plan` on a droplet carrying ordinary cloud-init. The test is the
+            # segment before the FIRST colon -- a shell variable name cannot
+            # contain a dot, though its default very much can.
+            "${BIND:-0.0.0.0:8080}",
+            "${HOST:-db.internal:5432}",
+            "${IMAGE:-ghcr.io/org/app:latest}",
+            "${ADDR:-127.0.0.1:6379}",
+            "${DATABASE_URL:-postgres://u:p@db.example.com:5432/app}",
+            "BIND=${BIND:-0.0.0.0:8080}\nexec /app\n",
         ],
     )
     def test_literal_is_returned_unchanged(self, text):
@@ -297,6 +309,37 @@ class TestFindReferencesAndTargets:
 
     def test_find_references_of_empty_params_is_empty(self):
         assert find_references({}) == {}
+
+
+class TestVolatileTargets:
+    """A target whose value this run is about to change resolves as unresolved,
+    so the caller resolves it again later -- but its attribute NAME is still
+    checked now, while there is still a plan to refuse."""
+
+    def test_a_volatile_target_is_reported_unresolved_even_though_it_is_present(self):
+        resolved, unresolved = resolve(ref(f"${{{WEB}:ipv4_address}}"), AVAILABLE, volatile={WEB})
+        assert unresolved == ["data"]
+        assert resolved == {"data": f"${{{WEB}:ipv4_address}}"}
+
+    def test_a_bad_attribute_on_a_volatile_target_still_raises_now(self):
+        # Deferring this to apply time would let the typo survive until after
+        # the target had been created, leaving the apply half-done.
+        with pytest.raises(ReferenceResolutionError) as excinfo:
+            resolve(ref(f"${{{WEB}:ipv4_addres}}"), AVAILABLE, volatile={WEB})
+        assert "ipv4_address" in str(excinfo.value)
+
+    def test_a_volatile_target_whose_current_value_is_none_does_not_raise(self):
+        # Only key presence is checked for a volatile target: a value that is
+        # about to be replaced is allowed to be None right now, which is exactly
+        # the state a drifted droplet's ipv4_address is in.
+        available = {WEB: {"id": "1", "ipv4_address": None}}
+        _resolved, unresolved = resolve(ref(f"${{{WEB}:ipv4_address}}"), available, volatile={WEB})
+        assert unresolved == ["data"]
+
+    def test_a_non_volatile_target_resolves_normally(self):
+        resolved, unresolved = resolve(ref(f"${{{WEB}:ipv4_address}}"), AVAILABLE, volatile={DB})
+        assert resolved == {"data": "203.0.113.5"}
+        assert unresolved == []
 
 
 class TestDescribe:

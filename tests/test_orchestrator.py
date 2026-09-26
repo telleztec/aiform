@@ -2458,6 +2458,84 @@ class TestReferenceToATargetThisRunWillReplace:
         assert zone_pr.entry.action == PlanAction.UPDATE
         assert len(client.messages.calls) == 0
 
+    def test_a_target_planned_update_in_place_also_withholds_its_dependent(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        # Any UPDATE makes a target volatile, not only one flagged
+        # likely_replace. likely_replace is the model's advisory guess, and
+        # gating on it missed two real cases: an "in-place" update that
+        # driver.update() then refuses (delete + create, new address), and the
+        # middle of a chain, whose own action is the deterministic UPDATE this
+        # mechanism produces and so carries likely_replace=False by construction.
+        write_ref_driver(drivers_dir)
+        write_ref_driver(drivers_dir, "domain")
+        web = tmp_path / "web.aiform.md"
+        zone = tmp_path / "a-zone.aiform.md"
+        # Differs from what the fake driver's read() reports, so the target has
+        # a real diff and is categorized as an update.
+        write_aiform_md(web, name="web-01", params={"size": "s-4vcpu-8gb"})
+        write_aiform_md(
+            zone,
+            resource="domain",
+            name="example.com",
+            params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.web-01": make_state_entry(
+                    name="web-01", id="id-web-01", attributes={"ipv4_address": "203.0.113.5"}
+                ),
+            },
+        )
+
+        client = FakeClient([categorization_response(action="update", rationale="size change")])
+        planned, _ = orchestrator.build_create_plan(
+            [zone, web], state_path=state_path, client=client
+        )
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.UPDATE
+        zone_pr = by_key["digitalocean.domain.example.com"]
+        assert zone_pr.unresolved_references == ["data"]
+        # One call for the target's own categorization; the dependent's UPDATE
+        # is deterministic and costs nothing.
+        assert len(client.messages.calls) == 1
+
+    def test_a_typo_on_a_withheld_target_is_still_refused_at_plan_time(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        # Withholding must not defer attribute-name validation into the apply:
+        # by then the target has already been created, and the failure would
+        # leave the apply half-done.
+        write_ref_driver(drivers_dir)
+        write_ref_driver(drivers_dir, "domain")
+        web = tmp_path / "web.aiform.md"
+        zone = tmp_path / "a-zone.aiform.md"
+        write_aiform_md(web, name="web-01")
+        write_aiform_md(
+            zone,
+            resource="domain",
+            name="example.com",
+            params={"data": "${digitalocean.compute.web-01:ipv4_addres}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.web-01": make_state_entry(
+                    name="web-01", id="MISSING", attributes={"ipv4_address": "203.0.113.5"}
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [zone, web], state_path=state_path, client=FakeClient([])
+            )
+        assert "ipv4_addres" in exc_info.value.reason
+        assert "ipv4_address" in exc_info.value.reason
+
     def test_the_dependent_then_picks_up_the_new_value_during_apply(
         self, tmp_path: Path, drivers_dir: Path
     ):

@@ -215,11 +215,23 @@ So:
 | `${digitalocean.compute.web:}` | **raises** — empty attribute |
 | `${digitalocean.compute.web:nosuchattr}` | **raises** — unknown attribute |
 | `${VERSION:-1.2.3}` | a literal — the dot is in the *default*, not the key |
+| `${BIND:-0.0.0.0:8080}` | a literal — dot and colon both in the default |
+| `${IMAGE:-ghcr.io/org/app:latest}` | a literal, same reason |
 
-A `${…}` is a reference **iff** its content contains a colon and the text left
-of the last colon **contains a dot**. One dot is the whole test for intent,
-because a shell variable name cannot contain one — so `${PORT:-8080}`,
-`${var:1:3}` and `${VERSION:-1.2.3}` all leave a dotless key and stay literal.
+A `${…}` is an attempted reference **iff** the segment before its **first**
+colon contains a dot. That segment is the provider in a real reference
+(`digitalocean` in `digitalocean.compute.web-01:ipv4_address`), and a shell
+*variable name* cannot contain a dot.
+
+**It must be the first colon, not the last.** In shell, everything after the
+first colon is a default value, which routinely contains dots *and* colons:
+`${BIND:-0.0.0.0:8080}`, `${HOST:-db.internal:5432}`,
+`${IMAGE:-ghcr.io/org/app:latest}`. An earlier version of this rule tested the
+text left of the *last* colon — `BIND:-0.0.0.0`, which is dotted — so every one
+of those raised, and `plan` refused outright on any droplet whose `user_data`
+carried ordinary cloud-init. Both `plan` and `plan destroy <file>` were blocked,
+since both route through `_dependency_targets()`. The split itself still uses
+the last colon, because `name` may contain one.
 
 Once that test passes, the text is an *attempted* reference and is validated
 rather than silently passed through: a key that does not parse as
@@ -394,10 +406,22 @@ always applied.
 topological order, and `_resolve_params()` withholds those keys from the
 namespace. A key joins it when `_will_get_new_attributes()` says so:
 
-- action is `CREATE` — which includes the **recreate of a drifted resource**,
-  the case that matters, since a drifted entry is still in `st.resources` with
-  its old attributes;
-- action is `UPDATE` **and** `likely_replace` is set.
+**Any `CREATE` or `UPDATE`** — deliberately not only an `UPDATE` flagged
+`likely_replace`. The question is "may this target's attributes differ after the
+apply", and an update is by definition an answer of yes; `likely_replace` only
+describes *how* the value changes, and it is the model's advisory guess rather
+than a fact. Gating on it missed two real cases:
+
+- an update the model called in-place that `driver.update()` then refuses,
+  producing a delete + create and a new address;
+- the **middle of a chain** (`a → b → c`), whose own action is the deterministic
+  `UPDATE` this very mechanism produces, and which therefore carries
+  `likely_replace=False` by construction — so `a` resolved against `b`'s
+  pre-update value.
+
+`CREATE` covers the **recreate of a drifted resource**, the case that matters
+most, since a drifted entry is still in `st.resources` with its old attributes.
+`DESTROY` and `NO_OP` are never volatile.
 
 Without this, the feature fails at its own purpose. A tracked droplet deleted
 out-of-band still holds its old `ipv4_address` in state, so a zone referencing
@@ -409,15 +433,26 @@ value as though it were the answer. That is exactly the P1 failure #215 was
 filed against. The same held for an ordinary replace (a `region` change → new
 droplet → new address). Both are covered by tests.
 
-Two deliberate asymmetries:
+Three properties worth stating:
 
-- **`likely_replace` is advisory** — `driver.update()` is the real arbiter — so
-  this errs toward treating a target as volatile when it might not be. A
-  needless dependent `UPDATE` rewrites the same value at zero LLM cost; a missed
-  one leaves a record pointing at a dead host. The trade is not close.
-- **Apply time does not withhold anything.** `_apply_params()` uses the full
-  namespace, because by then the target has actually been created or replaced
-  and state holds its real new value.
+- **Being broad costs a dependent update that rewrites an identical value**, at
+  zero LLM cost, and it converges: once the target is applied, its next plan is
+  `NO_OP`, nothing is volatile, and the dependent is `NO_OP` too. A missed
+  volatile instead leaves a record pointing at a dead host until the next plan.
+  The trade is not close.
+- **A withheld target's attribute name is still validated at plan time.**
+  `resolve()` takes `volatile` rather than having the caller delete those keys
+  from the mapping, precisely so the target's *shape* is still visible: a typo
+  like `${…:ipv4_addres}` is refused by `plan`, not discovered mid-apply after
+  the target had already been created. Only key presence is checked, not the
+  `None` rule — a value about to be replaced is allowed to be `None` now, which
+  is exactly a drifted droplet's `ipv4_address`.
+- **Apply time withholds nothing.** `_apply_params()` uses the full namespace,
+  because by then the target has actually been created or replaced and state
+  holds its real new value. A `ReferenceResolutionError` there — reachable only
+  for a brand-new target, whose attribute names could not be checked earlier —
+  is wrapped as `PlanBlockedError`, which `cli.py` already handles, so it cannot
+  reach the user as a traceback with the apply half-done.
 
 ### Plan output
 
@@ -495,9 +530,10 @@ it is the case that used to report a false no-op.
   the tree unchanged and no unresolved paths.
 - **A non-string scalar** (`ttl: 3600`) is never scanned; only `str` values can
   carry a reference.
-- **`ReferenceResolutionError` raised during a plan** surfaces as `PlanBlockedError` from
-  the orchestrator, so the CLI's existing exit-code handling applies and no new
-  exception type reaches `cli.py`.
+- **`ReferenceResolutionError` never reaches `cli.py`.** Every site that can
+  raise it — the edge pass, plan-time resolution, and apply-time
+  re-resolution — wraps it as `PlanBlockedError`, so the CLI's existing
+  exit-code handling applies and no new exception type escapes.
 
 ## Verification
 
