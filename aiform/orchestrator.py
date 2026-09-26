@@ -115,10 +115,10 @@ def referenceable(st: State) -> dict[str, dict[str, Any]]:
 # which routes the dependent through unresolved_entry() and gets it resolved
 # for real during the apply, after the target has its new value.
 def _resolve_params(
-    key: str, params: dict[str, Any], st: State, volatile: set[str]
+    key: str, params: dict[str, Any], st: State, volatile: set[str], replaced: set[str]
 ) -> tuple[dict[str, Any], list[str]]:
     try:
-        return references.resolve(params, referenceable(st), volatile=volatile)
+        return references.resolve(params, referenceable(st), volatile=volatile, replaced=replaced)
     except references.ReferenceResolutionError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
 
@@ -138,6 +138,16 @@ def _resolve_params(
 # plan is NO_OP, so nothing is volatile and the dependent is NO_OP too.
 def _will_get_new_attributes(entry: PlanEntry) -> bool:
     return entry.action in (PlanAction.CREATE, PlanAction.UPDATE)
+
+
+# The subset of the above whose CURRENT value says nothing about the value to
+# come, because the resource itself is being made again. It matters for exactly
+# one rule: a reference to an attribute that is currently unset. For a recreate
+# that is fine and expected -- a drifted droplet's ipv4_address is None
+# precisely because the droplet is gone -- while for an in-place update the
+# value stays unset, so refusing at plan time beats failing mid-apply.
+def _will_be_recreated(entry: PlanEntry) -> bool:
+    return entry.action == PlanAction.CREATE
 
 
 def _require_tracked(st: State, key: str) -> StateEntry:
@@ -470,6 +480,7 @@ def build_create_plan(
     # Accumulated in topological order, so by the time a dependent is planned
     # every target of its has already been classified.
     volatile: set[str] = set()
+    replaced: set[str] = set()
 
     for path in ordered_files:
         if is_delete_marked(path):
@@ -481,11 +492,14 @@ def build_create_plan(
                 driver_cache,
                 credentials_cache,
                 volatile,
+                replaced,
                 client=client,
                 llm_config=llm_config,
             )
         if _will_get_new_attributes(pr.entry):
             volatile.add(pr.entry.resource_key)
+        if _will_be_recreated(pr.entry):
+            replaced.add(pr.entry.resource_key)
         covered_keys.add(pr.entry.resource_key)
         planned.append(pr)
 
@@ -522,6 +536,7 @@ def _plan_one(
     driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]],
     credentials_cache: dict[str, dict[str, str]],
     volatile: set[str],
+    replaced: set[str],
     *,
     client: anthropic.Anthropic | None,
     llm_config: LLMConfig | None,
@@ -552,7 +567,7 @@ def _plan_one(
     # permanently, billing a categorization on every future plan. Because the
     # plan is walked in topological order, a target that is also in this run
     # has already been refreshed by the time its dependent resolves.
-    desired_params, unresolved = _resolve_params(key, resource_spec.params, st, volatile)
+    desired_params, unresolved = _resolve_params(key, resource_spec.params, st, volatile, replaced)
 
     entry, params_agree = _decide_action(
         key,

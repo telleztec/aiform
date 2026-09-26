@@ -208,18 +208,22 @@ def _require_attribute(reference: Reference, attributes: Mapping[str, Any], path
         )
 
 
+def _refuse_unset(reference: Reference, path: str) -> None:
+    # compute._flatten() returns ipv4_address: None before a public v4 attaches
+    # (#178). A DNS record whose data is the string "None" is worse than a
+    # refusal.
+    raise ReferenceResolutionError(
+        path,
+        f"{reference.target_key}'s {reference.attribute!r} is not set yet "
+        "(the provider reported no value)",
+    )
+
+
 def _attribute_value(reference: Reference, attributes: Mapping[str, Any], path: str) -> Any:
     _require_attribute(reference, attributes, path)
     value = attributes[reference.attribute]
     if value is None:
-        # compute._flatten() returns ipv4_address: None before a public v4
-        # attaches (#178). A DNS record whose data is the string "None" is
-        # worse than a refusal.
-        raise ReferenceResolutionError(
-            path,
-            f"{reference.target_key}'s {reference.attribute!r} is not set yet "
-            "(the provider reported no value)",
-        )
+        _refuse_unset(reference, path)
     return value
 
 
@@ -228,6 +232,7 @@ def _resolve_text(
     path: str,
     available: Mapping[str, Mapping[str, Any]],
     volatile: frozenset[str] | set[str],
+    replaced: frozenset[str] | set[str],
 ) -> tuple[Any, bool]:
     """Returns (value, resolved). `value` is `text` unchanged when not
     resolved, so an unresolved path keeps something a user recognises."""
@@ -247,11 +252,14 @@ def _resolve_text(
             # still checked now. Deferring that check to apply time would let a
             # typo survive until after the target had already been created,
             # leaving the apply half-done.
-            #
-            # Only key presence, not the None check: a value that is about to be
-            # replaced is allowed to be None right now, which is exactly the
-            # state a drifted droplet's ipv4_address is in.
             _require_attribute(reference, attributes, path)
+            if reference.target_key not in replaced and attributes[reference.attribute] is None:
+                # A target merely being updated in place keeps whatever it has,
+                # so a currently-unset value is still unset after the apply and
+                # is worth refusing now. A target being *replaced* is different:
+                # a drifted droplet's ipv4_address is None precisely because it
+                # is gone, and the recreate is what supplies the real one.
+                _refuse_unset(reference, path)
             deferred = True
     if deferred:
         return text, False
@@ -285,22 +293,28 @@ def _resolve_value(
     path: str,
     available: Mapping[str, Mapping[str, Any]],
     volatile: frozenset[str] | set[str],
+    replaced: frozenset[str] | set[str],
     unresolved: list[str],
 ) -> Any:
     if isinstance(value, dict):
         return {
             key: _resolve_value(
-                child, f"{path}.{key}" if path else str(key), available, volatile, unresolved
+                child,
+                f"{path}.{key}" if path else str(key),
+                available,
+                volatile,
+                replaced,
+                unresolved,
             )
             for key, child in value.items()
         }
     if isinstance(value, list):
         return [
-            _resolve_value(child, f"{path}[{index}]", available, volatile, unresolved)
+            _resolve_value(child, f"{path}[{index}]", available, volatile, replaced, unresolved)
             for index, child in enumerate(value)
         ]
     if isinstance(value, str):
-        resolved, ok = _resolve_text(value, path, available, volatile)
+        resolved, ok = _resolve_text(value, path, available, volatile, replaced)
         if not ok:
             unresolved.append(path)
         return resolved
@@ -312,11 +326,16 @@ def resolve(
     available: Mapping[str, Mapping[str, Any]],
     *,
     volatile: frozenset[str] | set[str] = frozenset(),
+    replaced: frozenset[str] | set[str] = frozenset(),
 ) -> tuple[dict[str, Any], list[str]]:
     """`volatile` names targets that are present in `available` but whose values
     this run is about to change. They resolve as *unresolved*, so the caller
     resolves them again later against the real value -- but their attribute
-    names are still validated now, while there is still a plan to refuse."""
+    names are still validated now, while there is still a plan to refuse.
+
+    `replaced` is the subset of `volatile` whose current value says nothing
+    about the value to come, because the resource itself is being recreated. For
+    those, and only those, a currently-unset value is not refused."""
     unresolved: list[str] = []
-    resolved = _resolve_value(params, "", available, volatile, unresolved)
+    resolved = _resolve_value(params, "", available, volatile, replaced, unresolved)
     return resolved, sorted(unresolved)

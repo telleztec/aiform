@@ -221,9 +221,9 @@ class TestMalformedReferencesRaise:
         ],
     )
     def test_shell_expansion_with_dots_in_the_value_stays_literal(self, text):
-        # The "is this a key" test is one dot on the LEFT of the last colon. A
-        # dotted default value must not drag the whole thing into reference
-        # territory.
+        # Intent is judged on the segment before the FIRST colon. A dotted
+        # default value sits to the right of it and must not drag the whole
+        # thing into reference territory.
         resolved, unresolved = resolve(ref(text), AVAILABLE)
         assert resolved == {"data": text}
         assert unresolved == []
@@ -328,13 +328,24 @@ class TestVolatileTargets:
             resolve(ref(f"${{{WEB}:ipv4_addres}}"), AVAILABLE, volatile={WEB})
         assert "ipv4_address" in str(excinfo.value)
 
-    def test_a_volatile_target_whose_current_value_is_none_does_not_raise(self):
-        # Only key presence is checked for a volatile target: a value that is
-        # about to be replaced is allowed to be None right now, which is exactly
-        # the state a drifted droplet's ipv4_address is in.
+    def test_an_unset_value_on_a_target_being_recreated_does_not_raise(self):
+        # A drifted droplet's ipv4_address is None precisely because the droplet
+        # is gone; the recreate is what supplies the real one. Refusing here
+        # would block a plan that is about to fix exactly this.
         available = {WEB: {"id": "1", "ipv4_address": None}}
-        _resolved, unresolved = resolve(ref(f"${{{WEB}:ipv4_address}}"), available, volatile={WEB})
+        _resolved, unresolved = resolve(
+            ref(f"${{{WEB}:ipv4_address}}"), available, volatile={WEB}, replaced={WEB}
+        )
         assert unresolved == ["data"]
+
+    def test_an_unset_value_on_a_target_updated_in_place_raises_now(self):
+        # An in-place update keeps whatever the target has, so an unset value
+        # stays unset -- better to refuse at plan time than to update the target
+        # and then fail on its dependent with the apply half-done.
+        available = {WEB: {"id": "1", "ipv4_address": None}}
+        with pytest.raises(ReferenceResolutionError) as excinfo:
+            resolve(ref(f"${{{WEB}:ipv4_address}}"), available, volatile={WEB})
+        assert "not set yet" in str(excinfo.value)
 
     def test_a_non_volatile_target_resolves_normally(self):
         resolved, unresolved = resolve(ref(f"${{{WEB}:ipv4_address}}"), AVAILABLE, volatile={DB})

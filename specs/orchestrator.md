@@ -1403,8 +1403,8 @@ belongs here is which of this module's functions changed.
   it first appears: a target that is tracked but drifted missing is **still in
   state**, so a reference to it resolves from stored attributes. Only a target
   absent from state entirely is unknown.
-- **`referenceable()` takes an `exclude` set, and `build_create_plan()` threads
-  a `volatile` set through its loop.** A key joins `volatile` when
+- **`build_create_plan()` threads a `volatile` set, and a `replaced` subset of
+  it, through its loop.** A key joins `volatile` when
   `_will_get_new_attributes()` holds — any `CREATE` (including the recreate of a
   drifted resource, which is still sitting in `st.resources` with its old
   attributes) or any `UPDATE`. Not only `UPDATE` with `likely_replace`: that
@@ -1413,7 +1413,9 @@ belongs here is which of this module's functions changed.
   whose own action is the deterministic `UPDATE` this mechanism produces. Those
   keys are passed to `references.resolve()` as `volatile` — present in the
   namespace, so their attribute names are still validated at plan time, but
-  reported unresolved so the real value is read during the apply. Without it, a dependent
+  reported unresolved so the real value is read during the apply. `replaced`
+  (action `CREATE`, per `_will_be_recreated()`) is the subset for which a
+  currently-unset value is *not* refused, since a recreate is what supplies it. Without it, a dependent
   resolves to the doomed value, diffs clean, plans `NO_OP`, and is skipped by
   `apply_plan()` before the apply-time re-resolve can correct it — leaving a DNS
   record pointing at a host the same apply just destroyed. Accumulating the set

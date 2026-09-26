@@ -143,7 +143,7 @@ cannot currently happen. It becomes one the moment a driver mutates in place.
   reference-derived targets with `depends_on` ones; `_plan_one()` resolves
   before `_decide_action()`; `_decide_action()` gains the unresolved branch;
   `apply_plan()` re-resolves before each driver call. It also gains a **public**
-  `referenceable(st, *, exclude=...)` returning the `attributes`-plus-`id`
+  `referenceable(st)` returning the `attributes`-plus-`id`
   namespace — public because `observability.py` needs the same mapping, and
   keeping this State-aware adapter here is what lets `references.py` stay free
   of a `State` import. Plus `_will_get_new_attributes()` and the `volatile` set
@@ -403,8 +403,10 @@ always applied.
 ### A target this run will replace
 
 `build_create_plan()` accumulates a `volatile` set as it walks the plan in
-topological order, and `_resolve_params()` withholds those keys from the
-namespace. A key joins it when `_will_get_new_attributes()` says so:
+topological order and passes it to `references.resolve()`. Those keys stay
+**in** the namespace — that is what keeps their attribute names checkable at
+plan time — but resolve as unresolved. A key joins the set when
+`_will_get_new_attributes()` says so:
 
 **Any `CREATE` or `UPDATE`** — deliberately not only an `UPDATE` flagged
 `likely_replace`. The question is "may this target's attributes differ after the
@@ -444,9 +446,15 @@ Three properties worth stating:
   `resolve()` takes `volatile` rather than having the caller delete those keys
   from the mapping, precisely so the target's *shape* is still visible: a typo
   like `${…:ipv4_addres}` is refused by `plan`, not discovered mid-apply after
-  the target had already been created. Only key presence is checked, not the
-  `None` rule — a value about to be replaced is allowed to be `None` now, which
-  is exactly a drifted droplet's `ipv4_address`.
+  the target had already been created.
+- **The unset-value rule splits on whether the target is being remade.**
+  `resolve()` also takes `replaced`, the subset of `volatile` whose action is
+  `CREATE`. For those, a currently-`None` attribute is accepted, because a
+  drifted droplet's `ipv4_address` is `None` precisely *because* the droplet is
+  gone and the recreate supplies the real one. For a target merely updated in
+  place the value stays unset, so it is refused at plan time — otherwise the
+  target would be updated and then its dependent would fail with the apply
+  half-done.
 - **Apply time withholds nothing.** `_apply_params()` uses the full namespace,
   because by then the target has actually been created or replaced and state
   holds its real new value. A `ReferenceResolutionError` there — reachable only
