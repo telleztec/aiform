@@ -484,8 +484,8 @@ neither waits on the other:
    billed — never launch that.
 
 The reviewer must be **Opus 5 or newer, and never the model that authored
-the diff** — unless the human has excluded a model from review, see
-"Constraining the reviewer model" below.
+the diff.** This is absolute: no waiver, no exclusion, no authorized
+self-review.
 This constrains the model that wrote the diff, not the session that
 delegated it — an Opus coordinator may review a Sonnet subagent's
 diff. What it does not permit is a model reviewing lines it wrote itself:
@@ -495,48 +495,13 @@ The mechanism: launch the review as a subagent, passing an explicit `model`
 override whenever the model you would otherwise inherit is the one
 that authored the diff. If you authored the diff yourself and cannot select
 a different model, say so on the PR instead of reviewing yourself, and ask
-the human whether to exclude a model.
+for a re-plan — re-planning is where the pair gets re-selected.
 
-### Constraining the reviewer model
-
-The human may exclude a model from review — typically under token or quota
-pressure, when the pairing the rule would otherwise force is unaffordable.
-
-- The signal is a PR comment or review body from `github.com/juanman2`,
-  trimmed and lowercased, exactly `/claude-review-no-fable`. Exact match,
-  no suffix, no arguments — same shape as the merge triggers, and for the
-  same reason: nothing to parse.
-- **Never post it yourself.** It is a human trigger, exactly like
-  `/claude-merge-approved`.
-- **Resolve it, don't assume it.** Qualifying reviewers are Opus 5 or newer
-  minus the excluded model. On today's roster that leaves Opus 5 alone.
-- **Say what it resolved to on the PR before reviewing.** If the only
-  reviewer left is the model that authored the diff, this is a self-review:
-  state that plainly first, so a self-review never happens as a silent side
-  effect of a cost decision.
-- It constrains **who reviews**, nothing else. The review still happens, its
-  findings are still resolved, and the reviewer is still Opus 5 or newer. It
-  is not a skip, and a status that implies otherwise is worse than none.
-- Every `llm-review` posted under it must name it and its timestamp in the
-  status description, the same "auditable rather than asserted" way
-  `system-test`'s carry-forward names the SHA it came from.
-- It holds for the **PR**, not the SHA. `llm-review` re-runs on every round
-  of fix commits, and re-waiving each round would turn the signal into
-  noise. Withdraw it with `/claude-merge-rejected` like any other objection.
-- **Said in conversation rather than on the PR**, it is still usable — but
-  then quoting it verbatim in the `llm-review` description *and* on the PR is
-  mandatory, marked as having come from conversation. A chat-only exclusion
-  that nobody records is exactly the "inferred from conversation history"
-  failure this document's four-gate rule exists to prevent.
-- **Reach upstream first.** This is a recovery mechanism for a diff the
-  authoring model has already written. Under budget pressure the cheaper
-  answer is to author with Sonnet and review with Opus: that needs no
-  exclusion, keeps the review independent, and spends less than Opus
-  reviewing its own diff. Naming the pairing in the plan (`PROCESS.md`'s
-  "What counts as a plan") is what stops the situation arising at all.
-- The literal names a model on today's roster, which is the most perishable
-  fact in this document. If the roster changes, re-derive what the exclusion
-  leaves rather than trusting this section's "Opus 5 alone".
+The pair named in the plan holds for the whole PR, through every round of
+fix commits; changing it takes a re-plan, not a per-round decision. Every
+`llm-review` status description must name the author/reviewer pair actually
+used — the status is pinned to its SHA and can't be edited afterward, unlike
+the PR body, so it's the durable record of which pair reviewed what.
 
 ### Choosing who authors the diff also chooses who reviews it
 

@@ -114,11 +114,8 @@ file is written:
   spawn. A Sonnet-or-Haiku-authored change still names a pairing too —
   usually the cheap default — because that's also where the human would
   object if the change warrants a stronger reviewer than the default.
-  If budget pressure means a model should be excluded from review, name
-  that in the plan too — `SKILL.md`'s "Constraining the reviewer model" is
-  the mechanism, and naming it here makes it a choice made before the diff
-  exists rather than a patch applied after the authoring model has already
-  written one.
+  The named pair holds for the whole PR, through every round of fix
+  commits; changing it takes a re-plan, which is where it gets re-selected.
   Be precise about what enforces this bullet: nothing does. No
   branch-protection check, no path check and no required PR section
   confirms it is present or that it names the pairing actually used — a

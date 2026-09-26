@@ -35,8 +35,9 @@ stop and flag it rather than assuming someone else already checked.
    handling.
 4. **Green.** Rerun this module's tests, then the full suite (`pytest`).
    All green.
-5. **Review.** Run `/code-review` (Opus 5 or newer) on the diff yourself —
-   it does not wait on the human. Fix what it
+5. **Review.** Launch `/code-review` yourself — it does not wait on the
+   human — on a model satisfying `github-commit-process`'s reviewer rule
+   (Opus 5 or newer, never the model that authored the diff). Fix what it
    flags, or note explicitly in the PR why something is deferred.
 6. **Live suite.** `pytest` proves the code does what its mocks were told
    to expect; it cannot prove the provider agrees. Before merge, run
