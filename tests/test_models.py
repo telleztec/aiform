@@ -25,6 +25,7 @@ from aiform.models import (
     ResourceSpec,
     Sample,
     StateEntry,
+    parse_dependency_key,
 )
 
 
@@ -83,6 +84,123 @@ class TestResourceSpec:
             params={"anything_goes": True, "nested": {"a": 1}},
         )
         assert spec.params == {"anything_goes": True, "nested": {"a": 1}}
+
+    def test_depends_on_defaults_to_empty_list(self):
+        spec = ResourceSpec(resource="compute", name="x", provider="digitalocean", params={})
+        assert spec.depends_on == []
+
+    def test_depends_on_accepts_a_multi_entry_list(self):
+        spec = ResourceSpec(
+            resource="compute",
+            name="app-01",
+            provider="digitalocean",
+            params={},
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        assert spec.depends_on == ["digitalocean.compute.db-01", "digitalocean.compute.cache-01"]
+
+    def test_depends_on_rejects_non_list(self):
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute",
+                name="x",
+                provider="digitalocean",
+                params={},
+                depends_on="digitalocean.compute.db-01",
+            )
+
+    def test_depends_on_rejects_non_string_element(self):
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute", name="x", provider="digitalocean", params={}, depends_on=[123]
+            )
+
+    def test_depends_on_rejects_malformed_key(self):
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute",
+                name="x",
+                provider="digitalocean",
+                params={},
+                depends_on=["not-a-fully-qualified-key"],
+            )
+
+    def test_depends_on_rejects_bad_provider_in_key(self):
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute",
+                name="x",
+                provider="digitalocean",
+                params={},
+                depends_on=["DigitalOcean.compute.db-01"],
+            )
+
+    def test_depends_on_rejects_bad_resource_type_in_key(self):
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute",
+                name="x",
+                provider="digitalocean",
+                params={},
+                depends_on=["digitalocean.Compute.db-01"],
+            )
+
+    def test_depends_on_validates_every_element_not_just_the_first(self):
+        # The second element is the malformed one -- proving the
+        # validator loops over the whole list rather than short-circuiting
+        # after the first (valid) target.
+        with pytest.raises(ValidationError):
+            ResourceSpec(
+                resource="compute",
+                name="x",
+                provider="digitalocean",
+                params={},
+                depends_on=["digitalocean.compute.db-01", "not-a-fully-qualified-key"],
+            )
+
+    def test_depends_on_accepts_a_dotted_resource_name(self):
+        spec = ResourceSpec(
+            resource="compute",
+            name="x",
+            provider="digitalocean",
+            params={},
+            depends_on=["digitalocean.domain.example.com"],
+        )
+        assert spec.depends_on == ["digitalocean.domain.example.com"]
+
+
+class TestParseDependencyKey:
+    def test_splits_into_provider_resource_type_name(self):
+        assert parse_dependency_key("digitalocean.compute.db-01") == (
+            "digitalocean",
+            "compute",
+            "db-01",
+        )
+
+    def test_dotted_name_round_trips(self):
+        # A naive split(".") would corrupt this -- split(".", 2) is what
+        # keeps the trailing dots part of `name`.
+        assert parse_dependency_key("digitalocean.domain.example.com") == (
+            "digitalocean",
+            "domain",
+            "example.com",
+        )
+
+    def test_too_few_segments_raises_value_error(self):
+        with pytest.raises(ValueError):
+            parse_dependency_key("digitalocean.compute")
+
+    def test_uppercase_provider_raises_value_error(self):
+        with pytest.raises(ValueError):
+            parse_dependency_key("DigitalOcean.compute.db-01")
+
+    def test_uppercase_resource_type_raises_value_error(self):
+        with pytest.raises(ValueError):
+            parse_dependency_key("digitalocean.Compute.db-01")
+
+    def test_empty_name_raises_value_error(self):
+        with pytest.raises(ValueError):
+            parse_dependency_key("digitalocean.compute.")
 
 
 class TestPlanAction:
@@ -380,6 +498,7 @@ class TestStateEntry:
             "last_refreshed_at",
             "aiform_md_path",
             "aiform_md_sha256",
+            "depends_on",
         }
         assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at"}
 
@@ -397,6 +516,21 @@ class TestStateEntry:
     def test_rejects_empty_name(self):
         with pytest.raises(ValidationError):
             self._make(name="")
+
+    def test_depends_on_defaults_to_empty_list(self):
+        entry = self._make()
+        assert entry.depends_on == []
+
+    def test_depends_on_round_trips_a_multi_entry_list(self):
+        entry = self._make(
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"]
+        )
+        dumped = entry.model_dump(mode="json")
+        reparsed = StateEntry.model_validate(dumped)
+        assert reparsed.depends_on == [
+            "digitalocean.compute.db-01",
+            "digitalocean.compute.cache-01",
+        ]
 
 
 class TestParsedResource:

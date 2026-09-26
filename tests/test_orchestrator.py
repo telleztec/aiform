@@ -223,10 +223,15 @@ def write_aiform_md(
     name: str = "telleztec-app-01",
     params: dict | None = None,
     intent: str | None = None,
+    depends_on: list[str] | None = None,
 ) -> str:
     if params is None:
         params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
-    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}", "params:"]
+    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}"]
+    if depends_on:
+        lines.append("depends_on:")
+        lines += [f"  - {target}" for target in depends_on]
+    lines.append("params:")
     lines += [f"  {key}: {json.dumps(value)}" for key, value in params.items()]
     lines.append("---")
     # Off by default, because most callers here do not care -- but every
@@ -1386,6 +1391,611 @@ class TestBuildCreatePlan:
             )
 
 
+class TestBuildCreatePlanDependencyOrdering:
+    def test_fan_in_orders_both_dependencies_before_the_dependent(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        db_path = tmp_path / "db.aiform.md"
+        cache_path = tmp_path / "cache.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(cache_path, name="cache-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        # Deliberately handed out of dependency order, to prove the pass
+        # reorders rather than merely preserving an already-correct order.
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [app_path, db_path, cache_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == [
+            "digitalocean.compute.cache-01",
+            "digitalocean.compute.db-01",
+            "digitalocean.compute.app-01",
+        ]
+        assert all(pr.entry.action == PlanAction.CREATE for pr in planned)
+        app_pr = planned[keys.index("digitalocean.compute.app-01")]
+        assert app_pr.depends_on == [
+            "digitalocean.compute.db-01",
+            "digitalocean.compute.cache-01",
+        ]
+        assert len(client.messages.calls) == 0
+
+    def test_target_only_in_state_resolves_with_no_edge(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        shared_entry = make_state_entry(name="shared-db-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.shared-db-01": shared_entry})
+
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.shared-db-01"])
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [app_path], state_path=state_path, client=client
+        )
+
+        assert len(planned) == 1
+        assert planned[0].entry.action == PlanAction.CREATE
+        assert planned[0].depends_on == ["digitalocean.compute.shared-db-01"]
+        assert len(client.messages.calls) == 0
+
+    def test_no_op_target_keeps_its_edge(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        db_path = tmp_path / "db.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        db_hash = hashlib.sha256(db_content.encode("utf-8")).hexdigest()
+        db_entry = make_state_entry(
+            name="db-01",
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=db_hash,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.db-01": db_entry})
+
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [app_path, db_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.db-01", "digitalocean.compute.app-01"]
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert planned[1].entry.action == PlanAction.CREATE
+        assert len(client.messages.calls) == 0
+
+    def test_no_op_retrofit_of_depends_on_onto_a_tracked_resource_reaches_state(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # A resource that was already tracked with no depends_on gets one
+        # added, with params otherwise unchanged. The diff is empty
+        # (params_agree), so plan_resource() still has to ask the model to
+        # categorize an empty diff because the .aiform.md hash moved --
+        # only the state write is what's under test here.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        driver_info = make_driver_info(driver_sha256(driver_file))
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        old_app_content = write_aiform_md(app_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(
+                    name="db-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(db_content.encode("utf-8")).hexdigest(),
+                ),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(old_app_content.encode("utf-8")).hexdigest(),
+                    depends_on=[],
+                ),
+            },
+        )
+
+        # Retrofit: add depends_on to the already-tracked app-01 file,
+        # params unchanged.
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+
+        client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
+        planned, _ = orchestrator.build_create_plan(
+            [db_path, app_path], state_path=state_path, client=client
+        )
+
+        app_pr = next(
+            pr for pr in planned if pr.entry.resource_key == "digitalocean.compute.app-01"
+        )
+        assert app_pr.entry.action == PlanAction.NO_OP
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.compute.app-01"].depends_on == [
+            "digitalocean.compute.db-01"
+        ]
+
+        destroy_plan, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        destroy_keys = [pr.entry.resource_key for pr in destroy_plan]
+        assert destroy_keys.index("digitalocean.compute.app-01") < destroy_keys.index(
+            "digitalocean.compute.db-01"
+        )
+
+    def test_no_op_retrofit_of_depends_on_stores_a_copy_not_an_alias(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # _new_state_entry() gets its copy for free from ResourceSpec's own
+        # pydantic constructor validation on the field it was parsed into
+        # (list[str] fields are copied on construction, not on assignment).
+        # The retrofit branch at the bottom of _plan_one() instead assigns
+        # resource_spec.depends_on straight onto an existing StateEntry,
+        # which has no validate_assignment, so no copy happens there.
+        #
+        # Caught by memoizing parser.parse_frontmatter() so every call
+        # against the same file content returns the identical ResourceSpec
+        # object no matter how many internal call sites re-parse it, then
+        # spying on state.save() to compare identities before anything
+        # round-trips through JSON, which would produce a fresh list either
+        # way and hide the aliasing.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        driver_info = make_driver_info(driver_sha256(driver_file))
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        old_app_content = write_aiform_md(app_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(
+                    name="db-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(db_content.encode("utf-8")).hexdigest(),
+                ),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    driver=driver_info,
+                    aiform_md_sha256=hashlib.sha256(old_app_content.encode("utf-8")).hexdigest(),
+                    depends_on=[],
+                ),
+            },
+        )
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+
+        parse_cache = {}
+        original_parse = orchestrator.parser.parse_frontmatter
+
+        def memo_parse(content):
+            if content not in parse_cache:
+                parse_cache[content] = original_parse(content)
+            return parse_cache[content]
+
+        monkeypatch.setattr(orchestrator.parser, "parse_frontmatter", memo_parse)
+
+        captured_states = []
+        original_save = state.save
+
+        def spy_save(st, path):
+            captured_states.append(st)
+            return original_save(st, path)
+
+        monkeypatch.setattr(state, "save", spy_save)
+
+        client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
+        orchestrator.build_create_plan([db_path, app_path], state_path=state_path, client=client)
+
+        app_content = app_path.read_text(encoding="utf-8-sig")
+        app_spec = parse_cache[app_content]
+        saved_entry = captured_states[-1].resources["digitalocean.compute.app-01"]
+        assert saved_entry.depends_on == ["digitalocean.compute.db-01"]
+        assert saved_entry.depends_on is not app_spec.depends_on
+
+    def test_unchanged_dependency_graph_makes_zero_llm_calls(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(drivers_dir, "digitalocean", "compute")
+        db_path = tmp_path / "db.aiform.md"
+        cache_path = tmp_path / "cache.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        db_content = write_aiform_md(db_path, name="db-01")
+        cache_content = write_aiform_md(cache_path, name="cache-01")
+        app_content = write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        driver_info = make_driver_info(driver_sha256(driver_file))
+        entries = {
+            "digitalocean.compute.db-01": make_state_entry(
+                name="db-01",
+                driver=driver_info,
+                aiform_md_sha256=hashlib.sha256(db_content.encode("utf-8")).hexdigest(),
+            ),
+            "digitalocean.compute.cache-01": make_state_entry(
+                name="cache-01",
+                driver=driver_info,
+                aiform_md_sha256=hashlib.sha256(cache_content.encode("utf-8")).hexdigest(),
+            ),
+            "digitalocean.compute.app-01": make_state_entry(
+                name="app-01",
+                driver=driver_info,
+                aiform_md_sha256=hashlib.sha256(app_content.encode("utf-8")).hexdigest(),
+                depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+            ),
+        }
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **entries)
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [app_path, db_path, cache_path], state_path=state_path, client=client
+        )
+
+        assert all(pr.entry.action == PlanAction.NO_OP for pr in planned)
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == [
+            "digitalocean.compute.cache-01",
+            "digitalocean.compute.db-01",
+            "digitalocean.compute.app-01",
+        ]
+        assert len(client.messages.calls) == 0
+
+    def test_duplicate_target_in_one_list_is_not_an_error_and_is_stored_verbatim(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.db-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [app_path, db_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.db-01", "digitalocean.compute.app-01"]
+        app_pr = planned[keys.index("digitalocean.compute.app-01")]
+        assert app_pr.depends_on == [
+            "digitalocean.compute.db-01",
+            "digitalocean.compute.db-01",
+        ]
+
+    def test_same_path_given_twice_via_different_spellings_is_not_a_duplicate_key_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+        differently_spelled = tmp_path / "." / "app.aiform.md"
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [differently_spelled, aiform_md], state_path=state_path, client=client
+        )
+
+        assert len(planned) == 1
+        assert planned[0].entry.resource_key == "digitalocean.compute.app-01"
+
+    def test_duplicate_key_across_two_files_raises_naming_both_paths(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        # No driver written and no credential set: if the duplicate-key
+        # check did not fire first, this would fail with a different error
+        # (missing driver, or missing credential) instead.
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        first_path = tmp_path / "first.aiform.md"
+        second_path = tmp_path / "second.aiform.md"
+        write_aiform_md(first_path, name="app-01")
+        write_aiform_md(second_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [first_path, second_path], state_path=state_path, client=client
+            )
+
+        reason = exc_info.value.reason
+        assert str(first_path) in reason
+        assert str(second_path) in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
+
+    def test_duplicate_key_live_file_and_its_own_delete_marked_copy_raises(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        # The nastiest variant named in specs/resource_dependencies.md: a
+        # user copies x.aiform.md to AIFORM-DELETE-x.aiform.md and leaves
+        # the original -- same key, one live and one destroy. drivers_dir
+        # is patched to an empty directory and no credential is set, same
+        # as the sibling duplicate-key test above: if the check did not
+        # fire first, this would fail with a missing-driver or
+        # missing-credential error instead, and the reason assertions
+        # below would catch that.
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        live_path = tmp_path / "app.aiform.md"
+        delete_path = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        write_aiform_md(live_path, name="app-01")
+        write_aiform_md(delete_path, name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [live_path, delete_path], state_path=state_path, client=FakeClient([])
+            )
+
+        reason = exc_info.value.reason
+        assert str(live_path) in reason
+        assert str(delete_path) in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+
+    def test_symlink_and_its_target_raise_duplicate_key_not_silently_dedupe(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        # A symlink and its target are two distinct directory entries for
+        # the same content -- unlike `./app.aiform.md` vs `app.aiform.md`,
+        # which are one file spelled two ways, there is no single path to
+        # keep here. Collapsing them (Path.resolve() follows symlinks)
+        # would silently pick one spelling to plan and leave the other
+        # nameless, which is the ambiguity _check_duplicate_keys() exists
+        # to refuse.
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        real_path = tmp_path / "app.aiform.md"
+        write_aiform_md(real_path, name="app-01")
+        link_path = tmp_path / "link.aiform.md"
+        try:
+            os.symlink(real_path, link_path)
+        except (OSError, NotImplementedError):
+            pytest.skip("platform cannot create symlinks")
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [real_path, link_path], state_path=state_path, client=FakeClient([])
+            )
+
+        reason = exc_info.value.reason
+        assert str(real_path) in reason
+        assert str(link_path) in reason
+
+    def test_unresolvable_target_names_the_offending_target_among_several(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        db_path = tmp_path / "db.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=[
+                "digitalocean.compute.db-01",
+                "digitalocean.compute.nonexistent-01",
+            ],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [db_path, app_path], state_path=state_path, client=client
+            )
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.app-01" in reason
+        assert "digitalocean.compute.nonexistent-01" in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
+
+    def test_delete_marked_file_exempt_from_resolution_errors(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        delete_path = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        write_aiform_md(
+            delete_path, name="app-01", depends_on=["digitalocean.compute.long-gone-01"]
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        planned, _ = orchestrator.build_create_plan(
+            [delete_path], state_path=state_path, client=FakeClient([])
+        )
+
+        assert planned[0].entry.action == PlanAction.DESTROY
+
+    def test_delete_marked_depending_on_a_live_file_is_allowed(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        live_path = tmp_path / "app.aiform.md"
+        write_aiform_md(live_path, name="app-01")
+        delete_path = tmp_path / "AIFORM-DELETE-old.aiform.md"
+        write_aiform_md(delete_path, name="old-01", depends_on=["digitalocean.compute.app-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [live_path, delete_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert set(keys) == {"digitalocean.compute.app-01", "digitalocean.compute.old-01"}
+        actions = {pr.entry.resource_key: pr.entry.action for pr in planned}
+        assert actions["digitalocean.compute.app-01"] == PlanAction.CREATE
+        assert actions["digitalocean.compute.old-01"] == PlanAction.DESTROY
+        assert len(client.messages.calls) == 0
+
+    def test_live_files_precede_delete_marked_files_in_returned_order(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # Names chosen so alphabetical order disagrees with the expected
+        # order -- a plain sort-by-name implementation would put alpha-01
+        # (delete-marked) before zeta-01 (live) and fail this.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        live_path = tmp_path / "zeta.aiform.md"
+        write_aiform_md(live_path, name="zeta-01")
+        delete_path = tmp_path / "AIFORM-DELETE-alpha.aiform.md"
+        write_aiform_md(delete_path, name="alpha-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path, **{"digitalocean.compute.alpha-01": make_state_entry(name="alpha-01")}
+        )
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [delete_path, live_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.zeta-01", "digitalocean.compute.alpha-01"]
+
+    def test_live_depends_on_same_run_delete_marked_raises(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        delete_path = tmp_path / "AIFORM-DELETE-db.aiform.md"
+        write_aiform_md(delete_path, name="db-01")
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [app_path, delete_path], state_path=state_path, client=client
+            )
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.app-01" in reason
+        assert "digitalocean.compute.db-01" in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
+
+    def test_cycle_raises_plan_blocked_error_before_driver_load_or_llm_call(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
+        write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan([a_path, b_path], state_path=state_path, client=client)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.a-01" in reason
+        assert "digitalocean.compute.b-01" in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
+
+    def test_self_dependency_raises_as_a_cycle(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.delenv("DIGITALOCEAN_TOKEN", raising=False)
+        a_path = tmp_path / "a.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        client = FakeClient([])
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan([a_path], state_path=state_path, client=client)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.a-01" in reason
+        assert "no driver found" not in reason
+        assert "DIGITALOCEAN_TOKEN" not in reason
+        assert len(client.messages.calls) == 0
+
+    def test_delete_marked_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
+        # The third destroy producer named in specs/resource_dependencies.md:
+        # build_create_plan()'s own delete-marked branch, not just the two
+        # build_destroy_plan() paths covered in TestBuildDestroyPlan below.
+        db_path = tmp_path / "AIFORM-DELETE-db.aiform.md"
+        cache_path = tmp_path / "AIFORM-DELETE-cache.aiform.md"
+        app_path = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(cache_path, name="cache-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.cache-01": make_state_entry(name="cache-01"),
+                "digitalocean.compute.app-01": make_state_entry(name="app-01"),
+            },
+        )
+
+        # Given in dependency (create) order, to prove destroy reverses it.
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [db_path, cache_path, app_path], state_path=state_path, client=client
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert keys.index("digitalocean.compute.app-01") < keys.index(
+            "digitalocean.compute.cache-01"
+        )
+        assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
+        assert len(client.messages.calls) == 0
+
+
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
@@ -1394,7 +2004,7 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        planned = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
         assert len(planned) == 1
         pr = planned[0]
@@ -1416,12 +2026,71 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
 
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.app-01",
             "digitalocean.compute.app-02",
         }
+
+    def test_paths_declaring_the_same_key_twice_raises_instead_of_silently_dropping_one(
+        self, tmp_path: Path
+    ):
+        # specs/resource_dependencies.md rule 1's "nastiest variant":
+        # app.aiform.md copied to copy.aiform.md, both still declaring
+        # app-01. A dict-keyed-by-resource-key collapse here means
+        # _apply_destroy() only trashes one of the two files, and the
+        # survivor recreates the resource on the very next `plan create`.
+        first_path = tmp_path / "app.aiform.md"
+        second_path = tmp_path / "copy.aiform.md"
+        write_aiform_md(first_path, name="app-01")
+        write_aiform_md(second_path, name="app-01")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([first_path, second_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert str(first_path) in reason
+        assert str(second_path) in reason
+
+    def test_same_path_given_twice_via_different_spellings_is_deduped_not_an_error(
+        self, tmp_path: Path
+    ):
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+        differently_spelled = tmp_path / "." / "app.aiform.md"
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [aiform_md, differently_spelled], state_path=state_path
+        )
+
+        assert len(planned) == 1
+        assert planned[0].entry.resource_key == "digitalocean.compute.app-01"
+
+    def test_symlink_and_its_target_raise_duplicate_key_not_silently_dedupe(self, tmp_path: Path):
+        real_path = tmp_path / "app.aiform.md"
+        write_aiform_md(real_path, name="app-01")
+        link_path = tmp_path / "link.aiform.md"
+        try:
+            os.symlink(real_path, link_path)
+        except (OSError, NotImplementedError):
+            pytest.skip("platform cannot create symlinks")
+        entry = make_state_entry(name="app-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": entry})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([link_path, real_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert str(real_path) in reason
+        assert str(link_path) in reason
 
     def test_untracked_file_produces_destroy_entry_with_no_state_entry(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
@@ -1429,7 +2098,7 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(), state_path)
 
-        planned = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
         assert planned[0].state_entry is None
 
@@ -1444,6 +2113,247 @@ class TestBuildDestroyPlan:
         orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
         assert state_path.read_text() == original_content
+
+    def test_file_driven_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
+        db_path = tmp_path / "db.aiform.md"
+        cache_path = tmp_path / "cache.aiform.md"
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(db_path, name="db-01")
+        write_aiform_md(cache_path, name="cache-01")
+        write_aiform_md(
+            app_path,
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.cache-01": make_state_entry(name="cache-01"),
+                "digitalocean.compute.app-01": make_state_entry(name="app-01"),
+            },
+        )
+
+        # Given in dependency (create) order, to prove destroy reverses it
+        # rather than merely preserving whatever order it was handed.
+        planned, _ = orchestrator.build_destroy_plan(
+            [db_path, cache_path, app_path], state_path=state_path
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert keys.index("digitalocean.compute.app-01") < keys.index(
+            "digitalocean.compute.cache-01"
+        )
+        assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
+
+    def test_file_driven_cycle_raises_plan_blocked_error(self, tmp_path: Path):
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
+        write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(name="a-01"),
+                "digitalocean.compute.b-01": make_state_entry(name="b-01"),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+
+    def test_state_driven_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
+        # The invocation a user actually types: `aiform plan destroy`, no
+        # file arguments -- reads StateEntry.depends_on since there are no
+        # files to read frontmatter from.
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.cache-01": make_state_entry(name="cache-01"),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert keys.index("digitalocean.compute.app-01") < keys.index(
+            "digitalocean.compute.cache-01"
+        )
+        assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
+
+    def test_state_driven_cycle_raises_plan_blocked_error(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    name="a-01", depends_on=["digitalocean.compute.b-01"]
+                ),
+                "digitalocean.compute.b-01": make_state_entry(
+                    name="b-01", depends_on=["digitalocean.compute.a-01"]
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+
+    def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
+        # Pins that with no depends_on anywhere, destroy order inverts the
+        # order the user typed on the command line -- `plan destroy a b`
+        # returns b, a -- rather than preserving it.
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01")
+        write_aiform_md(b_path, name="b-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(name="a-01"),
+                "digitalocean.compute.b-01": make_state_entry(name="b-01"),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
+
+    def test_zero_edge_destroy_order_from_state_is_reverse_alphabetical(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(name="a-01"),
+                "digitalocean.compute.b-01": make_state_entry(name="b-01"),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
+
+    def test_paths_driven_target_resolved_only_in_state_is_silent(self, tmp_path: Path):
+        # The everyday case: `plan destroy one-file.aiform.md` naming a
+        # dependency this run doesn't include as a file, but which is
+        # still tracked in state. Must neither warn nor block.
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.app-01": make_state_entry(name="app-01"),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan([app_path], state_path=state_path)
+
+        assert warnings == []
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
+
+    def test_paths_driven_target_resolving_nowhere_raises(self, tmp_path: Path):
+        app_path = tmp_path / "app.aiform.md"
+        write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.ghost-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.app-01": make_state_entry(name="app-01")})
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([app_path], state_path=state_path)
+
+        assert "digitalocean.compute.ghost-01" in exc_info.value.reason
+
+    def test_state_driven_target_resolving_nowhere_raises(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01", depends_on=["digitalocean.compute.ghost-01"]
+                )
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        assert "digitalocean.compute.ghost-01" in exc_info.value.reason
+
+    def test_dangling_error_names_every_offending_target(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01", depends_on=["digitalocean.compute.ghost-01"]
+                ),
+                "digitalocean.compute.other-01": make_state_entry(
+                    name="other-01", depends_on=["digitalocean.compute.ghost-02"]
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.ghost-01" in reason
+        assert "digitalocean.compute.ghost-02" in reason
+
+    def test_force_drops_dangling_edge_and_warns_per_pair(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    depends_on=[
+                        "digitalocean.compute.ghost-01",
+                        "digitalocean.compute.ghost-02",
+                    ],
+                )
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
+        assert len(warnings) == 2
+        assert any("digitalocean.compute.ghost-01" in w for w in warnings)
+        assert any("digitalocean.compute.ghost-02" in w for w in warnings)
+
+    def test_force_drops_only_the_dangling_edge_and_keeps_real_ordering(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.app-01": make_state_entry(
+                    name="app-01",
+                    depends_on=["digitalocean.compute.db-01", "digitalocean.compute.ghost-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
+        assert len(warnings) == 1
+        assert "digitalocean.compute.ghost-01" in warnings[0]
 
 
 class TestBuildPlanSummary:
@@ -1499,6 +2409,22 @@ class TestApplyPlan:
         assert entry.id == "new-1"
         assert entry.attributes == {"region": "sfo3", "size": "s-1vcpu-2gb"}
         assert "id" not in entry.attributes
+
+    def test_create_persists_depends_on_to_the_new_state_entry(self, tmp_path: Path):
+        driver = FakeDriver(create_result={"id": "new-1", "region": "sfo3", "size": "s-1vcpu-2gb"})
+        pr = make_planned_resource(
+            driver=driver,
+            state_entry=None,
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.db-01", "digitalocean.compute.cache-01"]
 
     def test_create_wraps_raw_driver_exception_in_driver_execution_error(self, tmp_path: Path):
         driver = FakeDriver()
@@ -1572,6 +2498,87 @@ class TestApplyPlan:
             "s-2vcpu-4gb"
         )
         assert result.executed == [pr.entry]
+
+    def test_update_without_replace_persists_depends_on_in_place(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.old-dep-01"],
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=["digitalocean.compute.new-dep-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.new-dep-01"]
+
+    def test_update_without_replace_stores_a_copy_of_depends_on_not_an_alias(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # _new_state_entry() already gets a copy for free: it passes
+        # pr.depends_on into StateEntry(...)'s constructor, and pydantic's
+        # constructor validation of a list[str] field copies it.
+        # _record_update()'s in-place branch instead assigned the
+        # ResourceSpec's own list onto an existing StateEntry by plain
+        # attribute assignment, which pydantic does not validate (no
+        # validate_assignment), so no copy happened there. Caught by
+        # spying on state.save() to read the in-memory StateEntry before
+        # it round-trips through JSON -- a JSON round trip would produce a
+        # fresh list either way and hide the aliasing.
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.old-dep-01"],
+        )
+        shared_depends_on = ["digitalocean.compute.new-dep-01"]
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="resize",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=shared_depends_on,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        captured: list[state.State] = []
+        original_save = state.save
+
+        def spy_save(st, path):
+            captured.append(st)
+            return original_save(st, path)
+
+        monkeypatch.setattr(state, "save", spy_save)
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        in_memory_depends_on = (
+            captured[-1].resources["digitalocean.compute.telleztec-app-01"].depends_on
+        )
+        assert in_memory_depends_on == ["digitalocean.compute.new-dep-01"]
+        assert in_memory_depends_on is not shared_depends_on
+
+        shared_depends_on.append("digitalocean.compute.mutated-01")
+        assert in_memory_depends_on == ["digitalocean.compute.new-dep-01"]
 
     def test_update_without_replace_logs_success(self, tmp_path: Path, caplog):
         caplog.set_level("INFO", logger="aiform.orchestrator")

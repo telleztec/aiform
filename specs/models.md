@@ -28,6 +28,7 @@ class ResourceSpec(BaseModel):
     name: str
     provider: str
     params: dict[str, Any]
+    depends_on: list[str] = Field(default_factory=list)
 ```
 
 - `resource` / `provider` — validated lowercase, `^[a-z][a-z0-9_]*$`.
@@ -41,6 +42,33 @@ class ResourceSpec(BaseModel):
   `PLAN.md` §2 is explicit that `params`' shape is only checked later,
   against the resolved driver's `PARAM_SCHEMA` (§4) — `ResourceSpec`
   itself must not narrow it.
+- `depends_on` — a list of fully-qualified
+  `provider.resource_type.name` keys, defaulted to `[]` so every
+  existing `.aiform.md` stays valid. A field validator runs
+  `parse_dependency_key()` over **every** element, so a bad entry
+  anywhere in the list is rejected, not just a bad first one. Only the
+  *shape* is checked here; whether a key names anything that exists is
+  the orchestrator's question, since this model knows nothing about
+  files or state. See `specs/resource_dependencies.md`.
+
+### `parse_dependency_key()`
+
+```python
+def parse_dependency_key(key: str) -> tuple[str, str, str]: ...
+```
+
+Splits a fully-qualified key into `(provider, resource_type, name)`,
+raising `ValueError` on a malformed one. It uses **`split(".", 2)`**,
+not a bare `split(".")`: `provider` and `resource_type` match
+`RESOURCE_OR_PROVIDER_PATTERN` and cannot contain dots, but `name` is
+only `min_length=1` and routinely does — `digitalocean.domain.example.com`
+is a legitimate key that a naive split corrupts into four segments.
+
+It lives here, beside the validator that calls it, rather than in
+`aiform/graph.py`. Putting it there would make `models` → `graph` →
+`models` an import cycle waiting to happen, and `graph.py` is
+deliberately pure — it takes edges in and gives order out, and knows
+nothing about key syntax.
 
 ### `PlanAction`
 
@@ -325,7 +353,17 @@ class StateEntry(BaseModel):
     last_refreshed_at: datetime
     aiform_md_path: str
     aiform_md_sha256: str
+    depends_on: list[str] = Field(default_factory=list)
 ```
+
+`depends_on` is defaulted so a `state.json` written before this field
+existed loads unchanged. It records the dependencies **as of the last
+apply**, which is what lets `aiform plan destroy` with no file arguments
+order its teardown — that path reads state and ignores files entirely.
+The staleness that implies is deliberate and documented in
+`specs/resource_dependencies.md`: editing `depends_on` and destroying
+without applying first orders by the old edges, and the alternative
+(reading files during a destroy that explicitly ignores them) is worse.
 
 `resource_type` mirrors `ResourceSpec.resource` (§3's own note: "the same
 value ... just named more precisely once it's sitting next to other

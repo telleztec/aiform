@@ -520,6 +520,97 @@ class TestPollBudgets:
         # constant is retuned again without the other.
         assert 60 * 3 > update_max_attempts * update_delay_seconds
 
+    # issue #207: two live runs nine minutes apart both exhausted the shared
+    # default waiting for size_slug, at ~182.6s and ~183.4s. A probe against
+    # real DigitalOcean then measured what a resize actually costs, and the
+    # numbers are what make 420s legible as a tail guard rather than a
+    # latency estimate -- see specs/digitalocean_compute.md's "Why the resize
+    # poll gets 420s".
+    OBSERVED_RESIZE_TIMEOUT_SECONDS = 183.4
+    MEASURED_RESIZE_SIZE_SLUG_MEDIAN_SECONDS = 22.6  # n=5, range 12.2-23.9
+    MEASURED_RESIZE_ACTION_WORST_SECONDS = 46.8  # n=3, range 45.4-46.8
+
+    def test_resize_poll_passes_its_own_budget_rather_than_the_shared_default(
+        self, driver, fake_urlopen, monkeypatch
+    ):
+        current = make_attrs(status="off", size="s-1vcpu-2gb")
+        desired = make_attrs(size="s-2vcpu-4gb")
+
+        fake_urlopen.script(
+            "POST",
+            actions_url("123"),
+            FakeHTTPResponse(201, {"action": {"id": 1, "status": "in-progress"}}),
+            FakeHTTPResponse(201, {"action": {"id": 2, "status": "in-progress"}}),
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(status="off", size="s-2vcpu-4gb")),
+            FakeHTTPResponse(200, make_droplet(status="active", size="s-2vcpu-4gb")),
+        )
+
+        default_max_attempts, default_delay_seconds = type(driver)._poll_until.__defaults__
+
+        original_poll_until = driver._poll_until
+        by_step = {}
+
+        def spy_poll_until(*args, **kwargs):
+            # `step` is positional at every call site in this driver; read it
+            # defensively anyway so a future keyword call still records.
+            step = args[3] if len(args) > 3 else kwargs.get("step")
+            by_step[step] = (kwargs.get("max_attempts"), kwargs.get("delay_seconds"))
+            return original_poll_until(*args, **kwargs)
+
+        monkeypatch.setattr(driver, "_poll_until", spy_poll_until)
+
+        driver.update("123", current, desired, CREDENTIALS)
+
+        # The literal pin: this IS the constant issue #207 introduced, so a
+        # future retune edits this line the same way it edits the driver.
+        assert by_step["resize"] == (210, 2)
+
+        # ...and it really is the driver's constant being passed through, not
+        # a literal that happens to match today. Without this, editing the
+        # constants would leave the pin above failing with no indication that
+        # the call site is still wired to them.
+        assert by_step["resize"] == (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS,
+            compute_module._RESIZE_POLL_DELAY_SECONDS,
+        )
+
+        # power-on deliberately keeps inheriting the shared default -- #207
+        # widened one step, not the whole driver, and a caller that quietly
+        # started passing its own budget here would be a silent scope creep.
+        assert by_step["power-on"] == (None, None)
+
+        # The property the override exists for, checked against the live
+        # default rather than a second literal so it survives a retune of
+        # either constant alone.
+        assert (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS * compute_module._RESIZE_POLL_DELAY_SECONDS
+            > default_max_attempts * default_delay_seconds
+        )
+
+    def test_resize_budget_clears_the_207_observed_timeout_with_real_margin(self, driver):
+        # Read off the module, not restated as a literal: a margin assertion
+        # computed from its own copy of the number would keep passing after a
+        # retune shrank the driver's, which is the one thing it exists to
+        # catch. Same reason test_update_default_budget_* reads __defaults__.
+        budget_seconds = (
+            compute_module._RESIZE_POLL_MAX_ATTEMPTS * compute_module._RESIZE_POLL_DELAY_SECONDS
+        )
+
+        # Clears what actually failed, and not just barely -- #152's own bump
+        # landed ~23% over its observed cluster and still needed raising.
+        assert budget_seconds > self.OBSERVED_RESIZE_TIMEOUT_SECONDS * 2
+
+        # And is a wide multiple of both measured clocks, which is the whole
+        # argument for the number: the old 150s was already ~6x the median,
+        # so the budget was never below typical latency -- it just failed to
+        # absorb a provider stall.
+        assert budget_seconds > self.MEASURED_RESIZE_ACTION_WORST_SECONDS * 8
+        assert budget_seconds > self.MEASURED_RESIZE_SIZE_SLUG_MEDIAN_SECONDS * 15
+
 
 class TestRead:
     def test_gets_droplet_by_id(self, driver, fake_urlopen):

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -8,6 +9,32 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RESOURCE_OR_PROVIDER_PATTERN = r"^[a-z][a-z0-9_]*$"
+_RESOURCE_OR_PROVIDER_RE = re.compile(RESOURCE_OR_PROVIDER_PATTERN)
+
+
+def parse_dependency_key(key: str) -> tuple[str, str, str]:
+    """Split a fully-qualified `provider.resource_type.name` key.
+
+    `split(".", 2)` rather than a plain split: `provider` and
+    `resource_type` cannot contain dots (RESOURCE_OR_PROVIDER_PATTERN
+    forbids it), but `name` legally can -- `digitalocean.domain.example.com`
+    is a real key, and a naive split(".") would corrupt it.
+    """
+    parts = key.split(".", 2)
+    if len(parts) != 3:
+        raise ValueError(
+            f"malformed dependency key {key!r}: expected 'provider.resource_type.name'"
+        )
+    provider, resource_type, name = parts
+    if not _RESOURCE_OR_PROVIDER_RE.match(provider):
+        raise ValueError(f"malformed dependency key {key!r}: invalid provider {provider!r}")
+    if not _RESOURCE_OR_PROVIDER_RE.match(resource_type):
+        raise ValueError(
+            f"malformed dependency key {key!r}: invalid resource_type {resource_type!r}"
+        )
+    if not name:
+        raise ValueError(f"malformed dependency key {key!r}: name must not be empty")
+    return provider, resource_type, name
 
 
 class ResourceSpec(BaseModel):
@@ -17,6 +44,14 @@ class ResourceSpec(BaseModel):
     name: str = Field(min_length=1)
     provider: str = Field(pattern=RESOURCE_OR_PROVIDER_PATTERN)
     params: dict[str, Any]
+    depends_on: list[str] = Field(default_factory=list)
+
+    @field_validator("depends_on")
+    @classmethod
+    def _depends_on_targets_are_valid_keys(cls, value: list[str]) -> list[str]:
+        for target in value:
+            parse_dependency_key(target)
+        return value
 
 
 class PlanAction(str, Enum):
@@ -191,3 +226,4 @@ class StateEntry(BaseModel):
     last_refreshed_at: datetime
     aiform_md_path: str
     aiform_md_sha256: str
+    depends_on: list[str] = Field(default_factory=list)

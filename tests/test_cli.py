@@ -109,10 +109,15 @@ def write_aiform_md(
     resource: str = "compute",
     name: str = "telleztec-app-01",
     params: dict | None = None,
+    depends_on: list[str] | None = None,
 ) -> None:
     if params is None:
         params = {"region": "sfo3", "size": "s-1vcpu-2gb"}
-    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}", "params:"]
+    lines = ["---", f"resource: {resource}", f"name: {name}", f"provider: {provider}"]
+    if depends_on:
+        lines.append("depends_on:")
+        lines += [f"  - {target}" for target in depends_on]
+    lines.append("params:")
     lines += [f"  {key}: {json.dumps(value)}" for key, value in params.items()]
     lines.append("---")
     path.write_text("\n".join(lines) + "\n")
@@ -1217,6 +1222,66 @@ class TestPlanCreate:
         assert payload["plan"][0]["action"] == "create"
         assert payload["warnings"] == []
 
+    def test_multi_dependency_resource_prints_all_targets_on_one_comma_separated_line(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "db.aiform.md", name="db-01")
+        write_aiform_md(project_dir / "cache.aiform.md", name="cache-01")
+        write_aiform_md(
+            project_dir / "app.aiform.md",
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
+        )
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "depends on: digitalocean.compute.db-01, digitalocean.compute.cache-01" in out
+        # Exactly one such line -- not one per edge, which would bury the
+        # rationale under a fan-in.
+        assert out.count("depends on:") == 1
+
+    def test_resource_without_dependencies_has_no_depends_on_line(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md")
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "depends on:" not in out
+
+    def test_json_output_carries_the_full_depends_on_list(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "db.aiform.md", name="db-01")
+        write_aiform_md(
+            project_dir / "app.aiform.md",
+            name="app-01",
+            depends_on=["digitalocean.compute.db-01"],
+        )
+        patch_client(monkeypatch, [])
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(["plan", "create", "--state-file", str(state_file), "--json"])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        by_key = {entry["resource_key"]: entry for entry in payload["plan"]}
+        assert by_key["digitalocean.compute.app-01"]["depends_on"] == ["digitalocean.compute.db-01"]
+        assert by_key["digitalocean.compute.db-01"]["depends_on"] == []
+
     def test_missing_driver_exits_2_with_clean_error(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -1919,6 +1984,93 @@ class TestPlanDestroy:
         reloaded = state.load(state_file)
         assert "digitalocean.compute.telleztec-app-01" in reloaded.resources
         assert aiform_md.exists()
+
+    def test_destroy_blocked_by_dangling_dependency_without_force(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={},
+            driver=make_driver_info("abc"),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(project_dir / "app.aiform.md"),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
+        assert "digitalocean.compute.ghost-01" in err
+        reloaded = state.load(state_file)
+        assert "digitalocean.compute.app-01" in reloaded.resources
+
+    def test_destroy_with_force_drops_dangling_dependency_and_warns(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01", depends_on=["digitalocean.compute.ghost-01"])
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(["plan", "destroy", "--yes", "--force", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Warning:" in out
+        assert "digitalocean.compute.ghost-01" in out
+        reloaded = state.load(state_file)
+        assert reloaded.resources == {}
+
+    def test_destroy_yes_alone_does_not_bypass_dangling_dependency_refusal(
+        self, project_dir, capsys
+    ):
+        state_file = project_dir / ".aiform" / "state.json"
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={},
+            driver=make_driver_info("abc"),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(project_dir / "app.aiform.md"),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+
+        assert code == 2
+        reloaded = state.load(state_file)
+        assert "digitalocean.compute.app-01" in reloaded.resources
 
 
 class TestPlanRefresh:
