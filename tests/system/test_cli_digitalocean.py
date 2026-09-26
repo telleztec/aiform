@@ -322,7 +322,13 @@ def _wait_for_public_ipv4(token: str, droplet_id: str, *, max_attempts=15, delay
     production bug -- the no-ip-fallback path is the correct, safe
     thing for a real user to hit here -- but it makes this specific
     live scenario non-deterministic, so wait it out explicitly rather
-    than let the assertion flake on DO's own timing."""
+    than let the assertion flake on DO's own timing.
+
+    Raises rather than returning quietly when the budget runs out. Falling
+    through silently would hand the caller the exact `no-ip-fallback`
+    confusion this guard exists to prevent, and the caller's own assertion
+    would then blame whatever it happens to be testing -- a firewall rule, an
+    SSH path -- instead of a droplet that never got an address."""
     for _ in range(max_attempts):
         live = get_droplet_or_none(token, droplet_id)
         if live:
@@ -330,6 +336,11 @@ def _wait_for_public_ipv4(token: str, droplet_id: str, *, max_attempts=15, delay
                 if net.get("type") == "public" and net.get("ip_address"):
                     return
         time.sleep(delay_seconds)
+    raise AssertionError(
+        f"droplet {droplet_id} reported active but still had no public v4 address "
+        f"after {max_attempts * delay_seconds:.0f}s -- issue 178's race, not a bug "
+        "in whatever this test was about to assert"
+    )
 
 
 class TestSshFirstPowerOffLive:
@@ -395,6 +406,12 @@ class TestSshFirstPowerOffLive:
         assert_cli_ok(code, capsys.readouterr(), "ssh fallback: initial create")
 
         droplet_id = state.load(state_path).resources[droplet_key].id
+        # Same race as the sibling test above, and for the same reason: this
+        # one also resizes moments after create. Without this, state carries no
+        # ipv4_address, _power_off_droplet takes its no-ip-fallback branch
+        # without attempting SSH at all, and the firewall -- the thing this
+        # test exists to exercise -- never gets to be the deciding factor.
+        _wait_for_public_ipv4(token, droplet_id)
 
         firewall_name = unique_firewall_name("sshblock")
         write_firewall_aiform_md(
