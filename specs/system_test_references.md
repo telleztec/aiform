@@ -72,10 +72,11 @@ One test, five steps, in order:
    `[verbose]` line and fail the run *after* the droplet had been billed. The
    no-op is asserted per resource (`= <key>: no-op`), not as the bare substring
    "no-op", which the always-printed summary tally contains regardless.
-5. `resource status <zone>` reads `in sync` — asserted positively rather than
-   as the word "drift" being absent, so it pins the verdict rather than the
-   wording of its opposite — then `plan destroy --yes` and wait for the zone to
-   be gone.
+5. `resource status <zone>` reads `in sync`, asserted positively *in addition
+   to* the word "drifted" being absent — the positive form pins the verdict
+   rather than the wording of its opposite, and the negative one catches a
+   renamed verdict that still reports drift. Then `plan destroy --yes` and wait
+   for the zone to be gone.
 
 ## Cleanup
 
