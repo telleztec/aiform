@@ -46,7 +46,7 @@ anything expensive to get wrong:
 
 Each role is **configuration, not a hardcoded constant** — see `specs/llm.md` and `specs/config.md` for the `LLMConfig`/`resolve_llm_config()` design, and `.aiform/config.yaml` for where a user overrides any of the four independently. The MVP default — and the only model source implemented at all right now — is Claude **Sonnet 5** (`claude-sonnet-5`) for `intent-orchestration-model` and `code-generator-model`, and Claude **Opus 5** (`claude-opus-5`) for `code-review-model` and `review-orchestration-model`, all via the Anthropic API. Do not change any of the four *defaults* for cost reasons without asking — this split was chosen deliberately, not by default. A user overriding their own `.aiform/config.yaml` is an intentional escape hatch for keeping pace with model capability and pricing changes over time, not a violation of this rule — don't add a second, uninstructed override of your own.
 
-Separate from the four roles above: **this project's own build process** (`PROCESS.md`) reviews newly-authored aiform modules — including a curated driver, before it ships as part of the aiform package (see "Driver curation" below) — via Claude Code's `/code-review`, fixed to Opus 5. That's a development-time tool for building aiform itself, not one of the four runtime roles and not configured through `.aiform/config.yaml`; `PROCESS.md` explains why the two are deliberately not the same mechanism even though they reuse the same author/reviewer philosophy.
+Separate from the four roles above: **this project's own build process** (`PROCESS.md`) reviews newly-authored aiform modules — including a curated driver, before it ships as part of the aiform package (see "Driver curation" below) — via Claude Code's `/code-review`, reviewed on Opus 5 or newer per the pairing rules in `.claude/skills/github-commit-process/SKILL.md`. That's a development-time tool for building aiform itself, not one of the four runtime roles and not configured through `.aiform/config.yaml`; `PROCESS.md` explains why the two are deliberately not the same mechanism even though they reuse the same author/reviewer philosophy.
 
 ## Persona and Use Case
 
@@ -70,7 +70,7 @@ for."
 
 ## MVP scope (locked)
 
-Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). No cross-resource dependency graph yet — deferred explicitly (see §10, "Not Yet Implemented").
+Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). Resources may declare *ordering* dependencies on one another (`depends_on:`, `specs/resource_dependencies.md`), but not yet reference each other's attribute *values* — see §10, "Not Yet Implemented", and `MULTI_RESOURCE_PRD.md` for the phasing.
 
 ## Driver curation: two permanent mechanisms
 
@@ -483,7 +483,7 @@ intent_notes = json.loads(response_text)["intent_notes"]
 
 `intent_orchestration_call()` (`aiform/llm.py`, `specs/llm.md`) is what actually talks to the model — which model, and which model source/vendor, is resolved at call time from `.aiform/config.yaml`'s `llm.intent_orchestration` entry (default `claude-sonnet-5` via Anthropic), not hardcoded here. `intent_notes` is passed into the **diff/plan step** (§5) as context for the `intent-orchestration-model`'s create/update/no-op categorization and rationale — it is *not* passed to the generated Python driver. Drivers stay dumb and deterministic; only the plan step interprets nuance. (Note: `destroy` is deliberately not one of the values the `intent-orchestration-model`'s categorization call can return — see "Resource deletion" above and §5's note on `PLAN_CATEGORIZATION_SCHEMA`.)
 
-One `.aiform.md` file describes exactly one resource in the MVP (no dependency graph). Multiple resources = multiple files, planned/applied independently in sequence. This is the natural extension point for a future graph, deliberately not built now.
+One `.aiform.md` file describes exactly one resource. Multiple resources = multiple files, planned and applied in sequence — no longer in whatever order the filename glob produced, but in a deterministic topological order derived from each file's optional `depends_on:` key (`specs/resource_dependencies.md`). The ordering is total and execution remains strictly sequential; what a file still cannot do is reference another resource's attribute *values*, which is §10's remaining gap.
 
 A file's *absence* from the discovered set is never itself meaningful to the parser or anything downstream of it (see "Resource deletion" above — no implicit deletion). The only filename-level convention this format recognizes at all is the `AIFORM-DELETE-` prefix marking a *present* file for destruction; nothing else about a file's name or location changes how it's parsed.
 
@@ -1594,20 +1594,84 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   deprecation just fails loudly at apply time, requiring a maintainer
   to fix and re-release it. No driver versioning or migration story
   exists yet.
-- **No dependency graph.** MVP supports only independent resources
-  planned/applied one file at a time — there's no way for one resource's
-  output (e.g. a compute resource's IP) to feed into another's `params`
-  (a DNS record referencing that IP is the canonical out-of-scope
-  example). This needs a fuller design pass beyond this one-line scoping
-  note: open questions include how a `.aiform.md` file would reference
-  another resource's attributes (a new frontmatter field? implicit by
-  resource type?), how the planner would need to sequence
-  create/update/destroy across files respecting those references
-  (topological ordering, cycle detection), how a single destroy or
-  failure mid-graph should propagate to dependents, and whether this
-  stays file-per-resource or introduces a multi-resource file format.
-  None of this is designed yet — named here as a real gap to revisit,
-  not a decision already made.
+- **Dependency graph: ordering exists, value flow does not.** This entry
+  used to say the whole area was undesigned. It has since had a
+  requirements pass and a phased delivery plan —
+  `MULTI_RESOURCE_PRD.md` at the repo root is the durable record, and
+  what remains deferred is now deferred *per phase* rather than
+  wholesale.
+
+  **Delivered (Phase 1, `specs/resource_dependencies.md`):** an optional
+  `depends_on:` frontmatter key naming any number of other resources by
+  their fully-qualified `provider.resource_type.name` key; a
+  deterministic topological order over the plan, so dependencies are
+  created before dependents; reverse order on destroy, through all three
+  destroy producers including the no-argument destroy-all-from-state
+  path; cycle detection over the edges a run declares, as a plan-time
+  `PlanBlockedError` rather than a silent wrong-order apply; and `plan`
+  output showing each resource's edges, so a reordering is reviewable.
+  The ordering pass is pure YAML and string work and costs zero
+  Anthropic calls.
+
+  One honest limit on that cycle claim, since an earlier draft of this
+  entry stated it without qualification: detection covers **the edges a
+  single run declares.** A target that exists only in state resolves
+  with no edge, so a cycle assembled across several runs into
+  `StateEntry.depends_on` is not caught at plan time — and then blocks
+  `plan destroy` for the whole deployment, acyclic resources included.
+
+  And it is cheaper to reach than "several applies" suggests: because
+  `plan` persists `depends_on` for an already-tracked resource
+  regardless of the action it decides, **two NO_OP plans can be enough**
+  — no `apply`, no *mutating* provider call, nothing to undo but
+  hand-editing `state.json`. (Each of those plans does still call
+  `driver.read()` per tracked resource, since refresh-before-diff is
+  unconditional, and spends one categorization call because adding
+  `depends_on` moves the file hash. "No provider call" would be false.)
+
+  The qualifier is load-bearing: each plan has to name **one side of the
+  cycle at a time**. A whole-directory `aiform plan create` — the
+  ordinary invocation — discovers both files, builds both edges, and
+  raises `PlanBlockedError` from the ordering pass *before* the
+  per-resource loop and before the single trailing `state.save()`, so
+  state is left untouched. Reaching this state takes deliberately
+  planning one file at a time.
+
+  That persistence is itself necessary (without it, adopting
+  `depends_on` on an existing resource never reaches state at all), so
+  this is a trade rather than an oversight. Tracked as #206, which owns
+  the refuse-versus-degrade decision and now has a stronger case for
+  refusing at the `plan` that closes the cycle.
+
+  **Still deferred, and why each is its own phase:** cross-resource
+  *attribute* references — a DNS record's `data` reading a droplet's
+  `ipv4_address`, the canonical example — are Phase 2, and are the half
+  of this gap that actually needs a reference syntax. *Automatic*
+  detection of edges from driver-declared metadata is Phase 3; it
+  produces the same edges Phase 1 already consumes, so the ordering
+  engine won't change. Refusing a destroy that would orphan a
+  still-tracked dependent, and recovering cleanly from a failure
+  mid-graph, are Phase 4 — deliberately after ordering, because failure
+  semantics are hard enough to get right serially. Concurrency-safe
+  state is Phase 5 and parallel execution is Phase 6; until then the
+  order Phase 1 produces is *total* and applied strictly sequentially.
+
+  The file-per-resource question is still genuinely open — see the PRD's
+  "Open questions", which carries it along with the Phase 2 reference
+  syntax and the Phase 5 durable-store decision.
+
+  **Future work, accepted as-is rather than owed:** `specs/resource_dependencies.md`
+  documents that a tracked file is read three times over one `plan create` —
+  once by the discovery/validation pass that builds the dependency graph,
+  once by `build_create_plan()`'s own loop, once more by `parse_file()`
+  inside it. A future project could cache the parsed dependency graph in
+  memory across those reads instead of re-reading and re-parsing each
+  `.aiform.md` from scratch every time it's needed. This is explicitly not
+  something Phase 1 owes: the cost is `read_text()` plus a pure-YAML parse,
+  with no LLM call either way, and the repo owner decided directly not to
+  build any caching now — "it is ok now, that we reread the file 3 times."
+  Recorded here so a future reader doesn't mistake three reads for an
+  oversight rather than a considered tradeoff.
 - **Only one resource kind is implemented.** `network` and `load_balancer` are
   named in Terminology as resource kinds the vocabulary already
   accommodates, but no `ResourceDriver` subclass exists for either yet —
@@ -1786,8 +1850,11 @@ entry's own note below.
   and retried on the next interval. This is a real risk today only at
   the margins (a single resource's poll loop stays well under DO's
   per-token rate limit on its own), but becomes materially sharper once
-  the "no dependency graph" gap above is closed and multiple resources
-  can be created/updated concurrently — N concurrent poll loops multiply
+  multiple resources can be created/updated **concurrently** — Phase 6 of
+  `MULTI_RESOURCE_PRD.md`, and still deferred. Phase 1's dependency
+  ordering does not sharpen it: that order is total and applied strictly
+  sequentially, so exactly one poll loop runs at a time, as today. When
+  concurrency does land, N concurrent poll loops multiply
   the aggregate request rate, and this loop's current all-or-nothing
   behavior means a single rate-limit hit anywhere kills that resource's
   entire operation rather than just slowing it down.

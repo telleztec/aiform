@@ -13,9 +13,10 @@ aiform's *runtime* behavior (`intent-orchestration-model`,
 plans) — that's a separate concern about what the shipped tool does, and
 those four roles are independently configurable per `.aiform/config.yaml`.
 This document happens to reuse the same author/reviewer split (Sonnet
-writes, Opus reviews, both fixed, not configurable) for building the tool
-itself, because it's the same philosophy at a different level, not
-because the two are the same mechanism.
+writes, Opus reviews by default, chosen per change per "What counts as a
+plan" below) for building the tool itself, because it's the same
+philosophy at a different level, not because the two are the same
+mechanism.
 
 ## Before the loop: plan and get explicit approval
 
@@ -95,8 +96,33 @@ file is written:
   `_poll_until`" and "introduce a config-driven, LLM-adjustable timeout
   policy store" are two different plans even though both respond to the
   same timeout report — proposing one is not proposing the other.
+- **which author/reviewer model pairing it will use, and why.**
+  `llm-review`'s rule is "Opus 5 or newer, and never the model that
+  authored the diff" — that constrains the reviewer, not the author, so it
+  doesn't reduce to a fixed pair of choices.
+  `.claude/skills/github-commit-process/SKILL.md`'s "Choosing who authors
+  the diff also chooses who reviews it" has the current roster and the two
+  pairings this repo defaults to — cite that section rather than
+  restating it here, since the roster is the most perishable fact in
+  either document. What matters for this bullet: authoring with Opus or
+  Fable each forces the reviewer to the other, since neither can review
+  itself and the other is the only remaining model clearing the bar — but
+  only Opus-authored forces the pricier reviewer (the repo owner's
+  2026-09-21 standing instruction is to stop defaulting to Fable), so
+  naming the pairing here is what makes that cost the human's choice
+  instead of one the coordinating session makes for them by picking who to
+  spawn. A Sonnet-or-Haiku-authored change still names a pairing too —
+  usually the cheap default — because that's also where the human would
+  object if the change warrants a stronger reviewer than the default.
+  The named pair holds for the whole PR, through every round of fix
+  commits; changing it takes a re-plan, which is where it gets re-selected.
+  Be precise about what enforces this bullet: nothing does. No
+  branch-protection check, no path check and no required PR section
+  confirms it is present or that it names the pairing actually used — a
+  missing or wrong one is caught only if a human or reviewer notices it
+  while reading.
 
-A chat message counts if it is specific enough to satisfy those three
+A chat message counts if it is specific enough to satisfy those four
 bullets. Plan mode's own output, or a short scratch doc, is preferable for
 anything non-trivial, because it leaves an artifact the human can point
 back to when approving. A `specs/<module>.md` file (loop step 1) is not
@@ -104,6 +130,26 @@ itself this plan — it is normally written by the implementer, after the
 decision to implement has already been made, and it's scoped per module
 rather than per change; a bug fix in particular often has no `specs/`
 entry to double as one.
+
+The pairing is a per-change judgment, not a per-project or per-session
+default: anticipated complexity varies change to change, so say what you
+expect and why for *this* change — a hard one may be worth starting with
+Opus, a routine one usually isn't.
+
+This is deliberately not a second gate, and not a standalone prompt asking
+which model to use before work starts. The plan-approval gate above
+already fires at exactly the moment this decision needs making, and
+`.claude/skills/github-commit-process/SKILL.md`'s "Closing more than one
+issue" warns against exactly this shape of fix — "a second exception with
+its own boundary to argue about" — for the same reason: another checkpoint
+here would just be one more thing to remember to run. A prompt would also
+ask a question nobody records the answer to; naming the pairing as a plan
+item instead means it's approved in the same act as the rest of the plan,
+and — because the approved plan carries into the PR's `## Plan` section
+(see "Recording it" below) — a reviewer can see whether the diff they're
+reading was authored by which model and reviewed by which, which is
+exactly the context needed to judge how much weight the review pass was
+carrying.
 
 ### What counts as approval
 
@@ -139,10 +185,10 @@ skipping this gate.
 ### If implementation already started without this gate
 
 Stop adding commits. Write the plan now — covering what's already been
-done and what remains, using the "what/why/how" bar above — and get the
-human's explicit approval on it before any further implementation work,
-exactly as if no code existed yet. Work already merged or already shipped
-isn't undone by this gate retroactively; it's simply a reason the
+done and what remains, using the "what/why/how/pairing" bar above — and
+get the human's explicit approval on it before any further implementation
+work, exactly as if no code existed yet. Work already merged or already
+shipped isn't undone by this gate retroactively; it's simply a reason the
 *remaining* work on that change needs a plan before it continues, not a
 precedent that skipping the gate once makes skipping it again acceptable.
 

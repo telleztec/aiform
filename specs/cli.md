@@ -394,13 +394,28 @@ reads or writes state.
   one-line tally (`N to create, N to update, N to destroy, N no-op.`),
   then any warnings (`PLAN.md` §5's "left alone... reported with a
   warning" case) each on their own line. `update` entries additionally
-  print `(likely replace)` when `entry.likely_replace` is set. This
+  print `(likely replace)` when `entry.likely_replace` is set. A
+  resource with declared dependencies gets **one** further indented
+  line after its rationale, `    depends on: <key>, <key>`, listing
+  every target comma-separated in declared order — one line per
+  resource, not one per edge, so a fan-in doesn't bury the rationale.
+  A resource with none gets no such line, so a project not using
+  `depends_on` prints exactly as it did before the feature existed.
+  The resources themselves are listed in execution order, which is now
+  topological rather than filename order; there is deliberately no
+  separate `Order:` footer, since the `depends on:` lines already
+  convey it (`specs/resource_dependencies.md`). This
   command's tally line never carries the `--yes` marker described under
   `plan apply` below — `create` has no `--yes` flag at all (issue #162),
   and always is pure preview.
 - `--json`: prints `{"plan": [...], "warnings": [...]}` instead, one
-  `{"resource_key", "action", "rationale", "likely_replace"}` object
-  per planned resource, `warnings` as given by `build_create_plan`.
+  `{"resource_key", "action", "rationale", "likely_replace",
+  "depends_on"}` object per planned resource, `warnings` as given by
+  `build_create_plan`. `depends_on` is the declared list verbatim, in
+  declared order, `[]` when there are none. The **array order of
+  `plan` itself is execution order** — that is documented rather than
+  duplicated into a second key, so a consumer reads the list in order
+  rather than reconstructing a sort from the edges.
   Nothing else is printed to stdout in this mode (the verbose call
   count, if requested, still goes to stderr — see below — so `--json
   --verbose` output stays parseable).
@@ -470,21 +485,39 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]`
+### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
 `build_destroy_plan` produces is `action=DESTROY`, and `apply_plan`'s
 `needs_review` is true whenever any entry is a destroy).
 
-1. `orchestrator.build_destroy_plan(paths, state_path=...)` — no `client`
-   parameter (`build_destroy_plan` never calls an LLM — Mechanism A
-   skips categorization entirely, `specs/orchestrator.md`).
+1. `orchestrator.build_destroy_plan(paths, state_path=..., force=args.force)`
+   — no `client` parameter (`build_destroy_plan` never calls an LLM —
+   Mechanism A skips categorization entirely, `specs/orchestrator.md`).
+   Returns `(planned, warnings)`; `warnings` carries one entry per
+   dangling `depends_on` target dropped under `--force`
+   (`specs/resource_dependencies.md`). Without `--force`, a dangling
+   target raises `PlanBlockedError` here, before step 2 prints anything
+   and before any driver load, credential resolution, or gate #2 call.
+   `--force` is unrelated to `--yes`: `--yes` only skips the confirmation
+   prompt in step 3, so a `--yes` run with a dangling target still
+   refuses here exactly as a non-`--yes` run would.
 2. Prints the plan the same way `plan create`/`apply` do, including
    `plan apply`'s `--yes` tally-line marker (issue #162) — destroy
    routes through the same `_plan_apply_and_report` call site, so this
    isn't a separate implementation, just the same behavior reached from
-   a second command.
+   a second command. That sameness includes the `depends on:` line
+   described under `plan create`: it prints here too, and for a destroy
+   it is load-bearing rather than incidental, because it is what
+   explains why the teardown is in the order shown. Its source differs
+   by invocation — frontmatter when files were named, `StateEntry`'s
+   recorded edges for the no-argument destroy-all form
+   (`specs/resource_dependencies.md`). Under `--force`, step 1's
+   `warnings` are passed to `_print_plan()` here instead of the `[]` it
+   passed before this — one `Warning:` line per dropped dangling edge,
+   printed after the tally line, same rendering `plan create`'s
+   uncovered-resource warnings already use.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review

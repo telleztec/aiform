@@ -70,6 +70,23 @@ def main(argv: list[str] | None = None) -> int:
   this script.
 - Returns the subprocess's exit code as-is, so scripting/automation
   around this wrapper can tell pass from fail without opening the log.
+
+  **That exit code is only as good as what the caller reads.** It reaches
+  the caller through whatever shell construct invoked this script, and a
+  compound command hands back the *last* command's status, not this one's.
+  `run_system_tests.py > run.log 2>&1; echo "EXIT=$?"` reports the
+  `echo`'s 0 for a run that failed — which is how issue #207's two live
+  failures were nearly recorded as a green `system-test` gate.
+  `.claude/skills/github-commit-process/SKILL.md` already warns to read
+  the log rather than trust a shell's exit status; noted here too because
+  this is the script that status comes from.
+
+  A **background** invocation makes it easier to hit, and worth calling
+  out separately: the wrapper's status is what the caller sees, so an
+  agent or CI job that backgrounds a pipeline and then reports "exit 0"
+  may be reporting the pipeline's tail rather than the suite. Run this
+  script as the sole command, or capture `$?` immediately, and confirm
+  the outcome against the log it wrote.
 - Log rotation keeps at most `MAX_LOG_FILES` (10) `*.log` files in
   `LOG_DIR` *including* the run just started — i.e. it trims down to at
   most 9 existing files before creating the 10th. Oldest-first, by

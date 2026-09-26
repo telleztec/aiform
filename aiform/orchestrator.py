@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import os
 import shutil
 import sys
 import termios
@@ -18,7 +19,7 @@ from typing import Any
 
 import anthropic
 
-from aiform import config, llm, log, parser, planner, state
+from aiform import config, graph, llm, log, parser, planner, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
@@ -120,6 +121,7 @@ def _new_state_entry(
         last_refreshed_at=now,
         aiform_md_path=str(pr.aiform_md_path),
         aiform_md_sha256=pr.current_aiform_md_sha256,
+        depends_on=pr.depends_on,
     )
 
 
@@ -265,6 +267,124 @@ class PlannedResource:
     driver_info: DriverInfo | None
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
+    depends_on: list[str] = dataclasses.field(default_factory=list)
+
+
+@dataclass
+class _DiscoveredFile:
+    path: Path
+    key: str
+    spec: ResourceSpec
+    delete_marked: bool
+
+
+def _discover_one(path: Path) -> _DiscoveredFile:
+    content = path.read_text(encoding="utf-8-sig")
+    resource_spec = parser.parse_frontmatter(content)
+    key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
+    return _DiscoveredFile(
+        path=path, key=key, spec=resource_spec, delete_marked=is_delete_marked(path)
+    )
+
+
+def _dedupe_normalized_paths(paths: list[Path]) -> list[Path]:
+    # The same file handed twice under different spellings (`app.aiform.md`
+    # and `./app.aiform.md`) is not a genuine duplicate declaration -- it is
+    # one file read twice. Collapsing by normalized path here, before
+    # _check_duplicate_keys() ever sees it, keeps that error for its real
+    # case: two *different* files declaring the same resource key.
+    #
+    # os.path.abspath(), not Path.resolve(): abspath only makes the path
+    # absolute and folds `.`/`..` via normpath, so it still collapses
+    # `./app.aiform.md` into `app.aiform.md`. resolve() additionally
+    # follows symlinks, which would collapse a symlink and its target into
+    # one entry and silently pick whichever spelling came first -- exactly
+    # the ambiguity _check_duplicate_keys() exists to refuse, since trashing
+    # the symlink's spelling on destroy would leave the target file behind
+    # to resurrect the resource on the next `plan create`.
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        normalized = os.path.abspath(path)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(path)
+    return deduped
+
+
+def _check_duplicate_keys(discovered: list[_DiscoveredFile]) -> None:
+    seen: dict[str, Path] = {}
+    for entry in discovered:
+        if entry.key in seen:
+            raise PlanBlockedError(
+                f"{entry.key}: declared by both {seen[entry.key]} and {entry.path} in this run"
+            )
+        seen[entry.key] = entry.path
+
+
+# Per target, not per resource: one resource can legally have a mix of
+# targets resolved different ways (specs/resource_dependencies.md's
+# "Which targets contribute an edge" table). A live declaring resource and
+# a delete-marked declaring resource resolve the same target differently
+# on purpose -- a destroy runs after every live action by construction
+# (see the ordering built by _order_files below), so a delete-marked
+# resource depending on a live one needs no edge to stay correct, while a
+# live resource depending on something being destroyed in the same run is
+# a genuine conflict.
+def _resolve_dependency_edges(discovered: list[_DiscoveredFile], st: State) -> dict[str, set[str]]:
+    delete_marked_keys = {entry.key for entry in discovered if entry.delete_marked}
+    live_keys = {entry.key for entry in discovered if not entry.delete_marked}
+
+    edges: dict[str, set[str]] = {entry.key: set() for entry in discovered}
+    for entry in discovered:
+        for target in entry.spec.depends_on:
+            if entry.delete_marked:
+                if target in delete_marked_keys:
+                    edges[entry.key].add(target)
+                continue
+            if target in delete_marked_keys:
+                raise PlanBlockedError(
+                    f"{entry.key}: depends on {target!r}, which is marked for deletion in this run"
+                )
+            if target in live_keys:
+                edges[entry.key].add(target)
+            elif target in st.resources:
+                continue
+            else:
+                raise PlanBlockedError(
+                    f"{entry.key}: depends on {target!r}, which is neither a file in this "
+                    "run nor a resource tracked in state"
+                )
+    return edges
+
+
+def _topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
+    try:
+        return graph.topological_order(keys, edges)
+    except graph.CycleError as exc:
+        raise PlanBlockedError("dependency cycle: " + " -> ".join(exc.path)) from exc
+
+
+def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
+    return list(reversed(_topological(keys, edges)))
+
+
+def _order_files(files: list[Path], st: State) -> list[Path]:
+    files = _dedupe_normalized_paths(files)
+    discovered = [_discover_one(path) for path in files]
+    _check_duplicate_keys(discovered)
+    edges = _resolve_dependency_edges(discovered, st)
+
+    delete_marked_keys = {entry.key for entry in discovered if entry.delete_marked}
+    live_keys = {entry.key for entry in discovered if not entry.delete_marked}
+    live_order = _topological(live_keys, {k: edges[k] for k in live_keys})
+    destroy_order = _reverse_topological(
+        delete_marked_keys, {k: edges[k] for k in delete_marked_keys}
+    )
+
+    by_key = {entry.key: entry.path for entry in discovered}
+    return [by_key[key] for key in live_order] + [by_key[key] for key in destroy_order]
 
 
 def build_create_plan(
@@ -277,6 +397,7 @@ def build_create_plan(
 ) -> tuple[list[PlannedResource], list[str]]:
     st = state.load(state_path)
     files = discover_files(paths, cwd=cwd)
+    ordered_files = _order_files(files, st)
 
     driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]] = {}
     credentials_cache: dict[str, dict[str, str]] = {}
@@ -284,7 +405,7 @@ def build_create_plan(
     planned: list[PlannedResource] = []
     covered_keys: set[str] = set()
 
-    for path in files:
+    for path in ordered_files:
         if is_delete_marked(path):
             pr = _plan_delete_marked(path, st)
         else:
@@ -322,6 +443,7 @@ def _plan_delete_marked(path: Path, st: State) -> PlannedResource:
         driver_info=None,
         credentials=None,
         state_entry=state_entry,
+        depends_on=resource_spec.depends_on,
     )
 
 
@@ -366,6 +488,20 @@ def _plan_one(
         llm_config=llm_config,
     )
 
+    # depends_on is ordering metadata, not resource config, so it is kept
+    # in sync with the file on every plan run regardless of the action
+    # decided below -- unlike aiform_md_sha256 just below, its correctness
+    # never depends on params_agree. This matters specifically for NO_OP:
+    # apply_plan() skips NO_OP before any state write, so a NO_OP is the
+    # only action that never reaches _record_update()/_new_state_entry()'s
+    # own depends_on writes. Retrofitting depends_on: onto an
+    # already-tracked resource with unchanged params would otherwise never
+    # reach state.json, leaving `plan destroy` ordering by stale (empty)
+    # edges forever -- no apply can repair it, since there is nothing
+    # non-NO_OP to apply.
+    if state_entry is not None:
+        state_entry.depends_on = list(resource_spec.depends_on)
+
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
     # so without this a reworded Intent section left state's hash stale
@@ -397,6 +533,7 @@ def _plan_one(
         driver_info=driver_info,
         credentials=credentials,
         state_entry=state_entry,
+        depends_on=resource_spec.depends_on,
     )
 
 
@@ -560,60 +697,140 @@ def _warnings_for_uncovered(
     return warnings
 
 
+# Both destroy producers pass raw, unfiltered depends_on lists (unlike
+# _order_files' _resolve_dependency_edges above, which restricts edges to
+# the run's own keys before calling _topological). A target is either an
+# edge (it's one of this producer's own nodes), silently resolvable (it
+# exists elsewhere and nothing here needs to order against it), or
+# dangling (it resolves nowhere at all). Collapsing "silently resolvable"
+# and "dangling" into one case would either warn on the everyday case --
+# `plan destroy one-file.aiform.md` naming a dependency tracked in state
+# but not in this run -- or silently proceed on a genuinely broken
+# reference; the distinction is the whole point.
+def _classify_destroy_edges(
+    raw_edges: dict[str, set[str]], node_keys: set[str], *, resolvable_elsewhere: set[str]
+) -> tuple[dict[str, set[str]], list[tuple[str, str]]]:
+    edges: dict[str, set[str]] = {}
+    dangling: list[tuple[str, str]] = []
+    for key, targets in raw_edges.items():
+        kept = set()
+        for target in targets:
+            if target in node_keys:
+                kept.add(target)
+            elif target not in resolvable_elsewhere:
+                dangling.append((key, target))
+        edges[key] = kept
+    return edges, dangling
+
+
+def _dangling_targets_reason(dangling: list[tuple[str, str]]) -> str:
+    pairs = "; ".join(f"{key} depends on {target!r}" for key, target in sorted(dangling))
+    return (
+        f"cannot destroy: {pairs} -- neither in this run nor tracked in state; "
+        "pass --force to drop these edges and destroy anyway"
+    )
+
+
+def _resolve_dangling_targets(dangling: list[tuple[str, str]], *, force: bool) -> list[str]:
+    if not dangling:
+        return []
+    if not force:
+        raise PlanBlockedError(_dangling_targets_reason(dangling))
+    return [
+        f"{key}: depends on {target!r}, which is neither in this run nor tracked in "
+        "state -- dropping the edge (--force)"
+        for key, target in sorted(dangling)
+    ]
+
+
 def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-) -> list[PlannedResource]:
+    force: bool = False,
+) -> tuple[list[PlannedResource], list[str]]:
     st = state.load(state_path)
-    planned: list[PlannedResource] = []
-
     if paths:
-        for path in paths:
-            content = path.read_text(encoding="utf-8-sig")
-            resource_spec = parser.parse_frontmatter(content)
-            key = resource_key(resource_spec.provider, resource_spec.resource, resource_spec.name)
-            state_entry = st.resources.get(key)
-            entry = planner.destroy_entry(key, rationale=f"explicit destroy requested via {path}")
-            planned.append(
-                PlannedResource(
-                    entry=entry,
-                    provider=resource_spec.provider,
-                    resource_type=resource_spec.resource,
-                    name=resource_spec.name,
-                    desired_params={},
-                    aiform_md_path=path,
-                    current_aiform_md_sha256=None,
-                    driver=None,
-                    driver_info=None,
-                    credentials=None,
-                    state_entry=state_entry,
-                )
-            )
-    else:
-        for key, state_entry in st.resources.items():
-            entry = planner.destroy_entry(
-                key,
-                rationale="explicit destroy requested: no files given, destroying all tracked "
-                "resources",
-            )
-            planned.append(
-                PlannedResource(
-                    entry=entry,
-                    provider=state_entry.provider,
-                    resource_type=state_entry.resource_type,
-                    name=state_entry.name,
-                    desired_params={},
-                    aiform_md_path=Path(state_entry.aiform_md_path),
-                    current_aiform_md_sha256=None,
-                    driver=None,
-                    driver_info=None,
-                    credentials=None,
-                    state_entry=state_entry,
-                )
-            )
+        return _build_destroy_plan_from_paths(paths, st, force=force)
+    return _build_destroy_plan_from_state(st, force=force)
 
-    return planned
+
+def _build_destroy_plan_from_paths(
+    paths: list[Path], st: State, *, force: bool
+) -> tuple[list[PlannedResource], list[str]]:
+    paths = _dedupe_normalized_paths(paths)
+    discovered = [_discover_one(path) for path in paths]
+    _check_duplicate_keys(discovered)
+
+    node_keys = {entry.key for entry in discovered}
+    raw_edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
+    edges, dangling = _classify_destroy_edges(
+        raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
+    )
+    warnings = _resolve_dangling_targets(dangling, force=force)
+
+    order = _reverse_topological(node_keys, edges)
+    by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}
+
+    planned: list[PlannedResource] = []
+    for key in order:
+        path, resource_spec = by_key[key]
+        state_entry = st.resources.get(key)
+        entry = planner.destroy_entry(key, rationale=f"explicit destroy requested via {path}")
+        planned.append(
+            PlannedResource(
+                entry=entry,
+                provider=resource_spec.provider,
+                resource_type=resource_spec.resource,
+                name=resource_spec.name,
+                desired_params={},
+                aiform_md_path=path,
+                current_aiform_md_sha256=None,
+                driver=None,
+                driver_info=None,
+                credentials=None,
+                state_entry=state_entry,
+                depends_on=resource_spec.depends_on,
+            )
+        )
+    return planned, warnings
+
+
+def _build_destroy_plan_from_state(
+    st: State, *, force: bool
+) -> tuple[list[PlannedResource], list[str]]:
+    node_keys = set(st.resources)
+    raw_edges = {key: set(entry.depends_on) for key, entry in st.resources.items()}
+    edges, dangling = _classify_destroy_edges(raw_edges, node_keys, resolvable_elsewhere=set())
+    warnings = _resolve_dangling_targets(dangling, force=force)
+
+    order = _reverse_topological(node_keys, edges)
+
+    planned: list[PlannedResource] = []
+    for key in order:
+        state_entry = st.resources[key]
+        entry = planner.destroy_entry(
+            key,
+            rationale="explicit destroy requested: no files given, destroying all tracked "
+            "resources",
+        )
+        planned.append(
+            PlannedResource(
+                entry=entry,
+                provider=state_entry.provider,
+                resource_type=state_entry.resource_type,
+                name=state_entry.name,
+                desired_params={},
+                aiform_md_path=Path(state_entry.aiform_md_path),
+                current_aiform_md_sha256=None,
+                driver=None,
+                driver_info=None,
+                credentials=None,
+                state_entry=state_entry,
+                depends_on=state_entry.depends_on,
+            )
+        )
+    return planned, warnings
 
 
 ConfirmFn = Callable[[str], bool]
@@ -896,6 +1113,7 @@ def _record_update(
         existing.last_applied_at = now
         existing.last_refreshed_at = now
         existing.aiform_md_sha256 = pr.current_aiform_md_sha256
+        existing.depends_on = list(pr.depends_on)
     # entry.likely_replace reflects the plan-time prediction; report what
     # actually happened instead, in both directions -- a predicted replace that
     # update() handled in place must not be reported as a replace just because

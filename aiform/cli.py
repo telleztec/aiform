@@ -173,6 +173,8 @@ def _print_plan(
         line = _colorize(f"{marker} {pr.entry.resource_key}: {label}", pr.entry.action, color=color)
         print(line)
         print(f"    {pr.entry.rationale}")
+        if pr.depends_on:
+            print(f"    depends on: {', '.join(pr.depends_on)}")
     summary = (
         f"Plan: {counts[PlanAction.CREATE]} to create, {counts[PlanAction.UPDATE]} to update, "
         f"{counts[PlanAction.DESTROY]} to destroy, {counts[PlanAction.NO_OP]} no-op."
@@ -192,6 +194,7 @@ def _plan_to_json(planned: list[orchestrator.PlannedResource], warnings: list[st
                 "action": pr.entry.action.value,
                 "rationale": pr.entry.rationale,
                 "likely_replace": pr.entry.likely_replace,
+                "depends_on": list(pr.depends_on),
             }
             for pr in planned
         ],
@@ -657,10 +660,10 @@ def _cmd_plan_apply(args: argparse.Namespace, client: _CountingClient) -> int:
 
 
 def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
-    planned = orchestrator.build_destroy_plan(
-        _resolve_paths(args.files), state_path=args.state_file
+    planned, warnings = orchestrator.build_destroy_plan(
+        _resolve_paths(args.files), state_path=args.state_file, force=args.force
     )
-    return _plan_apply_and_report(args, client, planned, [])
+    return _plan_apply_and_report(args, client, planned, warnings)
 
 
 def _cmd_plan_refresh(args: argparse.Namespace) -> int:
@@ -835,6 +838,7 @@ def _build_parser() -> argparse.ArgumentParser:
     destroy_parser = plan_sub.add_parser("destroy", parents=[global_parent, state_parent])
     destroy_parser.add_argument("files", nargs="*")
     destroy_parser.add_argument("--yes", action="store_true")
+    destroy_parser.add_argument("--force", action="store_true")
 
     plan_sub.add_parser("refresh", parents=[global_parent, state_parent])
     plan_sub.add_parser("show", parents=[global_parent, state_parent])
