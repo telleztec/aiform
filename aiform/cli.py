@@ -16,7 +16,7 @@ from typing import Any, NamedTuple
 
 import anthropic
 
-from aiform import config, llm, log, observability, orchestrator, ssh, state
+from aiform import config, llm, log, observability, orchestrator, references, ssh, state
 from aiform.exceptions import DriverExecutionError, PlanBlockedError
 from aiform.models import KeyCheck, KeyState, PlanAction
 
@@ -175,6 +175,12 @@ def _print_plan(
         print(f"    {pr.entry.rationale}")
         if pr.depends_on:
             print(f"    depends on: {', '.join(pr.depends_on)}")
+        for path, _refs, value in references.describe(pr.raw_params, pr.desired_params):
+            # An unresolved path already holds its own reference text, so both
+            # cases print the same way: resolved shows the value, unresolved
+            # shows the reference. No "(known after apply)" marker -- a
+            # reference is self-evidently unresolved.
+            print(f"    {path} = {value}")
     summary = (
         f"Plan: {counts[PlanAction.CREATE]} to create, {counts[PlanAction.UPDATE]} to update, "
         f"{counts[PlanAction.DESTROY]} to destroy, {counts[PlanAction.NO_OP]} no-op."
@@ -195,11 +201,31 @@ def _plan_to_json(planned: list[orchestrator.PlannedResource], warnings: list[st
                 "rationale": pr.entry.rationale,
                 "likely_replace": pr.entry.likely_replace,
                 "depends_on": list(pr.depends_on),
+                "references": _references_to_json(pr),
             }
             for pr in planned
         ],
         "warnings": list(warnings),
     }
+
+
+# Typed rows rather than the rendered text, since --json is the closest thing
+# aiform has to an API. `resolved` is null when the value is not known yet,
+# rather than echoing the literal the text output shows -- a consumer wants to
+# branch on "known", not string-match a placeholder. A resource with no
+# references carries [], never a missing key.
+def _references_to_json(pr: orchestrator.PlannedResource) -> list[dict]:
+    unresolved = set(pr.unresolved_references)
+    return [
+        {
+            "path": path,
+            "target": reference.target_key,
+            "attribute": reference.attribute,
+            "resolved": None if path in unresolved else value,
+        }
+        for path, refs, value in references.describe(pr.raw_params, pr.desired_params)
+        for reference in refs
+    ]
 
 
 def _print_review_flags(flags: list[orchestrator.PlanReviewFlag]) -> None:
