@@ -18,7 +18,7 @@ about their website and the needs of the infrastructure.
 * A non technical business owner who has procured a closed system with a website
 builder, a shopping site and found limitations of plugins, options and support.  
 
-* A highly tecnhical startup that has built the application, understands how to
+* A highly technical startup that has built the application, understands how to
 use Claude and Codex to build the Terraform, and has clarity on the architecture to
 create the terraform, but doesn't know how to take care of all day-2 operations and management.
 The team wants to be able to use the same declarative style they used to describe the
@@ -30,8 +30,8 @@ that can be managed without human intervention.
 
 The origin of this idea comes from the experience working on on Kubernetes precursor and 
 two different DBaaS implementations. What came out of that work was the recognition 
-that running terraform code is great for day zero problems, and combine with AI code generation
-is easy, but the terraform resource implementations day two operations are left to an SRE
+that running terraform code is great for day zero problems, and combined with AI code generation
+it is easy, but the terraform resource implementations' day two operations are left to an SRE
 team to solve. 
 
 Moreover we intend to reduce the friction associated with building and maintaining a large 
@@ -65,9 +65,9 @@ designed so that end users deploy that monitoring and running infrastructure
 with the tool themselves, and then use it to deploy and run their own SaaS application.
 
 Aiform is open source and will run using your infrastructure credentials, not
-a SaaS.  We anticipate potentially providing a methodology to run a control plain on 
+a SaaS.  We anticipate potentially providing a methodology to run a control plane on 
 behalf of customers if there is a demand for it.  For now, we expect everything runs
-in the endusers's infrastructure, with the enduser's credentials.
+in the end users' infrastructure, with the enduser's credentials.
 
 ## Use Case
 
