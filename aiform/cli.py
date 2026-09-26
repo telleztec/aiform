@@ -660,10 +660,10 @@ def _cmd_plan_apply(args: argparse.Namespace, client: _CountingClient) -> int:
 
 
 def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
-    planned = orchestrator.build_destroy_plan(
-        _resolve_paths(args.files), state_path=args.state_file
+    planned, warnings = orchestrator.build_destroy_plan(
+        _resolve_paths(args.files), state_path=args.state_file, force=args.force
     )
-    return _plan_apply_and_report(args, client, planned, [])
+    return _plan_apply_and_report(args, client, planned, warnings)
 
 
 def _cmd_plan_refresh(args: argparse.Namespace) -> int:
@@ -838,6 +838,7 @@ def _build_parser() -> argparse.ArgumentParser:
     destroy_parser = plan_sub.add_parser("destroy", parents=[global_parent, state_parent])
     destroy_parser.add_argument("files", nargs="*")
     destroy_parser.add_argument("--yes", action="store_true")
+    destroy_parser.add_argument("--force", action="store_true")
 
     plan_sub.add_parser("refresh", parents=[global_parent, state_parent])
     plan_sub.add_parser("show", parents=[global_parent, state_parent])

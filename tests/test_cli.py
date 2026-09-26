@@ -1985,6 +1985,93 @@ class TestPlanDestroy:
         assert "digitalocean.compute.telleztec-app-01" in reloaded.resources
         assert aiform_md.exists()
 
+    def test_destroy_blocked_by_dangling_dependency_without_force(self, project_dir, capsys):
+        state_file = project_dir / ".aiform" / "state.json"
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={},
+            driver=make_driver_info("abc"),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(project_dir / "app.aiform.md"),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error:" in err
+        assert "digitalocean.compute.ghost-01" in err
+        reloaded = state.load(state_file)
+        assert "digitalocean.compute.app-01" in reloaded.resources
+
+    def test_destroy_with_force_drops_dangling_dependency_and_warns(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = project_dir / "app.aiform.md"
+        write_aiform_md(aiform_md, name="app-01", depends_on=["digitalocean.compute.ghost-01"])
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(aiform_md),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(["plan", "destroy", "--yes", "--force", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "Warning:" in out
+        assert "digitalocean.compute.ghost-01" in out
+        reloaded = state.load(state_file)
+        assert reloaded.resources == {}
+
+    def test_destroy_yes_alone_does_not_bypass_dangling_dependency_refusal(
+        self, project_dir, capsys
+    ):
+        state_file = project_dir / ".aiform" / "state.json"
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="app-01",
+            id="123",
+            attributes={},
+            driver=make_driver_info("abc"),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(project_dir / "app.aiform.md"),
+            aiform_md_sha256="abc123",
+            depends_on=["digitalocean.compute.ghost-01"],
+        )
+        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+
+        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+
+        assert code == 2
+        reloaded = state.load(state_file)
+        assert "digitalocean.compute.app-01" in reloaded.resources
+
 
 class TestPlanRefresh:
     def test_refresh_updates_attributes(self, project_dir, drivers_dir, monkeypatch, capsys):
