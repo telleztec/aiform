@@ -1659,6 +1659,19 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   The file-per-resource question is still genuinely open — see the PRD's
   "Open questions", which carries it along with the Phase 2 reference
   syntax and the Phase 5 durable-store decision.
+
+  **Future work, accepted as-is rather than owed:** `specs/resource_dependencies.md`
+  documents that a tracked file is read three times over one `plan create` —
+  once by the discovery/validation pass that builds the dependency graph,
+  once by `build_create_plan()`'s own loop, once more by `parse_file()`
+  inside it. A future project could cache the parsed dependency graph in
+  memory across those reads instead of re-reading and re-parsing each
+  `.aiform.md` from scratch every time it's needed. This is explicitly not
+  something Phase 1 owes: the cost is `read_text()` plus a pure-YAML parse,
+  with no LLM call either way, and the repo owner decided directly not to
+  build any caching now — "it is ok now, that we reread the file 3 times."
+  Recorded here so a future reader doesn't mistake three reads for an
+  oversight rather than a considered tradeoff.
 - **Only one resource kind is implemented.** `network` and `load_balancer` are
   named in Terminology as resource kinds the vocabulary already
   accommodates, but no `ResourceDriver` subclass exists for either yet —

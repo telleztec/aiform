@@ -90,6 +90,11 @@ that graphically shows resources and the relationships between them. This
 is the richer successor to UX1, not a replacement — the textual form stays
 the reviewable default inside `plan` output.
 
+Neither UX1 nor UX2 covers a standalone command that prints the dependency
+graph on its own, outside of a `plan` run — UX1 is scoped to the line
+inside `plan` output, UX2 to a graphical form. Phase 7 (below) picks up
+that gap alongside UX2's original graphical scope.
+
 ## Additional requirements
 
 - **Reference mechanism.** UC1/UC3 both presuppose *some* way for a
@@ -356,9 +361,16 @@ exists and is tested before anything stresses it.
 resources concurrently. Last of the engine work because it is the riskiest
 piece and it depends on every phase above being solid.
 
-**Phase 7 — Graphical dependency visualization (UX2).** Additive, lowest
-risk, touches no execution path — and no longer urgent, since UX1's
-textual display shipped in Phase 1.
+**Phase 7 — Dependency graph display beyond `plan` output (UX2, widened).**
+UX1 only ever covered the `depends on:` line *inside* `plan create`/
+`apply`/`destroy` output, and UX2 as originally scoped is specifically
+*graphical* — so a standalone command that prints the dependency graph on
+its own (not attached to a plan run) fell in the gap between the two and
+was never actually covered by either. Phase 7 now covers both forms: a
+textual/CLI graph display as the cheaper first deliverable, and the
+graphical visualization as its richer successor. Additive, lowest risk,
+touches no execution path — and no longer urgent for either form, since
+UX1's textual display shipped in Phase 1.
 
 ## Open questions for later phases
 

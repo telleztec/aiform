@@ -485,16 +485,24 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]`
+### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
 `build_destroy_plan` produces is `action=DESTROY`, and `apply_plan`'s
 `needs_review` is true whenever any entry is a destroy).
 
-1. `orchestrator.build_destroy_plan(paths, state_path=...)` — no `client`
-   parameter (`build_destroy_plan` never calls an LLM — Mechanism A
-   skips categorization entirely, `specs/orchestrator.md`).
+1. `orchestrator.build_destroy_plan(paths, state_path=..., force=args.force)`
+   — no `client` parameter (`build_destroy_plan` never calls an LLM —
+   Mechanism A skips categorization entirely, `specs/orchestrator.md`).
+   Returns `(planned, warnings)`; `warnings` carries one entry per
+   dangling `depends_on` target dropped under `--force`
+   (`specs/resource_dependencies.md`). Without `--force`, a dangling
+   target raises `PlanBlockedError` here, before step 2 prints anything
+   and before any driver load, credential resolution, or gate #2 call.
+   `--force` is unrelated to `--yes`: `--yes` only skips the confirmation
+   prompt in step 3, so a `--yes` run with a dangling target still
+   refuses here exactly as a non-`--yes` run would.
 2. Prints the plan the same way `plan create`/`apply` do, including
    `plan apply`'s `--yes` tally-line marker (issue #162) — destroy
    routes through the same `_plan_apply_and_report` call site, so this
@@ -505,7 +513,11 @@ pass, unconditionally subject to gate #2 by construction (every entry
    explains why the teardown is in the order shown. Its source differs
    by invocation — frontmatter when files were named, `StateEntry`'s
    recorded edges for the no-argument destroy-all form
-   (`specs/resource_dependencies.md`).
+   (`specs/resource_dependencies.md`). Under `--force`, step 1's
+   `warnings` are passed to `_print_plan()` here instead of the `[]` it
+   passed before this — one `Warning:` line per dropped dangling edge,
+   printed after the tally line, same rendering `plan create`'s
+   uncovered-resource warnings already use.
 3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review

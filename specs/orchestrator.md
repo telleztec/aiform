@@ -305,7 +305,8 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-) -> list[PlannedResource]: ...
+    force: bool = False,
+) -> tuple[list[PlannedResource], list[str]]: ...
 
 
 # --- apply (PLAN.md §5 "aiform plan apply", also used by `aiform plan destroy`) ---
@@ -772,7 +773,7 @@ no-argument invocation. When explicit `paths` were given, `warnings` is
 always `[]` — a tracked resource simply not named is expected scoping,
 not an anomaly (same section).
 
-### `build_destroy_plan(paths=None, *, state_path=...) -> list[PlannedResource]`
+### `build_destroy_plan(paths=None, *, state_path=..., force=False) -> tuple[list[PlannedResource], list[str]]`
 
 Mechanism A. `state = state.load(state_path)`.
 
@@ -794,6 +795,23 @@ resource's `id`, not its desired shape), and using `spec.params` in one
 branch but `{}` in the other would be a real, silent inconsistency for
 no caller that needs it. Never mutates or saves state — this command has
 no refresh/diff step (`PLAN.md`: "skipping steps 3-6... entirely").
+
+**`force` and the `(planned, warnings)` return.** Both private producers,
+`_build_destroy_plan_from_paths()` and `_build_destroy_plan_from_state()`,
+now classify every `depends_on` target via `_classify_destroy_edges()`
+before ordering: a target inside the producer's own node set becomes an
+edge, a target resolvable elsewhere (`st.resources`, for the file-driven
+producer only — the state-driven producer's node set *is* `st.resources`,
+so it has no "elsewhere") is dropped silently, and anything else is
+dangling. `_resolve_dangling_targets()` raises `PlanBlockedError` naming
+every dangling pair when `force` is false, or returns one warning string
+per dropped pair when `force` is true. This is why `build_destroy_plan()`
+had to widen its return type to match `build_create_plan()`'s
+`(planned, warnings)` shape rather than keeping `list[PlannedResource]` —
+`cli.py` needed a channel for those warnings that wasn't there before
+(previously hardcoded to `[]` at the one call site). See
+`specs/resource_dependencies.md`'s "Dangling dependency targets on a
+destroy path, and `--force`" for the full rule.
 
 ### `build_plan_summary(planned) -> str`
 
@@ -1306,6 +1324,21 @@ changed and which deliberately did not.
   history; the second blamed the abort on the second delete hitting a stale id,
   which every shipped driver swallows as success (they treat a 404 on DELETE as
   "already gone"), so it never raises.
+- **Both producers now classify every target instead of filtering
+  silently.** They used to hand `depends_on` straight to
+  `_reverse_topological()` with no restriction, relying on
+  `graph.topological_order()` to drop anything outside its `keys` -- which
+  it no longer does (`graph.UnknownDependencyError`, see the graph.py
+  entry above). A target resolving nowhere -- not in the producer's own
+  node set, and, for the file-driven producer, not in `st.resources`
+  either -- blocks the plan with `PlanBlockedError` naming every dangling
+  pair, unless `force=True`, which drops the edge and returns one warning
+  per pair instead. `graph.UnknownDependencyError` never actually reaches
+  `graph.py` from either producer, since dangling targets are excluded
+  from the edge sets before ordering runs; `_topological()`'s `except
+  graph.UnknownDependencyError` clause is defense-in-depth for a path that
+  should be unreachable, same posture as its existing `CycleError`
+  conversion. Full rule in `specs/resource_dependencies.md`.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.
@@ -1319,5 +1352,8 @@ changed and which deliberately did not.
   corresponding `prompts/review_plan.md` change and no test that the reviewer
   uses it. Deferred to Phase 4, where orphan reasoning needs it.
 
-All four new failure modes raise the existing `PlanBlockedError`; no new
-exception type was added, and `graph.CycleError` never escapes this module.
+All five new failure modes -- the original four plus the destroy paths'
+dangling-target refusal -- raise the existing `PlanBlockedError`; no new
+exception type was added on the orchestrator side, and neither
+`graph.CycleError` nor `graph.UnknownDependencyError` ever escapes this
+module.

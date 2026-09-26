@@ -121,10 +121,17 @@ class CycleError(Exception):
     """Carries `path: list[str]`, the cycle as a walkable sequence."""
 
 
-def topological_order(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
-    """Kahn's algorithm. `edges[k]` is the set of keys `k` depends on.
+class UnknownDependencyError(Exception):
+    """Carries `key: str` and `target: str` -- `key` names a target outside
+    `keys`, and this is never ignored."""
 
-    Raises CycleError when the graph is not acyclic."""
+
+def topological_order(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
+    """Kahn's algorithm. `edges[k]` is the set of keys `k` depends on. Every
+    target in every `edges[k]` must be a member of `keys`.
+
+    Raises CycleError when the graph is not acyclic, UnknownDependencyError
+    when an edge names a target outside `keys`."""
 ```
 
 Pure: no I/O, no LLM, no import of `models`, `llm` or `anthropic`. Same shape
@@ -140,14 +147,26 @@ class PlannedResource:
 ```
 
 Plus a private discovery/validation pass in front of `build_create_plan()`'s
-existing loop. `build_create_plan()` and `build_destroy_plan()` keep their
-signatures; only the **order** of the list they return changes.
+existing loop. `build_create_plan()` keeps its signature; only the
+**order** of the list it returns changes. `build_destroy_plan()` gains a
+`force: bool = False` keyword-only parameter and its return type widens
+from `list[PlannedResource]` to `tuple[list[PlannedResource], list[str]]`
+— see "Dangling dependency targets on a destroy path, and `--force`"
+below for why the return type has to change here even though
+`build_create_plan()`'s doesn't.
 
 ### `aiform/cli.py`
 
 `_print_plan()` emits one extra indented line per resource with dependencies;
 `_plan_to_json()` gains a `depends_on` key per plan entry. Neither signature
-changes.
+changes. `plan destroy` gains a `--force` flag, `action="store_true"`,
+passed as `build_destroy_plan(..., force=args.force)`; `_cmd_plan_destroy`
+unpacks the returned `(planned, warnings)` tuple and passes the real
+`warnings` to `_plan_apply_and_report()` instead of the `[]` it hardcoded
+before this. `--force` is independent of `--yes`: `--yes` auto-approves
+the apply confirmation prompt, `--force` overrides the dangling-dependency
+refusal, and neither implies the other — a `--yes` run with a dangling
+target still refuses.
 
 ## Behavior
 
@@ -211,8 +230,21 @@ params:
 
   A separate `find_cycle()` is still not needed — this is the same traversal,
   trimmed.
-- A key in `edges` that is not in `keys` is ignored — the orchestrator
-  restricts edges before calling, and `graph.py` does not second-guess it.
+- **The precondition is enforced, not merely assumed.** Every target in
+  every `edges[k]` must itself be a member of `keys`; a target outside
+  `keys` raises `graph.UnknownDependencyError(key, target)` rather than
+  being silently ignored. This changed from the original MVP behavior
+  (which ignored it) after review found two of `graph.py`'s four call
+  sites — `build_destroy_plan()`'s two producers, below — did not
+  actually restrict edges first, contradicting the docstring's claim.
+  `_order_files`' `_resolve_dependency_edges` still does the restricting
+  itself before calling in, so this exception is defense-in-depth there;
+  the two destroy producers now do the same restricting explicitly (see
+  "Destroy ordering, all three producers" below) rather than relying on
+  `graph.py` to filter for them. `graph.UnknownDependencyError` is
+  `graph.py`-internal and never escapes the orchestrator, converted to
+  `PlanBlockedError` in `_topological()` the same way `graph.CycleError`
+  already is.
 
 ### The discovery/validation pass
 
@@ -388,6 +420,60 @@ three are covered:
   leaving it unordered would mean the feature ordered only the invocation
   nobody uses.
 
+### Dangling dependency targets on a destroy path, and `--force`
+
+The discovery/validation pass above classifies every target for
+`build_create_plan()`'s two node sets, live and delete-marked. The two
+`build_destroy_plan()` producers have no such pass in front of them — they
+read `depends_on` straight from frontmatter or `StateEntry`, and each must
+classify every target itself before handing edges to
+`graph.topological_order()`, which now enforces its precondition (see
+`aiform/graph.py` above) rather than filtering silently.
+
+Each target resolves one of three ways:
+
+- **In this destroy's own node set** — an edge, ordering the two destroys
+  against each other.
+- **Resolvable elsewhere, silently** — dropped, no warning, no error. This
+  is the everyday case: `aiform plan destroy one-file.aiform.md` where that
+  file depends on a resource tracked in state but not named in this run.
+  Refusing or warning here would make the single-file invocation
+  unusable — a resource almost always depends on something outside the one
+  file being destroyed.
+
+  What counts as "elsewhere" differs by producer, because the file-driven
+  path and the state-driven path don't have the same node set:
+
+  - `_build_destroy_plan_from_paths()`: the node set is the discovered
+    files' keys; "elsewhere" is `st.resources`.
+  - `_build_destroy_plan_from_state()`: the node set **is** `st.resources`
+    — the run is state, so there is no "elsewhere" distinct from the node
+    set itself. Every target is either in `st.resources` (an edge) or
+    dangling.
+- **Dangling** — resolves in neither place. Warn and refuse, unless
+  `--force`.
+
+**All dangling pairs are collected before any decision is made**, unlike
+the create path's discovery pass, which raises on the first unresolvable
+target it finds (rule 2, above). That asymmetry is deliberate: the create
+path's validation pass runs once per file in a loop that can cheaply
+re-run after a fix, while a destroy's `PlanBlockedError` is the thing
+standing between the user and a `--force` decision — naming only the
+first offender would produce a fix-rerun-fix loop where each `--force`
+still doesn't clear the plan, since another dangling target is discovered
+address by address on each retry.
+
+Without `--force`, `PlanBlockedError`'s reason names **every** dangling
+`(key, target)` pair. With `--force`, the edge is dropped exactly as
+"resolvable elsewhere" drops it, but each dropped pair also produces one
+warning string — through the same `(planned, warnings)` channel
+`build_create_plan()` already uses — so the CLI can tell the user which
+edges it silently gave up on.
+
+`graph.UnknownDependencyError` never reaches either producer: dangling
+targets are excluded from the edge sets handed to
+`graph.topological_order()` before it is called, not caught after.
+
 ### `StateEntry.depends_on`
 
 Written at **three** sites, and all three are needed:
@@ -499,10 +585,12 @@ empty diff. Before that fix it would have been one-or-two calls *forever*.
 ## Edge cases / errors
 
 **No new exception type.** `PlanBlockedError(reason)` already means "this plan
-cannot proceed" and already has CLI exit-code handling. It gains four reasons:
+cannot proceed" and already has CLI exit-code handling. It gains five reasons:
 duplicate resource key, unresolvable target, live-depends-on-same-run-destroy,
-and a cycle with its path. `graph.CycleError` is internal to the graph module
-and never escapes the orchestrator.
+a cycle with its path, and a destroy path's dangling dependency target(s)
+(naming every one, see "Dangling dependency targets on a destroy path, and
+`--force`" above). `graph.CycleError` and `graph.UnknownDependencyError` are
+internal to the graph module and never escape the orchestrator.
 
 - **Malformed `depends_on` shape** — a non-list, a non-string element, a key
   with too few segments, or a segment violating
@@ -545,7 +633,9 @@ and never escapes the orchestrator.
   - fan-out; diamond; disconnected components;
   - duplicate targets collapsing to one edge;
   - self-dependency as a length-1 cycle;
-  - a multi-node cycle carrying its path.
+  - a multi-node cycle carrying its path;
+  - a target outside `keys` raises `UnknownDependencyError` naming the
+    declaring key and the target, rather than being ignored.
 - **`tests/test_models.py`** — `depends_on` defaults to `[]`; a multi-entry
   list is accepted; non-list, malformed key, and pattern-violating
   provider/resource_type rejected, **including a list whose second element is
@@ -572,10 +662,23 @@ and never escapes the orchestrator.
   - state-only target resolves with no edge; NO_OP target keeps its edge;
   - delete-marked destroys reverse-ordered; both `build_destroy_plan()` paths
     reverse-ordered, including a fan-in destroyed before all of its targets;
-  - zero Anthropic calls on an unchanged graph.
+  - zero Anthropic calls on an unchanged graph;
+  - **both `build_destroy_plan()` producers**: a target resolved only in
+    state (file-driven path) resolves **silently** — no warning, not
+    blocked, the everyday `plan destroy one-file.aiform.md` case; a target
+    resolving nowhere raises `PlanBlockedError` on **both** producers; the
+    error names every dangling target when there are several; `force=True`
+    proceeds, drops the edge, and returns one warning per dropped pair
+    through the same `(planned, warnings)` channel `build_create_plan()`
+    already uses; ordering is still correct once a dangling edge is
+    dropped under `--force`, with a genuine edge elsewhere in the same
+    resource's `depends_on` preserved.
 - **`tests/test_cli.py`** — the `depends on:` line is present with edges and
   absent without; a multi-dependency resource renders all targets on one
-  comma-separated line; `--json` carries the full `depends_on` list.
+  comma-separated line; `--json` carries the full `depends_on` list;
+  `--force` is accepted on `plan destroy`; a dropped-edge warning renders
+  through the same `Warning:` line `build_create_plan()`'s warnings already
+  use; `--yes` alone does not bypass the dangling-dependency refusal.
 - **No pre-existing zero-Anthropic-call test weakened** to accommodate the new
   pass. `aiform/graph.py` imports neither `llm` nor `anthropic` nor `models`.
 - **Live**, before merge: three `.aiform.md` files in a scratch directory —
