@@ -311,3 +311,25 @@ correct with it.
   of `create`/`update`/`no-op` (see judgment call 2 for why `destroy`
   isn't one of its options at all), set `likely_replace` conservatively,
   and write a rationale that names the specific field(s) that changed.
+
+## Addendum: `resource_references` (`specs/resource_references.md`)
+
+`unresolved_entry(resource_key, unresolved_paths)` — a third deterministic,
+zero-LLM `PlanEntry` producer alongside `create_entry()` and
+`destroy_entry()`, and it exists for the same reason they do: the answer is
+already known, so the model is not asked.
+
+It returns `UPDATE` with a rationale naming the unresolved paths, and
+`likely_replace=False` — an unknown value implies nothing about a replace, and
+saying otherwise would route the plan through gate #2's batch review for no
+reason.
+
+The case it serves: a tracked resource whose reference target is brand new in
+this run, so the desired value is not knowable until apply resolves it. There
+is no honest diff to categorize, and handing the model a literal `${...}` would
+invite it to categorize the placeholder rather than the change.
+
+`diff_attributes()` and `plan_resource()` are unchanged. They receive params
+that are already resolved — `orchestrator._plan_one()` resolves before calling,
+because this module's no-op short-circuit compares desired against live and an
+unresolved literal would defeat it permanently.

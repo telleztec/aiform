@@ -1,8 +1,10 @@
 # Multi-Resource Support — Product Requirements
 
 Status: requirements settled. **Phase 0 shipped** (PR #199, merged
-2026-09-24 as `53ace29`, closing #198). **Phase 1 is in progress** — issue
-#200, spec at `specs/resource_dependencies.md`. This
+2026-09-24 as `53ace29`, closing #198). **Phase 1 shipped** (PR #204,
+merged 2026-09-25 as `6c5b2bd`, closing #200, spec at
+`specs/resource_dependencies.md`). **Phase 2 is in progress** — issue #215,
+spec at `specs/resource_references.md`. This
 document is the durable record of what multi-resource support must do and
 the order it gets built in. `PLAN.md` remains the architecture spec —
 §10's "No dependency graph" entry points here, and each phase reconciles
@@ -302,7 +304,8 @@ recorded N/A); and a review pass that walks each extracted function against
 the original block it came from rather than reading the result on its own.
 
 **Phase 1 — Declaration, ordering, cycle detection, textual display.**
-*(IN PROGRESS — issue #200, spec at `specs/resource_dependencies.md`.)*
+*(SHIPPED — PR #204, merged 2026-09-25. Spec at
+`specs/resource_dependencies.md`.)*
 
 An explicit `depends_on:` frontmatter field, a deterministic dependency
 graph, topological ordering of the plan (dependencies created before
@@ -331,10 +334,29 @@ independently as issue #195 / PR #196 before this phase started.
 > auto-detection later populates — building detection first would mean
 > inferring edges with nothing to feed them into.
 
-**Phase 2 — Cross-resource attribute references.** One resource's output
+**Phase 2 — Cross-resource attribute references.** *(IN PROGRESS — issue
+#215, spec at `specs/resource_references.md`.)* One resource's output
 attribute flowing into another's `params` — the canonical DNS-record-
 pointing-at-a-droplet-IP case. Depends on Phase 1's graph. Still
 sequential execution.
+
+Open question 1 below is answered by this phase:
+`${provider.resource_type.name:attribute}`, a colon rather than a fourth
+dot because a resource `name` may legally contain dots. Writing a
+reference implies the dependency edge. Two decisions worth recording
+because neither is implied by "references exist":
+
+- **A reference is not every `${...}`.** Only one whose content holds a
+  colon whose left side parses as a real resource key. Shell parameter
+  expansion in a params value — `${HOME}`, `${PORT:-8080}` — is an
+  anticipated case, since `compute.PARAM_SCHEMA` is
+  `additionalProperties: True` and `parser.py` already accommodates a
+  cloud-init `user_data: |` block scalar. The dot-instead-of-colon typo is
+  still refused, by a check those literals cannot reach.
+- **References into integer-typed fields do not work yet.** The
+  firewall's `droplet_ids` is typed `integer` while `compute`'s `id` is a
+  string, so a reference there resolves to a value its own validation
+  rejects. Filed separately rather than solved with a cast syntax.
 
 **Phase 3 — Automatic dependency detection (UC1).** Infer edges from
 driver-declared reference metadata, using `specs/digitalocean_firewall.md`'s
@@ -377,9 +399,11 @@ UX1's textual display shipped in Phase 1.
 Answered for Phase 1 in `specs/resource_dependencies.md`; still open
 beyond it:
 
-1. How does a resource reference another's *attribute values* (Phase 2) —
-   an interpolation syntax in `params`, a separate reference block, or
-   something else?
+1. ~~How does a resource reference another's *attribute values* (Phase 2)
+   — an interpolation syntax in `params`, a separate reference block, or
+   something else?~~ **Answered by Phase 2:** an interpolation syntax in
+   `params`, spelled `${provider.resource_type.name:attribute}`. See
+   `specs/resource_references.md`.
 2. Does the file-per-resource model survive, or does a multi-resource file
    format become worthwhile once graphs get large?
 3. What does a driver declare so Phase 3 can infer edges — a new class

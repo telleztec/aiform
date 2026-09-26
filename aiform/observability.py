@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aiform import config, orchestrator, parser, planner, state
+from aiform import config, orchestrator, parser, planner, references, state
 from aiform.driver import CapabilityNotSupported, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 from aiform.models import HealthReport, HealthStatus, MetricKind, Sample, StateEntry
@@ -497,7 +497,7 @@ def _status_for_entry(
         key,
         entry,
         live=live,
-        config=_config_for(driver, entry, attributes, liveness),
+        config=_config_for(driver, entry, attributes, liveness, st),
         health=health,
         health_unsupported=health_unsupported,
     )
@@ -572,7 +572,11 @@ def _undetermined(entry: StateEntry, detail: str) -> ConfigStatus:
 
 
 def _config_for(
-    driver: ResourceDriver, entry: StateEntry, attributes: dict | None, liveness: str
+    driver: ResourceDriver,
+    entry: StateEntry,
+    attributes: dict | None,
+    liveness: str,
+    st: State,
 ) -> ConfigStatus:
     # Nothing to diff against. Reported rather than left silent: silence
     # on a drift question reads as "no drift", which is the opposite of
@@ -611,9 +615,25 @@ def _config_for(
             f"{entry.aiform_md_path} now declares "
             f"{spec.provider}.{spec.resource}.{spec.name}, not this resource",
         )
-    drifted = planner.diff_attributes(
-        attributes, spec.params, unordered_fields=driver.UNORDERED_FIELDS
-    )
+    # Resolved before the diff, for the same reason the plan path resolves
+    # before its own: diff_attributes() iterates `desired`, so a literal
+    # "${...}" can never equal the value the provider echoed back and every
+    # referencing resource would report drift forever.
+    try:
+        desired, unresolved = references.resolve(spec.params, orchestrator.referenceable(st))
+    except references.ReferenceResolutionError as exc:
+        return _undetermined(entry, _oneline(f"a reference cannot be resolved: {exc}"))
+    if unresolved:
+        # Nothing can be said about drift while a target is untracked, and
+        # answering "drifted" would blame this resource for a missing
+        # dependency rather than naming the dependency.
+        missing = sorted(references.reference_targets(spec.params) - set(st.resources))
+        return _undetermined(
+            entry,
+            f"references cannot be resolved until their targets are tracked: {', '.join(missing)}",
+        )
+
+    drifted = planner.diff_attributes(attributes, desired, unordered_fields=driver.UNORDERED_FIELDS)
     return ConfigStatus(
         in_sync=not drifted,
         spec_file=entry.aiform_md_path,

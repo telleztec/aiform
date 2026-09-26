@@ -62,6 +62,29 @@ def create_entry(resource_key: str, rationale: str) -> PlanEntry:
     )
 
 
+def unresolved_entry(resource_key: str, unresolved_paths: Sequence[str]) -> PlanEntry:
+    # The third deterministic producer, after destroy_entry() and
+    # create_entry(), and it exists for the same reason: the answer is
+    # already known, so the model is not asked. A tracked resource whose
+    # reference target is being recreated in this same run has no diff worth
+    # categorizing -- the desired value is not knowable until apply resolves
+    # it -- and feeding the model a literal "${...}" would invite it to
+    # categorize the placeholder rather than the change.
+    #
+    # likely_replace is False because an unknown value implies nothing about
+    # a replace; saying otherwise would route the plan through gate #2's
+    # batch review for no reason.
+    return PlanEntry(
+        resource_key=resource_key,
+        action=PlanAction.UPDATE,
+        rationale=(
+            "references cannot be resolved until their targets exist: "
+            + ", ".join(unresolved_paths)
+        ),
+        likely_replace=False,
+    )
+
+
 def diff_attributes(
     current: dict[str, Any],
     desired: dict[str, Any],
