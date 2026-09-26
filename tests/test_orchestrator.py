@@ -300,6 +300,10 @@ def make_planned_resource(**overrides) -> "orchestrator.PlannedResource":
         state_entry=None,
     )
     defaults.update(overrides)
+    # apply_plan() re-resolves raw_params rather than reusing desired_params,
+    # so a PlannedResource built by hand needs the two to agree unless a test
+    # is deliberately exercising a reference.
+    defaults.setdefault("raw_params", defaults["desired_params"])
     return orchestrator.PlannedResource(**defaults)
 
 
@@ -2010,7 +2014,11 @@ class Driver(ResourceDriver):
     def read(self, id, credentials):
         if id == "MISSING":
             raise ResourceNotFoundError(f"resource {id} not found")
-        return {"id": id, "ipv4_address": "203.0.113.5"}
+        # Echoes `data` as well as `ipv4_address` so a resource whose params
+        # hold a reference can actually read back clean -- diff_attributes()
+        # iterates `desired`, so a read() that omitted `data` would show a
+        # permanent phantom diff and no no-op could ever be reached.
+        return {"id": id, "ipv4_address": "203.0.113.5", "data": "203.0.113.5"}
 
     def update(self, id, current, desired, credentials):
         return {"id": id, **{**current, **desired}}
@@ -2234,9 +2242,56 @@ class TestReferenceResolutionAtPlanTime:
     def test_tracked_resource_with_an_unresolved_reference_updates_without_an_llm_call(
         self, tmp_path: Path, drivers_dir: Path
     ):
-        # The narrow case unresolved_entry() exists for: the zone is tracked,
-        # its target drifted missing and is being recreated this run, so the
-        # desired value is not knowable and the model must not be asked.
+        # The narrow case unresolved_entry() exists for. Note what actually
+        # produces it: the target must be absent from state entirely, i.e.
+        # brand new in this run. A target that is tracked but drifted missing
+        # is still IN state, so its stored attributes resolve -- being drifted
+        # does not make a reference to it unknown.
+        #
+        # Realistically: the zone was applied earlier, and the user now edits
+        # it to point at a droplet they are adding in the same run.
+        write_ref_driver(drivers_dir)
+        write_ref_driver(drivers_dir, "domain")
+        web = tmp_path / "web.aiform.md"
+        zone = tmp_path / "a-zone.aiform.md"
+        write_aiform_md(web, name="web-01")
+        write_aiform_md(
+            zone,
+            resource="domain",
+            name="example.com",
+            params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.domain.example.com": make_state_entry(
+                    resource_type="domain",
+                    name="example.com",
+                    id="id-example.com",
+                    attributes={"data": "198.51.100.1"},
+                    aiform_md_path=str(zone),
+                ),
+            },
+        )
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [zone, web], state_path=state_path, client=client
+        )
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        zone_pr = by_key["digitalocean.domain.example.com"]
+        assert zone_pr.entry.action == PlanAction.UPDATE
+        assert "data" in zone_pr.entry.rationale
+        assert zone_pr.unresolved_references == ["data"]
+        assert len(client.messages.calls) == 0
+
+    def test_a_drifted_target_still_resolves_from_its_stored_attributes(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        # The distinction the test above turns on, pinned directly: web-01 is
+        # tracked but gone provider-side, and the reference to it still
+        # resolves, because state is what resolution reads.
         write_ref_driver(drivers_dir)
         write_ref_driver(drivers_dir, "domain")
         web = tmp_path / "web.aiform.md"
@@ -2253,27 +2308,18 @@ class TestReferenceResolutionAtPlanTime:
             state_path,
             **{
                 "digitalocean.compute.web-01": make_state_entry(
-                    name="web-01", id="MISSING", attributes={"ipv4_address": "203.0.113.5"}
-                ),
-                "digitalocean.domain.example.com": make_state_entry(
-                    resource_type="domain",
-                    name="example.com",
-                    id="id-example.com",
-                    attributes={"data": "203.0.113.5"},
-                    aiform_md_path=str(zone),
+                    name="web-01", id="MISSING", attributes={"ipv4_address": "198.51.100.9"}
                 ),
             },
         )
 
-        client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=client
+            [zone, web], state_path=state_path, client=FakeClient([])
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         zone_pr = by_key["digitalocean.domain.example.com"]
-        assert zone_pr.entry.action == PlanAction.UPDATE
-        assert "data" in zone_pr.entry.rationale
-        assert len(client.messages.calls) == 0
+        assert zone_pr.unresolved_references == []
+        assert zone_pr.desired_params["data"] == "198.51.100.9"
 
     def test_unchanged_input_with_a_resolved_reference_makes_zero_anthropic_calls(
         self, tmp_path: Path, drivers_dir: Path
