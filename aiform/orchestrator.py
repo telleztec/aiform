@@ -101,7 +101,7 @@ def _pop_id(
 # `id` is not in `attributes` -- _pop_id() above moves it to StateEntry.id --
 # but it is the most useful cross-resource value, so it is merged back in here
 # rather than every caller remembering to.
-def _referenceable(st: State) -> dict[str, dict[str, Any]]:
+def referenceable(st: State) -> dict[str, dict[str, Any]]:
     return {key: {**entry.attributes, "id": entry.id} for key, entry in st.resources.items()}
 
 
@@ -109,7 +109,7 @@ def _resolve_params(
     key: str, params: dict[str, Any], st: State
 ) -> tuple[dict[str, Any], list[str]]:
     try:
-        return references.resolve(params, _referenceable(st))
+        return references.resolve(params, referenceable(st))
     except references.ReferenceError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
 
@@ -1116,7 +1116,7 @@ def _extend_and_notify(
 # still worth its two lines, because the alternative to raising is sending a
 # literal "${...}" to the provider as a real resource value.
 def _apply_params(pr: PlannedResource, st: State) -> dict[str, Any]:
-    resolved, unresolved = references.resolve(pr.raw_params, _referenceable(st))
+    resolved, unresolved = references.resolve(pr.raw_params, referenceable(st))
     if unresolved:
         raise PlanBlockedError(
             f"{pr.entry.resource_key}: references are still unresolved at apply time: "
