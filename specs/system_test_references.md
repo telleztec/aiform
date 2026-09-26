@@ -30,7 +30,7 @@ applies — never on a `pull_request`/`push` trigger.
   read back **from DigitalOcean**, not from `.aiform/state.json` — state
   agreeing with itself proves nothing about what the provider was told.
 - A second `plan` over the applied pair is a clean no-op at **zero Anthropic
-  calls**, measured with `-v` and `verbose_call_count()`. This is the property
+  calls**, measured with `--verbose` and `verbose_call_count()`. This is the property
   the whole design is built around, and offline it can only be shown against a
   fake client.
 - `aiform resource status` does not report a resolved reference as drift, which
@@ -54,8 +54,9 @@ not apply here for the reason above; the filenames are chosen for legibility.
 
 One test, five steps, in order:
 
-1. Write both `.aiform.md` files — a droplet via `write_aiform_md()` (so it
-   carries `SYSTEM_TEST_TAG`) and a zone via `write_domain_aiform_md()` whose
+1. Write both `.aiform.md` files — a droplet via `write_aiform_md()`, named by
+   `unique_droplet_name()` so the sweep can reclaim it (see Cleanup), and a zone
+   via `write_domain_aiform_md()` whose
    single A record's `data` is
    `${digitalocean.compute.<droplet>:ipv4_address}`. Then `plan create`, and
    assert the unresolved reference prints **verbatim with no annotation** — no
@@ -64,18 +65,32 @@ One test, five steps, in order:
 3. Read the droplet's `ipv4_address` from state, then read the zone's A records
    from DigitalOcean and assert exactly one, that its `data` equals that
    address, and that no `${` survived to the provider.
-4. `-v plan create` again: a no-op at zero Anthropic calls, and the **resolved
-   value** now printed where the reference used to be.
-5. `resource status` reports no drift, then `plan destroy --yes` and wait for
-   the zone to be gone.
+4. `plan create --verbose` again: a no-op at zero Anthropic calls, and the
+   **resolved value** now printed where the reference used to be. The flag goes
+   **after** the subcommand — `aiform -v plan create` silently leaves verbose
+   off (issue #134), which would make `verbose_call_count()` raise on a missing
+   `[verbose]` line and fail the run *after* the droplet had been billed. The
+   no-op is asserted per resource (`= <key>: no-op`), not as the bare substring
+   "no-op", which the always-printed summary tally contains regardless.
+5. `resource status <zone>` reads `in sync` — asserted positively rather than
+   as the word "drift" being absent, so it pins the verdict rather than the
+   wording of its opposite — then `plan destroy --yes` and wait for the zone to
+   be gone.
 
 ## Cleanup
 
-Both objects are reclaimable if the run is interrupted (#141): the droplet
-carries `SYSTEM_TEST_TAG`, which the session droplet sweep keys off, and the
-zone name comes from `unique_zone_name()`, so it carries the prefix and
-timestamp the zone sweep parses. Nothing here relies on the test's own teardown
-running.
+Both objects are reclaimable if the run is interrupted (#141), but only because
+the droplet is named through **`unique_droplet_name()`**. `is_sweepable_droplet()`
+requires three signals and the first is the `SYSTEM_TEST_DROPLET_PREFIX` name
+prefix — which is deliberately *not* a prefix of the compute suite's own
+`aiform-system-test-droplet*`, so the tag alone is not enough and a droplet
+named that way has **no** sweep backstop. An earlier draft of this suite named
+it that way and claimed the tag covered it; it did not. The zone side needs no
+such care: `unique_zone_name()` produces exactly what `zone_created_at()`
+parses.
+
+`teardown_tracked_resources` is still the first line of defence; the sweeps
+matter only when the process dies before it runs.
 
 The record's `data` is emitted through `write_domain_aiform_md()`, which
 serializes each record as a JSON object — valid YAML **flow** style. That

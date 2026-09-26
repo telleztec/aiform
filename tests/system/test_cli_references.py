@@ -45,7 +45,7 @@ from tests.system.conftest import (
     live_token,
     token_has_domain_scope,
     token_owns_zone_parent,
-    unique_name,
+    unique_droplet_name,
     unique_zone_name,
     verbose_call_count,
     wait_until_domain_gone,
@@ -61,10 +61,12 @@ RECORD_NAME = "www"
 
 @pytest.fixture(scope="module", autouse=True)
 def _require_domain_scope():
+    # live_token() returns a RedactedSecret, a str subclass -- passed through
+    # rather than str()'d, so a traceback frame cannot hold the bare token.
     token = live_token()
-    if not token_has_domain_scope(str(token)):
+    if not token_has_domain_scope(token):
         pytest.skip("token lacks `domain` scope")
-    if not token_owns_zone_parent(str(token)):
+    if not token_owns_zone_parent(token):
         pytest.skip("account does not own the system-test zone parent")
 
 
@@ -72,8 +74,15 @@ class TestCrossResourceReferenceLive:
     def test_one_apply_publishes_the_droplets_real_address(
         self, project_dir, teardown_tracked_resources, capsys
     ):
-        token = str(live_token())
-        droplet_name = unique_name("aiform-system-test-droplet-ref")
+        token = live_token()
+        # unique_droplet_name(), NOT unique_name("aiform-system-test-droplet-..."):
+        # is_sweepable_droplet() keys off SYSTEM_TEST_DROPLET_PREFIX, which is
+        # deliberately not a prefix of the compute suite's own names, so a
+        # droplet named that way has no sweep backstop at all. This one is
+        # billable, so it gets one. The prefix reads "fwdrop" for historical
+        # reasons -- the firewall suite introduced it -- but the sweep is what
+        # matters here, not the spelling.
+        droplet_name = unique_droplet_name("ref")
         zone = unique_zone_name("ref")
 
         # Filenames are irrelevant to ordering (keys decide), so they are named
@@ -109,8 +118,8 @@ class TestCrossResourceReferenceLive:
         # Step 2: the address the zone published must be the one DigitalOcean
         # gave the droplet. Both sides are read back from the provider, not
         # from aiform's state -- state agreeing with itself proves nothing.
-        tracked = state.load(state.DEFAULT_STATE_PATH)
         droplet_key = f"digitalocean.compute.{droplet_name}"
+        tracked = state.load(state.DEFAULT_STATE_PATH)
         droplet_ip = tracked.resources[droplet_key].attributes["ipv4_address"]
         assert droplet_ip, "droplet has no public v4 address to reference"
 
@@ -128,10 +137,20 @@ class TestCrossResourceReferenceLive:
         # Step 3: the cost guarantee, on real input rather than a fake. A
         # resolved reference diffs clean, so the no-op short-circuit fires and
         # nothing is billed.
-        code = cli.main(["-v", "plan", "create"])
+        # `--verbose` TRAILING, after the subcommand. `aiform -v plan create`
+        # silently leaves verbose off (issue #134), which would make
+        # verbose_call_count() raise on a missing [verbose] line and fail this
+        # test on a correct implementation -- after the droplet had already
+        # been paid for. Verified empirically, both placements. Do not "tidy"
+        # this to the global flag until #134 is fixed.
+        code = cli.main(["plan", "create", "--verbose"])
         second_plan = capsys.readouterr()
         assert_cli_ok(code, second_plan, "second plan create")
-        assert "no-op" in second_plan.out.lower()
+        # The per-resource marker line, not the bare substring: _print_plan's
+        # summary tally always contains the words "no-op", so `"no-op" in out`
+        # passes for an all-update plan too.
+        assert f"= {droplet_key}: no-op" in second_plan.out
+        assert f"= digitalocean.domain.{zone}: no-op" in second_plan.out
         assert verbose_call_count(second_plan) == 0
         # Resolved now, so the value shows rather than the reference.
         assert droplet_ip in second_plan.out
@@ -147,10 +166,10 @@ class TestCrossResourceReferenceLive:
         assert "drifted" not in status.out
 
         # Step 5: destroy both, the zone first in reverse dependency order,
-        # because the reference alone established that edge. If this step fails
-        # the droplet is still reclaimable -- write_aiform_md() always tags it
-        # SYSTEM_TEST_TAG, which the session sweep keys off, and the zone name
-        # carries the prefix and timestamp the zone sweep parses.
+        # because the reference alone established that edge. If this step fails,
+        # teardown_tracked_resources destroys both; if the process is killed
+        # before that, the droplet's name and the zone's both match what the
+        # session sweeps parse.
         code = cli.main(["plan", "destroy", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy")
         wait_until_domain_gone(token, zone)
