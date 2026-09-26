@@ -2502,6 +2502,49 @@ class TestReferenceToATargetThisRunWillReplace:
         # is deterministic and costs nothing.
         assert len(client.messages.calls) == 1
 
+    def test_a_drifted_target_whose_stored_value_is_unset_still_plans(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        # Guards the `replaced` half of the volatile split, which nothing else
+        # exercised: a mutation test showed the whole suite stayed green with
+        # `replaced.add(...)` removed.
+        #
+        # This is the #178 state the split exists for -- a droplet gone
+        # provider-side whose last-known ipv4_address was never populated. The
+        # recreate is what supplies the real address, so `plan` must proceed.
+        # Without the `replaced` entry the unset-value rule fires and refuses a
+        # plan that was about to fix exactly this.
+        write_ref_driver(drivers_dir)
+        write_ref_driver(drivers_dir, "domain")
+        web = tmp_path / "web.aiform.md"
+        zone = tmp_path / "a-zone.aiform.md"
+        write_aiform_md(web, name="web-01")
+        write_aiform_md(
+            zone,
+            resource="domain",
+            name="example.com",
+            params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.web-01": make_state_entry(
+                    name="web-01", id="MISSING", attributes={"ipv4_address": None}
+                ),
+            },
+        )
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [zone, web], state_path=state_path, client=client
+        )
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.CREATE
+        zone_pr = by_key["digitalocean.domain.example.com"]
+        assert zone_pr.unresolved_references == ["data"]
+        assert len(client.messages.calls) == 0
+
     def test_a_typo_on_a_withheld_target_is_still_refused_at_plan_time(
         self, tmp_path: Path, drivers_dir: Path
     ):

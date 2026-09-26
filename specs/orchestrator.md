@@ -1413,14 +1413,19 @@ belongs here is which of this module's functions changed.
   whose own action is the deterministic `UPDATE` this mechanism produces. Those
   keys are passed to `references.resolve()` as `volatile` — present in the
   namespace, so their attribute names are still validated at plan time, but
-  reported unresolved so the real value is read during the apply. `replaced`
-  (action `CREATE`, per `_will_be_recreated()`) is the subset for which a
-  currently-unset value is *not* refused, since a recreate is what supplies it. Without it, a dependent
-  resolves to the doomed value, diffs clean, plans `NO_OP`, and is skipped by
-  `apply_plan()` before the apply-time re-resolve can correct it — leaving a DNS
-  record pointing at a host the same apply just destroyed. Accumulating the set
-  in topological order is what makes it correct: every target is classified
-  before any dependent of it is planned.
+  reported unresolved so the real value is read during the apply.
+
+  Without **`volatile`**, a dependent resolves to the doomed value, diffs clean,
+  plans `NO_OP`, and is skipped by `apply_plan()` before the apply-time
+  re-resolve can correct it — leaving a DNS record pointing at a host the same
+  apply just destroyed. Accumulating the set in topological order is what makes
+  it correct: every target is classified before any dependent of it is planned.
+
+  **`replaced`** (action `CREATE`, per `_will_be_recreated()`) is the subset for
+  which a currently-unset value is *not* refused, since a recreate is what
+  supplies it. Omitting `replaced` fails the other way from omitting `volatile`:
+  not stale DNS, but a spurious refusal of a plan that was about to fix exactly
+  the unset value it complains about.
 - **Both destroy producers union reference-derived edges.**
   `_build_destroy_plan_from_state()` gets it free from the persisted
   `StateEntry.depends_on`; `_build_destroy_plan_from_paths()` calls
