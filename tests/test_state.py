@@ -109,6 +109,21 @@ class TestLoad:
         with pytest.raises(ValidationError):
             load(path)
 
+    def test_state_json_written_without_depends_on_still_loads(self, tmp_path: Path):
+        entry = make_state_entry()
+        raw_entry = entry.model_dump(mode="json")
+        del raw_entry["depends_on"]
+        raw = {
+            "aiform_state_version": 1,
+            "resources": {"digitalocean.compute.telleztec-app-01": raw_entry},
+        }
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps(raw))
+
+        loaded = load(path)
+
+        assert loaded.resources["digitalocean.compute.telleztec-app-01"].depends_on == []
+
 
 class TestSave:
     def test_save_then_load_round_trips(self, tmp_path: Path):

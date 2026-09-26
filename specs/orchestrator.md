@@ -305,7 +305,8 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-) -> list[PlannedResource]: ...
+    force: bool = False,
+) -> tuple[list[PlannedResource], list[str]]: ...
 
 
 # --- apply (PLAN.md §5 "aiform plan apply", also used by `aiform plan destroy`) ---
@@ -772,7 +773,7 @@ no-argument invocation. When explicit `paths` were given, `warnings` is
 always `[]` — a tracked resource simply not named is expected scoping,
 not an anomaly (same section).
 
-### `build_destroy_plan(paths=None, *, state_path=...) -> list[PlannedResource]`
+### `build_destroy_plan(paths=None, *, state_path=..., force=False) -> tuple[list[PlannedResource], list[str]]`
 
 Mechanism A. `state = state.load(state_path)`.
 
@@ -794,6 +795,23 @@ resource's `id`, not its desired shape), and using `spec.params` in one
 branch but `{}` in the other would be a real, silent inconsistency for
 no caller that needs it. Never mutates or saves state — this command has
 no refresh/diff step (`PLAN.md`: "skipping steps 3-6... entirely").
+
+**`force` and the `(planned, warnings)` return.** Both private producers,
+`_build_destroy_plan_from_paths()` and `_build_destroy_plan_from_state()`,
+now classify every `depends_on` target via `_classify_destroy_edges()`
+before ordering: a target inside the producer's own node set becomes an
+edge, a target resolvable elsewhere (`st.resources`, for the file-driven
+producer only — the state-driven producer's node set *is* `st.resources`,
+so it has no "elsewhere") is dropped silently, and anything else is
+dangling. `_resolve_dangling_targets()` raises `PlanBlockedError` naming
+every dangling pair when `force` is false, or returns one warning string
+per dropped pair when `force` is true. This is why `build_destroy_plan()`
+had to widen its return type to match `build_create_plan()`'s
+`(planned, warnings)` shape rather than keeping `list[PlannedResource]` —
+`cli.py` needed a channel for those warnings that wasn't there before
+(previously hardcoded to `[]` at the one call site). See
+`specs/resource_dependencies.md`'s "Dangling dependency targets on a
+destroy path, and `--force`" for the full rule.
 
 ### `build_plan_summary(planned) -> str`
 
@@ -1230,10 +1248,14 @@ Returns the destination path.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.
-- **A dependency graph / multi-resource sequencing** — `PLAN.md` §10,
-  unchanged; this module processes `planned` in the literal order it was
-  built, one resource at a time, with no notion of one resource
-  depending on another.
+- **Cross-resource attribute references, automatic edge detection,
+  orphan refusal, and parallel execution** — Phases 2, 3, 4 and 6 of
+  `MULTI_RESOURCE_PRD.md`. Dependency *ordering* is no longer out of
+  scope here: see the `resource_dependencies` addendum below. What
+  remains true is that this module applies `planned` one resource at a
+  time, in the literal order the list carries — it is the plan
+  *builders* that now decide that order, and `apply_plan()` is unchanged
+  and unaware of the graph.
 
 ## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
 
@@ -1243,3 +1265,111 @@ Returns the destination path.
 module's involvement -- it reads the declaration off the driver and forwards
 it, exactly as it already does for the other per-field lists, and makes no
 decision of its own about it. See `specs/unordered_fields.md`.
+
+## Addendum: `resource_dependencies` (`specs/resource_dependencies.md`)
+
+This module owns the ordering half of Phase 1. `specs/resource_dependencies.md`
+is the full spec; what belongs here is which of this module's functions
+changed and which deliberately did not.
+
+- **`build_create_plan()`** gains a private discovery/validation pass ahead of
+  its existing loop. The pass reads and parses each discovered file's
+  frontmatter, then performs four checks in order -- duplicate resource key,
+  per-target resolution (live files only), same-run destroy conflict, and
+  topological ordering via `aiform/graph.py`. It makes **zero LLM calls, zero
+  driver loads and zero credential resolutions**, which is the point of doing
+  it first: a plan that is going to be refused must not first spend money and
+  hit a provider's API.
+
+  The loop then iterates the computed **order**, calling `_plan_one()` /
+  `_plan_delete_marked()` unchanged -- re-deriving each record from its path
+  rather than reusing the pass's. An earlier draft claimed the loop "iterates
+  those records"; it does not.
+
+  Counted honestly, a **tracked** file is now read three times: the discovery
+  pass, the loop, and `parse_file()` inside the loop. Two other cases read
+  twice, for two different reasons -- an **untracked** file because
+  `_parsed_resource()` returns early without `parse_file()` when there is no
+  state entry, and a **delete-marked** one because `_plan_delete_marked()` never
+  goes through `_parsed_resource()` at all: it does its own `read_text()` plus
+  `parse_frontmatter()` and returns. (Not because a delete-marked file lacks a
+  state entry -- it normally has one, and that branch looks it up.) The third
+  read is
+  pre-existing and is the one PR #199 filed out of scope, because closing it
+  means changing `parse_file()`'s interface; the discovery-pass read is what
+  this phase adds, and closing *that* is a different job -- threading the
+  pass's records into `_plan_one()` -- **not** a `parse_file()` change. Neither
+  is fixed here.
+
+  The cost is `read_text()` plus a pure-YAML parse, with no LLM call either
+  way, so this is wasted IO rather than a spent toll. It does leave a narrow
+  TOCTOU window: a file edited between two reads was validated and ordered on
+  content that is not what gets planned. `specs/resource_dependencies.md`
+  carries the same account -- keep the two in step.
+- **`build_destroy_plan()`** orders **both** of its paths in reverse
+  topological order -- the file-driven one from frontmatter, the state-driven
+  destroy-all one from `StateEntry.depends_on`. The second matters more: it is
+  the invocation a user actually types. The file-driven path additionally gained
+  the duplicate-key check, which it previously lacked. Before this PR, two files
+  declaring one key produced **two** plan entries rather than collapsing into
+  one -- the failure was at apply time, where the second `_apply_destroy()`
+  raised `PlanBlockedError` from `_require_tracked()`, the first having already
+  dropped the key from state, so the apply aborted part-way and the second file
+  stayed on disk to recreate the resource. See
+  `specs/resource_dependencies.md` for the full mechanism.
+
+  Two earlier drafts of this line were wrong in different ways, both recorded
+  because the corrections are the useful part: the first described a silent
+  collapse, which was the current code minus the check rather than the actual
+  history; the second blamed the abort on the second delete hitting a stale id,
+  which every shipped driver swallows as success (they treat a 404 on DELETE as
+  "already gone"), so it never raises.
+- **Both producers now classify every target instead of filtering
+  silently.** They used to hand `depends_on` straight to
+  `_reverse_topological()` with no restriction, relying on
+  `graph.topological_order()` to drop anything outside its `keys` -- which
+  it no longer does (`graph.UnknownDependencyError`, see the graph.py
+  entry above). A target resolving nowhere -- not in the producer's own
+  node set, and, for the file-driven producer, not in `st.resources`
+  either -- blocks the plan with `PlanBlockedError` naming every dangling
+  pair, unless `force=True`, which drops the edge and returns one warning
+  per pair instead. Both producers exclude every dangling target from the
+  edge sets *before* calling `_topological()`, so
+  `graph.UnknownDependencyError` cannot reach `graph.topological_order()`
+  from the orchestrator at all -- there is no remaining call site that
+  passes it an unrestricted edge set. `_topological()` deliberately does
+  **not** catch `graph.UnknownDependencyError`: unlike `CycleError`, which
+  is genuinely user-reachable (a user's own files can declare a cycle,
+  and `tests/test_orchestrator.py` exercises that conversion), an
+  `UnknownDependencyError` surfacing here would mean an orchestrator
+  caller failed to restrict its edges -- a bug in this module, not a bad
+  `depends_on` declaration. Converting it into a `PlanBlockedError` phrased
+  as "your dependency doesn't resolve" would misdirect a future reader
+  investigating that bug toward the user's `.aiform.md` files instead of
+  the actual defect; an uncaught exception's traceback names the real
+  cause. Full rule in `specs/resource_dependencies.md`.
+- **`PlannedResource.depends_on`** carries the declared list through to the
+  CLI and into state, defaulted so every existing construction site and test
+  helper keeps working.
+- **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
+  it, so a destroy-all can order by it later.
+- **`apply_plan()` is unchanged.** It applies the list in the order it is
+  given and has no notion of a graph. Everything about ordering lives in the
+  two plan builders.
+- **`build_plan_summary()` is deliberately unchanged.** Adding `depends_on`
+  would inject an unexplained key into gate #2's review prompt with no
+  corresponding `prompts/review_plan.md` change and no test that the reviewer
+  uses it. Deferred to Phase 4, where orphan reasoning needs it.
+
+All five new failure modes -- the original four plus the destroy paths'
+dangling-target refusal -- raise the existing `PlanBlockedError`; no new
+exception type was added on the orchestrator side. `graph.CycleError` is
+converted to `PlanBlockedError` in `_topological()`, since a cycle is
+genuinely reachable from a user's own `depends_on` declarations.
+`graph.UnknownDependencyError` is not caught anywhere in this module --
+every call site restricts its edges to its own node set before calling
+in, so the exception cannot actually reach `graph.topological_order()`
+from here; if it ever did, that would mean an orchestrator caller has a
+bug, not that a user's declaration is wrong, and an uncaught exception
+naming the real cause is the correct outcome for that case, not a
+`PlanBlockedError` phrased as a dependency problem.
