@@ -118,6 +118,28 @@ _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS = 45.0
 _SSH_POWER_OFF_POLL_MAX_ATTEMPTS = 30
 _SSH_POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
 
+# Issue #207: two live system-test runs nine minutes apart both exhausted
+# _poll_until's shared 150s default waiting for size_slug, at ~182.6s and
+# ~183.4s, blocking the gate for every runtime-path PR.
+#
+# probes/digitalocean_compute_resize.py then measured what a resize costs:
+# size_slug flips in 12.2-23.9s (n=5) and the resize *action* completes in
+# 45.4-46.8s (n=3). Power-off is not implicated -- backing it out of the
+# orchestrator's own update duration for both failures gives ~21.9s and
+# ~51.5s. So the old budget was never below typical latency; it was already
+# ~6x the median and simply did not absorb a provider-side stall.
+#
+# Neither failure ever completed, so no measurement can say what budget
+# *would* have sufficed -- only that 183s did not. 420s is therefore a
+# deliberate policy choice about tail coverage (~9x the action clock, ~17x
+# the median), a "something is genuinely wrong" threshold rather than an
+# estimate of how long a resize takes. #154's centralized, data-driven
+# timeout manager is still the real answer; this is the bounded unblock,
+# and the same hand-tuning has now recurred on three steps (#152, #168,
+# #207).
+_RESIZE_POLL_MAX_ATTEMPTS = 210
+_RESIZE_POLL_DELAY_SECONDS = 2  # 420s total
+
 # A freshly-uploaded account SSH key is not immediately usable in
 # POST /v2/droplets -- verified live (see _create_droplet): DO's own
 # "invalid key identifiers" 422 cleared after ~9s in a direct
@@ -798,7 +820,14 @@ class Driver(ResourceDriver):
         # Unlike the rejection path above, a *successful* resize always powers
         # the droplet back on, even if it started "off" -- this driver has now
         # changed its size, so it's expected to come back up, not stay down.
-        self._poll_until(id, credentials, lambda d: d["size_slug"] == target_size, "resize")
+        self._poll_until(
+            id,
+            credentials,
+            lambda d: d["size_slug"] == target_size,
+            "resize",
+            max_attempts=_RESIZE_POLL_MAX_ATTEMPTS,
+            delay_seconds=_RESIZE_POLL_DELAY_SECONDS,
+        )
         self._do_action_and_wait(
             id, credentials, {"type": "power_on"}, lambda d: d["status"] == "active", "power-on"
         )
