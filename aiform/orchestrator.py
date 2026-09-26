@@ -101,17 +101,43 @@ def _pop_id(
 # `id` is not in `attributes` -- _pop_id() above moves it to StateEntry.id --
 # but it is the most useful cross-resource value, so it is merged back in here
 # rather than every caller remembering to.
-def referenceable(st: State) -> dict[str, dict[str, Any]]:
-    return {key: {**entry.attributes, "id": entry.id} for key, entry in st.resources.items()}
+def referenceable(
+    st: State, *, exclude: frozenset[str] | set[str] = frozenset()
+) -> dict[str, dict[str, Any]]:
+    return {
+        key: {**entry.attributes, "id": entry.id}
+        for key, entry in st.resources.items()
+        if key not in exclude
+    }
 
 
+# `volatile` holds the keys this run is about to give new attribute values --
+# a drifted resource being recreated, or one whose update may turn into a
+# delete+create. Their CURRENT attributes are still sitting in state, and
+# offering those to a dependent is the stale-DNS bug this whole feature exists
+# to fix: the dependent would resolve to the doomed address, diff clean, plan
+# NO_OP, and be skipped by apply_plan() before the apply-time re-resolve could
+# ever correct it. Withholding them instead leaves the reference unresolved,
+# which routes the dependent through unresolved_entry() and gets it resolved
+# for real during the apply, after the target has its new value.
 def _resolve_params(
-    key: str, params: dict[str, Any], st: State
+    key: str, params: dict[str, Any], st: State, volatile: set[str]
 ) -> tuple[dict[str, Any], list[str]]:
     try:
-        return references.resolve(params, referenceable(st))
-    except references.ReferenceError as exc:
+        return references.resolve(params, referenceable(st, exclude=volatile))
+    except references.ReferenceResolutionError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
+
+
+# UPDATE counts only when likely_replace is set, and that field is advisory --
+# driver.update() is the real arbiter, so this errs toward treating a target as
+# volatile when it might not be. The asymmetry is deliberate: a needless
+# dependent update rewrites the same value at no LLM cost, while a missed one
+# leaves a record pointing at a dead host.
+def _will_get_new_attributes(entry: PlanEntry) -> bool:
+    return entry.action == PlanAction.CREATE or (
+        entry.action == PlanAction.UPDATE and entry.likely_replace
+    )
 
 
 def _require_tracked(st: State, key: str) -> StateEntry:
@@ -364,7 +390,7 @@ def _dependency_targets(spec: ResourceSpec, key: str) -> list[str]:
     declared = list(spec.depends_on)
     try:
         referenced = references.reference_targets(spec.params)
-    except references.ReferenceError as exc:
+    except references.ReferenceResolutionError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
     return declared + sorted(referenced - set(declared))
 
@@ -441,6 +467,9 @@ def build_create_plan(
 
     planned: list[PlannedResource] = []
     covered_keys: set[str] = set()
+    # Accumulated in topological order, so by the time a dependent is planned
+    # every target of its has already been classified.
+    volatile: set[str] = set()
 
     for path in ordered_files:
         if is_delete_marked(path):
@@ -451,9 +480,12 @@ def build_create_plan(
                 st,
                 driver_cache,
                 credentials_cache,
+                volatile,
                 client=client,
                 llm_config=llm_config,
             )
+        if _will_get_new_attributes(pr.entry):
+            volatile.add(pr.entry.resource_key)
         covered_keys.add(pr.entry.resource_key)
         planned.append(pr)
 
@@ -489,6 +521,7 @@ def _plan_one(
     st: State,
     driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]],
     credentials_cache: dict[str, dict[str, str]],
+    volatile: set[str],
     *,
     client: anthropic.Anthropic | None,
     llm_config: LLMConfig | None,
@@ -519,7 +552,7 @@ def _plan_one(
     # permanently, billing a categorization on every future plan. Because the
     # plan is walked in topological order, a target that is also in this run
     # has already been refreshed by the time its dependent resolves.
-    desired_params, unresolved = _resolve_params(key, resource_spec.params, st)
+    desired_params, unresolved = _resolve_params(key, resource_spec.params, st, volatile)
 
     entry, params_agree = _decide_action(
         key,
@@ -830,7 +863,11 @@ def _build_destroy_plan_from_paths(
     _check_duplicate_keys(discovered)
 
     node_keys = {entry.key for entry in discovered}
-    raw_edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
+    # _dependency_targets(), not spec.depends_on: a reference implies the edge on
+    # this path too. The state-driven producer below gets this for free by reading
+    # the persisted, already-unioned StateEntry.depends_on; this one derives its
+    # edges from the files, so it has to union them itself.
+    raw_edges = {entry.key: set(_dependency_targets(entry.spec, entry.key)) for entry in discovered}
     edges, dangling = _classify_destroy_edges(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
@@ -857,7 +894,7 @@ def _build_destroy_plan_from_paths(
                 driver_info=None,
                 credentials=None,
                 state_entry=state_entry,
-                depends_on=resource_spec.depends_on,
+                depends_on=_dependency_targets(resource_spec, key),
             )
         )
     return planned, warnings

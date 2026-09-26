@@ -2163,7 +2163,12 @@ class TestReferenceDerivedEdges:
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan([zone, doomed], state_path=state_path, client=client)
-        assert "digitalocean.compute.web-01" in exc_info.value.reason
+        reason = exc_info.value.reason
+        assert "digitalocean.compute.web-01" in reason
+        # Rule 3 (depends on something being destroyed this run), not rule 2
+        # (target resolves nowhere) -- both reasons name the target, so the key
+        # alone does not distinguish them.
+        assert "marked for deletion" in reason
         assert len(client.messages.calls) == 0
 
     def test_the_dot_typo_is_blocked_rather_than_sent_to_the_provider(
@@ -2286,17 +2291,17 @@ class TestReferenceResolutionAtPlanTime:
         assert zone_pr.unresolved_references == ["data"]
         assert len(client.messages.calls) == 0
 
-    def test_a_drifted_target_still_resolves_from_its_stored_attributes(
+    def test_a_healthy_tracked_target_not_in_this_run_resolves_from_state(
         self, tmp_path: Path, drivers_dir: Path
     ):
-        # The distinction the test above turns on, pinned directly: web-01 is
-        # tracked but gone provider-side, and the reference to it still
-        # resolves, because state is what resolution reads.
-        write_ref_driver(drivers_dir)
+        # The everyday case: the target already exists, nothing in this run
+        # touches it, so its stored attributes are the answer. This replaces an
+        # earlier test that used a DRIFTED target to make the same point and so
+        # pinned a bug as desired behaviour -- a drifted target is about to be
+        # recreated with a new address, and is now withheld (see
+        # TestReferenceToATargetThisRunWillReplace).
         write_ref_driver(drivers_dir, "domain")
-        web = tmp_path / "web.aiform.md"
         zone = tmp_path / "a-zone.aiform.md"
-        write_aiform_md(web, name="web-01")
         write_aiform_md(
             zone,
             resource="domain",
@@ -2308,13 +2313,13 @@ class TestReferenceResolutionAtPlanTime:
             state_path,
             **{
                 "digitalocean.compute.web-01": make_state_entry(
-                    name="web-01", id="MISSING", attributes={"ipv4_address": "198.51.100.9"}
+                    name="web-01", id="id-web-01", attributes={"ipv4_address": "198.51.100.9"}
                 ),
             },
         )
 
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=FakeClient([])
+            [zone], state_path=state_path, client=FakeClient([])
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         zone_pr = by_key["digitalocean.domain.example.com"]
@@ -2356,6 +2361,117 @@ class TestReferenceResolutionAtPlanTime:
         planned, _ = orchestrator.build_create_plan([zone], state_path=state_path, client=client)
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(client.messages.calls) == 0
+
+
+class TestReferenceEdgesOnTheDestroyPath:
+    """build_destroy_plan()'s file-driven producer must honour
+    reference-derived edges too. The state-driven producer gets this for free
+    by reading the persisted, unioned StateEntry.depends_on; this one derives
+    edges from the files, so it has to union them itself."""
+
+    def test_destroy_from_paths_orders_a_referencing_resource_before_its_target(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(
+            dependent,
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.zzz-01": make_state_entry(name="zzz-01", id="id-zzz"),
+                "digitalocean.compute.aaa-01": make_state_entry(name="aaa-01", id="id-aaa"),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan([dependent, target], state_path=state_path)
+        keys = [pr.entry.resource_key for pr in planned]
+        # Reverse dependency order: the referencing resource goes first. With
+        # no edge, reverse-alphabetical would put zzz-01 first instead.
+        assert keys == ["digitalocean.compute.aaa-01", "digitalocean.compute.zzz-01"]
+
+
+class TestReferenceToATargetThisRunWillReplace:
+    """A target being recreated or replaced in this run is about to get a new
+    attribute value, so its CURRENT value must not be handed to a dependent as
+    the answer -- that is exactly the stale-DNS failure #215 was filed for."""
+
+    def _zone_and_droplet(self, tmp_path: Path, drivers_dir: Path, *, droplet_id: str):
+        write_ref_driver(drivers_dir)
+        write_ref_driver(drivers_dir, "domain")
+        web = tmp_path / "web.aiform.md"
+        zone = tmp_path / "a-zone.aiform.md"
+        write_aiform_md(web, name="web-01")
+        zone_content = write_aiform_md(
+            zone,
+            resource="domain",
+            name="example.com",
+            params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.web-01": make_state_entry(
+                    name="web-01", id=droplet_id, attributes={"ipv4_address": "203.0.113.5"}
+                ),
+                "digitalocean.domain.example.com": make_state_entry(
+                    resource_type="domain",
+                    name="example.com",
+                    id="id-example.com",
+                    # Matches what the fake driver's read() echoes, so without
+                    # the fix the zone's diff is empty, the sha matches, and it
+                    # short-circuits to NO_OP -- which apply_plan() skips
+                    # outright, so the apply-time re-resolve never runs.
+                    attributes={"data": "203.0.113.5", "ipv4_address": "203.0.113.5"},
+                    aiform_md_path=str(zone),
+                    aiform_md_sha256=orchestrator.parser.compute_sha256(zone_content),
+                ),
+            },
+        )
+        return web, zone, state_path
+
+    def test_a_drifted_target_is_not_offered_as_resolved_to_its_dependent(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        # web-01 is tracked but gone provider-side, so it will be recreated
+        # with a NEW address. If the zone resolves against the stored address
+        # it plans NO_OP, apply_plan() skips it entirely, and DNS is left
+        # pointing at the dead host -- with `plan` having displayed the stale
+        # value as though it were the answer.
+        web, zone, state_path = self._zone_and_droplet(tmp_path, drivers_dir, droplet_id="MISSING")
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [zone, web], state_path=state_path, client=client
+        )
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.CREATE
+        zone_pr = by_key["digitalocean.domain.example.com"]
+        assert zone_pr.unresolved_references == ["data"]
+        assert zone_pr.entry.action == PlanAction.UPDATE
+        assert len(client.messages.calls) == 0
+
+    def test_the_dependent_then_picks_up_the_new_value_during_apply(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        web, zone, state_path = self._zone_and_droplet(tmp_path, drivers_dir, droplet_id="MISSING")
+        planned, _ = orchestrator.build_create_plan(
+            [zone, web], state_path=state_path, client=FakeClient([])
+        )
+
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        new_ip = saved.resources["digitalocean.compute.web-01"].attributes["ipv4_address"]
+        assert new_ip != "203.0.113.5"
+        assert saved.resources["digitalocean.domain.example.com"].attributes["data"] == new_ip
 
 
 class TestReferenceResolutionAtApplyTime:

@@ -49,8 +49,8 @@ sentence is retired by this spec.
 
 ## Relationship to PLAN.md §10
 
-§10's entry **"Dependency graph: ordering exists, value flow does not"** names
-this phase precisely:
+§10's entry — titled **"Dependency graph: ordering exists, value flow does
+not"** until this phase retired that title — named this phase precisely:
 
 > cross-resource *attribute* references — a DNS record's `data` reading a
 > droplet's `ipv4_address`, the canonical example — are Phase 2, and are the
@@ -79,7 +79,7 @@ class Reference(NamedTuple):
     attribute: str
 
 
-class ReferenceError(Exception):
+class ReferenceResolutionError(Exception):
     """A reference that cannot be honoured. Carries `path` (the dotted param
     path) and a message naming what was wrong."""
 
@@ -106,7 +106,7 @@ def resolve(
 
     A path is *unresolved* -- returned rather than raised -- only when its
     target key is absent from `available`. Every other failure raises
-    ReferenceError. An unresolved path keeps its literal text in the returned
+    ReferenceResolutionError. An unresolved path keeps its literal text in the returned
     tree."""
 
 
@@ -129,6 +129,13 @@ string share the single string they produced.
 
 `params` is never mutated; `resolve()` returns a new tree.
 
+One property worth knowing rather than guarding: for a whole-value reference to
+a list or dict attribute, the returned tree **aliases** the target's state
+attributes rather than copying them (`resolved["t"] is entry.attributes["tags"]`).
+No shipped driver mutates the `params` it is handed, so this is not a defect
+today, and a defensive `deepcopy` would be error handling for a scenario that
+cannot currently happen. It becomes one the moment a driver mutates in place.
+
 ### Changes to existing modules
 
 - **`aiform/orchestrator.py`** — `PlannedResource` gains `raw_params` and
@@ -136,10 +143,12 @@ string share the single string they produced.
   reference-derived targets with `depends_on` ones; `_plan_one()` resolves
   before `_decide_action()`; `_decide_action()` gains the unresolved branch;
   `apply_plan()` re-resolves before each driver call. It also gains a **public**
-  `referenceable(st)` returning the `attributes`-plus-`id` namespace — public
-  because `observability.py` needs the same mapping, and keeping this
-  State-aware adapter here is what lets `references.py` stay free of a `State`
-  import.
+  `referenceable(st, *, exclude=...)` returning the `attributes`-plus-`id`
+  namespace — public because `observability.py` needs the same mapping, and
+  keeping this State-aware adapter here is what lets `references.py` stay free
+  of a `State` import. Plus `_will_get_new_attributes()` and the `volatile` set
+  `build_create_plan()` threads through the loop; both destroy producers now
+  union reference-derived edges.
 - **`aiform/planner.py`** — `unresolved_entry()`, a third deterministic
   zero-LLM `PlanEntry` producer alongside `create_entry()`/`destroy_entry()`.
 - **`aiform/parser.py`** — `parse_frontmatter()` appends a hint to a YAML
@@ -148,6 +157,12 @@ string share the single string they produced.
   `_plan_to_json()` carries them.
 - **`aiform/observability.py`** — `_status_for_entry()` resolves before
   `_config_status()`'s diff.
+
+**Two specs the approved plan listed are not touched.** `specs/models.md`,
+because no model change turned out to be needed (below); and
+`specs/system_test_domain.md`, because the live test it describes changes with
+the live-suite run rather than ahead of it — describing a test that does not
+exist yet would be the overclaim this repo treats as a defect.
 
 **`aiform/models.py` does not change.** The approved plan listed
 `specs/models.md` among the specs to update; it turned out no model change is
@@ -193,12 +208,27 @@ So:
 | `${HOME}`, `${PATH}` | a literal, untouched — no colon |
 | `${PORT:-8080}`, `${FOO:+x}` | a literal, untouched — `PORT` is not a valid key |
 | `${digitalocean.compute.web:ipv4_address` (unclosed) | a literal, untouched |
-| `${digitalocean.compute.web.ipv4_address}` | **raises** — see below |
+| `${digitalocean.compute.web.ipv4_address}` | **raises** — dot, not colon |
+| `${Digitalocean.compute.web:ipv4_address}` | **raises** — bad provider |
+| `${digitalocean.compute:ipv4_address}` | **raises** — no name segment |
+| `${digitalocean.compute.web:ipv4-address}` | **raises** — bad attribute |
+| `${digitalocean.compute.web:}` | **raises** — empty attribute |
 | `${digitalocean.compute.web:nosuchattr}` | **raises** — unknown attribute |
+| `${VERSION:-1.2.3}` | a literal — the dot is in the *default*, not the key |
 
 A `${…}` is a reference **iff** its content contains a colon and the text left
-of the last colon parses as a valid dependency key. Everything else is literal
-text and passes through untouched.
+of the last colon **contains a dot**. One dot is the whole test for intent,
+because a shell variable name cannot contain one — so `${PORT:-8080}`,
+`${var:1:3}` and `${VERSION:-1.2.3}` all leave a dotless key and stay literal.
+
+Once that test passes, the text is an *attempted* reference and is validated
+rather than silently passed through: a key that does not parse as
+`provider.resource_type.name` raises, and so does a malformed attribute. The
+capitalised `${Digitalocean.compute.web-01:ipv4_address}` and the hyphenated
+`${digitalocean.compute.web-01:ipv4-address}` therefore both raise. An earlier
+draft gated on the key being *valid* rather than merely dotted, which sent both
+of those to the provider verbatim — the exact failure this rule exists to
+prevent.
 
 **The one exception, and why it earns its complexity.** The likeliest user
 error is writing the key with a fourth dot instead of a colon — that is what
@@ -206,7 +236,7 @@ Terraform habits produce. Passing it through silently sends the literal
 `${digitalocean.compute.web.ipv4_address}` to DigitalOcean as a DNS record's
 value. So a `${…}` with **no** colon whose content has three or more
 dot-separated segments, and whose first two segments match
-`RESOURCE_OR_PROVIDER_PATTERN`, raises `ReferenceError` naming the missing
+`RESOURCE_OR_PROVIDER_PATTERN`, raises `ReferenceResolutionError` naming the missing
 colon. That test is narrow by construction: `${HOME}` has no dots, and
 `${PORT:-8080}` has a colon, so neither can reach it.
 
@@ -219,7 +249,7 @@ colon. That test is narrow by construction: `${HOME}` has no dots, and
   `data: "web is ${…:ipv4_address}"`. Each reference is stringified and
   interpolated. Several references in one string all substitute.
 - **Embedding a non-scalar raises.** If an embedded reference resolves to
-  anything but `str`/`int`/`float`/`bool`, `ReferenceError` is raised rather
+  anything but `str`/`int`/`float`/`bool`, `ReferenceResolutionError` is raised rather
   than interpolating a Python `repr` — `"tags are ['a', 'b']"` is never what
   was meant. Whole-value references may resolve to any type.
 
@@ -229,7 +259,7 @@ A target's **state `attributes`, plus `id`**. `id` is not in `attributes` —
 `orchestrator._pop_id()` moves it to `StateEntry.id` — but it is the most useful
 cross-resource value, so callers pass `{**entry.attributes, "id": entry.id}`.
 
-An attribute not in that mapping raises `ReferenceError` listing the names that
+An attribute not in that mapping raises `ReferenceResolutionError` listing the names that
 are available, because a typo'd attribute is otherwise indistinguishable from a
 driver that stopped returning a field.
 
@@ -264,14 +294,17 @@ something actionable instead of a bare `mapping values are not allowed here`.
 **Plan time**, in `_plan_one()` before `_decide_action()`, against
 `st.resources`. Not optional: `planner.plan_resource()` diffs `desired_params`
 against live attributes, so an unresolved literal would defeat the no-op
-short-circuit at `planner.py:153` **permanently** and bill a categorization on
+short-circuit at `planner.py:176` **permanently** and bill a categorization on
 every future plan. Because the plan is walked in topological order, a target
 that is also in this run has already been refreshed by the time its dependent
 resolves.
 
 **Apply time**, in `apply_plan()`, re-resolving `raw_params` from the in-loop
-`st` immediately before `driver.create()`, `driver.update()`, and the replace
-path's create. `apply_plan()` saves state after every resource, so a
+`st` immediately before `driver.create()` and `driver.update()`. The replace
+path does **not** re-resolve a third time: `_replace_resource()` receives the
+value computed for the `update()` attempt that raised
+`DriverUpdateNotSupported`, because the only entry to leave state in between is
+its own, and a resource referencing itself is a cycle already refused. `apply_plan()` saves state after every resource, so a
 just-created droplet's `ipv4_address` is present by the zone's turn.
 
 Apply re-resolves **the whole tree**, not only the paths that were unknown at
@@ -315,6 +348,20 @@ means concretely:
   refreshed in that run, so the value is as fresh as the last run that touched
   the target.
 - A reference to a target **nowhere at all** raises.
+- **Both destroy producers honour reference-derived edges.**
+  `_build_destroy_plan_from_state()` gets it for free by reading the persisted,
+  already-unioned `StateEntry.depends_on`; `_build_destroy_plan_from_paths()`
+  derives edges from the files and so unions them itself. An earlier draft
+  switched every other site to the unioned list and missed this one, which let
+  `aiform plan destroy app.aiform.md db.aiform.md` destroy a referenced droplet
+  before the record pointing at it — the precise inversion Phase 1 exists to
+  prevent. Covered by a test.
+- **A delete-marked file's params are still scanned for malformed references.**
+  Phase 1 exempts a delete-marked file from *target resolution* errors, but a
+  dot-typo inside one raises during the edge pass, before that exemption is
+  reached. Narrow and arguably harmless — nothing is resolved for a resource
+  being destroyed — but it is a behaviour Phase 1's table does not describe, so
+  it is recorded here rather than left for someone to discover.
 
 ### Unresolved references and the plan action
 
@@ -327,15 +374,50 @@ Ordering inside `_decide_action()`, first match winning:
    deterministic `UPDATE`, zero LLM, rationale naming the unresolved paths.
 4. Otherwise → `planner.plan_resource()` as today.
 
-Case 3 exists for a narrow situation: a *tracked* dependent whose target
-drifted missing and is being recreated in the same run. There is no honest diff
-to categorize, because the desired value is not known yet, so the model is not
-asked. `params_agree` is `False`, which keeps `_plan_one()` from recording the
-`.aiform.md` hash on a run whose params were never fully known — the #195
-invariant.
+Case 3 covers two situations, and the second is the one that matters most:
+
+- The target is brand new in this run, so nothing about it is in state yet.
+- **The target is in state but this run is about to give it a new value** — see
+  "A target this run will replace" below.
+
+There is no honest diff to categorize either way, because the desired value is
+not known yet, so the model is not asked. `params_agree` is `False`, which keeps
+`_plan_one()` from recording the `.aiform.md` hash on a run whose params were
+never fully known — the #195 invariant.
 
 Case 3 never returns `NO_OP`, so a resource with an unresolved reference is
 always applied.
+
+### A target this run will replace
+
+`build_create_plan()` accumulates a `volatile` set as it walks the plan in
+topological order, and `_resolve_params()` withholds those keys from the
+namespace. A key joins it when `_will_get_new_attributes()` says so:
+
+- action is `CREATE` — which includes the **recreate of a drifted resource**,
+  the case that matters, since a drifted entry is still in `st.resources` with
+  its old attributes;
+- action is `UPDATE` **and** `likely_replace` is set.
+
+Without this, the feature fails at its own purpose. A tracked droplet deleted
+out-of-band still holds its old `ipv4_address` in state, so a zone referencing
+it resolves to the **dead** address, diffs clean, plans `NO_OP` — and
+`apply_plan()` skips `NO_OP` before `_apply_params()` runs, so the apply-time
+re-resolve never fires. The apply then recreates the droplet with a new address
+and leaves DNS pointing at the old one, with `plan` having displayed the stale
+value as though it were the answer. That is exactly the P1 failure #215 was
+filed against. The same held for an ordinary replace (a `region` change → new
+droplet → new address). Both are covered by tests.
+
+Two deliberate asymmetries:
+
+- **`likely_replace` is advisory** — `driver.update()` is the real arbiter — so
+  this errs toward treating a target as volatile when it might not be. A
+  needless dependent `UPDATE` rewrites the same value at zero LLM cost; a missed
+  one leaves a record pointing at a dead host. The trade is not close.
+- **Apply time does not withhold anything.** `_apply_params()` uses the full
+  namespace, because by then the target has actually been created or replaced
+  and state holds its real new value.
 
 ### Plan output
 
@@ -389,7 +471,7 @@ reporting a drift that is really a missing target.
 Resolution is deterministic string and tree work: no LLM call on the reference
 path, in any phase, per the PRD's cost constraint. On unchanged input every
 reference resolves to the same value, `diff_attributes()` is empty, and
-`planner.py:153` short-circuits to `NO_OP` exactly as today — so a repeat
+`planner.py:176` short-circuits to `NO_OP` exactly as today — so a repeat
 `plan` still costs **zero** Anthropic calls, and the tests pin it.
 
 When a target's attribute genuinely changes, the dependent's diff is non-empty
@@ -399,7 +481,7 @@ it is the case that used to report a false no-op.
 ## Edge cases / errors
 
 - **Malformed key** inside an otherwise well-formed reference (bad provider,
-  bad `resource_type`, empty name) → `ReferenceError` naming the key. The
+  bad `resource_type`, empty name) → `ReferenceResolutionError` naming the key. The
   message comes from `parse_dependency_key()`.
 - **Self-reference** — a resource referencing its own key — is a length-1
   cycle, refused by `graph.topological_order()` exactly as a self
@@ -413,7 +495,7 @@ it is the case that used to report a false no-op.
   the tree unchanged and no unresolved paths.
 - **A non-string scalar** (`ttl: 3600`) is never scanned; only `str` values can
   carry a reference.
-- **`ReferenceError` raised during a plan** surfaces as `PlanBlockedError` from
+- **`ReferenceResolutionError` raised during a plan** surfaces as `PlanBlockedError` from
   the orchestrator, so the CLI's existing exit-code handling applies and no new
   exception type reaches `cli.py`.
 

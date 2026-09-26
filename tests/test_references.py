@@ -5,7 +5,7 @@ import pytest
 
 from aiform.references import (
     Reference,
-    ReferenceError,
+    ReferenceResolutionError,
     describe,
     find_references,
     reference_targets,
@@ -84,7 +84,7 @@ class TestEmbeddedReference:
         # Interpolating a list would produce "tags are ['aiform', 'web']" --
         # a Python repr, never what was meant. A whole-value reference to the
         # same attribute is legal; only embedding is refused.
-        with pytest.raises(ReferenceError) as excinfo:
+        with pytest.raises(ReferenceResolutionError) as excinfo:
             resolve(ref(f"tags are ${{{WEB}:tags}}"), AVAILABLE)
         assert "tags" in str(excinfo.value)
 
@@ -167,16 +167,57 @@ class TestMalformedReferencesRaise:
         # produce. Passing it through would send the literal
         # "${digitalocean.compute.web-01.ipv4_address}" to the provider as a
         # DNS record's value.
-        with pytest.raises(ReferenceError) as excinfo:
+        with pytest.raises(ReferenceResolutionError) as excinfo:
             resolve(ref("${digitalocean.compute.web-01.ipv4_address}"), AVAILABLE)
         assert "colon" in str(excinfo.value).lower()
 
     def test_bad_provider_in_an_otherwise_wellformed_reference_raises(self):
-        with pytest.raises(ReferenceError):
+        with pytest.raises(ReferenceResolutionError):
             resolve(ref("${Digitalocean.compute.web-01:ipv4_address}"), AVAILABLE)
 
+    def test_a_missing_name_segment_raises(self):
+        # Two dotted segments, not three: the key half is malformed rather than
+        # absent, so intent is not in doubt.
+        with pytest.raises(ReferenceResolutionError):
+            resolve(ref("${digitalocean.compute:ipv4_address}"), AVAILABLE)
+
+    @pytest.mark.parametrize(
+        "attribute",
+        [
+            "ipv4-address",  # hyphen, the likeliest slip
+            "Ipv4_address",  # capitalised
+            "",  # "${key:}"
+            " ipv4_address",  # space, inside a quoted YAML string
+            "4ipv",  # leading digit
+        ],
+    )
+    def test_a_malformed_attribute_raises_rather_than_passing_through(self, attribute):
+        # These used to fall through as literals, which sent "${...:ipv4-address}"
+        # to the provider verbatim as a record value. The key half already
+        # parsed, so the text was plainly an attempted reference.
+        with pytest.raises(ReferenceResolutionError) as excinfo:
+            resolve(ref(f"${{{WEB}:{attribute}}}"), AVAILABLE)
+        assert "attribute" in str(excinfo.value).lower()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "${VERSION:-1.2.3}",  # a dotted *default*, not a dotted key
+            "${A:-x.y}",
+            "${var:1:3}",
+            "${FOO:=bar}",
+        ],
+    )
+    def test_shell_expansion_with_dots_in_the_value_stays_literal(self, text):
+        # The "is this a key" test is one dot on the LEFT of the last colon. A
+        # dotted default value must not drag the whole thing into reference
+        # territory.
+        resolved, unresolved = resolve(ref(text), AVAILABLE)
+        assert resolved == {"data": text}
+        assert unresolved == []
+
     def test_unknown_attribute_raises_and_lists_what_is_available(self):
-        with pytest.raises(ReferenceError) as excinfo:
+        with pytest.raises(ReferenceResolutionError) as excinfo:
             resolve(ref(f"${{{WEB}:ipv4_addres}}"), AVAILABLE)
         message = str(excinfo.value)
         assert "ipv4_addres" in message
@@ -190,13 +231,13 @@ class TestMalformedReferencesRaise:
         # attached (issue #178). A DNS record whose data is the string "None"
         # is worse than a refusal.
         available = {WEB: {"id": "1", "ipv4_address": None}}
-        with pytest.raises(ReferenceError) as excinfo:
+        with pytest.raises(ReferenceResolutionError) as excinfo:
             resolve(ref(f"${{{WEB}:ipv4_address}}"), available)
         assert "ipv4_address" in str(excinfo.value)
 
     def test_the_error_names_the_param_path(self):
         params = {"records": [{"data": f"${{{WEB}:nope}}"}]}
-        with pytest.raises(ReferenceError) as excinfo:
+        with pytest.raises(ReferenceResolutionError) as excinfo:
             resolve(params, AVAILABLE)
         assert "records[0].data" in str(excinfo.value)
 

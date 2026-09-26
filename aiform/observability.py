@@ -621,7 +621,7 @@ def _config_for(
     # referencing resource would report drift forever.
     try:
         desired, unresolved = references.resolve(spec.params, orchestrator.referenceable(st))
-    except references.ReferenceError as exc:
+    except references.ReferenceResolutionError as exc:
         return _undetermined(entry, _oneline(f"a reference cannot be resolved: {exc}"))
     if unresolved:
         # Nothing can be said about drift while a target is untracked, and

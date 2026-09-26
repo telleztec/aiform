@@ -1403,9 +1403,25 @@ belongs here is which of this module's functions changed.
   it first appears: a target that is tracked but drifted missing is **still in
   state**, so a reference to it resolves from stored attributes. Only a target
   absent from state entirely is unknown.
+- **`referenceable()` takes an `exclude` set, and `build_create_plan()` threads
+  a `volatile` set through its loop.** A key joins `volatile` when
+  `_will_get_new_attributes()` holds — action `CREATE` (including the recreate
+  of a drifted resource, which is still sitting in `st.resources` with its old
+  attributes) or `UPDATE` with `likely_replace`. Those keys are withheld from
+  the namespace a later dependent resolves against. Without it, a dependent
+  resolves to the doomed value, diffs clean, plans `NO_OP`, and is skipped by
+  `apply_plan()` before the apply-time re-resolve can correct it — leaving a DNS
+  record pointing at a host the same apply just destroyed. Accumulating the set
+  in topological order is what makes it correct: every target is classified
+  before any dependent of it is planned.
+- **Both destroy producers union reference-derived edges.**
+  `_build_destroy_plan_from_state()` gets it free from the persisted
+  `StateEntry.depends_on`; `_build_destroy_plan_from_paths()` calls
+  `_dependency_targets()` itself. Missing the second one let
+  `plan destroy <files>` invert the order for a reference-only edge.
 - **`_apply_params(pr, st)`** — new. Re-resolves the whole raw tree immediately
-  before each `create`/`update`/replace-create, rather than reusing plan time's
-  answer, so the value handed to a driver is the one live at that moment —
+  before each `create`/`update` — the replace path reuses the value computed for
+  the `update()` attempt that raised — rather than reusing plan time's answer, so the value handed to a driver is the one live at that moment —
   correct precisely when a target was replaced earlier in the same apply. It
   raises `PlanBlockedError` on a path still unresolved; topological ordering
   means that cannot happen, and the guard exists because the alternative to
