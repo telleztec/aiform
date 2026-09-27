@@ -333,3 +333,24 @@ response.
   text and return `intent_notes[]`, each item naming the `params.*` field
   it concerns (or `"general"`) and one atomic, diff/plan-relevant
   instruction, per `PLAN.md` §2's `INTENT_NOTES_SCHEMA` description.
+
+## Addendum: `resource_references` (`specs/resource_references.md`)
+
+`parse_frontmatter()` does not resolve references — it only has to not mangle
+them, and a well-formed reference is an ordinary YAML string.
+
+What it does add is a hint. Both ways a well-meant reference fails do so inside
+PyYAML, with a message naming neither cause: a space after the colon reads as a
+nested mapping (`ScannerError`), and an unquoted reference inside a `[ ]` flow
+sequence trips over its braces (`ParserError`). `_yaml_error()` appends a hint
+naming both, and **only when the source contains `${`**, so it cannot attach
+itself to unrelated YAML errors. It is applied at both raise sites, since
+`_closing_delimiter_index()`'s `compose_all()` is usually the one that fails
+first.
+
+Note what this module must *not* do: reject a `${...}` it cannot parse. Its own
+frontmatter logic already anticipates a cloud-init `user_data: |` block scalar,
+and `compute.PARAM_SCHEMA` is `additionalProperties: True`, so shell parameter
+expansion (`${HOME}`, `${PORT:-8080}`) in a params value is an anticipated case.
+`specs/resource_references.md`'s "What is, and is not, a reference" owns that
+rule.

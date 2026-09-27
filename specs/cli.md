@@ -1051,3 +1051,31 @@ Three things that will bite whoever wires up the parser:
 The rendering rules, `--output`'s append behaviour, and the per-resource
 name-resolution errors are specified in
 `specs/driver_observability.md` and not restated here.
+
+## Addendum: `resource_references` (`specs/resource_references.md`)
+
+`_print_plan()` prints one indented `<path> = <value>` line per referencing
+path, after the `depends on:` line. Resolved and unresolved render the same
+way, because `references.resolve()` leaves the reference text itself at an
+unresolved path — so a resolved line shows the value and an unresolved one
+shows the reference. **No `(known after apply)` marker**: a reference is
+self-evidently unresolved, and the suffix would be noise on every first apply.
+
+`_plan_to_json()` gains a `references` key carrying typed rows rather than the
+rendered text, since `--json` is the closest thing aiform has to an API:
+
+```json
+"references": [
+  {"path": "records[0].data", "target": "digitalocean.compute.web-01",
+   "attribute": "ipv4_address", "resolved": "203.0.113.5"}
+]
+```
+
+`resolved` is `null` when the value is not known yet, rather than echoing the
+literal the text form shows — a consumer should branch on "known", not
+string-match a placeholder. A resource with no references carries `[]`, never a
+missing key. One row per reference, so several references embedded in one string
+produce several rows sharing that path's single resolved value.
+
+Exit codes are unchanged: a bad reference surfaces as `PlanBlockedError`, which
+this module already maps to exit 2.

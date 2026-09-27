@@ -66,12 +66,31 @@ def _closing_delimiter_index(content: str, lines: list[str]) -> int:
     try:
         document = next(yaml.compose_all(content), None)
     except yaml.YAMLError as e:
-        raise ValueError(f"malformed .aiform.md frontmatter: invalid YAML: {e}") from e
+        raise _yaml_error(content, e) from e
 
     closing_index = document.end_mark.line if document is not None else len(lines)
     if closing_index >= len(lines) or lines[closing_index].strip() != "---":
         raise ValueError(_MALFORMED_DELIMITERS_MESSAGE)
     return closing_index
+
+
+# Both ways a well-intentioned reference fails inside PyYAML rather than in
+# aiform: a space after the colon makes the value look like a nested mapping,
+# and an unquoted reference inside a flow sequence trips over its braces.
+# Neither error names the cause, so the hint is appended whenever the source
+# was evidently trying to write a reference at all.
+_REFERENCE_YAML_HINT = (
+    " -- if you meant a cross-resource reference, note that "
+    "${provider.resource_type.name:attribute} takes no space after the colon, and must be "
+    'quoted when it appears inside a [ ] flow sequence: ids: ["${...:id}"]'
+)
+
+
+def _yaml_error(content: str, exc: Exception) -> ValueError:
+    message = f"malformed .aiform.md frontmatter: invalid YAML: {exc}"
+    if "${" in content:
+        message += _REFERENCE_YAML_HINT
+    return ValueError(message)
 
 
 def parse_frontmatter(content: str) -> ResourceSpec:
@@ -82,7 +101,7 @@ def parse_frontmatter(content: str) -> ResourceSpec:
     try:
         data = yaml.safe_load(frontmatter_text)
     except yaml.YAMLError as e:
-        raise ValueError(f"malformed .aiform.md frontmatter: invalid YAML: {e}") from e
+        raise _yaml_error(content, e) from e
 
     if not isinstance(data, dict):
         raise ValueError(

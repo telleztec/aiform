@@ -606,3 +606,15 @@ loudly, because every hit means the primary teardown failed somewhere.
   categorization path throughout.
 - **Concurrency/locking.** `PLAN.md` §10's known deferred gap; this suite
   runs one sequential scenario.
+
+## Addendum: cross-resource references (`specs/system_test_references.md`)
+
+A reference from a DNS record to a droplet's `ipv4_address` is exercised by its
+own live suite, `tests/system/test_cli_references.py`, rather than here. The
+split is deliberate: that test creates a real **droplet**, so it is billable,
+while this suite creates only free DNS zones and says so in its own cost note.
+Folding one into the other would quietly make this suite cost money.
+
+This suite therefore keeps using literal record values throughout. That is no
+longer a statement about what aiform can express — see
+`specs/resource_references.md` — only about what this file covers.

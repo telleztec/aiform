@@ -814,6 +814,11 @@ def delete_firewall_directly(token: str, firewall_id: str) -> None:
 # name: this sweep would otherwise delete that suite's droplets too. Both
 # are throwaways so nothing would have been lost, but a sweep whose reach
 # is wider than its docstring says is how the next one gets it wrong.
+#
+# The "fwdrop" spelling is historical -- the firewall suite needed the first
+# sweepable droplet -- but the constant is not firewall-specific. Any suite
+# whose droplet should have a sweep backstop names it through
+# unique_droplet_name(); test_cli_references.py does, and says why.
 SYSTEM_TEST_DROPLET_PREFIX = "aiform-system-test-fwdrop"
 
 

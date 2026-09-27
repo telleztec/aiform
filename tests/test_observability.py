@@ -685,6 +685,67 @@ params:
 Runs the app.
 """
 
+    REFERENCING_SOURCE = """\
+---
+resource: compute
+name: web-01
+provider: digitalocean
+params:
+  region: sfo3
+  size: ${digitalocean.compute.db-01:size}
+---
+"""
+
+    def test_a_resolved_reference_reads_as_in_sync_not_as_permanent_drift(
+        self, tmp_path, stub_environment
+    ):
+        # _config_for() re-parses the .aiform.md and diffs spec.params against
+        # attributes. Without resolving first, every referencing resource would
+        # report drift forever, since the literal "${...}" can never equal the
+        # value the provider echoed back.
+        driver = StubDriver(
+            read_result={"id": "123456789", "region": "sfo3", "size": "s-2vcpu-4gb"}
+        )
+        stub_environment["drivers"][("digitalocean", "compute")] = driver
+        md_path = tmp_path / "web.aiform.md"
+        md_path.write_text(self.REFERENCING_SOURCE, encoding="utf-8")
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(
+                aiform_md_path=str(md_path),
+                attributes={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            ),
+            make_state_entry(name="db-01", id="987", attributes={"size": "s-2vcpu-4gb"}),
+        )
+
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert report.config.in_sync is True
+        assert report.config.drifted_fields == []
+
+    def test_an_unresolvable_reference_makes_the_config_status_undetermined(
+        self, tmp_path, stub_environment
+    ):
+        # The target is not tracked, so nothing can be said about drift --
+        # reporting "drifted" would blame the resource for a missing
+        # dependency.
+        driver = StubDriver(
+            read_result={"id": "123456789", "region": "sfo3", "size": "s-2vcpu-4gb"}
+        )
+        stub_environment["drivers"][("digitalocean", "compute")] = driver
+        md_path = tmp_path / "web.aiform.md"
+        md_path.write_text(self.REFERENCING_SOURCE, encoding="utf-8")
+        path = write_state(
+            tmp_path / "state.json",
+            make_state_entry(
+                aiform_md_path=str(md_path),
+                attributes={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            ),
+        )
+
+        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        assert report.config.in_sync is None
+        assert "digitalocean.compute.db-01" in report.config.detail
+
     def test_reports_the_four_independent_answers(self, tmp_path, stub_environment):
         driver = StubDriver(
             health_result=FAILING_REPORT,
