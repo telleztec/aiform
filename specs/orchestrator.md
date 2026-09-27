@@ -1250,7 +1250,10 @@ Returns the destination path.
   detected before the CSP itself rejects a real call) — judgment call 3.
 - **Cross-resource attribute references, automatic edge detection,
   orphan refusal, and parallel execution** — Phases 2, 3, 4 and 6 of
-  `MULTI_RESOURCE_PRD.md`. Dependency *ordering* is no longer out of
+  `MULTI_RESOURCE_PRD.md`; Phase 3's automatic edge detection is deferred by
+  decision, and `specs/dependency_detection.md` records why — including that
+  inferring edges would require loading a driver before `_order_files()`,
+  which this module deliberately does not do. Dependency *ordering* is no longer out of
   scope here: see the `resource_dependencies` addendum below. What
   remains true is that this module applies `planned` one resource at a
   time, in the literal order the list carries — it is the plan

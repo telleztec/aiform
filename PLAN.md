@@ -1647,7 +1647,12 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   *attribute* references — a DNS record's `data` reading a droplet's
   `ipv4_address`, the canonical example — are Phase 2, and are the half
   of this gap that actually needs a reference syntax. *Automatic*
-  detection of edges from driver-declared metadata is Phase 3; it
+  detection of edges from driver-declared metadata is Phase 3, and is
+  **deferred by decision rather than by sequencing** — a design pass
+  (issue #220, `specs/dependency_detection.md`) found one inferable edge
+  in the whole driver set, which cannot change create ordering, carries no
+  destroy-order failure mode, and would make Phase 4 refuse safe destroys
+  if inferred. The mechanism is unchanged if it is ever revisited: it
   produces the same edges Phase 1 already consumes, so the ordering
   engine won't change. Refusing a destroy that would orphan a
   still-tracked dependent, and recovering cleanly from a failure
