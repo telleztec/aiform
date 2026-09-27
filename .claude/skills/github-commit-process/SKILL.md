@@ -419,13 +419,14 @@ reader who stops here should know what changed and why.
 - Further specifics, as bullets, if the lead doesn't cover them
 
 ## Plan
-Link the committed plan: `plans/<name>.md`. If this change is exempt from
-that gate (only a pure prose/documentation edit with no behavior change
-qualifies — see PROCESS.md's "Before the loop: plan and get explicit
-approval", "does not apply"; there is no other exemption and no size
-exception), keep this section and say so explicitly rather than deleting
-it — don't let leaving the section out be the thing that decides the
-exemption applied.
+Link the committed plan: `plans/<name>.md`, and state that the human
+approved it and how — this section records the approval, not the plan's
+contents. If this change is exempt from that gate (only a pure
+prose/documentation edit with no behavior change qualifies — see
+PROCESS.md's "Before the loop: plan and get explicit approval", "does not
+apply"; there is no other exemption and no size exception), keep this
+section and say so explicitly rather than deleting it — don't let leaving
+the section out be the thing that decides the exemption applied.
 - The author/reviewer model pairing the plan named, and why (see "Choosing
   who authors the diff also chooses who reviews it" below). For a PR
   exempt from the plan gate, no plan named one — state the pairing
