@@ -1594,8 +1594,10 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   deprecation just fails loudly at apply time, requiring a maintainer
   to fix and re-release it. No driver versioning or migration story
   exists yet.
-- **Dependency graph: ordering exists, value flow does not.** This entry
-  used to say the whole area was undesigned. It has since had a
+- **Dependency graph: ordering and value flow both exist; detection,
+  failure semantics and concurrency do not.** This entry used to say the
+  whole area was undesigned, and then that value flow was missing; both
+  are now out of date. It has since had a
   requirements pass and a phased delivery plan —
   `MULTI_RESOURCE_PRD.md` at the repo root is the durable record, and
   what remains deferred is now deferred *per phase* rather than
@@ -1643,10 +1645,21 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   the refuse-versus-degrade decision and now has a stronger case for
   refusing at the `plan` that closes the cycle.
 
-  **Still deferred, and why each is its own phase:** cross-resource
-  *attribute* references — a DNS record's `data` reading a droplet's
-  `ipv4_address`, the canonical example — are Phase 2, and are the half
-  of this gap that actually needs a reference syntax. *Automatic*
+  **Delivered (Phase 2, `specs/resource_references.md`):** cross-resource
+  attribute references — a DNS record's `data` reading a droplet's
+  `ipv4_address`, the canonical example. The syntax is
+  `${provider.resource_type.name:attribute}`: a colon rather than a fourth
+  dot, because a resource `name` may legally contain dots, which makes a
+  four-part dotted form ambiguous. Writing a reference **implies the
+  dependency edge**, so `depends_on:` is only needed for ordering with no
+  value flow, and the derived edge is persisted to state so destroy
+  ordering holds. A reference whose target is created in the same run
+  resolves during the apply loop, so one `apply` stands up the whole
+  graph; `plan` prints the reference verbatim until then. Resolution is
+  pure string and tree work and costs zero Anthropic calls, and a repeat
+  `plan` over a resolved reference still short-circuits to `NO_OP`.
+
+  **Still deferred, and why each is its own phase:** *automatic*
   detection of edges from driver-declared metadata is Phase 3; it
   produces the same edges Phase 1 already consumes, so the ordering
   engine won't change. Refusing a destroy that would orphan a
@@ -1657,8 +1670,9 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   order Phase 1 produces is *total* and applied strictly sequentially.
 
   The file-per-resource question is still genuinely open — see the PRD's
-  "Open questions", which carries it along with the Phase 2 reference
-  syntax and the Phase 5 durable-store decision.
+  "Open questions", which carries it along with the Phase 5 durable-store
+  decision. The Phase 2 reference syntax that list also carried is now
+  answered; see `specs/resource_references.md`.
 
   **Future work, accepted as-is rather than owed:** `specs/resource_dependencies.md`
   documents that a tracked file is read three times over one `plan create` —

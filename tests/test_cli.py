@@ -1282,6 +1282,111 @@ class TestPlanCreate:
         assert by_key["digitalocean.compute.app-01"]["depends_on"] == ["digitalocean.compute.db-01"]
         assert by_key["digitalocean.compute.db-01"]["depends_on"] == []
 
+    def test_unresolved_reference_prints_the_reference_verbatim(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # Printed bare, with no "(known after apply)" annotation: an
+        # unresolved reference is self-evidently unresolved, and the suffix
+        # would be noise on every first apply.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "target.aiform.md", name="zzz-01")
+        write_aiform_md(
+            project_dir / "dependent.aiform.md",
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "data = ${digitalocean.compute.zzz-01:ipv4_address}" in out
+        assert "known after apply" not in out
+
+    def test_resolved_reference_prints_the_value_it_resolved_to(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(
+            project_dir / "dependent.aiform.md",
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        state_file = project_dir / ".aiform" / "state.json"
+        target = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="zzz-01",
+            id="id-zzz",
+            attributes={"ipv4_address": "198.51.100.4"},
+            driver=make_driver_info("driverhash"),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(project_dir / "target.aiform.md"),
+            aiform_md_sha256="hash",
+        )
+        state.save(state.State(resources={"digitalocean.compute.zzz-01": target}), state_file)
+        patch_client(monkeypatch, [categorization_response()])
+
+        code = cli.main(["plan", "create", "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "data = 198.51.100.4" in out
+        assert "${" not in out
+
+    def test_resource_without_references_has_no_reference_line(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "app.aiform.md", name="app-01")
+        patch_client(monkeypatch, [])
+
+        code = cli.main(["plan", "create", "--state-file", str(project_dir / ".aiform/state.json")])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert " = " not in out
+
+    def test_json_output_carries_typed_reference_rows(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        # --json is the closest thing aiform has to an API, so the rows are
+        # typed rather than the rendered text, and `resolved` is null rather
+        # than the literal when the value is not known yet.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_aiform_md(project_dir / "target.aiform.md", name="zzz-01")
+        write_aiform_md(
+            project_dir / "dependent.aiform.md",
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        patch_client(monkeypatch, [])
+        state_file = project_dir / ".aiform" / "state.json"
+
+        code = cli.main(["plan", "create", "--state-file", str(state_file), "--json"])
+
+        out = capsys.readouterr().out
+        assert code == 0
+        payload = json.loads(out)
+        by_key = {entry["resource_key"]: entry for entry in payload["plan"]}
+        assert by_key["digitalocean.compute.aaa-01"]["references"] == [
+            {
+                "path": "data",
+                "target": "digitalocean.compute.zzz-01",
+                "attribute": "ipv4_address",
+                "resolved": None,
+            }
+        ]
+        # A resource with no references carries an empty list, not a missing
+        # key -- a consumer should not have to branch on presence.
+        assert by_key["digitalocean.compute.zzz-01"]["references"] == []
+
     def test_missing_driver_exits_2_with_clean_error(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
