@@ -405,37 +405,39 @@ its own boundary to argue about.
 
 ## Opening a PR
 
+A PR description explains the problem and the change, self-contained, for
+a reader who wasn't there — not a log of how the change was produced.
+
 Use `gh pr create` with a heredoc body, not `-b "single line"`:
 
 ```sh
 git push -u origin <branch-name>
 gh pr create --title "Short, specific title" --body "$(cat <<'EOF'
 ## Summary
-- What changed, as 1-3 bullets
-- Why, if not obvious from the summary alone
+1-3 sentence prose lead: what this PR does and the problem it solves. A
+reader who stops here should know what changed and why.
+- Further specifics, as bullets, if the lead doesn't cover them
 
 ## Plan
-One lead sentence or short paragraph: what the human approved before this
-was implemented, and how they approved it — see PROCESS.md's "Before the
-loop: plan and get explicit approval". If this change is exempt from that
-gate (only a pure prose/documentation edit with no behavior change
-qualifies — see that section's "does not apply"; there is no other
-exemption and no size exception), keep this section and say so explicitly
-rather than deleting it — don't let leaving the section out be the thing
-that decides the exemption applied.
+Link the committed plan: `plans/<name>.md`, and state that the human
+approved it and how — this section records the approval, not the plan's
+contents. If this change is exempt from that gate (only a pure
+prose/documentation edit with no behavior change qualifies — see
+PROCESS.md's "Before the loop: plan and get explicit approval", "does not
+apply"; there is no other exemption and no size exception), keep this
+section and say so explicitly rather than deleting it — don't let leaving
+the section out be the thing that decides the exemption applied.
 - The author/reviewer model pairing the plan named, and why (see "Choosing
   who authors the diff also chooses who reviews it" below). For a PR
   exempt from the plan gate, no plan named one — state the pairing
   actually used instead and say plainly that no plan named it; don't drop
   the bullet
-- Key point from what was approved
-- Another key point, if needed
 - If this PR closes more than one issue: the waiver, as a bullet — e.g.
   "Closes #A, closes #B — one change resolves both because <reason>;
   splitting was considered and rejected because <reason>." (note the
   repeated closing keyword — see "Closing more than one issue" below)
-- If live/discovery work surfaced something during implementation: one
-  bullet per finding, terse
+- If implementation deviated from what the plan approved: one bullet per
+  deviation — what changed and why, not how it was found
 
 ## Test plan
 - [ ] How this was or should be verified
@@ -452,10 +454,16 @@ EOF
   tested (e.g. this is a docs-only PR, or a piece that can't be verified
   without live cloud credentials), say that plainly rather than padding it
   with checkboxes that weren't really checked.
-- Keep `## Plan` terse and bulleted, not dense prose — one lead
-  sentence/paragraph stating what was approved, then bullets. This applies
-  even when the section is carrying a waiver or discovery findings: fold
-  them in as bullets, don't grow a subsection for them.
+- The description is not a review log — no round count, no defect tally,
+  no "what review found," no commit-by-commit narrative. That's what the
+  commit log and `llm-review`'s statuses are for; see "Satisfying
+  `llm-review`" below for where round-by-round findings actually go.
+- Keep `## Summary`'s lead prose, not bullets — 1-3 sentences on what
+  changed and why, before any bullet.
+- Keep `## Plan` terse and bulleted, not dense prose — a link to the
+  committed plan, then bullets. This applies even when the section is
+  carrying a waiver or an approved-scope deviation: fold them in as
+  bullets, don't grow a subsection for them.
 
 ## Before pushing anything
 
@@ -561,6 +569,12 @@ however small the change looks. Two placements, with different force:
   either fixed or explicitly deferred on the PR.
 - **On an earlier SHA, it is history** — a review record, and the checkpoint
   `/code-review-since` walks back to. It gates nothing.
+
+**Every review round posts its own PR comment** — N rounds of
+`/code-review`/`/code-review-since` leave N comments. That's where
+round-by-round findings live, not the description; see PR #217's
+[round-8 comment](https://github.com/telleztec/aiform/pull/217#issuecomment-5851317837)
+for the shape.
 
 **Never post it on a SHA that is still head with findings open.** Head plus a
 green CI plus an early human approval is a merge, so a premature `success`
