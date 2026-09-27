@@ -194,6 +194,14 @@ def prompts_dir(tmp_path: Path, monkeypatch) -> Path:
 
 
 @pytest.fixture
+def fake_do_token(monkeypatch) -> None:
+    # Without this the test reads whatever the developer's shell exports --
+    # green on a machine with direnv loaded, red in CI. Tests that need the
+    # token ABSENT call monkeypatch.delenv() themselves.
+    monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+
+
+@pytest.fixture
 def drivers_dir(tmp_path: Path, monkeypatch) -> Path:
     directory = tmp_path / "drivers"
     directory.mkdir()
@@ -2032,6 +2040,7 @@ def write_ref_driver(drivers_dir: Path, resource_type: str = "compute") -> None:
     write_driver(drivers_dir, "digitalocean", resource_type, REF_DRIVER_SOURCE)
 
 
+@pytest.mark.usefixtures("fake_do_token")
 class TestReferenceDerivedEdges:
     """A reference implies the dependency edge, so a user writes the
     reference alone. The classification of each target is Phase 1's --
@@ -2191,6 +2200,7 @@ class TestReferenceDerivedEdges:
         assert len(client.messages.calls) == 0
 
 
+@pytest.mark.usefixtures("fake_do_token")
 class TestReferenceResolutionAtPlanTime:
     def test_reference_to_a_tracked_target_resolves_from_state(
         self, tmp_path: Path, drivers_dir: Path
@@ -2397,6 +2407,7 @@ class TestReferenceEdgesOnTheDestroyPath:
         assert keys == ["digitalocean.compute.aaa-01", "digitalocean.compute.zzz-01"]
 
 
+@pytest.mark.usefixtures("fake_do_token")
 class TestReferenceToATargetThisRunWillReplace:
     """A target being recreated or replaced in this run is about to get a new
     attribute value, so its CURRENT value must not be handed to a dependent as
@@ -2595,6 +2606,7 @@ class TestReferenceToATargetThisRunWillReplace:
         assert saved.resources["digitalocean.domain.example.com"].attributes["data"] == new_ip
 
 
+@pytest.mark.usefixtures("fake_do_token")
 class TestReferenceResolutionAtApplyTime:
     def test_reference_resolves_against_a_resource_created_earlier_in_the_same_apply(
         self, tmp_path: Path, drivers_dir: Path
