@@ -101,9 +101,11 @@ quotes it for free. An unquoted reference in flow style is a `ParserError`, per
 
 ## Out of scope
 
-- **Integer-typed reference targets** — the firewall's `droplet_ids`. Not
-  supported yet; see `specs/resource_references.md`'s "Out of scope" and its
-  issue.
+- **Integer-typed reference targets** — the firewall's `droplet_ids`. Fixed
+  by #216 (`compute`'s `provider_id` key); not this file's test, since a
+  firewall is a different resource kind than the domain/compute pairing
+  here. Live coverage is `tests/system/test_cli_references.py`'s
+  `test_droplet_ids_reference_publishes_the_droplets_provider_id`.
 - **A reference to a target being replaced.** The withheld-target path
   (`volatile`/`replaced`) is covered offline in `tests/test_orchestrator.py`;
   provoking a real replace here would mean a second droplet create for a

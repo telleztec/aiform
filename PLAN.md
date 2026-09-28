@@ -932,6 +932,41 @@ class Driver(ResourceDriver):
   stops, matching the design goal of the execution being the boring,
   deterministic part.
 
+### Addendum: `provider_id`, a per-driver identity extension (#216)
+
+`create()`/`read()`/`update()` return "dict with at least `{"id": str,
+**attributes}`" (above) — deliberately "at least": that's a floor, not a
+fixed key set, so a driver returning further keys beyond it is
+contract-compatible, not a deviation. `provider_id` is the first such key,
+added to `drivers/digitalocean/compute.py`'s `_flatten()` for #216: the
+CSP's own droplet id, in its native `int`, carried in `attributes` beside
+the unchanged string `id`.
+
+Why both exist: `id` is aiform's own identity token — necessarily a `str`
+(§3's state schema, `StateEntry.id`), since it has to be uniform across
+every provider and resource kind — while a CSP's own identifier is
+whatever type that CSP uses. Those are two different jobs that happened to
+share one name. A cross-resource reference (`specs/resource_references.md`)
+preserves an attribute's native type, so once the CSP's own value is
+available under its own key, a reference can hand it to a field that needs
+that type — the firewall's `droplet_ids: {"type": "integer"}` is the
+motivating case.
+
+`provider_id` is adopted only where a driver is referenced *by id* — a
+zone's identity is its name, so `domain` and `firewall` don't carry one.
+Not every driver needs this key; a driver adds it only when a real
+reference target needs a native-typed identifier `id`'s string can't
+supply. Full rationale, the declaration-site code, and the accepted costs
+(state showing the identity twice, one one-time state rewrite, the
+attribute-name list in a reference error) are `specs/driver.md`'s and
+`specs/digitalocean_compute.md`'s.
+
+This addendum sits next to a still-open gap: this section's own code block
+omits `UNORDERED_FIELDS` from the four declarative class attributes (#133,
+`specs/driver.md`). `provider_id` doesn't touch that list — it's a
+returned-attributes convention, not a class attribute — so it doesn't
+widen the gap, but it doesn't close it either.
+
 ### Addendum: `aiform/ssh.py` — provider-agnostic SSH mechanics (issue #175)
 
 Not part of the `ResourceDriver` contract itself — a shared, provider-
@@ -1659,22 +1694,27 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   pure string and tree work and costs zero Anthropic calls, and a repeat
   `plan` over a resolved reference still short-circuits to `NO_OP`.
 
-  One known limitation, tracked as #216: a reference cannot currently
+  One known limitation, now **fixed as #216**: a reference could not
   supply a droplet's `id` to an integer-typed field such as the firewall's
-  `droplet_ids`. Not a limitation of references, which preserve an
+  `droplet_ids`. It was never a limitation of references, which preserve an
   attribute's type faithfully — `id` reaches the reference namespace as
   aiform's own identity token, which `StateEntry.id` types as `str`, so the
-  string comes from `id` serving both as aiform's primary key and as a
-  provider attribute. Fixing that is a prerequisite for revisiting Phase 3.
+  string came from `id` serving both as aiform's primary key and as a
+  provider attribute. The fix gives `compute` a second, native-typed key,
+  `provider_id`, alongside the unchanged string `id` — see §4's addendum
+  above, `specs/driver.md` and `specs/digitalocean_compute.md`. `id` itself
+  stays a string; this is additive, not a change to the identity contract.
 
   **Still deferred, and why each is its own phase:** *automatic*
   detection of edges from driver-declared metadata is Phase 3, and is
-  **paused by decision behind #216 rather than merely sequenced** — a design pass
+  **paused by decision, with reassessment gated on #216 rather than merely
+  sequenced** — a design pass
   (issue #220, `specs/dependency_detection.md`) found one inferable edge
   in the whole driver set, which cannot change create ordering and carries
-  no destroy-order failure mode. The decision is to fix #216 first and
-  reassess from what that teaches, rather than build inference over a
-  reference mechanism that cannot yet express the edge. The mechanism is
+  no destroy-order failure mode. The decision was to fix #216 first and
+  reassess from what that teaches; #216 is now fixed, and that reassessment
+  is `specs/dependency_detection.md`'s call to make, not recorded here. The
+  mechanism is
   unchanged if it is ever revisited: it
   produces the same edges Phase 1 already consumes, so the ordering
   engine won't change. Refusing a destroy that would orphan a

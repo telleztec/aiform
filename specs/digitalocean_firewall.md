@@ -136,6 +136,12 @@ otherwise be coerced on store exactly as an int port is. An empty target
 sub-list (`{"addresses": []}`) is refused for the same reason an empty
 target object is.
 
+This guard is what a `${digitalocean.compute.<name>:provider_id}` reference
+has to clear (#216), and the fix works *with* it rather than around it: the
+reference resolves to a real `int`, which `isinstance(item, int)` accepts
+exactly like a hand-written literal. See the addendum at the end of this
+file.
+
 An **unsorted** target list is rejected for a different reason, and it is
 not about rewriting on store. `unordered_equal()` is top-level only: a
 rule reaches it through `canonical_key()`, which serializes any list
@@ -219,15 +225,18 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   billing. Cleanup is guaranteed twice over: the `throwaway_droplet`
   fixture destroys it in a `finally`, and a session sweep catches one a
   crash left behind.
-- **`droplet_ids` can only hold literal integers.** A cross-resource
-  reference mechanism now exists (`specs/resource_references.md`, Phase 2)
-  and works for this driver's string-valued edges, but **not** for this
-  one, because of the type asymmetry: `compute.py` stringifies a droplet
-  id (`"id": str(droplet["id"])`) while this API takes and returns
-  integers, so a reference here resolves to a string
-  `_validate_scalar_list(params, "droplet_ids", int)` correctly rejects.
-  So a firewall still cannot say "the droplet aiform just created". Filed
-  separately; see the addendum at the end of this file.
+- **`droplet_ids` could only hold literal integers, until #216.** A
+  cross-resource reference mechanism exists (`specs/resource_references.md`,
+  Phase 2) and worked for this driver's string-valued edges from the start,
+  but not for `droplet_ids`, because of the type asymmetry: `compute.py`
+  stringifies a droplet id (`"id": str(droplet["id"])`) while this API takes
+  and returns integers, so a reference to `:id` resolved to a string
+  `_validate_scalar_list(params, "droplet_ids", int)` correctly rejects. #216
+  fixed this by giving `compute` a second, native-typed key —
+  `provider_id` — so a firewall can now say "the droplet aiform just
+  created" via `${digitalocean.compute.<name>:provider_id}`. `id` itself
+  stays a string; it's aiform's identity token, not this API's value. See
+  the addendum at the end of this file.
 - **Pagination is not used.** Rules and `droplet_ids` are embedded in the
   single firewall object rather than being separate paginated
   collections, and `read()` is one GET, so
@@ -346,11 +355,18 @@ mechanism did not exist. Phase 2 added one
 **string-valued** edges — `tags`, `sources.tags`, `destinations.tags` — including
 nested ones, since resolution walks the whole params tree.
 
-**It does not yet work for `droplet_ids` or `sources.droplet_ids`.** Those are
-`{"type": "integer"}` here, while `compute`'s `id` attribute is
+**It now also works for `droplet_ids` and `sources.droplet_ids`, via #216.**
+Those are `{"type": "integer"}` here, while `compute`'s `id` attribute is
 `str(droplet["id"])`, so `droplet_ids: ["${digitalocean.compute.web-01:id}"]`
-resolves to a string that `_validate_scalar_list(params, "droplet_ids", int)`
-correctly rejects. Phase 2's acceptance case was the string-valued DNS one; this
-is a documented limitation with its own issue, deliberately not solved by adding
-a cast syntax to the reference grammar or by changing `compute`'s attribute
-types.
+still resolves to a string that `_validate_scalar_list(params, "droplet_ids",
+int)` correctly rejects — that part of the diagnosis didn't change. Phase 2's
+acceptance case was the string-valued DNS one, and this was deliberately not
+solved there by adding a cast syntax to the reference grammar or by changing
+`compute`'s attribute types. #216 instead gave `compute._flatten()` a second
+key, `provider_id`, carrying the same id natively typed
+(`specs/digitalocean_compute.md`), so
+`droplet_ids: ["${digitalocean.compute.web-01:provider_id}"]` resolves to a
+real `int` and clears `_reject_wrong_scalars()`. `_reject_wrong_scalars()`
+also now names `provider_id` in its error when it rejects an all-digits
+string in an int-typed field, whether that string came from a quoted YAML
+literal or a `:id` reference written by mistake.

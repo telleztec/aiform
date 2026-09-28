@@ -55,7 +55,8 @@ future graph, deliberately not built now". This is that extension point being
 built; §10, §73 and §486 are updated rather than left claiming it doesn't
 exist. What remains deferred there, now phase by phase: attribute references
 shipped as Phase 2 (`specs/resource_references.md`), automatic detection from
-driver metadata is Phase 3 — paused by decision behind #216, see
+driver metadata is Phase 3 — paused by decision, with reassessment gated on
+#216, now fixed, see
 `specs/dependency_detection.md` — then orphan refusal and partial-failure
 recovery (Phase 4), concurrency-safe state (Phase 5), parallel execution
 (Phase 6), graphical visualization (Phase 7).
@@ -729,7 +730,8 @@ one.
   another's `params`. Shipped as Phase 2, `specs/resource_references.md`; still
   out of scope for *this* spec, which covers declaration only.
 - **Automatic dependency detection** from driver-declared metadata. Phase 3,
-  **paused by decision** behind #216 — `specs/dependency_detection.md` holds
+  **paused by decision**, with reassessment gated on #216 — now fixed —
+  `specs/dependency_detection.md` holds
   the evidence and the reopening conditions. It would produce the same edges
   this phase already consumes, so the ordering engine would not change either
   way. Note that Phase 2 already derives edges from *references*; what is

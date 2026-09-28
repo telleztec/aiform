@@ -158,6 +158,7 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   ```python
   {
       "id": str(droplet["id"]),
+      "provider_id": droplet["id"],
       "region": droplet["region"]["slug"],
       "size": droplet["size_slug"],
       "image": droplet["image"]["slug"],
@@ -166,6 +167,38 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       "ipv4_address": <first networks.v4 entry where type == "public", or None>,
   }
   ```
+  **`provider_id` (#216).** Not a `PARAM_SCHEMA` key — it's an addition to
+  the "at least" floor `PLAN.md` §4's return contract sets, the same way
+  `firewall.py`'s `_project()` already adds `"name"`
+  (`specs/digitalocean_firewall.md`). `id`
+  is aiform's own identity token: `orchestrator._pop_id()` moves it to
+  `StateEntry.id`, which `models.py` types `str`, necessarily, since it has
+  to be uniform across every provider and resource kind — DigitalOcean's own
+  droplet id is an int, stringified here to satisfy that contract.
+  `provider_id` carries the same value a second time, in DigitalOcean's own
+  `int`, so a cross-resource reference (`specs/resource_references.md`) can
+  hand a droplet's id to an integer-typed field elsewhere — the firewall's
+  `droplet_ids` is the motivating case
+  (`specs/digitalocean_firewall.md`'s addendum). `read()`/`update()` return
+  it too, since both route through `_flatten()`.
+
+  Safe by the same argument `firewall.py`'s `_project()` comment already
+  makes for its own extra key: `planner.diff_attributes()` iterates
+  `desired.items()`, so a key absent from the user's `params` can never
+  enter a diff, defeat the zero-LLM no-op short-circuit, or reach
+  `categorize_diff()`'s payload. Three small, accepted costs, recorded so a
+  reviewer doesn't discover them: `cli.py`'s `_print_state()` dumps
+  attributes verbatim, so `aiform plan show`/`plan refresh` and
+  `state.json` now show the droplet's identity twice, once as each type;
+  the first `plan`/`refresh` after this change rewrites `state.json` for
+  every tracked droplet, once, since `provider_id` is stable thereafter;
+  and `references.py`'s `_require_attribute()` lists `provider_id` among
+  available attributes in its error, which is the point — a user who
+  typos or reaches for `:id` on an integer field sees it as an option.
+  General convention, not compute-specific: `specs/driver.md`. `domain` and
+  `firewall` don't carry a `provider_id` — neither is referenced *by id*, a
+  zone's identity is its name.
+
   **Pending update**: `specs/resource_tagging.md` (not yet implemented)
   wraps this `"tags"` line in `self._tags_for_attributes(...)` — this
   code fence will understate what `_flatten()` actually returns once

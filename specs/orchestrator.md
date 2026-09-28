@@ -1250,8 +1250,9 @@ Returns the destination path.
   detected before the CSP itself rejects a real call) — judgment call 3.
 - **Automatic edge detection, orphan refusal, and parallel execution** —
   Phases 3, 4 and 6 of `MULTI_RESOURCE_PRD.md`. Phase 3's detection from
-  *literal* values is paused by decision behind #216, and
-  `specs/dependency_detection.md` records why — including that inferring such
+  *literal* values is paused by decision, with reassessment gated on #216 —
+  now fixed — and `specs/dependency_detection.md` records why the phase was
+  paused, including that inferring such
   an edge would require the driver's metadata before `_order_files()` runs,
   which this module deliberately does not have at that point. Neither
   dependency *ordering* nor cross-resource *references* is out of scope here

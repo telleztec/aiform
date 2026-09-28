@@ -6,9 +6,11 @@ merged 2026-09-25 as `6c5b2bd`, closing #200, spec at
 `specs/resource_dependencies.md`). **Phase 2 shipped** (PR #217, merged
 2026-09-27 as `15cbcb6`, closing #215, spec at
 `specs/resource_references.md`), with one known limitation tracked as #216.
+**#216 is fixed** (commit `0c71be6`, `plans/fix-216-reference-into-integer-field.md`).
 **Phase 3 is paused by decision** (issue #220,
-`specs/dependency_detection.md`) and keeps its number. **Next: fix #216**,
-then reassess Phase 3 from what that teaches. This
+`specs/dependency_detection.md`) and keeps its number. **Next:** reassess
+Phase 3 from what fixing #216 taught — `specs/dependency_detection.md`'s
+call, not decided here. This
 document is the durable record of what multi-resource support must do and
 the order it gets built in. `PLAN.md` remains the architecture spec —
 §10's "No dependency graph" entry points here, and each phase reconciles
@@ -30,8 +32,9 @@ system to automatically know that one resource depends on another, and
 why, without me having to declare every relationship by hand.
 
 > UC1 has **no committed phase.** It remains a use case worth wanting; Phase
-> 3, which would have delivered it, is paused by decision pending #216 — see
-> `specs/dependency_detection.md`. Note that Phase 2 delivers a *partial*
+> 3, which would have delivered it, is paused by decision, with reassessment
+> gated on #216 — now fixed, see `specs/dependency_detection.md` for the
+> reassessment. Note that Phase 2 delivers a *partial*
 > UC1 already: writing a reference implies its edge, so a user who expresses
 > a relationship as a reference never declares it separately. What is missing
 > is inference from a value that is *not* written as a reference.
@@ -361,7 +364,8 @@ independently as issue #195 / PR #196 before this phase started.
 
 **Phase 2 — Cross-resource attribute references.** *(SHIPPED — PR #217,
 merged 2026-09-27 as `15cbcb6`, closing #215, spec at
-`specs/resource_references.md`; one known limitation tracked as #216.)* One resource's output
+`specs/resource_references.md`; one known limitation tracked as #216, since
+fixed.)* One resource's output
 attribute flowing into another's `params` — the canonical DNS-record-
 pointing-at-a-droplet-IP case. Depends on Phase 1's graph. Still
 sequential execution.
@@ -379,10 +383,12 @@ because neither is implied by "references exist":
   `additionalProperties: True` and `parser.py` already accommodates a
   cloud-init `user_data: |` block scalar. The dot-instead-of-colon typo is
   still refused, by a check those literals cannot reach.
-- **References into integer-typed fields do not work yet.** The
-  firewall's `droplet_ids` is typed `integer` while `compute`'s `id` is a
-  string, so a reference there resolves to a value its own validation
-  rejects. Filed separately rather than solved with a cast syntax.
+- **References into integer-typed fields, fixed by #216.** The firewall's
+  `droplet_ids` is typed `integer` while `compute`'s `id` is a string, so a
+  reference to `:id` resolves to a value its own validation rejects. Not
+  solved with a cast syntax: `compute._flatten()` instead gained a second,
+  native-typed key, `provider_id`, so
+  `${digitalocean.compute.web-01:provider_id}` resolves to the real `int`.
 
 **Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
 `specs/dependency_detection.md`.** The mechanism is unchanged from what this
@@ -397,14 +403,15 @@ found **one** inferable edge in the entire driver set — the firewall's
 `droplet_ids` naming a droplet — which provably cannot change create
 ordering and carries no destroy-order failure mode.
 
-That edge is also the one #216 blocks from being written as a reference at
-all, which is the reason for the ordering here: **fix #216 first, then
-reassess.** #216 is a prerequisite for Phase 3 either way — inference over a
-reference mechanism that cannot express the edge would be building on a
-known-broken foundation — and fixing it may remove the need for detection
-entirely, since a working reference implies its own edge. Whether Phase 3 is
-still worth doing is a question to answer from what #216 teaches, not before
-it.
+That edge is also the one #216 blocked from being written as a reference at
+all, which was the reason for the ordering here: **fix #216 first, then
+reassess.** #216 was a prerequisite for Phase 3 either way — inference over a
+reference mechanism that could not express the edge would have been building
+on a known-broken foundation. **#216 is now fixed**: the edge is reachable as
+`${digitalocean.compute.<name>:provider_id}`, so a working reference now
+implies its own edge here too, same as the `tags`/`addresses` rows already
+did. Whether Phase 3 is still worth doing given that is a question for
+`specs/dependency_detection.md` to answer, not decided here.
 
 `specs/dependency_detection.md` holds the evidence, the answer to open
 question #3 below, and the conditions that reopen this. **The phase keeps its
