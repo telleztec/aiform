@@ -1659,17 +1659,17 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   pure string and tree work and costs zero Anthropic calls, and a repeat
   `plan` over a resolved reference still short-circuits to `NO_OP`.
 
-  One known limitation, tracked as #216: a reference into an
-  *integer*-typed field does not work, because the most useful value to
-  reference — a droplet's `id` — is exposed to the reference namespace as
-  aiform's own identity token, which `StateEntry.id` types as `str`. The
-  reference mechanism itself preserves type faithfully; the string comes
-  from `id` serving both as aiform's primary key and as a provider
-  attribute. Fixing that is a prerequisite for revisiting Phase 3.
+  One known limitation, tracked as #216: a reference cannot currently
+  supply a droplet's `id` to an integer-typed field such as the firewall's
+  `droplet_ids`. Not a limitation of references, which preserve an
+  attribute's type faithfully — `id` reaches the reference namespace as
+  aiform's own identity token, which `StateEntry.id` types as `str`, so the
+  string comes from `id` serving both as aiform's primary key and as a
+  provider attribute. Fixing that is a prerequisite for revisiting Phase 3.
 
   **Still deferred, and why each is its own phase:** *automatic*
   detection of edges from driver-declared metadata is Phase 3, and is
-  **deferred by decision rather than by sequencing** — a design pass
+  **paused by decision behind #216 rather than merely sequenced** — a design pass
   (issue #220, `specs/dependency_detection.md`) found one inferable edge
   in the whole driver set, which cannot change create ordering and carries
   no destroy-order failure mode. The decision is to fix #216 first and

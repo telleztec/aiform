@@ -359,8 +359,9 @@ independently as issue #195 / PR #196 before this phase started.
 > the project would have built inference and still had no way to declare an
 > edge by hand.
 
-**Phase 2 — Cross-resource attribute references.** *(IN PROGRESS — issue
-#215, spec at `specs/resource_references.md`.)* One resource's output
+**Phase 2 — Cross-resource attribute references.** *(SHIPPED — PR #217,
+merged 2026-09-27 as `15cbcb6`, closing #215, spec at
+`specs/resource_references.md`; one known limitation tracked as #216.)* One resource's output
 attribute flowing into another's `params` — the canonical DNS-record-
 pointing-at-a-droplet-IP case. Depends on Phase 1's graph. Still
 sequential execution.

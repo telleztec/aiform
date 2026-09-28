@@ -65,11 +65,11 @@ that teaches.** The grounds are narrow and specific to today's driver set.
 (#216). Understanding *why* is what settles the ordering of this phase, and
 the intuitive reading is wrong.
 
-It is **not** a limitation of references. `aiform/references.py:267-271`
+It is **not** a limitation of references. `aiform/references.py:267-272`
 handles a whole-value reference by returning the attribute's own Python
 object: "the attribute's own type survives — an int stays an int, a list
-stays a list. This is what lets a reference feed a non-string field." The
-grammar needs no cast.
+stays a list. This is what lets a reference feed a non-string field." So the
+grammar is not where the type is being lost.
 
 The string comes from the other end. `orchestrator.py:94` pops `"id"` out of
 the attributes a driver returns and moves it to `StateEntry.id`, which
@@ -85,8 +85,12 @@ token, legitimately a string; and a provider attribute a user wants to
 reference, whose native type is whatever the CSP says — an integer for a
 DigitalOcean droplet. A reference names an `aiform`-tracked *object*, and
 `:attribute` already expresses which value inside that object to hand the
-provider. The fix is therefore about making the right attribute available
-with the right type, not about new syntax.
+provider. The repo owner's stated direction follows from that reading: make
+the right attribute available with the right type, rather than add syntax. Be
+precise about what the type analysis alone establishes — a cast would also
+work mechanically for this edge, so preferring the attribute is a design
+judgement, not a consequence. Which of #216's candidate fixes is chosen
+belongs to #216.
 
 Two consequences for this phase:
 
@@ -105,7 +109,7 @@ fixing Phase 2.
 Every reference-shaped field across the three drivers. Graded `inferred`
 rather than `verified`: the fields are read from source, but whether the list
 is *complete* is a judgement about what counts as reference-shaped, and an
-earlier draft of this table missed two rows.
+earlier draft of this table missed one row and misclassified another.
 
 | Field | Points at | Match kind | Verdict |
 |---|---|---|---|
@@ -152,8 +156,11 @@ value is wrong, and it fails under any order. So: **either the target is a
 `NO_OP`, or the literal is stale and no ordering saves it.**
 
 Same for a replace. A droplet replaced in the same run leaves the firewall
-holding the old id, and a whole-object `PUT` carrying it 422s mid-apply under
-either order — a failure no ordering fixes, not an ordering hazard.
+holding the old id, and a whole-object `PUT` carrying it would presumably 422
+mid-apply under either order — presumably, because that is the unrun probe's
+second question below, inferred from transcript `21-`'s 422 at *create* rather
+than observed on an update. Either way it is a failure no ordering fixes, not
+an ordering hazard.
 
 **This argument covers id-match fields only.** It works because the id is
 provider-assigned. It says nothing about the `tags` and `addresses` rows,
@@ -347,7 +354,8 @@ which is why it appears under "Conditions that reopen this".
 
 - **Fixing #216 itself.** Named here as the prerequisite; its design is its
   own issue and its own plan. This spec takes a position on *why* it comes
-  first, and none on which of its candidate fixes is right.
+  first, and records the owner's stated direction above, but does not choose
+  among #216's candidate fixes or work out what the chosen one costs.
 - **Orphan refusal and partial-failure recovery.** Phase 4. This spec takes a
   position on what an inferred edge would do to Phase 4, and none on Phase 4's
   design.
@@ -370,9 +378,10 @@ which is why it appears under "Conditions that reopen this".
 
 | Claim | Grade | Basis |
 |---|---|---|
-| References preserve an attribute's native type for a whole-value reference | **verified** | `aiform/references.py:267-271`, comment and code |
+| References preserve an attribute's native type for a whole-value reference | **verified** | `aiform/references.py:267-272`, comment and code |
 | `id` reaches the reference namespace as `StateEntry.id`, a `str` | **verified** | `orchestrator.py:94`, `:104`; `models.py:222` |
-| A droplet id is provider-assigned; a firewall 422s on an unknown one | **verified** | `specs/digitalocean_firewall.md:290`, transcript `21-` |
+| A droplet id is provider-assigned; a firewall 422s on an unknown one at *create* | **verified** | `specs/digitalocean_firewall.md:290`, transcript `21-` |
+| A later `PUT` carrying a *deleted* droplet's id also 422s | **inferred** | Extrapolated from `21-`'s create-time 422; never observed on an update. It is the unrun probe's second question |
 | `apply_plan()` skips `NO_OP` before any driver call | **verified** | `orchestrator.py:1046` |
 | Destroy-from-state topologically sorts `StateEntry.depends_on` | **verified** | `orchestrator.py:922`, `:926` |
 | Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:399`, `:602` |

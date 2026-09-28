@@ -726,7 +726,8 @@ one.
 ## Out of scope
 
 - **Cross-resource attribute references** — one resource's output flowing into
-  another's `params`. Phase 2.
+  another's `params`. Shipped as Phase 2, `specs/resource_references.md`; still
+  out of scope for *this* spec, which covers declaration only.
 - **Automatic dependency detection** from driver-declared metadata. Phase 3,
   **paused by decision** behind #216 — `specs/dependency_detection.md` holds
   the evidence and the reopening conditions. It would produce the same edges
