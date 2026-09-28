@@ -203,6 +203,11 @@ class Driver(ResourceDriver):
                 break
         return {
             "id": str(droplet["id"]),
+            # Not a PARAM_SCHEMA key. Carried so a reference can hand this
+            # droplet's id to an integer-typed field elsewhere (droplet_ids
+            # is DO's own int) without a user-side cast. Safe: diff_attributes()
+            # iterates desired only, so an extra key here can never diff.
+            "provider_id": droplet["id"],
             "region": droplet["region"]["slug"],
             "size": droplet["size_slug"],
             "image": droplet["image"]["slug"],

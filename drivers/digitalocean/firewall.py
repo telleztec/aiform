@@ -218,7 +218,18 @@ class Driver(ResourceDriver):
             wrong_type = not isinstance(item, expected)
             sneaky_bool = expected is int and isinstance(item, bool)
             if wrong_type or sneaky_bool:
-                raise ValueError(f"{label}[{index}] must be a {expected.__name__}, got {item!r}")
+                article = "an" if expected.__name__[0] in "aeiou" else "a"
+                message = f"{label}[{index}] must be {article} {expected.__name__}, got {item!r}"
+                if expected is int and isinstance(item, str) and item.isdigit():
+                    # Serves two different readers with one sentence: someone
+                    # who quoted a plain number in YAML (drop the quotes) and
+                    # someone who reached for a reference (droplet_ids wants
+                    # the CSP's own int, so :provider_id, not :id).
+                    message += (
+                        " -- DigitalOcean's ids are integers, not quoted strings; if this "
+                        "came from a reference, use ':provider_id' instead of ':id'"
+                    )
+                raise ValueError(message)
 
     def _validate_rule(
         self, list_key: str, index: int, rule: dict[str, Any], target_key: str

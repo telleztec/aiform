@@ -141,6 +141,14 @@ FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS = FAKE_DRIVER_SOURCE.replace(
     'LIKELY_REPLACE_FIELDS = ["image"]\n    NON_DIFFABLE_FIELDS = ["ssh_keys"]',
 )
 
+# #216: read() returns a key -- provider_id -- that is not a PARAM_SCHEMA
+# field and so is never in `desired`, mirroring compute.py's real
+# _flatten(). Pins that such a key stays additive and invisible to the diff.
+FAKE_DRIVER_SOURCE_WITH_PROVIDER_ID = FAKE_DRIVER_SOURCE.replace(
+    'return {"id": id, "region": "sfo3", "size": "s-1vcpu-2gb"}',
+    'return {"id": id, "region": "sfo3", "size": "s-1vcpu-2gb", "provider_id": 123456789}',
+)
+
 # read() returns tags in the opposite order from what write_aiform_md()
 # below declares in params -- the exact "CSP returns the same elements
 # in a different order" scenario specs/unordered_fields.md fixes.
@@ -325,6 +333,32 @@ class TestResourceKey:
             orchestrator.resource_key("digitalocean", "compute", "telleztec-app-01")
             == "digitalocean.compute.telleztec-app-01"
         )
+
+
+class TestPopId:
+    def test_provider_id_survives_id_extraction(self):
+        new_id, attrs = orchestrator._pop_id(
+            {"id": "123", "provider_id": 123, "region": "sfo3"},
+            "digitalocean",
+            "compute",
+            "read",
+        )
+        assert new_id == "123"
+        assert attrs == {"provider_id": 123, "region": "sfo3"}
+
+
+class TestReferenceableNamespace:
+    def test_offers_both_id_and_provider_id(self):
+        entry = make_state_entry(id="123", attributes={"provider_id": 123, "region": "sfo3"})
+        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+
+        result = orchestrator.referenceable(st)
+
+        assert result["digitalocean.compute.telleztec-app-01"] == {
+            "provider_id": 123,
+            "region": "sfo3",
+            "id": "123",
+        }
 
 
 class TestDiscoverFiles:
@@ -755,6 +789,36 @@ class TestBuildCreatePlan:
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
+        assert len(client.messages.calls) == 0
+
+    def test_provider_id_only_in_current_stays_a_no_op_zero_llm_calls(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # #216: a key like provider_id that read() returns but the user's
+        # params never mention must not defeat the zero-LLM no-op
+        # short-circuit -- diff_attributes() iterates desired only.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir, "digitalocean", "compute", source=FAKE_DRIVER_SOURCE_WITH_PROVIDER_ID
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(aiform_md)
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "provider_id": 123456789},
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert "provider_id" not in planned[0].entry.rationale
         assert len(client.messages.calls) == 0
 
     def test_no_op_records_the_new_aiform_md_hash_in_state(

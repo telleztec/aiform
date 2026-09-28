@@ -25,6 +25,7 @@ import pytest
 from aiform.driver import CapabilityNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
+from aiform.references import resolve
 from drivers.digitalocean import firewall as firewall_module
 from drivers.digitalocean.firewall import Driver
 from tests.drivers import transcripts
@@ -448,15 +449,65 @@ class TestScalarListValidation:
         with pytest.raises(ValueError, match="droplet_ids"):
             driver.create(NAME, params, CREDENTIALS)
 
+    def test_a_digit_string_droplet_id_names_provider_id(self, driver):
+        # #216: the hint must serve two readers with one sentence -- someone
+        # who quoted a plain number in YAML, and someone who reached for a
+        # reference and should have written :provider_id, not :id.
+        params = {**minimal_params(), "droplet_ids": ["123"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        message = str(excinfo.value)
+        assert "must be an int" in message
+        assert "not quoted strings" in message
+        assert "use ':provider_id' instead of ':id'" in message
+
+    def test_a_non_digit_string_droplet_id_keeps_the_ordinary_message(self, driver):
+        params = {**minimal_params(), "droplet_ids": ["not-an-id"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
     def test_a_bool_is_not_an_int_even_though_python_says_so(self, driver):
         params = {**minimal_params(), "droplet_ids": [True]}
         with pytest.raises(ValueError, match="droplet_ids"):
             driver.create(NAME, params, CREDENTIALS)
 
+    def test_a_bool_droplet_id_keeps_the_ordinary_message(self, driver):
+        # sneaky_bool, not the digit-string branch: a bool is not a string.
+        params = {**minimal_params(), "droplet_ids": [True]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
     def test_tags_must_be_strings(self, driver):
         params = {**minimal_params(), "tags": [7]}
         with pytest.raises(ValueError, match="tags"):
             driver.create(NAME, params, CREDENTIALS)
+
+    def test_a_digit_string_tag_is_unaffected_by_the_droplet_id_hint(self, driver):
+        # expected is str here, not int -- the hint must not fire.
+        params = {**minimal_params(), "tags": ["123", 7]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
+
+class TestReferenceIntoDropletIds:
+    """#216 end to end: a firewall's droplet_ids referencing a compute
+    resource's provider_id must pass validation with no type error --
+    the check that, before the fix, only raises at apply time."""
+
+    def test_a_provider_id_reference_passes_validation(self, driver):
+        available = {"digitalocean.compute.web-01": {"id": "123456789", "provider_id": 123456789}}
+        params = {
+            **minimal_params(),
+            "droplet_ids": ["${digitalocean.compute.web-01:provider_id}"],
+        }
+
+        resolved, unresolved = resolve(params, available)
+
+        assert unresolved == []
+        driver._validate_params(resolved)
 
 
 class TestNestedTargetValidation:
