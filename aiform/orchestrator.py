@@ -858,6 +858,48 @@ def _resolve_dangling_targets(dangling: list[tuple[str, str]], *, force: bool) -
     ]
 
 
+# _build_destroy_plan_from_paths()'s own hazard, the mirror image of a
+# dangling target: a resource NOT in this run (so absent from node_keys and
+# never seen by _classify_destroy_edges above, which only looks at edges
+# OUT of the run's own nodes) whose persisted depends_on points INTO this
+# run. Destroying the target would silently orphan it. Read from the
+# dependent's persisted StateEntry.depends_on, not its .aiform.md -- that
+# file may not exist, may not be part of this run, and re-parsing every
+# .aiform.md on disk to answer this would be a new filesystem scan on the
+# destroy path.
+def _reverse_dependents(node_keys: set[str], st: State) -> list[tuple[str, str]]:
+    orphaned: list[tuple[str, str]] = []
+    for key, entry in st.resources.items():
+        if key in node_keys:
+            continue
+        for target in entry.depends_on:
+            if target in node_keys:
+                orphaned.append((key, target))
+    return orphaned
+
+
+def _orphaned_dependents_reason(orphaned: list[tuple[str, str]]) -> str:
+    pairs = "; ".join(
+        f"{dependent} depends on {target!r}" for dependent, target in sorted(orphaned)
+    )
+    return (
+        f"cannot destroy: {pairs} -- each dependent is not in this run and would be "
+        "orphaned; pass --force to drop these edges and destroy anyway"
+    )
+
+
+def _resolve_reverse_dependents(orphaned: list[tuple[str, str]], *, force: bool) -> list[str]:
+    if not orphaned:
+        return []
+    if not force:
+        raise PlanBlockedError(_orphaned_dependents_reason(orphaned))
+    return [
+        f"{dependent}: depends on {target!r}, which is being destroyed in this run -- "
+        "dropping the edge (--force)"
+        for dependent, target in sorted(orphaned)
+    ]
+
+
 def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
@@ -887,6 +929,7 @@ def _build_destroy_plan_from_paths(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
     warnings = _resolve_dangling_targets(dangling, force=force)
+    warnings += _resolve_reverse_dependents(_reverse_dependents(node_keys, st), force=force)
 
     order = _reverse_topological(node_keys, edges)
     by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}

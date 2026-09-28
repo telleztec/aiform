@@ -317,6 +317,18 @@ class TestZeroDiffInvariant:
 
         assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
 
+    def test_droplet_ids_shrink_is_still_reported_despite_being_unordered(self, driver):
+        # UNORDERED_FIELDS makes droplet_ids' order not matter, but
+        # unordered_equal is a multiset compare: [111, 222] vs [111] must
+        # still diff. #225's review found nothing pinning that on this
+        # field specifically -- tests/test_compare.py only pins it generically.
+        current = {"droplet_ids": [111, 222]}
+        desired = {"droplet_ids": [111]}
+
+        diff = diff_attributes(current, desired, unordered_fields=driver.UNORDERED_FIELDS)
+
+        assert diff == {"droplet_ids": {"current": [111, 222], "desired": [111]}}
+
 
 class TestUpdate:
     def test_is_a_single_put_then_a_read(self, driver, fake_urlopen):
@@ -351,6 +363,19 @@ class TestUpdate:
         with pytest.raises(ValueError):
             driver.update(firewall_id(), driver_current(), {"inbound_rules": []}, CREDENTIALS)
         assert fake_urlopen.calls == []
+
+    def test_put_body_carries_a_shrunk_droplet_ids(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "PUT", firewall_url(firewall_id()), FakeHTTPResponse(200, created_payload())
+        )
+        script_read(fake_urlopen)
+        current = {**driver_current(), "droplet_ids": [111, 222]}
+        desired = {**minimal_params(), "droplet_ids": [111]}
+
+        driver.update(firewall_id(), current, desired, CREDENTIALS)
+
+        body = fake_urlopen.calls[0]["body"]
+        assert body["droplet_ids"] == [111]
 
 
 def driver_current() -> dict:
