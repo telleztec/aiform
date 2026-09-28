@@ -21,10 +21,15 @@ Delivers two of `MULTI_RESOURCE_PRD.md`'s:
 
 - **UC2 — manual dependency override.** A user declares a relationship
   `aiform` cannot infer. Phase 1 delivers the *declaration* half only; value
-  flow (one resource reading another's attributes) is Phase 2, and *automatic*
-  detection is Phase 3. Note the deliberate inversion in the PRD's phasing:
-  UC2 ships before UC1, because explicit declaration is the foundation that
-  auto-detection later populates.
+  flow (one resource reading another's attributes) shipped as Phase 2
+  (`specs/resource_references.md`), and *automatic* detection from driver
+  metadata is Phase 3, now paused by decision
+  (`specs/dependency_detection.md`). Note the deliberate inversion in the
+  PRD's phasing: UC2 ships before UC1, because explicit declaration is the
+  foundation any auto-detection would populate — which is why declaration
+  being the half that shipped leaves users with a working mechanism rather
+  than half a feature. A Phase 2 reference now also implies its own edge, so
+  `depends_on:` is what expresses ordering with no value flow.
 - **UX1 — textual dependency display.** A `plan` that silently reorders
   resources without showing the graph it derived is not reviewable, and a user
   cannot correct a dependency they cannot see.
@@ -49,7 +54,9 @@ with no regard for what still points at them.
 future graph, deliberately not built now". This is that extension point being
 built; §10, §73 and §486 are updated rather than left claiming it doesn't
 exist. What remains deferred there, now phase by phase: attribute references
-(Phase 2), automatic detection (Phase 3), orphan refusal and partial-failure
+shipped as Phase 2 (`specs/resource_references.md`), automatic detection from
+driver metadata is Phase 3 — paused by decision behind #216, see
+`specs/dependency_detection.md` — then orphan refusal and partial-failure
 recovery (Phase 4), concurrency-safe state (Phase 5), parallel execution
 (Phase 6), graphical visualization (Phase 7).
 
@@ -719,10 +726,14 @@ one.
 ## Out of scope
 
 - **Cross-resource attribute references** — one resource's output flowing into
-  another's `params`. Phase 2.
-- **Automatic dependency detection** from driver-declared metadata. Phase 3;
-  it produces the same edges this phase already consumes, so the ordering
-  engine won't change.
+  another's `params`. Shipped as Phase 2, `specs/resource_references.md`; still
+  out of scope for *this* spec, which covers declaration only.
+- **Automatic dependency detection** from driver-declared metadata. Phase 3,
+  **paused by decision** behind #216 — `specs/dependency_detection.md` holds
+  the evidence and the reopening conditions. It would produce the same edges
+  this phase already consumes, so the ordering engine would not change either
+  way. Note that Phase 2 already derives edges from *references*; what is
+  paused is deriving them from literal values.
 - **Refusing a destroy that would orphan a still-tracked dependent**, and
   partial-failure recovery for a graph apply. Phase 4 — deliberately after
   this one, since failure semantics are hard enough serially.

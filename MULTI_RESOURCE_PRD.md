@@ -3,8 +3,12 @@
 Status: requirements settled. **Phase 0 shipped** (PR #199, merged
 2026-09-24 as `53ace29`, closing #198). **Phase 1 shipped** (PR #204,
 merged 2026-09-25 as `6c5b2bd`, closing #200, spec at
-`specs/resource_dependencies.md`). **Phase 2 is in progress** — issue #215,
-spec at `specs/resource_references.md`. This
+`specs/resource_dependencies.md`). **Phase 2 shipped** (PR #217, merged
+2026-09-27 as `15cbcb6`, closing #215, spec at
+`specs/resource_references.md`), with one known limitation tracked as #216.
+**Phase 3 is paused by decision** (issue #220,
+`specs/dependency_detection.md`) and keeps its number. **Next: fix #216**,
+then reassess Phase 3 from what that teaches. This
 document is the durable record of what multi-resource support must do and
 the order it gets built in. `PLAN.md` remains the architecture spec —
 §10's "No dependency graph" entry points here, and each phase reconciles
@@ -25,9 +29,20 @@ a compute resource's IPv4 address) to feed into another resource's
 system to automatically know that one resource depends on another, and
 why, without me having to declare every relationship by hand.
 
+> UC1 has **no committed phase.** It remains a use case worth wanting; Phase
+> 3, which would have delivered it, is paused by decision pending #216 — see
+> `specs/dependency_detection.md`. Note that Phase 2 delivers a *partial*
+> UC1 already: writing a reference implies its edge, so a user who expresses
+> a relationship as a reference never declares it separately. What is missing
+> is inference from a value that is *not* written as a reference.
+
 **UC2 — Manual dependency override.** As a user of aiform, I want to be
 able to declare or correct a dependency myself, for the case where
-automatic detection misses an unspecified/undetectable dependency.
+automatic detection misses an unspecified/undetectable dependency. With UC1
+only partly delivered, `depends_on:` is less an override than one of the two
+ways an edge comes into existence today — the other being a Phase 2
+reference, which implies its edge. What `depends_on:` uniquely expresses is
+ordering with **no** value flow.
 
 **UC3 — Parallel execution.** As a user of aiform, I want resources that
 have no dependency relationship to each other to be created/started in
@@ -80,7 +95,11 @@ narrower bar, not against distributed-system requirements.
 
 **UX1 — Textual dependency display in the CLI.** The CLI must show
 resource dependencies in a textual form — which resources depend on which,
-and (once UC1 lands) why an edge exists. This is a prerequisite for UC2,
+and, *if* UC1 ever lands fully, why an edge exists. Every edge a user sees
+today is traceable to something they wrote — a `depends_on:` line or a
+reference — so "why" is answered by their own config, and provenance only
+becomes load-bearing once an edge can come from neither. This is a
+prerequisite for UC2,
 not a nicety: a user cannot correct a dependency they cannot see, and
 `plan` output that silently reorders resources without showing the graph
 it derived is not reviewable. Ships in Phase 1, alongside the graph
@@ -118,9 +137,11 @@ that gap alongside UX2's original graphical scope.
 - **Cost/model-tiering constraint.** `CLAUDE.md`'s non-negotiable rule:
   a repeat `plan`/`apply` on unchanged input must make zero Anthropic API
   calls. Dependency resolution must be fully deterministic — no LLM call
-  on the graph path, in any phase. When UC1's automatic detection lands
-  in Phase 3 it must derive edges from driver-declared metadata, not from
-  a model call on the hot path.
+  on the graph path, in any phase. This binds UC1's automatic detection
+  should it ever be built: edges must derive from driver-declared metadata,
+  never a model call on the hot path. `specs/dependency_detection.md` treats
+  an LLM-inferred edge as permanently excluded rather than deferred, since it
+  would also be nondeterministic across runs.
 - **Backward compatibility — not required at all.** See
   "Non-requirements" below; it is stated there rather than here because
   it governs what we deliberately will *not* spend effort on.
@@ -330,12 +351,17 @@ Phase 1 needed no prerequisite work in the end. Its design named the
 independently as issue #195 / PR #196 before this phase started.
 
 > Note the deliberate inversion: **UC2 (manual declaration) ships before
-> UC1 (automatic detection).** Explicit declaration is the foundation that
-> auto-detection later populates — building detection first would mean
-> inferring edges with nothing to feed them into.
+> UC1 (automatic detection).** Explicit declaration is the foundation any
+> auto-detection would populate — building detection first would mean
+> inferring edges with nothing to feed them into. That ordering turned out to
+> matter more than expected: UC1's remaining half is now paused
+> (`specs/dependency_detection.md`), so had the inversion gone the other way,
+> the project would have built inference and still had no way to declare an
+> edge by hand.
 
-**Phase 2 — Cross-resource attribute references.** *(IN PROGRESS — issue
-#215, spec at `specs/resource_references.md`.)* One resource's output
+**Phase 2 — Cross-resource attribute references.** *(SHIPPED — PR #217,
+merged 2026-09-27 as `15cbcb6`, closing #215, spec at
+`specs/resource_references.md`; one known limitation tracked as #216.)* One resource's output
 attribute flowing into another's `params` — the canonical DNS-record-
 pointing-at-a-droplet-IP case. Depends on Phase 1's graph. Still
 sequential execution.
@@ -358,12 +384,32 @@ because neither is implied by "references exist":
   string, so a reference there resolves to a value its own validation
   rejects. Filed separately rather than solved with a cast syntax.
 
-**Phase 3 — Automatic dependency detection (UC1).** Infer edges from
-driver-declared reference metadata, using `specs/digitalocean_firewall.md`'s
-"Resource graph" table as the prior art for what an edge looks like.
-Detection produces the same edges Phase 1 already consumes, so the
-ordering engine doesn't change. Must stay deterministic — no LLM call on
-the plan hot path.
+**Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
+`specs/dependency_detection.md`.** The mechanism is unchanged from what this
+phase always described: infer edges from driver-declared reference metadata,
+using `specs/digitalocean_firewall.md`'s "Resource graph" table as the prior
+art for what an edge looks like, producing the same edges Phase 1 already
+consumes so the ordering engine doesn't change, and staying deterministic —
+no LLM call on the plan hot path.
+
+What changed is the decision to build it now. A design pass (issue #220)
+found **one** inferable edge in the entire driver set — the firewall's
+`droplet_ids` naming a droplet — which provably cannot change create
+ordering and carries no destroy-order failure mode.
+
+That edge is also the one #216 blocks from being written as a reference at
+all, which is the reason for the ordering here: **fix #216 first, then
+reassess.** #216 is a prerequisite for Phase 3 either way — inference over a
+reference mechanism that cannot express the edge would be building on a
+known-broken foundation — and fixing it may remove the need for detection
+entirely, since a working reference implies its own edge. Whether Phase 3 is
+still worth doing is a question to answer from what #216 teaches, not before
+it.
+
+`specs/dependency_detection.md` holds the evidence, the answer to open
+question #3 below, and the conditions that reopen this. **The phase keeps its
+number while paused** — Phases 4-7 are not renumbered, and nothing else in
+the sequence moves.
 
 **Phase 4 — Orphan refusal, partial-failure recovery, restartability
 (R3).** Refusing (or explicitly forcing) a destroy that would orphan a
@@ -406,7 +452,13 @@ beyond it:
    `specs/resource_references.md`.
 2. Does the file-per-resource model survive, or does a multi-resource file
    format become worthwhile once graphs get large?
-3. What does a driver declare so Phase 3 can infer edges — a new class
-   attribute alongside `PARAM_SCHEMA`, or metadata inside it?
-4. What single-instance concurrency model satisfies R1–R3, and does it
+3. What single-instance concurrency model satisfies R1–R3, and does it
    require R4 (a durable store) or does an in-process lock suffice?
+
+**Answered since.** *What does a driver declare so Phase 3 can infer edges —
+a new class attribute alongside `PARAM_SCHEMA`, or metadata inside it?* A
+fifth declarative class attribute, `REFERENCE_FIELDS`, not metadata inside
+`PARAM_SCHEMA` — because `PARAM_SCHEMA` is passed verbatim to the
+intent-orchestration model and aiform-private keys inside it change a prompt
+payload for no model benefit. Designed but not built, since Phase 3 is
+deferred: see `specs/dependency_detection.md`'s "The declaration contract".

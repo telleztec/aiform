@@ -27,6 +27,10 @@ requirement, the *value flow* half:
 
 It is a prerequisite for UC1 (automatic detection, Phase 3) and UC3 (parallel
 execution, Phase 6), both of which presuppose that a reference can exist at all.
+It also delivers *half* of UC1 on its own: a reference implies its own edge, so
+a relationship written as a reference is never declared separately. Phase 3's
+remaining scope — inferring an edge from a *literal* value — is paused by
+decision behind #216, see `specs/dependency_detection.md`.
 
 ## The gap this closes
 
@@ -58,7 +62,8 @@ not"** until this phase retired that title — named this phase precisely:
 
 That entry is updated rather than left claiming the gap exists, including its
 title, which stops being true. What remains deferred there: automatic detection
-(Phase 3), orphan refusal and partial-failure recovery (Phase 4),
+(Phase 3 — paused by decision behind #216,
+`specs/dependency_detection.md`), orphan refusal and partial-failure recovery (Phase 4),
 concurrency-safe state (Phase 5), parallel execution (Phase 6), graphical
 visualization (Phase 7). The PRD's open question 1 (this syntax) is answered;
 open question 2 (file-per-resource) is untouched.
@@ -615,9 +620,11 @@ cleanup discipline.
   what-is-a-reference rule above means only text that parses as a real
   reference is substituted, so a literal never has to be escaped.
 - **Automatic edge detection** from driver-declared metadata — Phase 3, and the
-  PRD's open question 3. A driver class attribute declaring which `params` keys
-  hold references would be answering that question; resolution here is
-  deliberately driver-agnostic.
+  PRD's open question 3. That question is now answered — a fifth
+  `REFERENCE_FIELDS` class attribute, `specs/dependency_detection.md` — and the
+  phase itself is paused by decision behind #216, which is this spec's own
+  known limitation. Resolution here stays deliberately driver-agnostic either
+  way.
 - **Orphan refusal and partial-failure recovery** (Phase 4),
   **concurrency-safe state** (Phase 5), **parallel execution** (Phase 6),
   **graphical visualization** (Phase 7). Execution here stays strictly

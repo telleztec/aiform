@@ -1248,10 +1248,15 @@ Returns the destination path.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.
-- **Cross-resource attribute references, automatic edge detection,
-  orphan refusal, and parallel execution** — Phases 2, 3, 4 and 6 of
-  `MULTI_RESOURCE_PRD.md`. Dependency *ordering* is no longer out of
-  scope here: see the `resource_dependencies` addendum below. What
+- **Automatic edge detection, orphan refusal, and parallel execution** —
+  Phases 3, 4 and 6 of `MULTI_RESOURCE_PRD.md`. Phase 3's detection from
+  *literal* values is paused by decision behind #216, and
+  `specs/dependency_detection.md` records why — including that inferring such
+  an edge would require the driver's metadata before `_order_files()` runs,
+  which this module deliberately does not have at that point. Neither
+  dependency *ordering* nor cross-resource *references* is out of scope here
+  any more: see the `resource_dependencies` and `resource_references`
+  addenda below. What
   remains true is that this module applies `planned` one resource at a
   time, in the literal order the list carries — it is the plan
   *builders* that now decide that order, and `apply_plan()` is unchanged
