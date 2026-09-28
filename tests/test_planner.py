@@ -112,6 +112,39 @@ class TestDestroyEntry:
         assert entry.action == PlanAction.DESTROY
 
 
+class TestUnresolvedEntry:
+    """The third deterministic producer, alongside create_entry() and
+    destroy_entry(). It exists for one narrow case: a tracked resource whose
+    reference target is being recreated in the same run, so the desired value
+    is not known yet and there is no honest diff to categorize."""
+
+    def test_returns_update_plan_entry_naming_the_unresolved_paths(self):
+        entry = planner.unresolved_entry(RESOURCE_KEY, ["records[0].data"])
+
+        assert isinstance(entry, PlanEntry)
+        assert entry.resource_key == RESOURCE_KEY
+        assert entry.action == PlanAction.UPDATE
+        assert "records[0].data" in entry.rationale
+
+    def test_lists_every_unresolved_path(self):
+        entry = planner.unresolved_entry(RESOURCE_KEY, ["records[0].data", "records[1].data"])
+        assert "records[0].data" in entry.rationale
+        assert "records[1].data" in entry.rationale
+
+    def test_likely_replace_is_false(self):
+        # Nothing about an unknown value implies a replace, and saying so
+        # would route the plan through gate #2's batch review for no reason.
+        entry = planner.unresolved_entry(RESOURCE_KEY, ["data"])
+        assert entry.likely_replace is False
+
+    def test_makes_no_llm_call(self, prompts_dir: Path):
+        # No client passed at all -- same guard as create_entry()'s. This is
+        # the whole point of the producer: the model is not asked a question
+        # whose answer is not knowable yet.
+        entry = planner.unresolved_entry(RESOURCE_KEY, ["data"])
+        assert entry.action == PlanAction.UPDATE
+
+
 class TestDiffAttributes:
     def test_empty_when_all_desired_keys_match_current(self):
         current = {"region": "sfo3", "size": "s-1vcpu-2gb"}

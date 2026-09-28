@@ -19,7 +19,7 @@ from typing import Any
 
 import anthropic
 
-from aiform import config, graph, llm, log, parser, planner, state
+from aiform import config, graph, llm, log, parser, planner, references, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
@@ -95,6 +95,59 @@ def _pop_id(
     except KeyError as exc:
         raise DriverExecutionError(provider, resource_type, operation, exc) from exc
     return new_id, attrs
+
+
+# The referenceable namespace: a tracked resource's attributes plus its `id`.
+# `id` is not in `attributes` -- _pop_id() above moves it to StateEntry.id --
+# but it is the most useful cross-resource value, so it is merged back in here
+# rather than every caller remembering to.
+def referenceable(st: State) -> dict[str, dict[str, Any]]:
+    return {key: {**entry.attributes, "id": entry.id} for key, entry in st.resources.items()}
+
+
+# `volatile` holds the keys this run is about to give new attribute values --
+# a drifted resource being recreated, or one whose update may turn into a
+# delete+create. Their CURRENT attributes are still sitting in state, and
+# offering those to a dependent is the stale-DNS bug this whole feature exists
+# to fix: the dependent would resolve to the doomed address, diff clean, plan
+# NO_OP, and be skipped by apply_plan() before the apply-time re-resolve could
+# ever correct it. Withholding them instead leaves the reference unresolved,
+# which routes the dependent through unresolved_entry() and gets it resolved
+# for real during the apply, after the target has its new value.
+def _resolve_params(
+    key: str, params: dict[str, Any], st: State, volatile: set[str], replaced: set[str]
+) -> tuple[dict[str, Any], list[str]]:
+    try:
+        return references.resolve(params, referenceable(st), volatile=volatile, replaced=replaced)
+    except references.ReferenceResolutionError as exc:
+        raise PlanBlockedError(f"{key}: {exc}") from exc
+
+
+# Any CREATE or UPDATE, deliberately -- not only an UPDATE flagged
+# likely_replace. "This target's attributes may differ after the apply" is the
+# question, and an update is by definition an answer of yes; likely_replace only
+# describes *how* the value changes, and it is the model's advisory guess rather
+# than a fact, so gating on it missed two real cases: an update the model called
+# in-place that driver.update() then refuses (delete + create, new address), and
+# the middle of a chain, whose own action is the deterministic UPDATE this
+# mechanism produces and which therefore has likely_replace=False by
+# construction. Both left a dependent pointing at a dead host for a plan cycle.
+#
+# The cost of being broad is a dependent update that rewrites an identical
+# value, at zero LLM cost, and it converges: once the target is applied its next
+# plan is NO_OP, so nothing is volatile and the dependent is NO_OP too.
+def _will_get_new_attributes(entry: PlanEntry) -> bool:
+    return entry.action in (PlanAction.CREATE, PlanAction.UPDATE)
+
+
+# The subset of the above whose CURRENT value says nothing about the value to
+# come, because the resource itself is being made again. It matters for exactly
+# one rule: a reference to an attribute that is currently unset. For a recreate
+# that is fine and expected -- a drifted droplet's ipv4_address is None
+# precisely because the droplet is gone -- while for an in-place update the
+# value stays unset, so refusing at plan time beats failing mid-apply.
+def _will_be_recreated(entry: PlanEntry) -> bool:
+    return entry.action == PlanAction.CREATE
 
 
 def _require_tracked(st: State, key: str) -> StateEntry:
@@ -268,6 +321,12 @@ class PlannedResource:
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
     depends_on: list[str] = dataclasses.field(default_factory=list)
+    # desired_params is resolved as far as plan time could manage and is what
+    # the diff and the plan display read. raw_params keeps the references
+    # intact, because apply re-resolves from scratch against state as it
+    # stands at the moment of each driver call.
+    raw_params: dict[str, Any] = dataclasses.field(default_factory=dict)
+    unresolved_references: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -332,13 +391,27 @@ def _check_duplicate_keys(discovered: list[_DiscoveredFile]) -> None:
 # resource depending on a live one needs no edge to stay correct, while a
 # live resource depending on something being destroyed in the same run is
 # a genuine conflict.
+# A reference implies the edge, so the two sources are unioned before the
+# per-target classification below ever runs -- a reference adds targets to
+# that table, it does not add rules to it. Declared order is preserved and
+# reference-only targets are appended sorted, so which target a
+# PlanBlockedError names first stays deterministic and unchanged from Phase 1.
+def _dependency_targets(spec: ResourceSpec, key: str) -> list[str]:
+    declared = list(spec.depends_on)
+    try:
+        referenced = references.reference_targets(spec.params)
+    except references.ReferenceResolutionError as exc:
+        raise PlanBlockedError(f"{key}: {exc}") from exc
+    return declared + sorted(referenced - set(declared))
+
+
 def _resolve_dependency_edges(discovered: list[_DiscoveredFile], st: State) -> dict[str, set[str]]:
     delete_marked_keys = {entry.key for entry in discovered if entry.delete_marked}
     live_keys = {entry.key for entry in discovered if not entry.delete_marked}
 
     edges: dict[str, set[str]] = {entry.key: set() for entry in discovered}
     for entry in discovered:
-        for target in entry.spec.depends_on:
+        for target in _dependency_targets(entry.spec, entry.key):
             if entry.delete_marked:
                 if target in delete_marked_keys:
                     edges[entry.key].add(target)
@@ -404,6 +477,10 @@ def build_create_plan(
 
     planned: list[PlannedResource] = []
     covered_keys: set[str] = set()
+    # Accumulated in topological order, so by the time a dependent is planned
+    # every target of its has already been classified.
+    volatile: set[str] = set()
+    replaced: set[str] = set()
 
     for path in ordered_files:
         if is_delete_marked(path):
@@ -414,9 +491,15 @@ def build_create_plan(
                 st,
                 driver_cache,
                 credentials_cache,
+                volatile,
+                replaced,
                 client=client,
                 llm_config=llm_config,
             )
+        if _will_get_new_attributes(pr.entry):
+            volatile.add(pr.entry.resource_key)
+        if _will_be_recreated(pr.entry):
+            replaced.add(pr.entry.resource_key)
         covered_keys.add(pr.entry.resource_key)
         planned.append(pr)
 
@@ -443,7 +526,7 @@ def _plan_delete_marked(path: Path, st: State) -> PlannedResource:
         driver_info=None,
         credentials=None,
         state_entry=state_entry,
-        depends_on=resource_spec.depends_on,
+        depends_on=_dependency_targets(resource_spec, key),
     )
 
 
@@ -452,6 +535,8 @@ def _plan_one(
     st: State,
     driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]],
     credentials_cache: dict[str, dict[str, str]],
+    volatile: set[str],
+    replaced: set[str],
     *,
     client: anthropic.Anthropic | None,
     llm_config: LLMConfig | None,
@@ -476,9 +561,19 @@ def _plan_one(
     )
     credentials = _credentials_for(resource_spec.provider, credentials_cache)
 
+    # Resolved before the diff, not after: plan_resource() compares
+    # desired_params against live attributes, so an unresolved "${...}" literal
+    # would never equal a real value and would defeat the no-op short-circuit
+    # permanently, billing a categorization on every future plan. Because the
+    # plan is walked in topological order, a target that is also in this run
+    # has already been refreshed by the time its dependent resolves.
+    desired_params, unresolved = _resolve_params(key, resource_spec.params, st, volatile, replaced)
+
     entry, params_agree = _decide_action(
         key,
         resource_spec,
+        desired_params,
+        unresolved,
         parsed,
         state_entry,
         driver=driver,
@@ -487,6 +582,7 @@ def _plan_one(
         client=client,
         llm_config=llm_config,
     )
+    depends_on = _dependency_targets(resource_spec, key)
 
     # depends_on is ordering metadata, not resource config, so it is kept
     # in sync with the file on every plan run regardless of the action
@@ -499,8 +595,11 @@ def _plan_one(
     # reach state.json, leaving `plan destroy` ordering by stale (empty)
     # edges forever -- no apply can repair it, since there is nothing
     # non-NO_OP to apply.
+    # The unioned list, not just the declared one: a reference-derived edge has
+    # to reach state or `plan destroy` from state alone would tear a target
+    # down before the resource pointing at it.
     if state_entry is not None:
-        state_entry.depends_on = list(resource_spec.depends_on)
+        state_entry.depends_on = list(depends_on)
 
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
@@ -526,14 +625,16 @@ def _plan_one(
         provider=resource_spec.provider,
         resource_type=resource_spec.resource,
         name=resource_spec.name,
-        desired_params=resource_spec.params,
+        desired_params=desired_params,
         aiform_md_path=path,
         current_aiform_md_sha256=parsed.aiform_md_sha256,
         driver=driver,
         driver_info=driver_info,
         credentials=credentials,
         state_entry=state_entry,
-        depends_on=resource_spec.depends_on,
+        depends_on=depends_on,
+        raw_params=resource_spec.params,
+        unresolved_references=unresolved,
     )
 
 
@@ -598,6 +699,8 @@ def _credentials_for(provider: str, cache: dict[str, dict[str, str]]) -> dict[st
 def _decide_action(
     key: str,
     resource_spec: ResourceSpec,
+    desired_params: dict[str, Any],
+    unresolved: list[str],
     parsed: ParsedResource,
     state_entry: StateEntry | None,
     *,
@@ -645,11 +748,23 @@ def _decide_action(
             entry = planner.create_entry(
                 key, rationale="tracked resource no longer exists on the provider side"
             )
+        elif unresolved:
+            # Tracked, present, but a reference target is being (re)created in
+            # this same run, so the desired value is not knowable yet. There is
+            # no honest diff to categorize -- handing the model the literal
+            # "${...}" would invite it to categorize the placeholder -- so the
+            # answer is produced deterministically instead, at zero cost.
+            #
+            # params_agree stays False so _plan_one() does not record the
+            # .aiform.md hash on a run whose params were never fully known
+            # (the #195 invariant).
+            params_agree = False
+            entry = planner.unresolved_entry(key, unresolved)
         else:
             entry, params_agree = planner.plan_resource(
                 key,
                 current_attributes,
-                resource_spec.params,
+                desired_params,
                 intent_notes=parsed.intent_notes,
                 param_schema=driver.PARAM_SCHEMA,
                 likely_replace_fields=driver.LIKELY_REPLACE_FIELDS,
@@ -763,7 +878,11 @@ def _build_destroy_plan_from_paths(
     _check_duplicate_keys(discovered)
 
     node_keys = {entry.key for entry in discovered}
-    raw_edges = {entry.key: set(entry.spec.depends_on) for entry in discovered}
+    # _dependency_targets(), not spec.depends_on: a reference implies the edge on
+    # this path too. The state-driven producer below gets this for free by reading
+    # the persisted, already-unioned StateEntry.depends_on; this one derives its
+    # edges from the files, so it has to union them itself.
+    raw_edges = {entry.key: set(_dependency_targets(entry.spec, entry.key)) for entry in discovered}
     edges, dangling = _classify_destroy_edges(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
@@ -790,7 +909,7 @@ def _build_destroy_plan_from_paths(
                 driver_info=None,
                 credentials=None,
                 state_entry=state_entry,
-                depends_on=resource_spec.depends_on,
+                depends_on=_dependency_targets(resource_spec, key),
             )
         )
     return planned, warnings
@@ -942,9 +1061,10 @@ def apply_plan(
             # test_replace_*_failure_reports_* tests.
             replaced = False
             update_start = time.monotonic()
+            desired = _apply_params(pr, st)
             try:
                 raw = pr.driver.update(
-                    pr.state_entry.id, pr.state_entry.attributes, pr.desired_params, pr.credentials
+                    pr.state_entry.id, pr.state_entry.attributes, desired, pr.credentials
                 )
             except DriverUpdateNotSupported:
                 replaced = True
@@ -956,7 +1076,7 @@ def apply_plan(
                         return ApplyResult(
                             executed=executed, review_flags=review_flags, aborted=True
                         )
-                raw = _replace_resource(pr, st, state_path=state_path)
+                raw = _replace_resource(pr, st, state_path=state_path, desired=desired)
             except Exception as exc:
                 _log_driver_outcome(
                     pr.provider,
@@ -1038,6 +1158,32 @@ def _extend_and_notify(
     on_review_fn(new_flags)
 
 
+# Re-resolved from the raw tree at the moment of the call, not reused from plan
+# time, and deliberately for the whole tree rather than only the paths that were
+# unknown then: one code path instead of two, and the value handed to a driver
+# is the one live now -- which is the correct answer precisely when a target was
+# replaced earlier in this same apply.
+#
+# Topological ordering means an unresolved path here cannot happen. The guard is
+# still worth its two lines, because the alternative to raising is sending a
+# literal "${...}" to the provider as a real resource value.
+def _apply_params(pr: PlannedResource, st: State) -> dict[str, Any]:
+    try:
+        resolved, unresolved = references.resolve(pr.raw_params, referenceable(st))
+    except references.ReferenceResolutionError as exc:
+        # Wrapped, not left to escape: cli.py handles PlanBlockedError and does
+        # not handle this, so a reference that only becomes checkable at apply
+        # time -- a brand-new target's attribute name -- would otherwise reach
+        # the user as a traceback with the apply half-done.
+        raise PlanBlockedError(f"{pr.entry.resource_key}: {exc}") from exc
+    if unresolved:
+        raise PlanBlockedError(
+            f"{pr.entry.resource_key}: references are still unresolved at apply time: "
+            + ", ".join(unresolved)
+        )
+    return resolved
+
+
 def _apply_create(pr: PlannedResource, st: State) -> None:
     raw = _call_driver(
         pr.driver.create,
@@ -1045,7 +1191,7 @@ def _apply_create(pr: PlannedResource, st: State) -> None:
         pr.resource_type,
         "create",
         pr.name,
-        pr.desired_params,
+        _apply_params(pr, st),
         pr.credentials,
     )
     new_id, attrs = _pop_id(raw, pr.provider, pr.resource_type, "create")
@@ -1068,7 +1214,9 @@ def _replace_review(
     _extend_and_notify(single_review, review_flags, on_review_fn)
 
 
-def _replace_resource(pr: PlannedResource, st: State, *, state_path: Path) -> dict[str, Any]:
+def _replace_resource(
+    pr: PlannedResource, st: State, *, state_path: Path, desired: dict[str, Any]
+) -> dict[str, Any]:
     _call_driver(
         pr.driver.delete,
         pr.provider,
@@ -1086,13 +1234,16 @@ def _replace_resource(pr: PlannedResource, st: State, *, state_path: Path) -> di
     _require_tracked(st, pr.entry.resource_key)
     del st.resources[pr.entry.resource_key]
     state.save(st, state_path)
+    # `desired` is the value computed before delete(), not recomputed here:
+    # this resource has just been dropped from state, and re-resolving would
+    # only differ if it referenced itself, which is a cycle and already refused.
     return _call_driver(
         pr.driver.create,
         pr.provider,
         pr.resource_type,
         "create",
         pr.name,
-        pr.desired_params,
+        desired,
         pr.credentials,
     )
 

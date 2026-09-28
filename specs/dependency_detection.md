@@ -1,35 +1,36 @@
-# specs/dependency_detection.md — automatic dependency detection, and why it is deferred
+# specs/dependency_detection.md — automatic dependency detection, and why it is paused
 
 **Naming note**: like `specs/resource_dependencies.md`,
-`specs/unordered_fields.md` and `specs/resource_tagging.md`, this filename
-deliberately doesn't follow `specs/README.md`'s per-module mirroring rule. It
-describes one feature that would span `aiform/driver.py`,
-`aiform/orchestrator.py` and every driver, and it is named for the feature so
-it is discoverable from any of them.
+`specs/resource_references.md`, `specs/unordered_fields.md` and
+`specs/resource_tagging.md`, this filename deliberately doesn't follow
+`specs/README.md`'s per-module mirroring rule. It describes one feature that
+would span `aiform/driver.py`, `aiform/orchestrator.py` and every driver, and
+it is named for the feature so it is discoverable from any of them.
 
 Closes #220. Phase 3 of `MULTI_RESOURCE_PRD.md`.
 
-**Build status.** **Not built, and deferred by decision** — not pending, not
-in progress, not next. This file is the decision record and the contract a
+**Build status.** **Not built, and paused by decision** — not pending, not in
+progress, not next. This file is the decision record and the contract a
 future Phase 3 starts from. Nothing here is implemented: no driver declares
 reference metadata, `aiform/driver.py` has four declarative class attributes
-and not five, and no code path infers an edge.
+and not five, and no code path infers an edge from a literal value.
 
 | Piece | State |
 |---|---|
-| The decision to defer | made, recorded here |
+| The decision to pause | made, recorded here |
 | `REFERENCE_FIELDS` contract (PRD open question #3) | **designed, not built** |
 | `REFERENCE_FIELDS` on any driver | not built |
-| Edge inference in `_order_files()` | not built |
+| Edge inference from literal values | not built |
 | The firewall-deletion probe | named here, not run |
+| #216, the named prerequisite | open, not started |
 
 ## Purpose
 
 Record what automatic dependency detection would be, what it would be worth
-today, and why the answer is "not enough to build" — so the question is
-settled with evidence rather than re-derived from scratch, and so a future
-session inherits a decided declaration contract instead of three sentences
-of PRD text.
+today, and why the answer is "not before #216 is fixed" — so the question is
+settled with evidence rather than re-derived, and so a future session
+inherits a decided declaration contract rather than three sentences of PRD
+text.
 
 ## Use cases
 
@@ -37,136 +38,185 @@ of PRD text.
 wants `aiform` to know that one resource depends on another, and why, without
 declaring every relationship by hand.
 
-UC1 has **no committed phase**. Phase 1 delivered UC2 (manual declaration),
-which is the escape hatch UC1 was always going to need anyway — the PRD's own
-"deliberate inversion" note explains why declaration shipped first.
+UC1 is **half delivered, and the other half is paused.** Phase 2
+(`specs/resource_references.md`) made a reference imply its own edge — so a
+user who expresses a relationship as `${digitalocean.compute.web-01:ipv4_address}`
+never declares it separately, and `aiform` derives the edge without being
+told. What remains is inferring an edge from a value that is *not* written as
+a reference: a literal the user pasted. That residue is what this spec is
+about, and the whole question is how much of it is real.
 
 ## Relationship to PLAN.md §10
 
 §10's "Dependency graph: ordering exists, value flow does not" entry lists
 automatic detection as Phase 3, phrased as deferred-but-coming. This spec
-**narrows** that entry: the mechanism is unchanged, but the phase is deferred
-by decision rather than by sequencing, and §10 is updated to say so rather
-than left implying a schedule.
-
-Nothing in §10's *delivered* claims changes. Phase 1's ordering engine,
-cycle detection and `depends_on` persistence are untouched by this decision.
+**narrows** that entry: the mechanism is unchanged, but the phase is paused by
+decision behind a named prerequisite rather than merely sequenced, and §10 is
+updated to say so. §10's *delivered* claims for Phases 1 and 2 are untouched.
 
 ## The decision
 
-**Do not build automatic detection now.** The grounds are narrow and specific
-to today's driver set, not a general claim that inference is a bad idea.
+**Do not build automatic detection now. Fix #216 first and reassess from what
+that teaches.** The grounds are narrow and specific to today's driver set.
 
-### There is one inferable edge in the entire driver set
+### #216 is the prerequisite, and it reframes the whole question
 
-Every reference-shaped field across the three drivers:
+`droplet_ids: ["${digitalocean.compute.web-01:id}"]` does not work
+(#216). Understanding *why* is what settles the ordering of this phase, and
+the intuitive reading is wrong.
 
-| Field | Points at | Verdict |
-|---|---|---|
-| `droplet_ids` (`firewall.py:83`) and `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **The one real edge.** Integer, matched `str(int)` against `StateEntry.id`, which `compute.py:205` produces as `str(droplet["id"])` |
-| `tags` (`firewall.py:84`, `compute.py:173`) and `sources`/`destinations.tags` (`firewall.py:53`) | a DigitalOcean tag | No `tag` driver exists; a tag cannot be an aiform resource, so there is no node to point at |
-| `ssh_keys` (`compute.py:170`) | a DigitalOcean SSH key | No `ssh_key` driver exists |
-| `load_balancer_uids`, `kubernetes_ids` (`firewall.py:54-55`) | a load balancer, a k8s cluster | No drivers. The k8s edge was never probed at all (`specs/digitalocean_firewall.md:289`) |
-| `records[].data` (`domain.py:103`) | a droplet's IP | An **attribute** match against `attributes["ipv4_address"]` (`compute.py:211`), not an id match. This is Phase 2's problem — value flow — not detection's |
+It is **not** a limitation of references. `aiform/references.py:267-271`
+handles a whole-value reference by returning the attribute's own Python
+object: "the attribute's own type survives — an int stays an int, a list
+stays a list. This is what lets a reference feed a non-string field." The
+grammar needs no cast.
+
+The string comes from the other end. `orchestrator.py:94` pops `"id"` out of
+the attributes a driver returns and moves it to `StateEntry.id`, which
+`aiform/models.py:222` types as `str` — necessarily, since it is `aiform`'s
+primary key and has to be uniform across every provider and resource kind.
+`orchestrator.py:104`'s `referenceable()` then merges that string back into
+the reference namespace under the name `id`. So `compute.py:205`'s
+`str(droplet["id"])` is not a driver quirk; it is satisfying the identity
+contract `PLAN.md` §4 imposes.
+
+**`id` is doing two unrelated jobs under one name:** `aiform`'s identity
+token, legitimately a string; and a provider attribute a user wants to
+reference, whose native type is whatever the CSP says — an integer for a
+DigitalOcean droplet. A reference names an `aiform`-tracked *object*, and
+`:attribute` already expresses which value inside that object to hand the
+provider. The fix is therefore about making the right attribute available
+with the right type, not about new syntax.
+
+Two consequences for this phase:
+
+- **#216 is a prerequisite for Phase 3 regardless of the outcome.** Building
+  inference over a reference mechanism that cannot express the one edge that
+  exists would be building on a known-broken foundation.
+- **Fixing it may remove the need for detection entirely** for this edge,
+  since a working reference implies its own edge already. That is the
+  specific thing to reassess afterwards.
+
+A Phase 2 defect is not an argument *for* Phase 3. It is an argument for
+fixing Phase 2.
+
+### The edge inventory
+
+Every reference-shaped field across the three drivers. Graded `inferred`
+rather than `verified`: the fields are read from source, but whether the list
+is *complete* is a judgement about what counts as reference-shaped, and an
+earlier draft of this table missed two rows.
+
+| Field | Points at | Match kind | Verdict |
+|---|---|---|---|
+| `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Exactly the edge #216 blocks from being a reference |
+| `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:210`) | **attribute** | A *user-chosen* value, writable before its referent exists. Phase 2 references already work here (`specs/digitalocean_firewall.md:341-347`) |
+| `addresses` (`firewall.py:51`) | a droplet, via `ipv4_address` (`compute.py:211`) | **attribute** | Same class as `records[].data`. Missed by this table's first draft |
+| `records[].data` (`domain.py:103`) | a droplet, via `ipv4_address` | **attribute** | Phase 2's canonical case; references work |
+| `ssh_keys` (`compute.py:170`) | a DigitalOcean SSH key | id | No `ssh_key` driver exists; no node to point at |
+| `load_balancer_uids`, `kubernetes_ids` (`firewall.py:54-55`) | a load balancer, a k8s cluster | id | No drivers. The k8s edge was never probed (`specs/digitalocean_firewall.md:292`) |
 
 `specs/resource_tagging.md`'s marker tag contributes no edge: it is a fixed
 constant, never a lookup key, and explicitly invisible to the diff engine.
 
-Worth noting where the metadata already lives, because it shortens a future
-Phase 3 considerably: `firewall.py:40-42` already carries a comment saying
-every rule target key *is* a reference to another resource kind, and
-`specs/digitalocean_firewall.md:279-295` already tabulates the edges with
-their id types and pre-existence requirements, probe by probe. Phase 3's real
-work is moving that from prose into something the planner can read, not
-discovering it.
+Two corrections worth recording, because the wrong versions are the intuitive
+ones. The `tags` rows do **not** point at a "tag resource" — there is no such
+driver, but that is beside the point, because what a user references is the
+*droplet carrying the tag*. And a tag is user-chosen, so it is writable before
+its referent exists. An earlier draft asserted that no such field exists in
+any current driver; that was false, and it mattered, because that field type
+is the one the create-ordering argument below cannot cover.
 
-### The one edge cannot change create ordering
+Where the metadata already lives, since it shortens a future Phase 3:
+`firewall.py:40-42` carries a comment stating that every rule target key *is*
+a reference to another resource kind, and
+`specs/digitalocean_firewall.md:282-298` tabulates the edges with id types and
+pre-existence evidence, probe by probe. Phase 3's real work is moving that
+from prose into something the planner can read.
 
-A droplet's id is assigned by DigitalOcean at creation. A user cannot write
-it into a firewall's `droplet_ids` before the droplet exists — the API
-refuses an unknown id with a 422 (`specs/digitalocean_firewall.md:287`). So
-any config containing that literal was written after a prior successful apply
-of that droplet, which means the droplet is already tracked, and at the run
-where the firewall is first created the droplet's action is `NO_OP`.
-`apply_plan()` skips `NO_OP` before any driver call
-(`aiform/orchestrator.py:927`). Ordering a `CREATE` against a `NO_OP` is
-inert.
+### The id-match edge cannot change create ordering
 
-A replace does assign a new id, leaving a stale literal in the firewall's
-params — but that surfaces as a phantom diff on a later run, not a same-run
-ordering hazard.
+A droplet's id is assigned by DigitalOcean at creation, and the API refuses
+an unknown id with a 422 (`specs/digitalocean_firewall.md:290`). So a literal
+in `droplet_ids` was written after a prior successful apply of that droplet.
+In the common case the droplet is therefore already tracked and its action is
+`NO_OP`, and `apply_plan()` skips `NO_OP` before any driver call
+(`orchestrator.py:1046`) — ordering a `CREATE` against a `NO_OP` is inert.
 
-**This argument is scoped to this field type, not to inference in general.**
-It holds because the id is *provider-assigned*. A **user-chosen** reference
-value — a zone name, a tag string — is writable before its referent exists,
-and would break the argument outright. No such field exists in any current
-driver. Do not read this section as evidence that detection's create-ordering
-value is structurally zero; it is zero for the one edge that exists.
+The premise does not hold universally, and the honest statement of the
+conclusion does not need it to. If state was lost, the config directory was
+copied to a fresh machine, the droplet drifted missing, or the droplet was
+created outside `aiform`, then the literal is either stale or names nothing
+this run knows about. In every one of those cases no ordering helps: the
+value is wrong, and it fails under any order. So: **either the target is a
+`NO_OP`, or the literal is stale and no ordering saves it.**
 
-### Phase 2 supersedes most of the value
+Same for a replace. A droplet replaced in the same run leaves the firewall
+holding the old id, and a whole-object `PUT` carrying it 422s mid-apply under
+either order — a failure no ordering fixes, not an ordering hazard.
 
-Whatever reference syntax Phase 2 lands (PRD open question #1 — interpolation
-in `params`, a separate reference block, something else), the edge is explicit
-*in the syntax*. Parsing it yields a deterministic, zero-cost edge at full
-precision with no driver metadata at all.
-
-The PRD sequences Phase 2 ahead of Phase 3 and permits one phase in flight at
-a time, so by the time detection could ship, the explicit-reference edges
-already exist. Detection's residual scope is then only the hardcoded-literal
-case — which is the provably-inert case above.
+**This argument covers id-match fields only.** It works because the id is
+provider-assigned. It says nothing about the `tags` and `addresses` rows,
+whose values are user-chosen and writable ahead of their referents. For those,
+Phase 2 references already produce the edge, which is why the argument does
+not need to stretch.
 
 ### Destroy ordering has no failure mode for this edge
 
-Two corrections to an earlier draft of this argument, both recorded because
-the wrong version is the intuitive one.
+`_build_destroy_plan_from_state()` runs a real topological sort over
+`StateEntry.depends_on` (`orchestrator.py:922`, `:926`); it degenerates to
+reverse-lexical only when there are no edges at all.
 
-First, the mechanism. `_build_destroy_plan_from_state()` does run a real
-topological sort over `StateEntry.depends_on`
-(`aiform/orchestrator.py:803`, `:807`); it degenerates to reverse-alphabetical
-only when there are no edges at all. That is the undeclared case, because
-`StateEntry.depends_on` is written solely from `resource_spec.depends_on`
-(`aiform/orchestrator.py:124`, `:503`, `:1116`) — never from anything
-inferred.
+In that zero-edge case the order cannot currently break anything, by naming
+accident rather than design. `graph.topological_order()` drains a heap of raw
+key strings (`aiform/graph.py:56-61`), and those keys are
+`provider.resource_type.name` as `resource_key()` formats them
+(`orchestrator.py:45`) — so plain lexical string order happens to compare
+`resource_type` before `name`, and with `"compute" < "domain" < "firewall"`
+every firewall is destroyed before every droplet, for any pair of names.
+**Single-provider only**: the provider segment sorts first, so this holds
+because there is exactly one provider today.
 
-Second, today the ordering that fallback produces cannot break anything, by
-naming accident rather than design. `parse_dependency_key()`
-(`aiform/models.py:15`) yields `provider.resource_type.name` and the sort
-compares `resource_type` before `name`; since `"compute" < "domain" <
-"firewall"`, every firewall is destroyed before every droplet, for any pair
-of names. That flips the moment a resource type sorting after `firewall`
-arrives — a `load_balancer` driver, whose edge
-`specs/digitalocean_firewall.md:288` already documents.
+It flips the moment a resource type sorting after `firewall` arrives — a
+`load_balancer` driver, whose edge `specs/digitalocean_firewall.md:291`
+already documents. But it flips into a *hazard* only for a resource that
+actually breaks when its referent disappears, and a firewall does not:
 
-But it flips into a hazard only for a resource that actually *breaks* when
-its referent disappears, and a firewall does not:
+> **A firewall does not break when a droplet in it is removed.** A firewall
+> can also exist ahead of the droplets it targets *by tag*, with the
+> configuration inert until matching droplets exist.
 
-> **A firewall does not break when a droplet in it is removed**, and a
-> firewall can exist ahead of the droplets it targets — the configuration is
-> simply inert until they exist.
+Owner-reported, not probed — see "Knowledge-confidence". The second half is
+scoped to tag targeting deliberately: it cannot be true of `droplet_ids`,
+which 422s on an id that does not exist yet.
 
-That is owner-reported, not probed; see "Knowledge-confidence" below. It
-closes the question `specs/digitalocean_firewall.md:293-295` left open, and
-it means destroy ordering carries no correctness value for this edge.
+This closes the question `specs/digitalocean_firewall.md:296-298` left open.
 
-### Inferring this edge would make Phase 4 refuse safe destroys
+### An inferred edge would cost more than it pays
 
-This is the argument that looked strongest *for* detection, and it inverts.
+Inferring the id-match edge has two costs and no observable benefit.
 
-Phase 4's orphan refusal blocks a destroy that would leave a still-tracked
-dependent broken. Phase 1 already gives it everything it needs for declared
-edges, so detection's marginal contribution would be covering the user who
-hardcodes a droplet id and never writes the redundant `depends_on:` line.
+**It would start refusing plans immediately.** Not a Phase 4 hypothetical:
+`_resolve_dependency_edges()` (`orchestrator.py:408`) already raises
+`PlanBlockedError` when a live resource's target is delete-marked in the same
+run. An inferred `firewall → droplet` edge would therefore refuse a
+`plan create` that removes the droplet — today — for a removal that does not
+in fact break the firewall.
 
-But if the firewall is not broken by the droplet's removal, then an inferred
-`firewall → droplet` edge makes Phase 4 refuse a perfectly safe destroy,
-forcing `--force` for no reason. `prompts/review_plan.md:48` already states
-the principle for gate #2 — "a false block trains the user to stop trusting
-this gate" — and it applies identically to a refusal derived from a guessed
-edge.
+**It is a worse mechanism than the one it substitutes for.** A working
+reference gives a live, typed value: replace the droplet and the reference
+re-resolves. A detected literal is a stale-able copy — when the id changes the
+literal rots, and detection then finds *no* edge at all, which is quietly
+wrong rather than absent.
 
-A declared edge does not have this problem: the user asserted the
-relationship, so refusing on it honors an instruction. An inferred one
-asserts a relationship the user never claimed.
+Whether a block or a warning is the right response to a stale literal is a
+genuine judgement, not settled here. There is a real case for saying
+something: the config *is* wrong, and this spec's own edge cases note that
+silence about a rotted literal is worse than noise. What is not defensible is
+refusing a safe destroy on an edge the user never asserted. A declared edge
+honors an instruction; an inferred one asserts a relationship nobody claimed.
+Phase 4 would need to distinguish the two, which `MULTI_RESOURCE_PRD.md`'s
+Phase 4 text does not currently contemplate.
 
 ## The declaration contract
 
@@ -180,159 +230,158 @@ four in `aiform/driver.py` (`PARAM_SCHEMA` `:62`, `LIKELY_REPLACE_FIELDS`
 inside `PARAM_SCHEMA`. Three reasons:
 
 - **`PARAM_SCHEMA` is a prompt payload.** It is passed verbatim to the
-  intent-orchestration model (`aiform/planner.py:99`,
-  `prompts/diff_plan.md:15`). Adding aiform-private keys to it changes what
-  the model sees, for no model benefit — and the model is told to reason about
-  that schema's types, so unexplained keys are a live risk, not a cosmetic one.
+  intent-orchestration model (`aiform/planner.py:122`,
+  `prompts/diff_plan.md:15`), which is told to reason about its types. Adding
+  aiform-private keys changes what the model sees for no model benefit.
 - **The existing four establish one concern, one attribute.** Each is a flat
-  declaration the base class reads and the driver reassigns rather than
-  mutates. A fifth fits the pattern; a nested annotation inside a JSON Schema
-  does not.
+  declaration the base class reads and a driver reassigns rather than mutates.
 - **`PLAN.md` §4's contract is stability-critical.** An additive sibling
-  leaves the existing four untouched. Mutating a shared schema makes every
-  driver's `PARAM_SCHEMA` load-bearing for a second purpose.
+  leaves the four untouched; mutating a shared schema makes every driver's
+  `PARAM_SCHEMA` load-bearing for a second purpose.
 
 **Shape.** Each entry names a field path, the resource kind it points at, and
-which state field the value matches:
+which value inside that object the provider wants:
 
-- **field path**, including nesting, because the real edges are nested —
-  `droplet_ids` and `inbound_rules[].sources.droplet_ids` are different paths
-  to the same target kind.
+- **field path**, including nesting — `droplet_ids` and
+  `inbound_rules[].sources.droplet_ids` are different paths to the same kind.
 - **target `provider` and `resource_type`**, so the match is against a
   resource key rather than a guess.
-- **which state field the value equals** — `StateEntry.id`, or a named key in
-  `StateEntry.attributes`. The `domain.records[].data` row above is the whole
-  reason this has to be explicit: an attribute match and an id match are
-  different lookups, and only the id one is available before Phase 2.
+- **which attribute the value equals** — and this is the same question #216
+  raises from the other direction. A reference says *which attribute of the
+  object to read*; `REFERENCE_FIELDS` would say *which attribute a literal
+  here would have come from*. Both need the attribute to exist with the right
+  type, which is why #216 is upstream of this design and not merely adjacent
+  to it.
 
-Note that `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its list of
-declarative attributes (#133). A fifth attribute inherits that documentation
-debt — fix #133 first or the same gap doubles.
+Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
+list (#133). A fifth attribute inherits that debt — fix #133 first or the gap
+doubles.
 
 ## Where detection would run, and what it would cost
 
-This is the part `MULTI_RESOURCE_PRD.md:341-343` understates. "The ordering
-engine doesn't change" is true. The pass in front of it does.
+`MULTI_RESOURCE_PRD.md`'s "the ordering engine doesn't change" is true. The
+pass in front of it is not.
 
-`_order_files()` (`aiform/orchestrator.py:373`) is called at
-`aiform/orchestrator.py:400`, deliberately **before** the driver cache is
-built at `:402` and before any credential resolution. That ordering is what
-makes the pass free: pure YAML and string work, no driver import, no CSP call,
-no model call.
+`_order_files()` (`orchestrator.py:446`) is called at `orchestrator.py:473`,
+before the driver cache is built at `:475` and before any credential
+resolution. That ordering is what makes the pass free: pure YAML, string and
+tree work, no driver import, no CSP call, no model call. Phase 2 fits inside
+it because a reference is visible in the *text* of `params` —
+`references.reference_targets()` (`aiform/references.py:154`) needs no driver.
 
-Detection needs the driver class to read `REFERENCE_FIELDS`. So it either
-moves the driver load ahead of the ordering pass, or adds a second pass after
-it — and both perturb a pass whose zero-cost property is pinned by tests:
-`tests/test_orchestrator.py:1614`
-(`test_unchanged_dependency_graph_makes_zero_llm_calls`) and `:1919`
-(`test_cycle_raises_plan_blocked_error_before_driver_load_or_llm_call`). The
-second test's name *is* the invariant — it asserts the cycle check happens
-before a driver load, which is precisely what detection would need to undo.
+Detection is different: it needs the driver's `REFERENCE_FIELDS` to know that
+an integer in `droplet_ids` means a droplet at all. Three options, none free:
 
-A future Phase 3 must therefore state which it does and re-establish the
-invariant, not discover the conflict mid-implementation. Loading a driver is
-not free of side effects either: `load_driver` re-executes the module on every
-call.
+- move the driver load ahead of the ordering pass;
+- add a second pass after it;
+- read `REFERENCE_FIELDS` by AST without importing, as `driver_gen.py`
+  already does for drivers.
+
+The first two perturb a pass whose zero-cost property is pinned by
+`tests/test_orchestrator.py:1626`
+(`test_unchanged_dependency_graph_makes_zero_llm_calls`) and `:1931`
+(`test_cycle_raises_plan_blocked_error_before_driver_load_or_llm_call`) —
+whose *name* is the invariant, asserting the cycle check precedes any driver
+load. A future Phase 3 must say which option it takes and re-establish the
+invariant, not discover the conflict mid-implementation.
 
 ## Edge cases a future implementation must answer
 
-Recorded so they aren't rediscovered. None is resolved here.
+None is resolved here.
 
-- **A literal matching more than one resource.** Two tracked droplets cannot
-  share a DigitalOcean id, but an *attribute* match (an IP, a tag) can match
-  several. Detection must refuse or pick deterministically; a nondeterministic
-  edge breaks Phase 1's determinism requirement.
-- **A literal matching a resource in state but not in this run.** Phase 1's
-  declared-edge rule is that a state-only target contributes no edge
-  (`aiform/orchestrator.py:352-353`). An inferred edge must follow the same
-  rule or the two mechanisms disagree.
-- **A stale literal after a replace.** The id no longer matches anything, so
-  detection finds no edge where the user believes one exists. Silence here is
+- **A literal matching more than one resource.** An attribute match (a tag, an
+  IP) can match several; detection must refuse or pick deterministically,
+  since a nondeterministic edge breaks Phase 1's determinism requirement.
+- **A literal matching a resource in state but not in this run.** Declared
+  edges resolve a state-only target to no edge. An inferred edge must follow
+  the same rule or the two mechanisms disagree.
+- **A stale literal after a replace.** The id matches nothing, so detection
+  silently finds no edge where the user believes one exists. Silence here is
   worse than an unhelpful edge.
-- **Precedence against a declared edge.** If a user declared `depends_on` and
-  detection infers a different set, declared must win — UC2 exists as the
-  correction mechanism for exactly this.
-- **Whether an inferred edge is persisted.** Writing it to
-  `StateEntry.depends_on` would make it indistinguishable from a declared one
-  on the next run, and would feed Phase 4's refusal. It should not be
-  persisted without deciding that deliberately.
+- **Precedence against a declared edge.** Declared must win; UC2 exists as the
+  correction mechanism.
+- **Whether an inferred edge is persisted — already decided, follow the
+  precedent.** `_dependency_targets()` (`orchestrator.py:399`) unions
+  reference-derived targets with declared ones, and `orchestrator.py:602`
+  persists the union to `StateEntry.depends_on`, deliberately, so that
+  `plan destroy` from state alone does not tear a target down before the
+  resource pointing at it. So `aiform` already derives and persists edges the
+  user never declared, and the design question is not *whether* but whether a
+  *literal*-derived edge deserves the same trust as a syntax-derived one.
 
 ## Verification
 
-Nothing to test — nothing is built. What a future Phase 3 would need, and what
-this decision rests on:
+Nothing to test — nothing is built. What this decision rests on, and what a
+future Phase 3 would need:
 
 **The named probe, not run.** It would promote the owner-reported firewall
 behavior to `verified` and close
-`specs/digitalocean_firewall.md:293-295`'s open note. Shape: create a
+`specs/digitalocean_firewall.md:296-298`'s open note. Shape: create a
 disposable droplet and a firewall carrying its id in `droplet_ids`, `DELETE`
 the droplet, then `GET` the firewall and observe whether `droplet_ids` still
 carries the dead id, and whether a later `PUT` carrying it returns 422.
-Follow `specs/driver_creation.md`'s loop, with the transcript under
-`probes/transcripts/` and findings in
-`knowledge/drivers/<session>/FINDINGS.md`.
+Follow `specs/driver_creation.md`'s loop, transcript under
+`probes/transcripts/`, findings in `knowledge/drivers/<session>/FINDINGS.md`.
 
-It is **not** a decision gate. The deferral holds on the deterministic
-arguments above whichever way the probe comes out; a dangling reference that
-*did* break would restore the destroy-ordering and orphan-refusal cases, which
-is why it appears under "Conditions that reopen this" rather than here.
+It is **not** a decision gate. The pause holds whichever way it comes out; a
+dangling reference that *did* break would restore the destroy-ordering case,
+which is why it appears under "Conditions that reopen this".
 
 ## Conditions that reopen this
 
-Any one of these invalidates a specific argument above:
-
-- **A driver whose reference value is user-chosen** rather than
-  provider-assigned — a zone name, a tag string, anything writable before its
-  referent exists. Breaks the create-ordering argument outright.
+- **#216 is fixed and detection is still the only way to get this edge** — for
+  example if the chosen fix leaves integer-typed fields unreachable by
+  reference. Then the literal is permanent, and this is the reassessment the
+  decision defers to.
 - **A resource type that genuinely breaks when its referent is deleted.**
-  Restores both the destroy-ordering and the orphan-refusal cases.
-- **A driver set where the edge inventory is no longer one row** — a `tag`,
-  `ssh_key`, `load_balancer` or k8s driver would each add real edges, and a
-  `load_balancer` additionally sorts after `firewall`, flipping the
-  destroy-order accident described above.
-- **Phase 2 landing a reference syntax that does not make its own edges
-  self-evident.** Unexpected, but it would restore detection's main scope.
+  Restores the destroy-ordering and orphan-refusal cases.
+- **A reference that fails silently rather than loudly.** The stale-literal
+  argument assumes a 422; a silent wrong answer inverts it.
+- **A driver set where the id-match inventory is more than one row** — an
+  `ssh_key`, `load_balancer` or k8s driver. A `load_balancer` additionally
+  sorts after `firewall`, flipping the destroy-order accident above.
+- **A second provider.** The single-provider caveat on the destroy-order
+  argument stops holding.
 
 ## Out of scope
 
-- **Cross-resource attribute references.** Phase 2, and PRD open question #1.
-  The `domain.records[].data` row above belongs to it, not here — a value
-  flowing from one resource into another is a different mechanism from noticing
-  that two resources are related.
+- **Fixing #216 itself.** Named here as the prerequisite; its design is its
+  own issue and its own plan. This spec takes a position on *why* it comes
+  first, and none on which of its candidate fixes is right.
 - **Orphan refusal and partial-failure recovery.** Phase 4. This spec takes a
-  position on what detection would *do to* Phase 4, and none on Phase 4's own
+  position on what an inferred edge would do to Phase 4, and none on Phase 4's
   design.
 - **Inferring edges with a model call.** Permanently excluded, not deferred.
-  `CLAUDE.md` and `MULTI_RESOURCE_PRD.md:116-121` both require the graph path
-  to be deterministic, and a repeat `plan` on unchanged input to make zero
-  Anthropic calls. An LLM-inferred edge would also be nondeterministic across
-  runs, which Phase 1's ordering guarantees forbid independently of cost.
+  `CLAUDE.md` and `MULTI_RESOURCE_PRD.md` both require the graph path to be
+  deterministic and a repeat `plan` on unchanged input to make zero Anthropic
+  calls. An LLM-inferred edge would also be nondeterministic across runs,
+  which Phase 1's ordering guarantees forbid independently of cost.
 - **A lint that warns instead of inferring** — "you hardcoded an id matching a
-  tracked resource, did you mean a reference?". A real and much cheaper idea
-  than detection, and deliberately not designed here: it is a different feature
-  with a different failure mode (a false warning costs attention, not a refused
-  destroy), and it would need its own use case rather than inheriting UC1's.
-- **Renumbering the PRD's phases.** Phase 3 keeps its number while deferred, so
+  tracked resource, did you mean a reference?". Cheaper than detection and
+  deliberately not designed here: it is a different feature with a different
+  failure mode (a false warning costs attention, not a refused destroy), and
+  it would need its own use case rather than inheriting UC1's. It becomes more
+  attractive, not less, if #216 is fixed — at that point the warning has
+  somewhere to point the user.
+- **Renumbering the PRD's phases.** Phase 3 keeps its number while paused, so
   Phases 4-7 and every reference to them stay valid.
 
 ## Knowledge-confidence
 
-Grading each load-bearing claim, per the convention in
-`specs/driver_observability.md` and `specs/driver_creation.md`.
-
 | Claim | Grade | Basis |
 |---|---|---|
-| The edge inventory is complete for the three current drivers | **verified** | Every `PARAM_SCHEMA` read in full; file:line cited per row |
-| A droplet id is provider-assigned and a firewall 422s on an unknown one | **verified** | `specs/digitalocean_firewall.md:287`, transcript `21-` |
-| `apply_plan()` skips `NO_OP` before any driver call | **verified** | `aiform/orchestrator.py:927` |
-| The destroy-from-state path topologically sorts `StateEntry.depends_on` | **verified** | `aiform/orchestrator.py:803`, `:807` |
-| `"compute" < "domain" < "firewall"` makes the zero-edge fallback safe today | **verified** | `aiform/models.py:15`, read rather than reasoned about |
-| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated directly by the repo owner, 2026-09-26. Not probed. The probe above is what would promote it |
-| A firewall can exist ahead of the droplets it targets, config inert | **owner-reported** | Same statement, same date |
-| Phase 2's syntax will make its own edges self-evident | **inferred** | True of every reference syntax under consideration, but Phase 2 is undesigned (PRD open question #1) |
-| Detection would force a driver load before the ordering pass | **inferred** | Follows from `aiform/orchestrator.py:400` preceding `:402`; no implementation has tested it |
+| References preserve an attribute's native type for a whole-value reference | **verified** | `aiform/references.py:267-271`, comment and code |
+| `id` reaches the reference namespace as `StateEntry.id`, a `str` | **verified** | `orchestrator.py:94`, `:104`; `models.py:222` |
+| A droplet id is provider-assigned; a firewall 422s on an unknown one | **verified** | `specs/digitalocean_firewall.md:290`, transcript `21-` |
+| `apply_plan()` skips `NO_OP` before any driver call | **verified** | `orchestrator.py:1046` |
+| Destroy-from-state topologically sorts `StateEntry.depends_on` | **verified** | `orchestrator.py:922`, `:926` |
+| Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:399`, `:602` |
+| The zero-edge destroy order puts firewalls first today | **verified, single-provider** | `graph.py:56-61`, `orchestrator.py:45`; holds because one provider exists |
+| The edge inventory is *complete* | **inferred** | Fields read from source, but completeness is a judgement; the first draft missed `addresses` and misclassified `tags` |
+| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220 |
+| A tag-targeted firewall can exist ahead of its droplets, config inert | **owner-reported** | Same conversation, 2026-09-27. Not probed, and scoped to tag targeting |
+| Detection would force a driver load, or an AST read, before the ordering pass | **inferred** | Follows from `orchestrator.py:473` preceding `:475`; no implementation has tested it |
 
-The two owner-reported rows are the ones a future reader should treat with
-most care. They are decisive for the destroy and orphan-refusal arguments, and
-they rest on operational knowledge rather than a transcript. They must not be
-silently upgraded to `verified` without the probe.
+The two owner-reported rows are decisive for the destroy-ordering and
+orphan-refusal arguments and rest on operational knowledge rather than a
+transcript. They must not be silently upgraded to `verified` without the probe.
