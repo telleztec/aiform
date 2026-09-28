@@ -190,11 +190,37 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   reviewer doesn't discover them: `cli.py`'s `_print_state()` dumps
   attributes verbatim, so `aiform plan show`/`plan refresh` and
   `state.json` now show the droplet's identity twice, once as each type;
-  the first `plan`/`refresh` after this change rewrites `state.json` for
-  every tracked droplet, once, since `provider_id` is stable thereafter;
-  and `references.py`'s `_require_attribute()` lists `provider_id` among
-  available attributes in its error, which is the point — a user who
-  typos or reaches for `:id` on an integer field sees it as an option.
+  **a droplet's `state.json` entry is rewritten to carry `provider_id` the
+  next time *that droplet* is refreshed** — every tracked droplet whose own
+  `.aiform.md` is part of the run, on the first `plan`/`apply` after
+  upgrading, or every tracked droplet at once via a bare `aiform plan
+  refresh` (`orchestrator.refresh_state()` iterates `st.resources` directly,
+  independent of which files are passed); one-time, since `provider_id` is
+  stable thereafter; and `references.py`'s `_require_attribute()` lists
+  `provider_id` among available attributes in its error, which is the
+  point — a user who typos or reaches for `:id` on an integer field sees it
+  as an option.
+
+  **The upgrade path this creates, and the remedy.** A droplet's entry only
+  gets refreshed when that droplet's own `.aiform.md` is part of the run —
+  `_resolve_dependency_edges()` (`orchestrator.py:408`, `:425-426`)
+  `continue`s for a target that is `in st.resources` but not one of this
+  run's discovered files, so it is never touched by `refresh_resource()`
+  and its `state.json` entry is untouched. On a project that tracked a
+  droplet before this change, adding a firewall that references
+  `${digitalocean.compute.<name>:provider_id}` and planning **only the new
+  file** (`aiform plan create firewall.aiform.md`, or any invocation that
+  doesn't also pass the droplet's own file) resolves the reference against
+  that stale, pre-upgrade entry — `referenceable(st)` (`orchestrator.py:104`)
+  reads `st.resources` as loaded, and nothing in that path refreshes a
+  target outside the run. `_require_attribute()` then raises `digitalocean.
+  compute.<name> has no attribute 'provider_id'; available: backups, id,
+  image, ...`, wrapped as `PlanBlockedError` — which reads as "this feature
+  doesn't exist in my version" rather than "this droplet's state predates
+  it." **The remedy is a single `aiform plan refresh`**: it refreshes every
+  tracked resource regardless of which `.aiform.md` files are passed, so it
+  backfills `provider_id` onto the droplet's entry once, and the same
+  `plan create` that failed then succeeds.
   General convention, not compute-specific: `specs/driver.md`. `domain` and
   `firewall` don't carry a `provider_id` — neither is referenced *by id*, a
   zone's identity is its name.

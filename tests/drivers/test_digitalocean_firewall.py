@@ -467,6 +467,15 @@ class TestScalarListValidation:
             driver.create(NAME, params, CREDENTIALS)
         assert "provider_id" not in str(excinfo.value)
 
+    def test_a_non_ascii_digit_string_droplet_id_keeps_the_ordinary_message(self, driver):
+        # str.isdigit() is true for Arabic-Indic digits, which no reference
+        # produces and which "drop the quotes" would not fix either -- YAML
+        # still would not parse them as an int.
+        params = {**minimal_params(), "droplet_ids": ["١٢٣"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
     def test_a_bool_is_not_an_int_even_though_python_says_so(self, driver):
         params = {**minimal_params(), "droplet_ids": [True]}
         with pytest.raises(ValueError, match="droplet_ids"):
@@ -484,12 +493,12 @@ class TestScalarListValidation:
         with pytest.raises(ValueError, match="tags"):
             driver.create(NAME, params, CREDENTIALS)
 
-    def test_a_digit_string_tag_is_unaffected_by_the_droplet_id_hint(self, driver):
-        # expected is str here, not int -- the hint must not fire.
-        params = {**minimal_params(), "tags": ["123", 7]}
-        with pytest.raises(ValueError) as excinfo:
-            driver.create(NAME, params, CREDENTIALS)
-        assert "provider_id" not in str(excinfo.value)
+    def test_a_digit_string_tag_does_not_trigger_the_droplet_id_hint(self, driver):
+        # A digit string is a perfectly valid tag -- expected is str here,
+        # not int, so the hint must not leak in and this must not raise
+        # at all.
+        params = {**minimal_params(), "tags": ["123"]}
+        driver._validate_params(params)
 
 
 class TestReferenceIntoDropletIds:

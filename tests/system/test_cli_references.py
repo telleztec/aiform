@@ -86,11 +86,12 @@ def _skip_without_firewall_scope(token) -> None:
         pytest.skip("this DIGITALOCEAN_TOKEN cannot read /v2/firewalls")
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _require_domain_scope():
-    # live_token() returns a RedactedSecret, a str subclass -- passed through
-    # rather than str()'d, so a traceback frame cannot hold the bare token.
-    token = live_token()
+def _skip_without_domain_scope(token) -> None:
+    # #216 review (F6): this used to be a module-scoped autouse fixture,
+    # which meant a firewall-scoped token on a team without the zone parent
+    # silently skipped the whole module -- including the droplet_ids/
+    # provider_id test below, which needs neither `domain` scope nor the
+    # zone parent. Each live test now gates on exactly what it needs.
     if not token_has_domain_scope(token):
         pytest.skip("token lacks `domain` scope")
     if not token_owns_zone_parent(token):
@@ -101,7 +102,11 @@ class TestCrossResourceReferenceLive:
     def test_one_apply_publishes_the_droplets_real_address(
         self, project_dir, teardown_tracked_resources, capsys
     ):
+        # live_token() returns a RedactedSecret, a str subclass -- passed
+        # through rather than str()'d, so a traceback frame cannot hold
+        # the bare token.
         token = live_token()
+        _skip_without_domain_scope(token)
         # unique_droplet_name(), NOT unique_name("aiform-system-test-droplet-..."):
         # is_sweepable_droplet() keys off SYSTEM_TEST_DROPLET_PREFIX, which is
         # deliberately not a prefix of the compute suite's own names, so a

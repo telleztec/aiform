@@ -220,11 +220,21 @@ class Driver(ResourceDriver):
             if wrong_type or sneaky_bool:
                 article = "an" if expected.__name__[0] in "aeiou" else "a"
                 message = f"{label}[{index}] must be {article} {expected.__name__}, got {item!r}"
-                if expected is int and isinstance(item, str) and item.isdigit():
+                # expected is int here only for droplet_ids (see the nested
+                # path's own `int if key == "droplet_ids" else str` above) --
+                # no str-typed field (tags, addresses, ...) can reach this
+                # branch. Kept explicit rather than dropped: correctness
+                # would otherwise rest on that non-local fact holding
+                # forever, instead of being visible at the call site.
+                if expected is int and isinstance(item, str) and item.isascii() and item.isdigit():
                     # Serves two different readers with one sentence: someone
                     # who quoted a plain number in YAML (drop the quotes) and
                     # someone who reached for a reference (droplet_ids wants
-                    # the CSP's own int, so :provider_id, not :id).
+                    # the CSP's own int, so :provider_id, not :id). isascii()
+                    # excludes non-ASCII digits ("١٢٣", "１２３") and
+                    # superscripts ("²"), which str.isdigit() accepts but
+                    # which no reference produces and YAML still won't parse
+                    # as an int even with the quotes dropped.
                     message += (
                         " -- DigitalOcean's ids are integers, not quoted strings; if this "
                         "came from a reference, use ':provider_id' instead of ':id'"

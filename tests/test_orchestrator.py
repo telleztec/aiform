@@ -820,6 +820,15 @@ class TestBuildCreatePlan:
         assert planned[0].entry.action == PlanAction.NO_OP
         assert "provider_id" not in planned[0].entry.rationale
         assert len(client.messages.calls) == 0
+        # Pins that the key actually came from the driver's read(), not just
+        # from the state fixture above -- refresh_resource() replaces
+        # state_entry.attributes wholesale, so this fails if the driver
+        # stops returning provider_id.
+        refreshed = state.load(state_path)
+        assert (
+            refreshed.resources["digitalocean.compute.telleztec-app-01"].attributes["provider_id"]
+            == 123456789
+        )
 
     def test_no_op_records_the_new_aiform_md_hash_in_state(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch

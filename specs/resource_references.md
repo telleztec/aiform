@@ -634,6 +634,16 @@ cleanup discipline.
   CSP's own id type is. See `specs/digitalocean_compute.md` and
   `specs/driver.md` for the `provider_id` convention this establishes, and
   `specs/digitalocean_firewall.md`'s addendum for this driver's side of it.
+  **An upgrade caveat, not a limitation of the reference itself:**
+  `provider_id` only reaches a droplet's `state.json` entry once that
+  droplet is refreshed, and a `plan` scoped to only the *dependent*
+  file — the new firewall, not the droplet's own `.aiform.md` — never
+  refreshes an already-tracked target (`orchestrator._resolve_dependency_edges()`
+  simply `continue`s past it). On a project tracked before this fix, that
+  makes `${…:provider_id}` fail with `has no attribute 'provider_id'` until
+  the droplet is refreshed — a single `aiform plan refresh` does it for
+  every tracked resource at once. Full account:
+  `specs/digitalocean_compute.md`.
 - **An escape for a literal `${`.** Not needed: the narrowed
   what-is-a-reference rule above means only text that parses as a real
   reference is substituted, so a literal never has to be escaped.
