@@ -65,10 +65,12 @@ not"** until this phase retired that title — named this phase precisely:
 That entry is updated rather than left claiming the gap exists, including its
 title, which stops being true. What remains deferred there: automatic detection
 (Phase 3 — paused by decision, reassessment gated on #216, now fixed —
-`specs/dependency_detection.md`), orphan refusal and partial-failure recovery (Phase 4),
-concurrency-safe state (Phase 5), parallel execution (Phase 6), graphical
-visualization (Phase 7). The PRD's open question 1 (this syntax) is answered;
-open question 2 (file-per-resource) is untouched.
+`specs/dependency_detection.md`), the rest of orphan refusal and all of
+partial-failure recovery (Phase 4, **partially shipped** — see "Out of
+scope" below), concurrency-safe state (Phase 5), parallel execution
+(Phase 6), graphical visualization (Phase 7). The PRD's open question 1
+(this syntax) is answered; open question 2 (file-per-resource) is
+untouched.
 
 ## Interface
 
@@ -659,7 +661,11 @@ cleanup discipline.
   reassessing it. #216 is now fixed; whether Phase 3 is still worth doing from
   what that teaches is `specs/dependency_detection.md`'s call, not this spec's.
   Resolution here stays deliberately driver-agnostic either way.
-- **Orphan refusal and partial-failure recovery** (Phase 4),
+- **Orphan refusal and partial-failure recovery** (Phase 4, **partially
+  shipped since** — #225, `1ed84bf`, added a paths-driven destroy refusal
+  for a reference-derived edge same as a declared one; the delete-marker
+  route still orphans silently, **#226**; partial-failure recovery and
+  restartability are untouched — see `specs/resource_dependencies.md`),
   **concurrency-safe state** (Phase 5), **parallel execution** (Phase 6),
   **graphical visualization** (Phase 7). Execution here stays strictly
   sequential and the order is total.

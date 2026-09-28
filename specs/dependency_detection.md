@@ -235,8 +235,16 @@ something: the config *is* wrong, and this spec's own edge cases note that
 silence about a rotted literal is worse than noise. What is not defensible is
 refusing a safe destroy on an edge the user never asserted. A declared edge
 honors an instruction; an inferred one asserts a relationship nobody claimed.
-Phase 4 would need to distinguish the two, which `MULTI_RESOURCE_PRD.md`'s
-Phase 4 text does not currently contemplate.
+**Phase 4 has since partially shipped (#225, `1ed84bf`), and it distinguishes
+the two by construction rather than by an explicit design decision this spec
+worried was missing:** `_reverse_dependents()` refuses only on a tracked
+resource's *persisted* `StateEntry.depends_on` — the union Phase 1's
+`depends_on:` and Phase 2's references already produce — and since Phase 3
+inference still doesn't exist, there is no inferred edge for it to refuse on
+yet. The distinction this paragraph asked for holds today only because one
+side of it is still unbuilt, not because Phase 4 chose it; if Phase 3 is ever
+built, Phase 4's refusal would need deciding whether an inferred edge
+qualifies too, and nothing shipped in #225 answers that.
 
 ## The declaration contract
 
@@ -384,9 +392,13 @@ which is why it appears under "Conditions that reopen this".
   position on *why* it came first, and recorded the owner's stated direction
   above, but did not choose among #216's candidate fixes or work out what
   the chosen one costs — that's #216's plan, not this file.
-- **Orphan refusal and partial-failure recovery.** Phase 4. This spec takes a
+- **Orphan refusal and partial-failure recovery.** Phase 4, **partially
+  shipped since** (#225, paths-driven destroy only — see
+  `specs/resource_dependencies.md` and `MULTI_RESOURCE_PRD.md`'s Phase 4
+  entry). This spec takes a
   position on what an inferred edge would do to Phase 4, and none on Phase 4's
-  design.
+  design; #225 didn't need to settle that question either, since it only acts
+  on edges Phase 1/2 already produce.
 - **Inferring edges with a model call.** Permanently excluded, not deferred.
   `CLAUDE.md` and `MULTI_RESOURCE_PRD.md` both require the graph path to be
   deterministic and a repeat `plan` on unchanged input to make zero Anthropic

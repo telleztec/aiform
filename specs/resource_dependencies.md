@@ -489,6 +489,70 @@ edges it silently gave up on.
 targets are excluded from the edge sets handed to
 `graph.topological_order()` before it is called, not caught after.
 
+### Reverse dependents on a paths-driven destroy, and `--force` (#225)
+
+Everything above classifies edges pointing **out of** the nodes being
+destroyed. `_build_destroy_plan_from_paths()` had no check at all in the
+other direction: a resource **outside** this run that persists a
+`depends_on` **into** a node being destroyed was never consulted, so
+`aiform plan destroy droplet.aiform.md` would destroy the droplet and leave
+a firewall that depends on it tracked, live, and pointed at an id that no
+longer exists — silently. Nothing warned: the uncovered-resource warning is
+gated on `if not paths`, so a paths-driven run never reaches it, and gate
+#2's review model can't see the hazard either, since the plan summary
+carries no `depends_on` (see `build_plan_summary()`'s own note, above).
+
+`_reverse_dependents(node_keys, st)` walks every entry in `st.resources`
+that is **not** in `node_keys` (this destroy's own nodes) and records every
+`(dependent, target)` pair where `target` is one of `node_keys` and
+`dependent`'s persisted `StateEntry.depends_on` names it.
+`_resolve_reverse_dependents()` mirrors `_resolve_dangling_targets()`'s
+shape rather than folding into it — the two hazards are semantic mirror
+images (a target this run can't find, versus a dependent this run doesn't
+know about) and read better as separate messages: without `--force`,
+`PlanBlockedError` names every orphaned pair; with it, each pair drops to a
+warning instead, through the same `(planned, warnings)` channel.
+
+**Reads the dependent's persisted `StateEntry.depends_on`, not its
+`.aiform.md`.** Two reasons, both load-bearing: the dependent's file may not
+exist any more (hand-deleted, moved), and even when it does, it is very
+likely not part of *this* run — the whole scenario is "a resource outside
+the run depends on one inside it." Re-parsing every `.aiform.md` on disk to
+answer this question would add a filesystem scan to the destroy path that
+no other check here needs.
+
+**`--force` warns and proceeds, and `_apply_destroy()` makes the warning's
+"dropping the edge" true at apply time.** `_prune_dependents_on(st,
+destroyed_key)` runs immediately after the destroyed key is deleted from
+`st.resources`, and rewrites **every** other entry's persisted
+`StateEntry.depends_on` to drop the destroyed key — not only the pair(s)
+`_resolve_reverse_dependents()` warned about, though in practice that is
+the same set, since anything else naming the destroyed key would have
+produced its own warning. This is deliberately a `state.json`-only edit:
+**the dependent's own `.aiform.md` may still declare the dead
+`depends_on:` in its frontmatter, and this leaves that alone on purpose** —
+rewriting a file nobody asked to edit is worse than the next `plan` on it
+blocking with an actionable error. Concretely: after a forced destroy, the
+survivor's *state* no longer orders against the gone resource, but the next
+`plan` that touches the survivor's own file recomputes
+`_dependency_targets()` from that file's frontmatter, sees the same
+now-nonexistent target again, and — since it resolves nowhere — hits the
+same dangling-target refusal the file-driven destroy path already has,
+until the user actually edits the file — and this particular check,
+`_resolve_dependency_edges()`'s `else` branch (`orchestrator.py:427-431`),
+has **no** `--force` escape of its own; a stale `depends_on:` in
+frontmatter naming a resource no longer tracked anywhere must be edited out
+of the file, not forced past. Pruning removes the stale ordering edge from
+state; it does not, and is not meant to, remove the user's obligation to
+update their own `.aiform.md`.
+
+**Only this producer.** `_plan_delete_marked()` (`build_create_plan()`'s
+`AIFORM-DELETE-` route) still classifies edges only out of the nodes it
+processes, has no equivalent reverse check, and can still orphan a
+dependent silently. Filed separately as **#226**, `priority:
+P1-correctness` — not fixed here, and not to be read as covered by this
+section.
+
 ### `StateEntry.depends_on`
 
 Written at **three** sites, and all three are needed:
@@ -738,7 +802,17 @@ one.
   paused is deriving them from literal values.
 - **Refusing a destroy that would orphan a still-tracked dependent**, and
   partial-failure recovery for a graph apply. Phase 4 — deliberately after
-  this one, since failure semantics are hard enough serially.
+  this one, since failure semantics are hard enough serially. **Partially
+  shipped since** (#225, `1ed84bf`): the paths-driven destroy producer this
+  spec's "Dangling dependency targets on a destroy path, and `--force`"
+  section describes (above) now also refuses (or, with `--force`, warns and
+  proceeds) when a tracked resource outside the run persists a `depends_on`
+  into a node being destroyed — the mirror image of a dangling target, not
+  covered by that section. See `specs/orchestrator.md`'s
+  `resource_dependencies` addendum for the mechanism. The delete-marker
+  producer has no equivalent check yet (**#226**, `priority:
+  P1-correctness`); partial-failure recovery and restartability remain
+  entirely undelivered.
 - **Concurrency-safe state** (Phase 5) and **parallel execution** (Phase 6).
   Phase 1's order is total and strictly sequential.
 - **Graphical visualization** (UX2). Phase 7.

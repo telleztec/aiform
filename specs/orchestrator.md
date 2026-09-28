@@ -1248,8 +1248,8 @@ Returns the destination path.
 - **`PARAM_SCHEMA` shape validation** — judgment call 2.
 - **Live credential validity checking** (an expired/malformed token
   detected before the CSP itself rejects a real call) — judgment call 3.
-- **Automatic edge detection, orphan refusal, and parallel execution** —
-  Phases 3, 4 and 6 of `MULTI_RESOURCE_PRD.md`. Phase 3's detection from
+- **Automatic edge detection and parallel execution** — Phases 3 and 6 of
+  `MULTI_RESOURCE_PRD.md`. Phase 3's detection from
   *literal* values is paused by decision, with reassessment gated on #216 —
   now fixed — and `specs/dependency_detection.md` records why the phase was
   paused, including that inferring such
@@ -1262,6 +1262,17 @@ Returns the destination path.
   time, in the literal order the list carries — it is the plan
   *builders* that now decide that order, and `apply_plan()` is unchanged
   and unaware of the graph.
+- **Orphan refusal — Phase 4, partly in scope now, not fully out of it.**
+  #225 (`1ed84bf`) added `_reverse_dependents()`/`_resolve_reverse_dependents()`
+  to `_build_destroy_plan_from_paths()` — the **paths-driven** destroy
+  producer only; see the `resource_dependencies` addendum below for the
+  mechanism. `_plan_delete_marked()` (the `AIFORM-DELETE-` route,
+  reached from `build_create_plan()`) still checks edges only *out of* the
+  nodes it processes, never a persisted edge pointing *into* one from
+  outside the run, so it still orphans a dependent silently — filed as
+  **#226**, `priority: P1-correctness`. The two destroy producers now differ
+  in this one respect; partial-failure recovery and restartability, the
+  rest of Phase 4, remain entirely out of scope here.
 
 ## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
 
@@ -1354,6 +1365,34 @@ changed and which deliberately did not.
   investigating that bug toward the user's `.aiform.md` files instead of
   the actual defect; an uncaught exception's traceback names the real
   cause. Full rule in `specs/resource_dependencies.md`.
+- **`_build_destroy_plan_from_paths()` also refuses to orphan a tracked
+  resource outside the run (#225, `1ed84bf`).** The bullet above covers a
+  *forward* dangling target — a node being destroyed that depends on
+  something resolving nowhere. This is the mirror image: `_reverse_dependents()`
+  scans every entry in `st.resources` that is **not** one of this run's own
+  nodes, and for each one whose persisted `StateEntry.depends_on` names a
+  node that *is* being destroyed, records the pair. Without `--force`,
+  `_resolve_reverse_dependents()` raises `PlanBlockedError` naming every
+  such pair; with it, each drops to a warning instead — same shape as
+  `_resolve_dangling_targets()`, deliberately not folded into it, since the
+  two hazards are semantic mirror images with their own messages. It checks
+  the dependent's **persisted** `StateEntry.depends_on`, never its
+  `.aiform.md`: that file may not exist any more, or may simply not be part
+  of this run, and re-parsing every `.aiform.md` on disk to answer this
+  would add a filesystem scan to the destroy path that nothing else here
+  needs. **`_apply_destroy()` makes the "dropping the edge" warning true**:
+  `_prune_dependents_on(st, destroyed_key)` runs right after the destroyed
+  key is deleted from `st.resources`, rewriting every other entry's
+  persisted `depends_on` to drop it — `state.json` only. A dependent's own
+  `.aiform.md` frontmatter is deliberately left untouched, so the next
+  `plan` that reads it still sees the stale declaration and, since it now
+  resolves nowhere, blocks (no `--force` escape on that particular check;
+  see `specs/resource_dependencies.md`) until the user edits the file.
+  **Only the paths-driven producer got this fix.** `_plan_delete_marked()` (the
+  `AIFORM-DELETE-` route, reached from `build_create_plan()`) still checks
+  edges only *out of* the nodes it processes and has no equivalent check in
+  the other direction, so it can still orphan a dependent silently — filed
+  separately as **#226**, `priority: P1-correctness`, not fixed here.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working.

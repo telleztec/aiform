@@ -3129,7 +3129,13 @@ class TestReverseDependentDestroyRefusal:
         assert "digitalocean.firewall.fw-01" in reason
         assert "digitalocean.firewall.fw-02" in reason
 
-    def test_force_drops_reverse_dependent_edge_and_warns_per_pair(self, tmp_path: Path):
+    def test_force_proceeds_past_reverse_dependent_edges_and_warns_per_pair(self, tmp_path: Path):
+        # Only build_destroy_plan()'s own contract, at the planning level:
+        # --force lets the destroy proceed and each pair gets one warning.
+        # Whether the edge is actually dropped from the dependent's
+        # persisted state is a separate, apply-time guarantee -- see
+        # TestForcedDestroyPrunesTheDroppedEdge below, which is what "drops"
+        # would have to mean for a test with that name to be true.
         droplet_path = tmp_path / "droplet.aiform.md"
         write_aiform_md(droplet_path, name="droplet-01")
         state_path = tmp_path / ".aiform" / "state.json"
@@ -3279,6 +3285,108 @@ class TestReverseDependentDestroyRefusal:
         reason = exc_info.value.reason
         assert "digitalocean.firewall.fw-01" in reason
         assert "digitalocean.compute.droplet-01" in reason
+
+
+class TestForcedDestroyPrunesTheDroppedEdge:
+    """#225 F15: the --force warning says "dropping the edge" -- apply_plan()
+    must make that literally true, or a later tear-it-all-down `plan destroy`
+    demands --force again for a resource the user already destroyed on
+    purpose. Pruning happens in _apply_destroy(), in the same state write
+    that removes the destroyed resource's own entry."""
+
+    def test_forced_destroy_prunes_the_dependents_persisted_depends_on(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+        assert len(warnings) == 1
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        assert "digitalocean.compute.droplet-01" not in saved.resources
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+
+    def test_pruning_leaves_unrelated_depends_on_entries_alone(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+                "digitalocean.firewall.fw-02": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-02",
+                    depends_on=["digitalocean.compute.droplet-02"],
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+        assert saved.resources["digitalocean.firewall.fw-02"].depends_on == [
+            "digitalocean.compute.droplet-02"
+        ]
+
+    def test_pruning_does_not_fire_when_nothing_was_orphaned(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-02"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+        assert warnings == []
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-02"
+        ]
 
 
 class TestBuildPlanSummary:

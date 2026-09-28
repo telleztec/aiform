@@ -2292,6 +2292,7 @@ class TestPlanDestroy:
         reloaded = state.load(state_file)
         assert "digitalocean.compute.droplet-01" not in reloaded.resources
         assert "digitalocean.firewall.fw-01" in reloaded.resources
+        assert reloaded.resources["digitalocean.firewall.fw-01"].depends_on == []
 
     def test_destroy_by_path_yes_alone_does_not_bypass_reverse_dependent_refusal(
         self, project_dir, capsys

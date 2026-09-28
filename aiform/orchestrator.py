@@ -884,7 +884,8 @@ def _orphaned_dependents_reason(orphaned: list[tuple[str, str]]) -> str:
     )
     return (
         f"cannot destroy: {pairs} -- each dependent is not in this run and would be "
-        "orphaned; pass --force to drop these edges and destroy anyway"
+        "orphaned (read from recorded state; run `aiform plan` first if this edge is "
+        "stale); pass --force to drop these edges and destroy anyway"
     )
 
 
@@ -1316,6 +1317,19 @@ def _record_update(
     return pr.entry.model_copy(update={"likely_replace": replaced})
 
 
+# _resolve_reverse_dependents()'s --force warning promises "dropping the
+# edge" for a resource outside the run that depends on the target being
+# destroyed. Making that true is this function's job, not build_destroy_plan()'s:
+# the edge only actually disappears once the target is really gone, which is
+# here. A dependent's OWN .aiform.md may still declare the dead dependency --
+# left alone on purpose, since rewriting a file nobody asked to edit is worse
+# than the next `plan` on it blocking with an actionable error.
+def _prune_dependents_on(st: State, destroyed_key: str) -> None:
+    for entry in st.resources.values():
+        if destroyed_key in entry.depends_on:
+            entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
+
+
 def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     if pr.state_entry is not None:
         driver = load_driver(pr.provider, pr.resource_type)
@@ -1333,6 +1347,7 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         )
         _require_tracked(st, pr.entry.resource_key)
         del st.resources[pr.entry.resource_key]
+        _prune_dependents_on(st, pr.entry.resource_key)
     state.save(st, state_path)
     move_to_trash(pr.aiform_md_path)
 

@@ -395,8 +395,15 @@ class TestReverseDependentDestroyRefusalLive:
         assert droplet_a_key not in tracked.resources
         assert firewall_key in tracked.resources
         assert get_droplet_or_none(token, str(provider_id_a)) is None
+        # #225 F15: the warning above says "dropping the edge" -- pin that
+        # it actually happened, or the state-driven cleanup destroy below
+        # (which has no --force of its own) hits the exact same refusal
+        # again for a droplet the user just deliberately destroyed.
+        assert tracked.resources[firewall_key].depends_on == []
 
-        # Destroy everything else that remains.
+        # Destroy everything else that remains. No --force here: F14 found
+        # this step blocked (and the firewall plus droplet B left live)
+        # when the pruning above didn't happen.
         code = cli.main(["plan", "destroy", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy (cleanup)")
         assert get_firewall_or_none(token, tracked.resources[firewall_key].id) is None

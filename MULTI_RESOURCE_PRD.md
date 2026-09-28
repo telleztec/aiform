@@ -131,7 +131,8 @@ that gap alongside UX2's original graphical scope.
   error on a cycle — never a silent wrong-order apply.
 - **Destroy-order semantics.** Destroy runs in reverse dependency order.
   Refusing a destroy that would orphan a still-tracked dependent is a
-  separate, harder problem — see Phase 4.
+  separate, harder problem — see Phase 4, **partially delivered** for the
+  paths-driven destroy producer (#225).
 - **Partial-failure semantics for a graph apply.** If resource B fails
   after resource A succeeded, what does state look like, what does the
   user see, and how does a re-run recover cleanly (ties directly to R3)?
@@ -423,12 +424,33 @@ number while paused** — Phases 4-7 are not renumbered, and nothing else in
 the sequence moves.
 
 **Phase 4 — Orphan refusal, partial-failure recovery, restartability
-(R3).** Refusing (or explicitly forcing) a destroy that would orphan a
-still-tracked dependent, plus making `apply_plan()` survive a
-mid-sequence failure with a well-formed result and an idempotent re-run.
-Deliberately **before** concurrency: failure semantics are hard enough to
-get right serially, and concurrency multiplies the failure modes rather
-than creating them.
+(R3). PARTIALLY DELIVERED** — PR closing #225, `1ed84bf`, no spec updates
+at the time; reconciled here. Refusing (or explicitly forcing) a destroy
+that would orphan a still-tracked dependent, plus making `apply_plan()`
+survive a mid-sequence failure with a well-formed result and an idempotent
+re-run. Deliberately **before** concurrency: failure semantics are hard
+enough to get right serially, and concurrency multiplies the failure modes
+rather than creating them.
+
+What shipped, and what did not: `_build_destroy_plan_from_paths()` — the
+**paths-driven** destroy producer, i.e. `aiform plan destroy
+<file.aiform.md>` — now refuses unless `--force` when a tracked resource
+outside the run has a persisted `depends_on` naming a resource inside it
+(`_reverse_dependents()`/`_resolve_reverse_dependents()`,
+`specs/orchestrator.md`). A forced destroy also has `_apply_destroy()`
+prune the destroyed key out of every other tracked entry's persisted
+`depends_on` (`_prune_dependents_on()`) — `state.json` only; a survivor's
+own `.aiform.md` frontmatter is left as the user wrote it. The
+**delete-marker** destroy route
+(`AIFORM-DELETE-`, `specs/resource_dependencies.md`'s Mechanism B) still
+orphans a dependent silently — filed as **#226**, `priority:
+P1-correctness`, not fixed here. Partial-failure recovery and
+restartability are untouched; this phase's number stays as the owner
+directed, since it "is a list of 3 different robustness tests" and #225
+landing first does not mean the other two are done. See
+`specs/resource_dependencies.md` for the mechanism and its escape hatch,
+and `specs/dependency_detection.md` for whether this changes that spec's
+own destroy-ordering argument (it does not, for reasons recorded there).
 
 **Phase 5 — Concurrency-safe state (R1, and the R4 decision).** Make
 state reads/writes safe under concurrent mutation within one process, and
