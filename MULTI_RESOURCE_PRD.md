@@ -383,12 +383,16 @@ because neither is implied by "references exist":
   `additionalProperties: True` and `parser.py` already accommodates a
   cloud-init `user_data: |` block scalar. The dot-instead-of-colon typo is
   still refused, by a check those literals cannot reach.
-- **References into integer-typed fields, fixed by #216.** The firewall's
-  `droplet_ids` is typed `integer` while `compute`'s `id` is a string, so a
-  reference to `:id` resolves to a value its own validation rejects. Not
-  solved with a cast syntax: `compute._flatten()` instead gained a second,
-  native-typed key, `provider_id`, so
+- **References into integer-typed fields, fixed by #216 for the top-level
+  case.** The firewall's `droplet_ids` is typed `integer` while `compute`'s
+  `id` is a string, so a reference to `:id` resolves to a value its own
+  validation rejects. Not solved with a cast syntax: `compute._flatten()`
+  instead gained a second, native-typed key, `provider_id`, so
   `${digitalocean.compute.web-01:provider_id}` resolves to the real `int`.
+  The same reference nested inside a rule's `sources`/`destinations`
+  works too, but only one per list — a second one hits a sorted-list
+  requirement a reference can't generally satisfy (#224,
+  `specs/digitalocean_firewall.md`).
 
 **Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
 `specs/dependency_detection.md`.** The mechanism is unchanged from what this

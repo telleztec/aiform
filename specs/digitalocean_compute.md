@@ -179,8 +179,12 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `int`, so a cross-resource reference (`specs/resource_references.md`) can
   hand a droplet's id to an integer-typed field elsewhere — the firewall's
   `droplet_ids` is the motivating case
-  (`specs/digitalocean_firewall.md`'s addendum). `read()`/`update()` return
-  it too, since both route through `_flatten()`.
+  (`specs/digitalocean_firewall.md`'s addendum). `create()`/`read()`/`update()`
+  all return it, since all three route through `_flatten()`
+  (`compute.py:387` for `create()`). `create()` is the load-bearing path: the
+  motivating case is a firewall referencing a droplet created in the *same*
+  `apply`, resolved from the create call's own returned attributes before
+  any `read()` ever runs.
 
   Safe by the same argument `firewall.py`'s `_project()` comment already
   makes for its own extra key: `planner.diff_attributes()` iterates

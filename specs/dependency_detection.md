@@ -126,7 +126,7 @@ earlier draft of this table missed one row and misclassified another.
 
 | Field | Points at | Match kind | Verdict |
 |---|---|---|---|
-| `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Was the edge #216 blocked from being a reference; reachable now via `provider_id` (`compute.py:210`) |
+| `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Was the edge #216 blocked from being a reference; reachable now via `provider_id` (`compute.py:210`) for top-level `droplet_ids` unconditionally, and for the nested field only with a single reference — more than one hits a sorted-list check a reference can't generally satisfy (#224, `specs/digitalocean_firewall.md`) |
 | `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:215`) | **attribute** | A *user-chosen* value, writable before its referent exists. Phase 2 references already work here (`specs/digitalocean_firewall.md:352-356`) |
 | `addresses` (`firewall.py:51`) | a droplet, via `ipv4_address` (`compute.py:216`) | **attribute** | Same class as `records[].data`. Missed by this table's first draft |
 | `records[].data` (`domain.py:103`) | a droplet, via `ipv4_address` | **attribute** | Phase 2's canonical case; references work |
@@ -359,7 +359,11 @@ which is why it appears under "Conditions that reopen this".
   resolves to a real `int` and passes `_reject_wrong_scalars()` — so
   integer-typed fields are not left unreachable, and detection is not "the
   only way to get this edge" any more than it was for the `tags`/`addresses`
-  rows above. That answers this condition; it does not itself decide
+  rows above. (The edge inventory row above narrows this further: a nested
+  `sources`/`destinations.droplet_ids` reaches this only for a single
+  reference, not several — #224 — but the top-level `droplet_ids` field this
+  design pass actually found as the one inferable edge has no such limit.)
+  That answers this condition; it does not itself decide
   whether Phase 3 is worth building for some other reason, which is the
   repo owner's call and outside this edit's scope.
 - **A resource type that genuinely breaks when its referent is deleted.**
