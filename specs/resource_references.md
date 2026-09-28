@@ -638,11 +638,16 @@ cleanup discipline.
   `provider_id` only reaches a droplet's `state.json` entry once that
   droplet is refreshed, and a `plan` scoped to only the *dependent*
   file — the new firewall, not the droplet's own `.aiform.md` — never
-  refreshes an already-tracked target (`orchestrator._resolve_dependency_edges()`
-  simply `continue`s past it). On a project tracked before this fix, that
-  makes `${…:provider_id}` fail with `has no attribute 'provider_id'` until
-  the droplet is refreshed — a single `aiform plan refresh` does it for
-  every tracked resource at once. Full account:
+  refreshes an already-tracked target: `refresh_resource()` is only called
+  from `_decide_action()` (`orchestrator.py:732`), which `_plan_one()` calls
+  per resource (`orchestrator.py:572`), which only runs for a file
+  `build_create_plan()` discovered *this run* (`orchestrator.py:485-489`) —
+  a target merely referenced, not planned, never reaches it. On a project
+  tracked before this fix, that makes
+  `${…:provider_id}` fail with `has no attribute 'provider_id'` until the
+  droplet is refreshed — usually a single `aiform plan refresh`, which
+  refreshes every tracked resource at once, though not if that droplet is
+  also drifted-missing on the provider side (#223). Full account:
   `specs/digitalocean_compute.md`.
 - **An escape for a literal `${`.** Not needed: the narrowed
   what-is-a-reference rule above means only text that parses as a real

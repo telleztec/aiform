@@ -202,12 +202,20 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   as an option.
 
   **The upgrade path this creates, and the remedy.** A droplet's entry only
-  gets refreshed when that droplet's own `.aiform.md` is part of the run —
-  `_resolve_dependency_edges()` (`orchestrator.py:408`, `:425-426`)
-  `continue`s for a target that is `in st.resources` but not one of this
-  run's discovered files, so it is never touched by `refresh_resource()`
-  and its `state.json` entry is untouched. On a project that tracked a
-  droplet before this change, adding a firewall that references
+  gets refreshed when `refresh_resource()` is actually called against it,
+  and that function is only called from `_decide_action()`
+  (`orchestrator.py:732`), which `_plan_one()` calls for each resource
+  (`orchestrator.py:572`), which `build_create_plan()` only calls for a file
+  it discovered *this run* (`orchestrator.py:485-489` loops `ordered_files`,
+  itself derived from the paths passed in) — a target that is merely
+  *referenced*, and whose own `.aiform.md` is not part of the run, is never
+  passed to `_plan_one()` at all, so its `state.json` entry stays untouched.
+  (`_resolve_dependency_edges()`'s `continue` for a target `in st.resources`,
+  `orchestrator.py:425-426`, only governs whether the plan is *allowed to
+  proceed* referencing that target without an edge — it does not itself
+  decide refresh, and an earlier draft of this paragraph wrongly credited it
+  with the "never refreshed" behavior.) On a project that tracked a droplet
+  before this change, adding a firewall that references
   `${digitalocean.compute.<name>:provider_id}` and planning **only the new
   file** (`aiform plan create firewall.aiform.md`, or any invocation that
   doesn't also pass the droplet's own file) resolves the reference against
@@ -217,10 +225,32 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   compute.<name> has no attribute 'provider_id'; available: backups, id,
   image, ...`, wrapped as `PlanBlockedError` — which reads as "this feature
   doesn't exist in my version" rather than "this droplet's state predates
-  it." **The remedy is a single `aiform plan refresh`**: it refreshes every
-  tracked resource regardless of which `.aiform.md` files are passed, so it
+  it." **The remedy is usually a single `aiform plan refresh`**: `refresh_state()`
+  (`orchestrator.py:285-307`) calls `refresh_resource()` for every entry in
+  `st.resources` regardless of which `.aiform.md` files exist, so it
   backfills `provider_id` onto the droplet's entry once, and the same
   `plan create` that failed then succeeds.
+
+  **Neither remedy above covers a droplet that is also drifted-missing on
+  the provider side (#223).** `refresh_resource()` catches
+  `ResourceNotFoundError` and returns `state_entry.attributes` **unchanged**
+  (`orchestrator.py:249-259`) — both `plan refresh` and an ordinary
+  `plan create` that includes the droplet's own file go through this exact
+  function, so neither can backfill `provider_id` for a droplet DigitalOcean
+  no longer has. Trying to fix it the obvious way — running a `plan create`
+  that includes *both* the droplet's own `.aiform.md` (so it gets marked for
+  recreation) and the dependent firewall's (so the reference resolves) in
+  the same invocation — makes it worse, not better: the droplet lands in
+  both `volatile` and `replaced` for that plan, but
+  `references._resolve_text()` calls `_require_attribute()` unconditionally,
+  before it ever consults `replaced` (`aiform/references.py:255`), so
+  resolving the firewall's reference raises `PlanBlockedError` regardless —
+  the very plan that would recreate the droplet and supply a real
+  `provider_id` is the one being blocked. The
+  workarounds today: drop the reference, apply to let the droplet recreate,
+  then re-add the reference — or hand-edit `state.json`. **Issue #223**
+  tracks the deeper fix (letting `_resolve_text()` defer instead of raising
+  when the target is in `replaced`); no direction is decided there yet.
   General convention, not compute-specific: `specs/driver.md`. `domain` and
   `firewall` don't carry a `provider_id` — neither is referenced *by id*, a
   zone's identity is its name.

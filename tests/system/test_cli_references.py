@@ -45,6 +45,7 @@ import pytest
 from aiform import cli, state
 from tests.system.conftest import (
     assert_cli_ok,
+    ensure_system_test_tag,
     get_domain_or_none,
     get_firewall_or_none,
     list_domain_records,
@@ -221,6 +222,13 @@ class TestCrossResourceReferenceLive:
         # since a mock encodes the same assumption the driver does.
         token = live_token()
         _skip_without_firewall_scope(token)
+        # The firewall below carries SYSTEM_TEST_TAG, and firewall creation
+        # -- unlike droplet creation -- does not auto-create a referenced
+        # tag; it 422s "tag <name> does not exist" if the tag isn't already
+        # there. Relying on the droplet being applied first in the same
+        # plan to create it as a side effect would be an undocumented,
+        # order-dependent accident.
+        ensure_system_test_tag(token)
 
         droplet_name = unique_droplet_name("providerid")
         firewall_name = unique_firewall_name("providerid")
