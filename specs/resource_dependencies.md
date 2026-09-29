@@ -99,8 +99,9 @@ Each is a property a test can assert.
 | **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
 | **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
 | **D8** | Re-running after a partial failure never destroys or duplicates a resource that succeeded. | UC-E | met for the succeeded prefix — a live read plus the dependency-closed-prefix invariant; **not** met for a resource whose create succeeded on the provider but never reached state |
+| **D9** | A resource recreated after drift does not silently lose a relationship a dependent's params expressed. | UC-B, UC-D | **met for an implicit edge, not met for a literal** — see "Drift" below. The literal case is #232 |
 
-D4, D6, D7 and D8's exception are the open work. Each is traceable to an issue:
+D4, D6, D7, D8's exception and D9's literal half are the open work. Each is traceable to an issue:
 D4 to the orphan-reference issues, D6 to this spec's "Change propagation", D7
 to the absence of any dependency-aware observability, D8 to the PRD's R3.
 
@@ -147,6 +148,22 @@ mouth.
 | **Explicit** | `depends_on: [key]` | no — ordering with no value flow | `depends_on`, its "last resort" |
 | **Implicit** | `${provider.type.name:attribute}` in `params` | yes, by construction — the edge exists *because* a value flows | an expression reference, its default |
 | **Provider default** | nothing at all | no | no equivalent |
+
+**One name, and the synonyms already in the tree.** This spec says **implicit**.
+Other specs call the same thing *reference-derived* (`specs/orchestrator.md`,
+`specs/resource_references.md`, `specs/dependency_detection.md`,
+`specs/system_test_references.md`) or a *derived edge* (those plus `PLAN.md`), and
+`specs/resource_references.md` also calls the syntax a *cross-resource attribute
+reference*. All name the second row above; this spec does not rename them in
+place, and a reader meeting any of them should read "implicit".
+
+**Do not read `inferred` as a synonym.** That word already does two other jobs — a
+confidence grade in every spec's Knowledge-confidence table, and Phase 3's
+matching of a *literal* value against tracked resources
+(`specs/dependency_detection.md`'s "declared vs inferred" axis). An implicit edge
+is written by the user, in the text of `params`; an inferred one would be guessed
+by `aiform` from a value the user never marked as a reference. Conflating the two
+makes Phase 3 look already shipped.
 
 The first two are Terraform's. **The third is not, and it is real.** At the time
 this section was written the DigitalOcean account carried two VPCs —
@@ -373,6 +390,45 @@ So **D6 is genuinely not met**, and it is not met for a reason that has nothing
 to do with edge typing: it is a granularity gap, not a taxonomy gap. Worth
 stating because the rest of this model is about typing edges, and this is the one
 requirement typing would not fix.
+
+## Drift, and why the two edge kinds diverge here
+
+D4 is scoped to a destroy. **Drift** is the case where aiform destroyed nothing and
+the relationship breaks anyway, and the two edge kinds behave oppositely — which
+makes this the sharpest practical consequence of the explicit/implicit distinction
+in the whole model.
+
+**An implicit edge survives drift, in both directions it can go.**
+
+- *Target drifts and is recreated.* `refresh_resource()` reports
+  `drifted_missing`, the target is planned as a `CREATE`, and so joins both
+  `volatile` and `replaced`. The dependent's reference is withheld at plan time,
+  `_decide_action()` routes it to `planner.unresolved_entry()`, and
+  `_apply_params()` re-resolves **after** the target is recreated. The dependent
+  follows the target to its new value with no user action. This is #215's fix, and
+  drift is the case it was filed for.
+- *Target is gone for good*, its file removed too. `_resolve_dependency_edges()`
+  raises `PlanBlockedError` — "neither a file in this run nor a resource tracked in
+  state" — with no `--force`. Loud, and the user must fix the file.
+
+**A literal does not survive drift, and fails silently.** A firewall whose
+`droplet_ids` holds `[123]` still holds it after droplet `123` is deleted out of
+band. DigitalOcean keeps the dead id too (verified,
+`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`), so the live
+read and the stale file **agree**, `unordered_equal` finds no diff, and the
+firewall is `NO_OP`. The droplet is then recreated with a new id and comes back
+behind no firewall, with the plan reporting nothing. Filed as **#232**.
+
+Note what produces the silence: the provider's helpfulness. Had DigitalOcean
+dropped the dead id, the diff would have shown a change and the firewall would have
+been repaired on the next apply. The stale reference is invisible *because* both
+sides of the comparison are equally stale.
+
+So for any identity-valued field, an implicit edge is not merely tidier than a
+literal — it is the difference between a self-healing relationship and a silently
+broken one. That is a **safety** argument for #216, which is what makes
+`droplet_ids` expressible as a reference at all. Until it lands, the unsafe form is
+the only form available for that field.
 
 ## What the model means for each remaining phase
 
