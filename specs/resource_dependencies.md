@@ -54,10 +54,11 @@ UC3 is the exception: "N resources shouldn't take N times as long" is an
 outcome, and you can write a test for it.
 
 The consequence has been concrete. #223, #224, #225, #226 and #227 were filed
-within hours of each other, from one review of one PR, and each needed a fresh
+on one day, from one review of one PR, and most needed a fresh
 judgement about what should happen on destroy, because no use case said what
-*must be true* for a destroy to be correct. One of those issues changed its
-recommendation three times as facts arrived.
+*must be true* for a destroy to be correct. Two of the five turn out not to be
+destroy questions at all — see the addendum — which is itself the symptom: with
+no definition to check against, related-looking issues were filed as one cluster.
 
 ### Outcome-framed use cases
 
@@ -77,7 +78,9 @@ These are what the requirements below are derived from.
 - **UC-E — Recover in dependency order.** After a partial failure, a re-run
   completes the work rather than compounding the damage.
 
-UC-A and UC-B are delivered. UC-C is partly delivered and over-reports (see
+UC-A is delivered. UC-B is delivered **within a single run** and not across
+runs — the requirements derived from it, D3 and D4, are respectively qualified
+and unmet. UC-C is delivered and deliberately over-reports (see
 "Change propagation"). UC-D and UC-E are **not** delivered; UC-D has no
 implementation at all.
 
@@ -153,6 +156,11 @@ sits in one. So a resource can have a dependency that is neither declared nor
 referenced, created by the provider on the user's behalf, and invisible to the
 graph.
 
+DigitalOcean documents the existence of a per-region default — its
+`vpcs_delete` description states that *"the default VPC for a region can not be
+deleted"* — so the defaults themselves are expected rather than anomalous. What is
+recorded nowhere is that `aiform`'s own resources depend on one.
+
 Nothing is built for the third source and this spec proposes nothing. It is
 recorded because a model that claims two sources is wrong, and because it is
 the shape a future `network`/VPC driver has to reckon with — a driver for a
@@ -166,20 +174,36 @@ does manage.
 **After that nothing downstream can tell an explicit edge from an implicit
 one.**
 
-This is the model's central defect, and it is worth stating as a defect rather
-than as an absence: the distinction *is* computed, at the one place that knows
-it, and thrown away on the next line. Terraform keeps it, which is why it can
-plan tightly; the cost of discarding it is that `aiform` treats every edge as
-the conservative kind.
+This is worth stating as a defect rather than as an absence: the distinction
+*is* computed, at the one place that knows it, and thrown away on the next line.
+Terraform keeps the two kinds distinguishable and recommends the implicit one,
+because it says an expression reference *"let[s] Terraform understand which value
+the reference derives from"* — but note that is a per-**attribute** property, not
+merely a per-edge one, and per-attribute granularity is a separate gap this spec
+treats under "Change propagation". Retaining the type is worth doing; it would not
+on its own buy what Terraform gets.
 
-Two consequences, both visible elsewhere in this spec:
+One consequence is visible elsewhere in this spec: `specs/cli.md` describes the
+`depends_on` in `--json` output as "the declared list verbatim, in declared
+order". It is the union.
 
-- **Repair is undecidable.** Only an implicit edge has a value that can go
-  stale. Asked to fix a dependent after its target is destroyed, `aiform`
-  cannot tell whether there is anything to fix.
-- **A doc bug follows from it.** `specs/cli.md` describes the `depends_on` in
-  `--json` output as "the declared list verbatim, in declared order". It is the
-  union.
+**A tempting second consequence does not hold, and the reason is instructive.**
+It is natural to say "only an implicit edge has a value that can go stale, so
+retaining the type would tell `aiform` whether there is anything to repair". On
+`main` that is false in exactly the case that motivates it. A firewall's
+`droplet_ids` cannot hold a reference — integer-typed field, string `id` — so the
+firewall→droplet edge is an **explicit** `depends_on` plus a literal integer, and
+transcript `13`'s stale `droplet_ids: [604557432]` is a literal going stale on an
+explicit edge.
+
+So the edge type does not by itself decide whether a repair is possible. What
+decides it is whether the *field* holds a value derived from the target, which is
+a per-field property and exactly what a relationship-kind declaration would carry
+— not something recoverable from the explicit/implicit distinction alone. The
+type is still worth retaining; it is just not sufficient for this.
+
+The same case also refutes "there is no explicit-only edge in the driver set":
+that is the only kind this edge can currently be.
 
 ### Roles belong to edges, not to resources
 
@@ -196,17 +220,42 @@ the tradition the missing half of this model belongs to, not to IaC.
 
 The kinds `aiform` can currently observe, with what was verified about each:
 
-| Kind | Instance | Target must pre-exist? | Dependent survives target's loss? | Provider refuses the destroy? |
+| Kind | Instance | Target must pre-exist? | Provider refuses the destroy? | Dependent survives target's loss? |
 |---|---|---|---|---|
-| **Hosts** | VPC → droplet | yes — `404` on an unknown `vpc_uuid` | **no** | **yes — `409 "Can not delete VPC with members"`** |
-| **Uses** | firewall → droplet's `provider_id` | yes — `422` on an unknown id | yes | no |
-| **Protects** | firewall → droplet, operationally | n/a | n/a — inverted, see below | no |
+| **Hosts** | VPC → droplet | yes — `404` on an unknown `vpc_uuid` | **yes — `409 "Can not delete VPC with members"`** | **unobservable** — the provider prevents the situation |
+| **Uses** | firewall → droplet's id | yes — `422` on an unknown id | no | yes, and its reference goes stale |
+| **Protects** | firewall → droplet, operationally | n/a | no | n/a — inverted, see below |
 
-Evidence for the first two rows is `knowledge/drivers/digitalocean_vpc/` and
-`knowledge/drivers/digitalocean_vpc_member/`. The `409` was probed
-deliberately: it is the first **verified** existentially-coupled edge in this
-repo, and until it existed every edge in the driver set was the survivable
-kind.
+The refusal itself is **documented** by DigitalOcean, not discovered here — its
+`vpcs_delete` description says a VPC *"can only be deleted if it does not contain
+any member resources"*. What the probe adds is that **the documented status is
+wrong**: the same description promises *"a 403 Forbidden error response"*, and the
+API returns **`409 conflict`** (`knowledge/drivers/digitalocean_vpc_member/`,
+transcript `10`). The paired `204` at `14` shows the refusal is about membership.
+A design that recognised this refusal by status would have matched the wrong one
+had it trusted the documentation.
+
+Be precise about the `Hosts` row's last cell, because an earlier draft was not. Nothing observed a droplet *after*
+losing its VPC, because the provider does not allow that state to arise — so
+"the dependent cannot survive" is an inference from the refusal, not a
+measurement. The one time a VPC was deleted with a droplet nominally inside
+(`digitalocean_vpc`, transcript `07`, during provisioning) the droplet went on to
+exist and delete normally, which is weak evidence the other way.
+
+The refusal is nonetheless the distinction the model needs: a kind whose parent
+the provider will not release is categorically different from one it will, and
+before this probe every edge in the driver set was the latter.
+
+Note the `Uses` row's `422` comes from `specs/digitalocean_firewall.md`'s own
+pre-existence table (probe `21-` of the `digitalocean_firewall` session), not
+from the two VPC sessions.
+
+**On `id`:** the attribute a firewall's `droplet_ids` needs is the droplet's
+identity, which reaches the reference namespace as `id` (`referenceable()`). On
+`main` a reference cannot actually supply it — `droplet_ids` is integer-typed and
+`id` is a string, which is the limitation `specs/digitalocean_firewall.md`
+records — so today this edge is written as `depends_on` plus a literal integer.
+That has a consequence for the model, below.
 
 ### `Protects` is the kind that does not fit, and it explains the issue history
 
@@ -243,15 +292,19 @@ rule it out as a foundation:
    on the firewall.
 
 And a third, from reading rather than probing: an edge is not readable from live
-state immediately. A droplet reports `vpc_uuid: None` while its status is
+state immediately. A droplet's record carries **no `vpc_uuid` key at all** just
+after creation — absent, not null, which is a different thing to code against —
+and the key appears within a poll or two, while its status is still
 `new`, so a graph built by asking the provider is empty exactly when a plan is
 being applied.
 
 ### What a dependency determines
 
-Three effects. The first two are what Terraform's graph is for — its own
-documentation scopes dependencies to "resources are created and destroyed in the
-correct order". The third is outside Terraform's job and has no IaC prior art.
+Three effects. The first two are what Terraform's graph is for: its dependencies
+tutorial scopes them to determining *"the correct order in which to create the
+different resources"*, and its graph internals describe the graph as used to
+*"generate plans and refresh state"*. The third is outside Terraform's job and has
+no IaC prior art.
 
 | Effect | When | Explicit edge | Implicit edge |
 |---|---|---|---|
@@ -269,38 +322,57 @@ below.
 ## Change propagation
 
 What a plan says when one resource's change alters a value another consumes.
-This is UC-C, and the behaviour is safe but blunt.
+This is UC-C.
+
+**None of what follows is newly discovered.** `specs/resource_references.md`'s
+"A target this run will replace" already designs this deliberately and argues
+the trade, and a test pins the cost. This section exists to connect that design
+to the dependency model, not to report a defect — an earlier draft of it did the
+latter and was wrong about the mechanism, the cost and the grade.
+
+### The mechanism
 
 `references._resolve_text()` sets `deferred = True` for **any** target in
 `volatile`, and `_will_get_new_attributes()` puts every `CREATE` *and* every
-`UPDATE` in `volatile`. So a reference whose target is changing at all is left
-unresolved at plan time: the dependent's `desired` keeps the literal
-`${provider.type.name:attribute}`, and `_apply_params()` resolves it from live
-state after the target has been applied.
+`UPDATE` there. So a reference whose target is changing at all resolves as
+unresolved at plan time, and `_apply_params()` resolves it from live state after
+the target has been applied.
 
-Two consequences, and the second is a defect:
+A tracked dependent carrying unresolved references then does **not** reach the
+diff at all. `_decide_action()` routes it to `planner.unresolved_entry()`, which
+returns a deterministic `UPDATE` — the code's own words are "the answer is
+produced deterministically instead, at zero cost", because handing the model a
+literal `${...}` "would invite it to categorize the placeholder".
 
-- **No stale value is ever shown or sent.** This is why the design is right in
-  the direction that matters. A dependent never receives a value its target is
-  about to replace.
-- **Every dependent of a changing resource is reported as changing**, because
-  `diff_attributes()` compares the current attribute against an unresolved
-  literal, which never matches. A droplet gaining a tag therefore marks the DNS
-  record that reads its `ipv4_address` as changing, even though the address is
-  untouched — and the resulting `UPDATE` spends one intent-orchestration call at
-  plan time and then applies a no-op.
+### What that costs, exactly
 
-The distinction the code cannot currently make is **whether the referenced
-attribute is among the ones this change will alter.** `volatile` is
-per-resource; the question is per-attribute. Nothing in `PlanEntry` or the diff
-records which attributes an `UPDATE` will touch, and a driver's own
-`diff_fields` computation happens later, inside `update()`.
+- **No stale value is ever shown or sent**, which is the direction that matters.
+  `specs/resource_references.md` records what the alternative cost: a narrower
+  rule let a zone resolve against a **dead** `ipv4_address`, plan `NO_OP`, and
+  leave DNS pointing at the old address — the P1 failure #215 was filed for.
+- **Every dependent of a changing target is reported as changing**, whether the
+  consumed value moved or not. A droplet gaining a tag marks the DNS record
+  reading its `ipv4_address` as changing, and the resulting `UPDATE` rewrites an
+  identical value.
+- **At zero LLM cost.** The dependent's `UPDATE` is deterministic;
+  `tests/test_orchestrator.py` asserts one categorization call for the target and
+  none for the dependent.
 
-Recorded as **D6** and graded `inferred` — it follows from `references.py`'s
-`deferred` assignment and `_will_get_new_attributes()`, and no test in the repo
-asserts it either way. The check that would settle it: plan a droplet tag change
-alongside a domain record referencing that droplet's `ipv4_address`, and assert
-whether the record is reported as changing.
+The existing spec's verdict on the trade is "not close", and this spec agrees.
+Over-reporting a no-op update is cheap; under-reporting a dead address is a P1.
+
+### Where it connects to the model
+
+The distinction the code cannot make is **whether the referenced attribute is
+among the ones this change will alter.** `volatile` is per-resource; the question
+is per-attribute. Nothing in `PlanEntry` records which attributes an `UPDATE`
+will touch — a driver computes that inside `update()`, long after the plan is
+built.
+
+So **D6 is genuinely not met**, and it is not met for a reason that has nothing
+to do with edge typing: it is a granularity gap, not a taxonomy gap. Worth
+stating because the rest of this model is about typing edges, and this is the one
+requirement typing would not fix.
 
 ## What the model means for each remaining phase
 
@@ -334,7 +406,7 @@ Three things change about the decision:
 3. **The blanket "never infer from a literal" becomes precise.** Terraform never
    does it, and the reason is ambiguity. The declaration splits that: matching on
    an **identity** attribute is unambiguous, because ids are unique and a literal
-   that matches a tracked `provider_id` *is* that resource; matching on a
+   that matches a tracked resource's identity *is* that resource; matching on a
    **value** attribute is not, because a literal `10.0.0.5` in a rule's
    `addresses` may be a tracked droplet, a coincidence, or an external host. So
    detection is sound for identity fields and unsound for value fields, and the
@@ -1088,13 +1160,17 @@ claims are covered by this spec's own tests.
 
 | Claim | Confidence | Source |
 |---|---|---|
-| A VPC refuses deletion while it has a converged member, with `409 "Can not delete VPC with members"` | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`; the paired `204` at `14` |
+| A VPC refuses deletion while it has a converged member | **documented** | DigitalOcean's `vpcs_delete` description, read 2026-09-29 — not an `aiform` discovery |
+| That refusal is `409 conflict`, not the `403` DigitalOcean documents | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`; the paired `204` at `14` |
+| A region's default VPC cannot be deleted at all | **documented, not probed** | same description. Deliberately not attempted — a passing result is a destroyed region default |
 | A droplet naming a nonexistent `vpc_uuid` is refused `404`, not auto-created | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `01` |
 | A firewall keeps a deleted droplet's id in `droplet_ids` and reports `status: succeeded`, `pending_changes: []` | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13` |
 | A VPC's member list identifies members by URN, in a namespace nothing in `aiform` records | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `09` |
-| An edge is not readable from live state while the dependent is still `new` | **verified** | `digitalocean_vpc` `05`; `digitalocean_vpc_member` polls 1-3 |
+| A droplet's record carries no `vpc_uuid` key immediately after creation | **verified** | `digitalocean_vpc`, transcript `05` |
+| The key then appears while the droplet is still `new`, before it reaches `active` | **inferred** | `digitalocean_vpc_member`'s polls showed it, but those calls were `record=False` and left no transcript, which `specs/driver_creation.md` does not permit grading `verified` |
 | The type of an edge is discarded by `_dependency_targets()`'s union | **verified** | `orchestrator.py`, the one return statement, and `StateEntry.depends_on` |
-| Terraform treats implicit as the default and `depends_on` as a last resort, and scopes dependencies to create/destroy ordering | **verified** | HashiCorp's `depends_on` and graph-internals documentation, read 2026-09-29 |
+| Terraform treats implicit as the default and `depends_on` as a last resort ("only use `depends_on` as a last resort") | **verified** | `developer.hashicorp.com/terraform/language/meta-arguments/depends_on`, read 2026-09-29 |
+| Terraform's graph is used for provisioning operations only — plans, applies, destroys, refreshes | **verified** | `developer.hashicorp.com/terraform/internals/graph` and the dependencies tutorial, read 2026-09-29. Neither page uses the phrase an earlier draft of this spec quoted; it paraphrased them |
 | Every dependent of a changing resource is reported as changing, whether the consumed value moved or not | **inferred** | `references.py`'s `deferred` assignment plus `_will_get_new_attributes()`. No test asserts it; the check that would settle it is named under "Change propagation" |
 | Two `default: true` VPCs exist that `aiform` did not create | **verified** | observed on the account 2026-09-29, read-only |
 | Those defaults were created by the provider when droplets were first made in each region | **inferred** | their `created_at` dates match, which is suggestive and not evidence |

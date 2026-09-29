@@ -10,27 +10,29 @@ which survives its target and whose operational impact runs *opposite* to the
 declared edge. A model validated against that one example is validated against
 the example that misleads.
 
-A VPC is the aligned case: a droplet needs its VPC's id AND cannot exist
-without it. Probing it is what makes "the dependent cannot survive its target"
-a verified property rather than an owner-reported one.
+A VPC is the aligned case: a droplet needs its VPC's id, and DigitalOcean will
+not release the VPC while the droplet is in it. Probing it establishes *that
+refusal* -- not that the droplet would break without its VPC, which the provider
+prevents anyone from observing.
 
 It answers four questions the documentation does not settle:
 
   1. Must a VPC pre-exist before a droplet can name it? (an implied edge)
-  2. Does DigitalOcean refuse to delete a VPC that still has members, and
-     with what status and message? The "empty requirement" is owner-reported
-     and drives whether aiform's own refusal is worth anything.
+  2. DigitalOcean *documents* that a VPC "can only be deleted if it does not
+     contain any member resources", and documents the refusal as 403. Is the
+     documented status right? (It is not -- see digitalocean_vpc_member.)
   3. Does VPC membership clear by itself when a member is destroyed?
   4. And the same question for a firewall's droplet_ids, which
-     specs/digitalocean_firewall.md:323 names as "not yet probed" and which
+     specs/digitalocean_firewall.md recorded as not yet probed, and which
      decides whether #227 has anything to repair.
 
 Question 4 rides along deliberately: it needs a droplet, this session already
 pays for one, and asking it separately would pay twice.
 
-DELIBERATELY NOT PROBED: whether a *default* VPC can be deleted. A passing
-result there is a destroyed region default, which is not a finding worth the
-blast radius. Recorded as unprobed.
+DELIBERATELY NOT PROBED: whether a *default* VPC can be deleted. DigitalOcean
+documents that it cannot, and a passing result would be a destroyed region
+default -- not a finding worth the blast radius. Recorded as documented and
+unprobed.
 
 Costs: one droplet, the cheapest DigitalOcean sells, for roughly four
 minutes. VPCs and firewalls are free. The droplet is never logged into and
@@ -106,12 +108,6 @@ def _created_id(result, key, name=None):
     return result.body[key]["id"]
 
 
-def _members_of(result):
-    if not isinstance(result.body, dict):
-        return "<dry-run>"
-    return result.body.get("members", [])
-
-
 def _wait_until_droplet_gone(probe: Probe, droplet_id: str) -> bool:
     """Poll until the droplet 404s. Returns whether it actually went."""
     if droplet_id == DRY_ID:
@@ -149,9 +145,18 @@ def run(probe: Probe) -> None:
     # alarming case: a droplet that was actually accepted here is live with no
     # cleanup registered, because the call was written expecting a refusal.
     if 0 < refused.status < 400:
+        # Register cleanup before aborting rather than after: the body carries the
+        # id, so there is no reason to leave a billable droplet to the sweep's
+        # age floor just because the call went the way the session did not expect.
+        try:
+            probe.cleanup("DELETE", f"/droplets/{refused.body['droplet']['id']}")
+            registered = "a cleanup DELETE was registered and will run on exit"
+        except (TypeError, KeyError):
+            registered = "its body did not parse, so NO cleanup could be registered"
         raise SystemExit(
-            "a droplet naming a nonexistent VPC was ACCEPTED -- it is live and untracked, "
-            "and this session registered no cleanup for it. Destroy it by hand NOW."
+            "a droplet naming a nonexistent VPC was ACCEPTED -- it is live and billable. "
+            f"{registered}. Verify by hand before trusting this session's later steps, "
+            "whose premise (that the target must pre-exist) is now false."
         )
 
     # --- 02: create the probe VPC -------------------------------------
@@ -269,7 +274,7 @@ def run(probe: Probe) -> None:
     )
 
     # --- 11: does a firewall's droplet_ids clear itself? ---------------
-    # specs/digitalocean_firewall.md:323 names this as not yet probed, and
+    # specs/digitalocean_firewall.md's pre-existence table names this as not yet probed, and
     # #227 turns on the answer: if DigitalOcean drops the dead id itself,
     # there is nothing for aiform to repair.
     probe.call(
@@ -297,6 +302,24 @@ def run(probe: Probe) -> None:
     )
 
 
+def _wait_for_droplets_gone(probe: Probe, ids: list[str]) -> None:
+    """Block until every id 404s, so the VPC sweep below is not refused.
+
+    A droplet DELETE is accepted asynchronously, and this session's own finding
+    is that a VPC cannot be deleted while a member is alive. Sweeping vpcs
+    immediately after droplets would therefore 409 on exactly the leak it was
+    called to clean, and only succeed on some later run.
+    """
+    for droplet_id in ids:
+        for _ in range(DELETE_POLL_ATTEMPTS):
+            seen = probe.call(
+                "GET", f"/droplets/{droplet_id}", note="sweep: wait for gone", record=False
+            )
+            if seen.status == 404:
+                break
+            time.sleep(DELETE_POLL_SECONDS)
+
+
 def _age_minutes(created_at: str) -> float:
     created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     return (datetime.datetime.now(datetime.UTC) - created).total_seconds() / 60
@@ -310,11 +333,14 @@ def sweep(probe: Probe) -> int:
     that tried the VPC first would report a false leak for it.
     """
     leaked = 0
+    deleted_droplets: list[str] = []
     for collection, prefix, label in (
         ("droplets", DROPLET_PREFIX, "DROPLET (billing)"),
         ("firewalls", FW_PREFIX, "firewall"),
         ("vpcs", VPC_PREFIX, "vpc"),
     ):
+        if collection == "vpcs" and deleted_droplets and probe.mutate:
+            _wait_for_droplets_gone(probe, deleted_droplets)
         listed = probe.call(
             "GET", f"/{collection}?per_page=200", note=f"sweep: list {collection}", record=False
         )
@@ -331,6 +357,8 @@ def sweep(probe: Probe) -> int:
                 probe.call(
                     "DELETE", f"/{collection}/{item['id']}", note="sweep: delete", record=False
                 )
+                if collection == "droplets":
+                    deleted_droplets.append(item["id"])
     return leaked
 
 

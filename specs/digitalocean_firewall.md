@@ -312,9 +312,10 @@ it**, and the firewall's own status is useless as a signal — `succeeded`
 with empty `pending_changes` is exactly what a healthy firewall reports.
 Two consequences for this driver: `read()` will return the dead id
 faithfully, so it reaches `StateEntry.attributes` and any diff against a
-desired list that has dropped it; and nothing in `health()` would notice,
-because a firewall with a dead member is not unhealthy by any measure
-DigitalOcean exposes.
+desired list that has dropped it; and no observability surface would notice —
+this driver implements neither `health()` nor `metrics()`, and even if it did, a
+firewall with a dead member is not unhealthy by any measure DigitalOcean
+exposes.
 
 The probe rode along on a session run for `specs/resource_dependencies.md`'s
 dependency model rather than costing a droplet of its own.

@@ -32,9 +32,11 @@ is the corrected session.
   (`01`) — it is not auto-created, and the droplet is not created either. So
   `droplet.vpc_uuid` is an implied edge of the same shape as
   `firewall.droplet_ids`: the target must pre-exist. Contrast `tags`, where
-  droplet creation *does* auto-create (`digitalocean_firewall` probes `19`,
-  `20`), which is why "must the referent pre-exist" cannot be answered once
-  for a provider and reused.
+  droplet creation *does* auto-create — a compute-side fact recorded in
+  `specs/digitalocean_compute.md`, not in the firewall probes, which established
+  the firewall side (a firewall's `tags` 422 on a tag that does not exist).
+  Either way, "must the referent pre-exist" cannot be answered once for a
+  provider and reused.
 
 - **`GET /v2/vpcs/{id}/members` exists and answers `200`** (`03`, `06`) — so
   for a VPC the provider itself answers "what depends on me". A firewall's
@@ -73,16 +75,22 @@ is the corrected session.
   deleted the probe VPC while a droplet created into it was notionally
   inside, and got `204`, which read as a refutation of the owner-reported
   "a VPC can only be deleted if it has no member resources attached". It was
-  not: `05` shows the droplet at `status: "new"` with `vpc_uuid: None`, and
+  not: `05` shows the droplet at `status: "new"` with **no `vpc_uuid` key at
+  all** — absent, not null; the `None` in the console output was the probe's own
+  `.get()` — and
   `06` shows `members: []`, `total: 0`. The VPC was empty as far as
   DigitalOcean was concerned. **A probe that races convergence measures the
   race, not the rule** — the corrected session waits and gets `409`.
 
 ## Not probed, deliberately
 
-- **Whether a `default` VPC can be deleted.** A passing result is a destroyed
-  region default, which is not a finding worth the blast radius. Recorded as
-  unprobed rather than attempted.
+- **Whether a `default` VPC can be deleted.** DigitalOcean documents that it
+  cannot — its `vpcs_delete` description says *"the default VPC for a region can
+  not be deleted"* — and a passing result would be a destroyed region default,
+  which is not a finding worth the blast radius. Recorded as documented and
+  unprobed rather than attempted. Note `digitalocean_vpc_member` showed the
+  documented *status* for the sibling case to be wrong, so the documentation is
+  not evidence about what this would return.
 - **What happens to a droplet whose VPC is deleted mid-provisioning.** Step 07
   created exactly that situation and the session did not ask; the droplet went
   on to delete normally at `09`. Whether it fell back to the region default or
@@ -91,4 +99,6 @@ is the corrected session.
   `default-nyc3` and `default-sfo3` both carry `default: true` and
   `created_at` dates matching when droplets were first made in those regions,
   which is suggestive, not evidence. Nothing in this session created them and
-  nothing probed how they came to exist.
+  nothing probed how they came to exist. DigitalOcean documents that a region
+  *has* a default VPC, so their existence is expected; what is recorded nowhere
+  is that `aiform`'s droplets depend on one.

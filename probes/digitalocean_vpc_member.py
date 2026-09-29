@@ -6,23 +6,29 @@
 Separate from digitalocean_vpc.py rather than appended to it, following the
 precedent digitalocean_firewall_attach.py sets: a re-run restarts the sequence
 at 01 and would overwrite that session's transcripts, and those transcripts
-carry a finding worth keeping -- that a droplet's `vpc_uuid` is still None
-while its status is "new".
+carry a finding worth keeping -- that a droplet's record has no `vpc_uuid` key
+at all immediately after creation.
 
 That finding is exactly why this session exists. digitalocean_vpc.py's step 07
 deleted a VPC while a droplet it had just created was notionally inside it, and
-got 204. That looked like a refutation of the owner-reported rule ("a VPC can
-only be deleted if it has no member resources attached"). It was not: step 06
-showed `members: []` and step 05 showed `vpc_uuid: None` on a droplet still in
-status "new". The VPC was empty as far as DigitalOcean was concerned, so the
+got 204. That looked like a refutation of DigitalOcean's documented rule ("a VPC
+can only be deleted if it does not contain any member resources"). It was not:
+step 06 showed `members: []` and step 05 showed no `vpc_uuid` key at all on a
+droplet still in status "new". The VPC was empty as far as DigitalOcean was concerned, so the
 delete tells us nothing about a VPC that is not.
 
 This session waits for the droplet to reach "active" and for the VPC's member
 list to actually show it, and only then attempts the delete. If the delete
 still succeeds, the rule is genuinely wrong and the dependency model should not
-be built on it. If it is refused, the model gets its first verified
-existentially-coupled edge -- and every other edge in the driver set is the
-survivable kind, which is why one verified hard edge is worth a droplet.
+be built on it. If it is refused, the model gets its first edge whose parent the
+provider will not release -- note the narrower claim: that is the refusal, not
+evidence a droplet breaks without its VPC, which the provider prevents anyone
+from observing.
+
+The rule itself is DigitalOcean's own documentation, not a guess: vpcs_delete
+says a VPC "can only be deleted if it does not contain any member resources",
+and promises a 403. Whether the documented *status* is right is the part a probe
+can actually settle.
 
 Costs: one droplet, the cheapest DigitalOcean sells, for roughly five minutes
 -- longer than digitalocean_vpc.py because this one waits for convergence
@@ -174,9 +180,10 @@ def run(probe: Probe) -> None:
         note="delete the VPC while a CONVERGED member is alive",
         predict={
             "status": 403,
-            "notes": "the question this session exists for. Owner-reported as refused. If "
-            "this is a 2xx, a VPC is NOT an existentially-coupled parent on DigitalOcean "
-            "and the dependency model must not claim otherwise",
+            "notes": "403 is what DigitalOcean's own vpcs_delete description promises. "
+            "The first run observed 409 instead, so this prediction is kept as the "
+            "documented value deliberately: a re-run that sees 409 again records the "
+            "documented-vs-observed gap rather than hiding it behind a corrected guess",
         },
     )
     if 0 < refused.status < 400:
@@ -228,6 +235,24 @@ def run(probe: Probe) -> None:
     )
 
 
+def _wait_for_droplets_gone(probe: Probe, ids: list[str]) -> None:
+    """Block until every id 404s, so the VPC sweep below is not refused.
+
+    A droplet DELETE is accepted asynchronously, and this session's own finding
+    is that a VPC cannot be deleted while a member is alive. Sweeping vpcs
+    immediately after droplets would therefore 409 on exactly the leak it was
+    called to clean, and only succeed on some later run.
+    """
+    for droplet_id in ids:
+        for _ in range(POLL_ATTEMPTS):
+            seen = probe.call(
+                "GET", f"/droplets/{droplet_id}", note="sweep: wait for gone", record=False
+            )
+            if seen.status == 404:
+                break
+            time.sleep(POLL_SECONDS)
+
+
 def _age_minutes(created_at: str) -> float:
     created = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     return (datetime.datetime.now(datetime.UTC) - created).total_seconds() / 60
@@ -236,10 +261,13 @@ def _age_minutes(created_at: str) -> float:
 def sweep(probe: Probe) -> int:
     """Droplets first: they bill, and a VPC cannot go while one is inside it."""
     leaked = 0
+    deleted_droplets: list[str] = []
     for collection, prefix, label in (
         ("droplets", DROPLET_PREFIX, "DROPLET (billing)"),
         ("vpcs", VPC_PREFIX, "vpc"),
     ):
+        if collection == "vpcs" and deleted_droplets and probe.mutate:
+            _wait_for_droplets_gone(probe, deleted_droplets)
         listed = probe.call(
             "GET", f"/{collection}?per_page=200", note=f"sweep: list {collection}", record=False
         )
@@ -256,6 +284,8 @@ def sweep(probe: Probe) -> int:
                 probe.call(
                     "DELETE", f"/{collection}/{item['id']}", note="sweep: delete", record=False
                 )
+                if collection == "droplets":
+                    deleted_droplets.append(item["id"])
     return leaked
 
 
