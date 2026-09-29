@@ -11,9 +11,35 @@ Closes #200. Phase 1 of `MULTI_RESOURCE_PRD.md`.
 
 ## Purpose
 
-Let a user declare that one resource must exist before another, and have
-`aiform` order the plan accordingly — dependencies created before dependents,
-destroys in reverse, cycles refused at plan time.
+The purpose of this document is to describe the relationships and dependencies
+that will be implemented by `aiform`. This detailed specification may describe
+more relationships than initially implemented. Each relationship type will be
+analyzed against specific use cases listed here, and those that are important use
+cases will be implemented. Creating one or more internal graphs of the
+relationships between resources, with edges that describe those relationships,
+will enable the use cases listed below. We expect to be able to enhance the
+**efficiency, accuracy, and resiliency** of the infrastructure deployment and the
+operations of that infrastructure.
+
+Three consequences of that purpose, because they govern how the rest of this
+document is read:
+
+- **Describing a relationship is not committing to it.** A kind may be specified
+  here and left unimplemented; what earns implementation is a use case, not a
+  taxonomy.
+- **Every relationship kind must be analysed against the use cases**, which is
+  what "Each kind against the use cases" below does. A kind with no use case is
+  documentation, not work.
+- **"One or more internal graphs" is deliberate.** Provisioning needs a DAG it can
+  order; an operational view may not be acyclic. The purpose permits more than one
+  rather than assuming a single structure serves both.
+
+Phase 1 delivers the first slice of this: a user declares that one resource must
+exist before another, and `aiform` orders the plan accordingly — dependencies
+created before dependents, destroys in reverse, cycles refused at plan time. The
+three effects those relationships have map onto the goals above: create and
+destroy ordering buy **efficiency and accuracy**, and failure impact is where
+**resiliency** would come from — which is the effect with no implementation.
 
 ## Definitions
 
@@ -186,6 +212,34 @@ identity, which reaches the reference namespace as `id` (`referenceable()`). On
 records — so today this edge is written as `depends_on` plus a literal integer.
 That has a consequence for the model, below.
 
+
+### Each kind against the use cases
+
+What the Purpose commits this document to: a relationship kind earns
+implementation from a use case, not from being describable. Use-case names are
+`MULTI_RESOURCE_PRD.md`'s.
+
+| Kind | Use cases it serves | Already served by | Worth implementing as a kind? |
+|---|---|---|---|
+| **Hosts** | UC-A (the host must exist first), UC-B (the provider *enforces* the order — `409`), UC-D (a host's loss takes its members with it) | Phase 1 ordering already covers UC-A and UC-B for it | **Only for UC-D.** Ordering needs no kind; the existing edge suffices |
+| **Uses** | UC-A, UC-B, and the repair case behind #227 | Phase 1 ordering covers UC-A and UC-B | **For repair.** #227 cannot decide refuse-versus-repair without knowing the dependent survives |
+| **Protects** | **UC-D only** | nothing | **No, not yet.** Its only use case is the one with no implementation |
+
+Three conclusions, and the third is the one that saves work:
+
+1. **Ordering needs no relationship kinds at all.** UC-A and UC-B are delivered by
+   an untyped edge. Every kind above is already ordered correctly today.
+2. **Repair needs one distinction**, not a taxonomy: whether the dependent survives
+   its target. That is the single property #227 turns on.
+3. **`Protects` earns nothing until UC-D is built.** It is the kind that motivated
+   the typing discussion — the firewall inversion — and it is the kind with the
+   weakest case for existing, because the effect it serves has no implementation
+   and no committed phase. Describing it is correct; building it now would be
+   inverted priorities.
+
+So the honest summary is that the relationship kinds are **specified ahead of
+need**, which the Purpose explicitly permits, and the first one to earn
+implementation will be whichever the first operational use case requires.
 
 ### Why `Protects` does not fit the single relationship type
 
@@ -1185,10 +1239,12 @@ one.
   model names that is **not derivable from configuration** — somebody has to
   assert that one resource matters more than another. That may belong to the
   operator rather than to `aiform`, and this spec does not decide.
-- **Whether one graph serves both purposes.** Provisioning needs a DAG it can
-  order. Operational relationships may not be acyclic — `Connects to` is
-  symmetric and mutual dependency is normal in running systems. Forcing both
-  into one acyclic structure may be wrong, and nothing here commits to it.
+- **How many graphs there are.** Not an open question so much as a deliberately
+  unforced one: the Purpose says "one or more internal graphs", so nothing here
+  assumes a single structure serves both provisioning and operations. Provisioning
+  needs a DAG it can order; an operational view may not be acyclic, since mutual
+  dependency is normal in running systems. What is out of scope is *choosing* —
+  that follows from the first operational use case built, not from this document.
 
 ## Knowledge-confidence
 
