@@ -264,6 +264,51 @@ Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
 list (#133). A fifth attribute inherits that debt — fix #133 first or the gap
 doubles.
 
+### The declaration has three uses, and generation is the most expensive
+
+Once a driver declares that a field holds references to a resource kind, matched
+on a named attribute, a literal in that field stops being an opaque string. Three
+things become possible, and this spec had only reasoned about the first:
+
+| Use | What it does | Confidence it must clear |
+|---|---|---|
+| **Generate** | create an edge from a matched literal | high — a wrong edge changes ordering and can refuse a destroy |
+| **Lint** | "you hardcoded an id matching a tracked resource; did you mean a reference?" | low — a false warning costs attention |
+| **Verify** | check a declared `depends_on` against what the field's value actually resolves to, and prompt | low — a false prompt costs a question |
+
+**Verification is the cheapest and it catches what nothing else can.** Generation
+must be trusted enough to *create* an edge; verification only has to be trusted
+enough to *ask*. It clears the lint's low bar while addressing a class of error the
+lint cannot see — not a literal that should have been a reference, but a
+**declaration that disagrees with the configuration it describes**.
+
+### A wrong `depends_on` is worse than none
+
+Recorded because nothing in this repo said it, and it is the case verification
+exists for. Suppose a user writes:
+
+```yaml
+depends_on: [digitalocean.compute.web-01]
+params:
+  droplet_ids: [<web-02's id>]
+```
+
+`_dependency_targets()` returns the declared target only — the literal contributes
+nothing — so:
+
+- the ordering graph gains an edge to `web-01` that buys nothing;
+- the **real** dependency on `web-02` is absent, so a destroy can tear `web-02`
+  down before the firewall that points at it;
+- and any future blast-radius answer is wrong in both directions.
+
+All silently, and undetectably by anything that exists today. A user who declares
+nothing at least gets alphabetical order and no false confidence; a user who
+declares the wrong thing gets a graph that is confidently wrong.
+
+That is the strongest available argument for the declaration, and it is independent
+of whether generation is ever built: the same metadata that would infer an edge can
+check one, and checking is the cheaper half.
+
 ## Where detection would run, and what it would cost
 
 `MULTI_RESOURCE_PRD.md`'s "the ordering engine doesn't change" is true. The
@@ -305,8 +350,12 @@ None is resolved here.
 - **A stale literal after a replace.** The id matches nothing, so detection
   silently finds no edge where the user believes one exists. Silence here is
   worse than an unhelpful edge.
-- **Precedence against a declared edge.** Declared must win; UC2 exists as the
-  correction mechanism.
+- **Precedence against a declared edge.** Declared must win the *ordering* — UC2
+  exists as the correction mechanism. But "declared wins" must not mean the
+  disagreement is discarded: see "A wrong `depends_on` is worse than none" above.
+  If the declaration and the field's value name different resources, the graph
+  should honour the declaration **and say so**, because a silently-resolved
+  disagreement is how a user's mistake becomes permanent.
 - **Whether an inferred edge is persisted — already decided, follow the
   precedent.** `_dependency_targets()` (`orchestrator.py:399`) unions
   reference-derived targets with declared ones, and `orchestrator.py:602`
@@ -371,6 +420,12 @@ which is why it appears under "Conditions that reopen this".
   it would need its own use case rather than inheriting UC1's. It becomes more
   attractive, not less, if #216 is fixed — at that point the warning has
   somewhere to point the user.
+- **Verifying a declared edge against the configuration**, and prompting on a
+  disagreement. Also out of scope *here*, and for the same reason as the lint — it
+  needs its own use case. But note it is the cheapest of the declaration's three
+  uses and the only one that catches a wrong declaration; see "The declaration has
+  three uses" above, which is where the reasoning lives so a future design pass
+  does not have to re-derive it.
 - **Renumbering the PRD's phases.** Phase 3 keeps its number while paused, so
   Phases 4-7 and every reference to them stay valid.
 
