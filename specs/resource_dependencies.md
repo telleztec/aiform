@@ -24,8 +24,8 @@ document is read:
   here and left unimplemented; what earns implementation is a use case, not a
   taxonomy.
 - **Every relationship kind must be analysed against the use cases**, which is
-  what "Each kind against the use cases" below does. A kind with no use case is
-  documentation, not work.
+  what "Relationship kinds observed in the current driver set" below does. A kind
+  with no use case is documentation, not work.
 - **"One or more internal graphs" is deliberate.** Provisioning needs a DAG it can
   order; an operational view may not be acyclic. The purpose permits more than one
   rather than assuming a single structure serves both.
@@ -155,45 +155,15 @@ The kinds `aiform` can currently observe, with what was verified about each:
 |---|---|---|---|---|
 | **Hosts** | VPC → droplet | yes — `404` on an unknown `vpc_uuid` | **yes — `409 "Can not delete VPC with members"`** | **unobservable** — the provider prevents the situation |
 | **Uses** | firewall → droplet's id | yes — `422` on an unknown id | no | yes, and its reference goes stale |
-| **Protects** | firewall → droplet, operationally | n/a | no | n/a — inverted, see below |
+| **Protects** | firewall → droplet, operationally | n/a | no | n/a — the operational direction is the inverse of the configuration edge, and is not expressible. **#235** |
 
-The refusal itself is **documented** by DigitalOcean, not discovered here — its
-`vpcs_delete` description says a VPC *"can only be deleted if it does not contain
-any member resources"*. What the probe adds is that **the documented status is
-wrong**: the same description promises *"a 403 Forbidden error response"*, and the
-API returns **`409 conflict`** (`knowledge/drivers/digitalocean_vpc_member/`,
-transcript `10`). The paired `204` at `14` shows the refusal is about membership.
-A design that recognised this refusal by status would have matched the wrong one
-had it trusted the documentation.
+A kind whose target the provider will not release is categorically different from
+one it will: every edge in the driver set was the latter until the `Hosts` refusal
+was probed. Each claim in the table is graded, with its transcript, in
+**Knowledge-confidence** below.
 
-Be precise about the `Hosts` row's last cell. Nothing observed a droplet *after*
-losing its VPC, because the provider does not allow that state to arise — so
-"the dependent cannot survive" is an inference from the refusal, not a
-measurement. The one time a VPC was deleted with a droplet nominally inside
-(`digitalocean_vpc`, transcript `07`, during provisioning) the droplet went on to
-exist and delete normally, which is weak evidence the other way.
-
-The refusal is nonetheless the distinction the model needs: a kind whose parent
-the provider will not release is categorically different from one it will, and
-before this probe every edge in the driver set was the latter.
-
-Note the `Uses` row's `422` comes from `specs/digitalocean_firewall.md`'s own
-pre-existence table (probe `21-` of the `digitalocean_firewall` session), not
-from the two VPC sessions.
-
-**On `id`:** the attribute a firewall's `droplet_ids` needs is the droplet's
-identity, which reaches the reference namespace as `id` (`referenceable()`). On
-`main` a reference cannot actually supply it — `droplet_ids` is integer-typed and
-`id` is a string, which is the limitation `specs/digitalocean_firewall.md`
-records — so today this edge is written as `depends_on` plus a literal integer.
-That has a consequence for the model, below.
-
-
-### Each kind against the use cases
-
-What the Purpose commits this document to: a relationship kind earns
-implementation from a use case, not from being describable. Use-case names are
-`MULTI_RESOURCE_PRD.md`'s.
+A relationship kind earns implementation from a use case, not from being
+describable. Use-case names are `specs/MULTI_RESOURCE_PRD.md`'s.
 
 | Kind | Use cases it serves | Already served by | Worth implementing as a kind? |
 |---|---|---|---|
@@ -201,43 +171,17 @@ implementation from a use case, not from being describable. Use-case names are
 | **Uses** | UC-A, UC-B, and the repair case behind #227 | Phase 1 ordering covers UC-A and UC-B | **For repair.** #227 cannot decide refuse-versus-repair without knowing the dependent survives |
 | **Protects** | **UC-D only** | nothing | **No, not yet.** Its only use case is the one with no implementation |
 
-Three conclusions, and the third is the one that saves work:
+Three conclusions:
 
 1. **Ordering needs no relationship kinds at all.** UC-A and UC-B are delivered by
    an untyped edge. Every kind above is already ordered correctly today.
 2. **Repair needs one distinction**, not a taxonomy: whether the dependent survives
    its target. That is the single property #227 turns on.
-3. **`Protects` earns nothing until UC-D is built.** It is the kind that motivated
-   the typing discussion — the firewall inversion — and it is the kind with the
-   weakest case for existing, because the effect it serves has no implementation
-   and no committed phase. Describing it is correct; building it now would be
-   inverted priorities.
+3. **`Protects` earns nothing until UC-D is built**, because the effect it serves
+   has no implementation and no committed phase — #235 is what it would buy.
 
-So the honest summary is that the relationship kinds are **specified ahead of
-need**, which the Purpose explicitly permits, and the first one to earn
-implementation will be whichever the first operational use case requires.
-
-### Why `Protects` does not fit the single relationship type
-
-A firewall's relationship to a droplet is two relationships, and they point
-opposite ways:
-
-- **Configuration:** the firewall needs the droplet's id. Modelled. Drives both
-  orderings.
-- **Operational:** the droplet needs the firewall's filtering. Not modelled,
-  and not expressible, because there is only one relationship type available.
-
-So `Protects` has to be written as `depends on`, and the graph then asserts that
-a droplet failure impacts the firewall when the truth is the reverse. That
-mistyping is upstream of every recent destroy-semantics question.
-
-It has a cost that is invisible today: both orderings follow the configuration
-edge, so both **maximise** the window in which a droplet is live and unfiltered.
-Create puts the droplet first. Destroy puts the firewall first — and if the
-droplet's delete then fails, the window does not close. A tag-targeted firewall
-can be created first and avoids it; one using `droplet_ids` cannot, because
-`droplet_ids` needs an id that does not exist until the droplet does.
-
+So the kinds are **specified ahead of need**, which the Purpose permits, and the
+first to earn implementation is whichever the first operational use case requires.
 
 ### `aiform`'s graph has to be its own
 
@@ -1217,6 +1161,8 @@ claims are covered by this spec's own tests.
 | That refusal is `409 conflict`, not the `403` DigitalOcean documents | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`; the paired `204` at `14` |
 | A region's default VPC cannot be deleted at all | **documented, not probed** | same description. Deliberately not attempted — a passing result is a destroyed region default |
 | A droplet naming a nonexistent `vpc_uuid` is refused `404`, not auto-created | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `01` |
+| A firewall naming a nonexistent droplet id is refused `422` | **verified** | `specs/digitalocean_firewall.md`'s pre-existence table, probe `21-` of the `digitalocean_firewall` session — not one of the VPC sessions |
+| Whether a droplet survives losing its VPC is **unobservable** | **inferred** | The provider refuses the destroy, so the state never arises. The one VPC deleted with a droplet nominally inside (`digitalocean_vpc`, transcript `07`, mid-provisioning) left the droplet working, which is weak evidence the other way |
 | A firewall keeps a deleted droplet's id in `droplet_ids` and reports `status: succeeded`, `pending_changes: []` | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13` |
 | A VPC's member list identifies members by URN, in a namespace nothing in `aiform` records | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `09` |
 | A droplet's record carries no `vpc_uuid` key immediately after creation | **verified** | `digitalocean_vpc`, transcript `05` |
@@ -1248,6 +1194,7 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | **#225** | P1 | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
 | **#226** | P1 | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
 | **#224** | P1 | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
+| **#235** | P1 | A destroy that fails on the droplet leaves it running with its firewall already deleted | **Decisive.** The `Protects` row is the unmodelled operational direction that causes it; expressing it is what would let a plan warn |
 | **#227** | P2 | Repair a firewall's live `droplet_ids` on force-destroy, and warn instead of refusing | **Decisive.** Needs the relationship kind for refuse-versus-repair, and `digitalocean_vpc` transcript `13` now proves there *is* something to repair |
 | **#233** | P2 | A deployment cannot be network-isolated; no file can choose a VPC | **Indirectly.** A user-created VPC containing droplets would be this model's first *aligned* `Hosts` edge — the second example the taxonomy lacks |
 | **#223** | P2 | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
