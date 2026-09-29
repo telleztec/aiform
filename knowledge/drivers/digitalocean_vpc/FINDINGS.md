@@ -95,31 +95,39 @@ is the corrected session.
   created exactly that situation and the session did not ask; the droplet went
   on to delete normally at `09`. Whether it fell back to the region default or
   kept a dangling `vpc_uuid` is unknown.
-- **How the two default VPCs observed at recon time came to exist.** Recorded as
-  **unknown**, after an earlier draft of this file guessed. `default-nyc3` and
-  `default-sfo3` both carry `default: true`, created `2026-09-15T19:46:04Z` and
-  `2026-09-11T00:04:56Z`. The guess was that each appeared when a droplet was
-  first created in its region; three facts refute it:
+- **How a region's default VPC comes to exist.** Recorded as **owner-reported and
+  consistent with observation**, after this file first guessed, then over-corrected
+  to "unknown", then landed here.
 
-  1. `default-sfo3` postdates this repo's earliest `sfo3` droplet
-     (`digitalocean_firewall_attach`, `2026-09-10T23:13:19Z`) by 51 minutes.
-  2. **No live call in this repo has ever used `nyc3`** — the string appears only
-     as mocked data in offline unit tests.
-  3. The one archived droplet that reports a `vpc_uuid` at all
-     (`digitalocean_compute_monitoring`, `2026-09-15`) names
-     `b57810f7-ac82-4428-906d-baca2a95553d`, which the current token cannot see
-     because it was repointed to a different team since. So the dates being
-     compared came from two different accounts.
+  The account: *DigitalOcean generates a default VPC named `default-<region slug>`
+  the first time resources are used or provisioned in that region.*
+  Owner-reported, and consistent with three things observed independently — the
+  naming convention (`default-nyc3`, `default-sfo3`), DigitalOcean's own "all
+  applicable resources are placed into the default VPC network unless otherwise
+  specified", and `digitalocean_vpc_default`'s finding that an unplaced droplet
+  lands in the default.
 
-     **That id is not a third VPC.** It is the production team's own
-     `default-sfo3` — owner-reported, and consistent with the droplet being
-     `telleztec-wordpress`. Each team has a per-region default, so two distinct
-     VPCs share the name. See
-     `knowledge/drivers/digitalocean_vpc_default/FINDINGS.md` for why that makes
-     `aiform`'s `provider.resource_type.name` key ambiguous across teams.
+  **The `created_at` timestamps are not usable evidence, in either direction, and
+  two earlier drafts of this bullet used them both ways.** The first cited them as
+  support ("the dates match when droplets were first made in those regions"); the
+  second cited them as refutation ("`default-sfo3` postdates this repo's earliest
+  `sfo3` droplet by 51 minutes"). Both were unsound for one reason: **this token
+  has pointed at more than one DigitalOcean team**, each with its own per-region
+  default, and no archived droplet records which team it was created against.
+  System-test logs show `sfo3` droplets from `2026-08-20`, weeks before either
+  VPC's `created_at`, so the dates cannot be reconciled without team creation dates
+  nobody has.
 
-  DigitalOcean's "How to Set a Default VPC" page states that every region
-  containing resources has a default but does not say how one arises, so the
-  documentation does not settle it either. Probing it would mean creating a
-  resource in a region that has none and watching what appears — cheap, and worth
-  doing before any VPC driver is written.
+  A related confusion is dissolved by the same fact. An earlier draft flagged
+  `b57810f7-ac82-4428-906d-baca2a95553d` — named by droplet `589098829`,
+  `telleztec-wordpress` — as a mysterious **third** VPC. It is not: it is the
+  production team's own `default-sfo3`, owner-reported. There were never three
+  VPCs; there were two teams, each with a per-region default. See
+  `knowledge/drivers/digitalocean_vpc_default/FINDINGS.md` for why that makes
+  `aiform`'s `provider.resource_type.name` key ambiguous across teams.
+
+  Do not re-derive a timeline from those dates. Either take the owner-reported
+  mechanism, or settle it the one clean way: **provision a resource into a region
+  that currently has no VPC and watch what appears.** That permanently adds a
+  default to a third region, so it is a deliberate decision rather than a side
+  effect of a probe.
