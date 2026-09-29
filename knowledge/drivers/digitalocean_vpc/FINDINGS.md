@@ -64,12 +64,24 @@ is the corrected session.
   pending_changes: []
   ```
 
-  This settles the question `specs/digitalocean_firewall.md` carried as **not
-  yet probed** and regrades it `verified`. Two consequences: DigitalOcean does
-  **not** self-heal a stale reference, so there is real repair work for the
-  issue that proposes doing it; and the firewall's own status is useless as a
-  signal, since `succeeded` with empty `pending_changes` is exactly what a
-  healthy firewall reports.
+  **Verified, and narrower than a first reading of it.** What `13` establishes
+  is that the dead id is listed *while the firewall reports itself converged* —
+  so the firewall's own status is useless as a signal that a member is gone,
+  since `succeeded` with empty `pending_changes` is exactly what a healthy
+  firewall reports. That much is solid and is what the driver has to cope with.
+
+  **It does not establish that the entry is permanent, and the timing is why.**
+  The read at `13` is **12 seconds** after the `DELETE` at `09`
+  (`04:46:07.1` vs `04:45:55.0`). The droplet never reached `active` — created
+  `04:45:51`, still `new` at `05`, deleted at `:55` — and `08` shows the
+  firewall created at `:54` with `status: "waiting"` and a **pending change to
+  add that same droplet**, `removing: False`. So `13` caught that pending attach
+  resolving with the id retained, not a settled steady state.
+
+  **This is step 07's defect in a different place** — the session diagnosed a
+  raced convergence there and then read `13` the same way. Whether DigitalOcean
+  reaps a dead id on a slower sweep is **unknown**: `inferred` at best, and the
+  probe that would settle it is below.
 
 - **Step 07 was misdesigned, and the failure is itself the finding.** It
   deleted the probe VPC while a droplet created into it was notionally
@@ -84,6 +96,16 @@ is the corrected session.
 
 ## Not probed, deliberately
 
+- **Whether a stale `droplet_ids` entry is permanent.** The session's own read at
+  `13` cannot answer it, for the timing reasons above. The probe that would:
+  create a droplet and **wait for `active`**; attach a firewall and **wait for
+  its `status` to reach `succeeded` with `pending_changes: []` on a live
+  member**, so the baseline is a genuinely converged firewall; `DELETE` the
+  droplet and poll it to 404; then read the firewall **immediately, at one
+  minute, and at ten**, recording each. Three recorded reads separate "the id
+  survives convergence" from "the id survives indefinitely", and only the second
+  supports the word *permanent*. Cheap — one droplet of the smallest size, one
+  firewall, both free or near-free — and it is the read `#232` rests on.
 - **Whether a `default` VPC can be deleted.** DigitalOcean documents that it
   cannot — its `vpcs_delete` description says *"the default VPC for a region can
   not be deleted"* — and a passing result would be a destroyed region default,

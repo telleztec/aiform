@@ -295,11 +295,11 @@ Every edge that was probed requires its referent to already exist, which
 makes a firewall a pure *consumer* of other resources — it is a leaf in
 any future dependency graph, never a thing others point at.
 
-Whether a reference silently shrinks when its referent is deleted is now
-**probed, and it does not**
-(`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`).
-After a droplet was destroyed and a subsequent `GET` returned 404, its
-firewall read back:
+Whether a reference silently shrinks when its referent is deleted was probed,
+and the honest answer is narrower than the first reading of it
+(`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`). **Twelve
+seconds** after an accepted `DELETE`, with a subsequent `GET` returning 404,
+the firewall read back:
 
 ```
 droplet_ids:     [604557432]
@@ -307,9 +307,21 @@ status:          "succeeded"
 pending_changes: []
 ```
 
-So a stale `droplet_ids` entry is **permanent until something rewrites
-it**, and the firewall's own status is useless as a signal — `succeeded`
-with empty `pending_changes` is exactly what a healthy firewall reports.
+**What that verifies**, and it is the part that matters for this driver: the
+dead id is still listed *while the firewall reports itself converged*.
+`succeeded` with empty `pending_changes` is exactly what a healthy firewall
+reports, so **the firewall's own status is useless as a signal** that a member
+is gone.
+
+**What it does not verify: permanence.** Read the timing before relying on it.
+The droplet never reached `active` — created at `04:45:51`, still `new` at
+`:52`, deleted at `:55` — and the firewall was created at `:54` with
+`status: "waiting"` and a *pending* change to add that very droplet. So
+transcript `13` catches that pending attach resolving, 12s later, with the id
+retained. Nothing observed a steady state, and this spec's own
+"Convergence is slower than it looks" note puts firewall convergence at tens of
+seconds. Whether DigitalOcean reaps a dead id on a slower sweep is **unknown**,
+not answered — graded `inferred` below, with the probe that would settle it.
 Two consequences for this driver: `read()` will return the dead id
 faithfully, so it reaches `StateEntry.attributes` and any diff against a
 desired list that has dropped it; and no observability surface would notice —

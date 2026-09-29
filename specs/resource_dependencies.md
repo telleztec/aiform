@@ -118,14 +118,15 @@ these in place.
 | **cross-resource attribute reference** | `specs/resource_references.md` | **Yes**, of the syntax rather than the edge: it is what writing one produces an *implicit* edge from |
 | **declared** | `specs/dependency_detection.md`'s "declared vs inferred" axis | **Yes** — read it as *explicit* |
 | **provider default** | this spec, before #228 | **Yes** — superseded by *intrinsic resource*, which is wider: not every implicitly created CSP object carries a `default` flag |
-| **inferred** | every spec's Knowledge-confidence table; `specs/dependency_detection.md:202-224` | **No.** Two unrelated jobs, neither of them *implicit* — see below |
+| **inferred** | every spec's Knowledge-confidence table; `specs/dependency_detection.md`'s "An inferred edge would cost more than it pays" | **No.** Two unrelated jobs, neither of them *implicit* — see below |
 
 **`inferred` is the one to watch.** It means a confidence grade in every
 Knowledge-confidence table, and separately it is Phase 3's name for an edge
 `aiform` derives on its own by matching a *literal* value against tracked
 resources. An implicit edge is written by the user, in the text of `params`; an
 inferred one is guessed from a value the user never marked as a reference.
-`specs/dependency_detection.md:224` draws exactly that line — a declared edge
+`specs/dependency_detection.md`'s "An inferred edge would cost more than it pays"
+draws exactly that line — a declared edge
 "honors an instruction; an inferred one asserts a relationship nobody claimed."
 Reading the two as synonyms makes Phase 3 look shipped when it is paused.
 
@@ -252,7 +253,7 @@ Each is a property a test can assert, and each traces to a use case in
 | **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
 | **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
 | **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; **not** met across runs — a dependent outside the run is not consulted by the create-path delete-marker route |
-| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall keeps a deleted droplet's id and reports itself converged |
+| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall lists a deleted droplet's id while reporting itself converged, so nothing the provider says surfaces the break |
 | **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
 | **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
 | **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
@@ -391,8 +392,9 @@ in the whole model.
 
 **A literal does not survive drift, and fails silently.** A firewall whose
 `droplet_ids` holds `[123]` still holds it after droplet `123` is deleted out of
-band. DigitalOcean keeps the dead id too (verified,
-`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`), so the live
+band. DigitalOcean keeps the dead id too — verified at least across the
+firewall's own convergence, and it reports `status: succeeded` while doing so
+(`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`) — so the live
 read and the stale file **agree**, `unordered_equal` finds no diff, and the
 firewall is `NO_OP`. The droplet is then recreated with a new id and comes back
 behind no firewall, with the plan reporting nothing. Filed as **#232**.
@@ -401,6 +403,14 @@ Note what produces the silence: the provider's helpfulness. Had DigitalOcean
 dropped the dead id, the diff would have shown a change and the firewall would have
 been repaired on the next apply. The stale reference is invisible *because* both
 sides of the comparison are equally stale.
+
+**The dependency on that provider behaviour is worth stating, because it is the
+weaker half of the evidence.** If DigitalOcean *does* reap dead ids on a slower
+sweep — untested, and graded `inferred` below — then the window in which the diff
+is blind is bounded rather than permanent, and #232 becomes a race rather than a
+steady state. It is a hazard either way: an `apply` inside that window still
+plans `NO_OP` on an unprotected droplet. The unbounded reading is the one that
+needs the probe.
 
 So for any identity-valued field, an implicit edge is not merely tidier than a
 literal — it is the difference between a self-healing relationship and a silently
@@ -1199,7 +1209,8 @@ claims are covered by this spec's own tests.
 | A droplet naming a nonexistent `vpc_uuid` is refused `404`, not auto-created | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `01` |
 | A firewall naming a nonexistent droplet id is refused `422` | **verified** | `specs/digitalocean_firewall.md`'s pre-existence table, probe `21-` of the `digitalocean_firewall` session — not one of the VPC sessions |
 | Whether a droplet survives losing its VPC is **unobservable** | **inferred** | The provider refuses the destroy, so the state never arises. The one VPC deleted with a droplet nominally inside (`digitalocean_vpc`, transcript `07`, mid-provisioning) left the droplet working, which is weak evidence the other way |
-| A firewall keeps a deleted droplet's id in `droplet_ids` and reports `status: succeeded`, `pending_changes: []` | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13` |
+| A firewall lists a deleted droplet's id in `droplet_ids` while reporting `status: succeeded`, `pending_changes: []` — so its own status cannot detect a missing member | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13` |
+| …and that entry is **permanent**, i.e. DigitalOcean never reaps it | **inferred** | `13` is a single read **12s** after the `DELETE`, on a droplet that never reached `active`, against a firewall whose attach for it was still `waiting` at `08`. Nothing observed a steady state. The three-read probe that would settle it is named in `knowledge/drivers/digitalocean_vpc/FINDINGS.md` |
 | A VPC's member list identifies members by URN, in a namespace nothing in `aiform` records | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `09` |
 | A droplet's record carries no `vpc_uuid` key immediately after creation | **verified** | `digitalocean_vpc`, transcript `05` |
 | The key then appears while the droplet is still `new`, before it reaches `active` | **inferred** | `digitalocean_vpc_member`'s polls showed it, but those calls were `record=False` and left no transcript, which `specs/driver_creation.md` does not permit grading `verified` |
@@ -1227,15 +1238,18 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | Issue | Priority | What it is | Does this model help? |
 |---|---|---|---|
 | **#232** | P0-safety | A recreated droplet comes back unprotected and the plan reports the firewall as `no-op` | **Decisive.** It is the literal half of **D9**; the implicit half already self-heals. See "Drift" |
-| **#225** | P1 | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
-| **#226** | P1 | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
-| **#224** | P1 | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
-| **#235** | P1 | A destroy that fails on the droplet leaves it running with its firewall already deleted | **Decisive.** The `Protects` row is the unmodelled operational direction that causes it; expressing it is what would let a plan warn |
-| **#227** | P2 | Repair a firewall's live `droplet_ids` on force-destroy, and warn instead of refusing | **Decisive.** Needs the relationship kind for refuse-versus-repair, and `digitalocean_vpc` transcript `13` now proves there *is* something to repair |
-| **#233** | P2 | A deployment cannot be network-isolated; no file can choose a VPC | **Indirectly.** A user-created VPC containing droplets would be this model's first *aligned* `Hosts` edge — the second example the taxonomy lacks |
-| **#223** | P2 | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
-| **#201** | P2 | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
-| **#220** | — | Automatic detection, paused | **Mechanism yes, decision partly.** See "Phase 3" |
-| **#236** | P3 | A malformed `depends_on` key is reported with pydantic's internals and a `pydantic.dev` URL | **None.** D12's refusal is correct; only its rendering is wrong |
-| **#234** | P3 | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Named in "Definitions"; every per-edge behaviour this model describes would need it |
-| **#206** | — | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |
+| **#201** | P0-safety | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
+| **#225** | P1-correctness | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
+| **#226** | P1-correctness | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
+| **#224** | P1-correctness | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
+| **#235** | P1-correctness | A destroy that fails on the droplet leaves it running with its firewall already deleted | **Decisive.** The `Protects` row is the unmodelled operational direction that causes it; expressing it is what would let a plan warn |
+| **#206** | P1-correctness | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |
+| **#227** | P2-usability | Repair a firewall's live `droplet_ids` on force-destroy, and warn instead of refusing | **Decisive.** Needs the relationship kind for refuse-versus-repair, and transcript `13` shows there *is* something to repair — at least for as long as the provider keeps the dead id |
+| **#233** | P2-usability | A deployment cannot be network-isolated; no file can choose a VPC | **Indirectly.** A user-created VPC containing droplets would be this model's first *aligned* `Hosts` edge — the second example the taxonomy lacks |
+| **#223** | P2-usability | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
+| **#220** | P3-cosmetic (closed) | Automatic detection, paused | **Mechanism yes, decision partly.** See "Phase 3" |
+| **#236** | P3-cosmetic | A malformed `depends_on` key is reported with pydantic's internals and a `pydantic.dev` URL | **None.** D12's refusal is correct; only its rendering is wrong |
+| **#234** | P3-cosmetic | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Named in "Definitions"; every per-edge behaviour this model describes would need it |
+
+Priorities in this table are the issues' **actual labels**, read from GitHub
+rather than transcribed from memory — three were wrong before this was checked.

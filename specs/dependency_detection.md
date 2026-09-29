@@ -370,21 +370,25 @@ future Phase 3 would need:
 asked whether a firewall's `droplet_ids` still carries a deleted droplet's id,
 and whether a later `PUT` carrying that id returns `422`.
 
-- **Question one: answered, `verified`.** The id stays, and the firewall reports
-  itself converged — `status: "succeeded"`, `pending_changes: []`
-  (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`).
-  `specs/digitalocean_firewall.md`'s open note is closed on that basis. **The
-  provider does not self-heal a stale reference.**
-- **Question two: still unrun.** Whether a `PUT` carrying a dead id returns
-  `422` is graded `inferred` in `specs/digitalocean_firewall.md`'s
-  knowledge table, extrapolated from a create-time `422` and never observed on
-  an update.
+- **Question one: partly answered.** `verified` — the dead id is listed *while
+  the firewall reports itself converged*, `status: "succeeded"` with
+  `pending_changes: []` (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`,
+  transcript `13`). So the firewall's own status cannot be used to detect a
+  missing member. **Not** verified: that the entry is permanent. The read is 12
+  seconds after the `DELETE`, on a droplet that never reached `active`, against a
+  firewall whose attach for that droplet was still `waiting` — see the FINDINGS
+  entry, which names the three-read probe that would settle it.
+- **Question two: still unrun and ungraded as an observation.** Whether a `PUT`
+  carrying a dead id returns `422` is graded `inferred` in **this document's**
+  Knowledge-confidence table, extrapolated from transcript `21-`'s create-time
+  `422` and never observed on an update. `specs/digitalocean_firewall.md` does
+  not grade it at all.
 
-The answer to question one **sharpens** the stale-literal argument rather than
-settling the phase. A literal that goes stale is now known to be invisible
-rather than merely suspected: the live read and the stale file agree, so the
-diff finds nothing and the resource plans `NO_OP`. That is **#232**, filed at
-P0. A future Phase 3 inherits a verified hazard here, not a hypothesis.
+What is answered **sharpens** the stale-literal argument without settling the
+phase: a literal that goes stale is invisible to the firewall's own status, so
+nothing the provider reports surfaces the break. That is what **#232** rests on.
+A future Phase 3 inherits a partly-verified hazard here — enough to act on, not
+enough to call permanent.
 
 It remains **not** a decision gate. The pause holds either way.
 

@@ -112,9 +112,13 @@ change. No VPC driver. Criticality, health propagation, recovery ordering and
   confirming nothing but `.md` and new probe files moved.
 - Probes dry-run before running live; both ran with `--mutate` and the account
   was verified empty afterwards (0 droplets, 0 firewalls).
-- `system-test` is **N/A** by the path check: no `aiform/**`, `drivers/**`,
-  `prompts/**`, `tests/**` or `pyproject.toml` change. `probes/**` is not a
-  runtime path.
+- `system-test` **must run; it is not N/A.** This line originally claimed N/A on
+  the grounds that no `tests/**` path changed. That became false when the
+  `MULTI_RESOURCE_PRD.md` move repointed one docstring line in
+  `tests/system/test_cli_references.py`, which is on the gate's runtime-path
+  list. The check reads paths, not content, deliberately — `PROCESS.md`: *"A
+  false N/A is what this gate exists to prevent."* Ran green on `94766c2`:
+  15 passed in 764.97s, `system-test-20260929T225410Z.log`.
 
 ## Process
 
