@@ -25,9 +25,9 @@ a compute resource's IPv4 address) to feed into another resource's
 
 ## Use cases
 
-**This is the single home for the dependency use cases.** Earlier drafts stated
-three here and five more in `specs/resource_dependencies.md`; they are consolidated
-below. Specs reference this table rather than restating it.
+This table is the single home for the dependency use cases; specs reference it
+rather than restating it. Each is stated as an outcome a run either has or does
+not have, so a test can settle it.
 
 Ordered by priority, not by number. **Priorities are proposed, not decided** — the
 scale is the repo's own `P0`-`P3` from `.claude/skills/prioritize-issue`, reused so
@@ -69,16 +69,6 @@ decision (#220).
 **UC2 is not really an override.** It was framed as correcting what UC1's detection
 missed, but detection does not exist, so `depends_on:` is one of the two ways an
 edge comes into existence rather than a correction to the other.
-
-### A note on how these were written
-
-UC1, UC2 and UC3 were originally phrased as capabilities — "I want the system to
-automatically know…" — which names a mechanism and cannot be tested: no run proves
-or disproves it. UC-A through UC-E restate the same intent as outcomes a run either
-has or does not have, which is what the `D`-requirements in
-`specs/resource_dependencies.md` are derived from. The original phrasings are
-preserved above in the "What must be true" column rather than kept as a second
-list.
 
 ## Requirements implied by the use cases
 
