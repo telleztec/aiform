@@ -31,7 +31,20 @@ mouth.
 |---|---|---|---|
 | **Explicit** | `depends_on: [key]` | no — ordering with no value flow | `depends_on`, its "last resort" |
 | **Implicit** | `${provider.type.name:attribute}` in `params` | yes, by construction — the edge exists *because* a value flows | an expression reference, its default |
-| **Provider default** | nothing at all | no | no equivalent |
+| **Intrinsic** | nothing at all — no configuration requested it | no | no equivalent |
+
+**Intrinsic resource** — one the provider creates on the user's behalf, that no
+configuration requested and that cannot be deleted. `aiform` never creates, tracks
+or manages one. The term is this project's; it is not established IaC vocabulary,
+and it replaces an earlier "provider default", which borrowed DigitalOcean's own
+`default: true` flag name into a provider-agnostic spec and was too narrow — not
+every implicitly created CSP object is flagged a default.
+
+Say **"an edge to an intrinsic resource"** rather than "an intrinsic edge".
+*Implicit* and *intrinsic* read as near-synonyms in ordinary speech while the
+distinction here is load-bearing: an implicit edge comes from a reference the user
+**wrote**, an intrinsic one exists with **no configuration at all**. Keeping the
+three-way parallel out of the sentence keeps them apart.
 
 **One name, and the synonyms already in the tree.** This spec says **implicit**.
 Other specs call the same thing *reference-derived* (`specs/orchestrator.md`,
@@ -49,7 +62,7 @@ is written by the user, in the text of `params`; an inferred one would be guesse
 by `aiform` from a value the user never marked as a reference. Conflating the two
 makes Phase 3 look already shipped.
 
-The first two are Terraform's. **The third is not, and it is real.** At the time
+The first two are Terraform's. **Intrinsic is not, and it is real.** At the time
 this section was written the DigitalOcean account carried two VPCs —
 `default-nyc3` and `default-sfo3`, both flagged `default: true` — that `aiform`
 never created and no `.aiform.md` mentions. Every droplet `aiform` has created
@@ -68,13 +81,13 @@ sends one, and a droplet created with exactly that body converges reporting the
 region's `default: true` VPC, which in turn lists it as a member
 (`knowledge/drivers/digitalocean_vpc_default/`).
 
-**And the edge is inert, by construction.** A provider-created default — and any
-other CSP object created implicitly on the user's behalf — is a **NOOP as far as
-`aiform` is concerned**. The repo owner's scoping decision, and
-it follows from two probed properties rather than from convenience. Against each of
-the three effects:
+**And an edge to an intrinsic resource is inert, by construction.** An intrinsic
+resource — a region default, and any other CSP object created implicitly on the
+user's behalf — is a **NOOP as far as `aiform` is concerned**. The repo owner's
+scoping decision, and it follows from two probed properties rather than from
+convenience. Against each of the three effects:
 
-| Effect | Why a provider default cannot participate |
+| Effect | Why an intrinsic resource cannot participate |
 |---|---|
 | **Create order** | The target always pre-exists. It is generated on first use in a region, so it can never be absent when a dependent is created — there is no ordering to get wrong |
 | **Destroy order** | The target **cannot be deleted** (DigitalOcean documents it; the owner confirms the account offers no delete). `aiform` never destroys it, so no dependent can be orphaned by its removal |
@@ -90,8 +103,8 @@ along on it:
 1. **A user cannot choose a VPC**, so a deployment cannot be network-isolated.
    `compute.py` has no `vpc_uuid` in `PARAM_SCHEMA`, so every droplet joins the
    region default and the file cannot say so, change it, or record it. That is an
-   expressiveness gap about *user-chosen* VPCs, not about defaults, and treating
-   defaults as inert does not touch it. Filed as **#233**, which also notes that a
+   expressiveness gap about *user-chosen* VPCs, not about intrinsic ones, and
+   treating intrinsic resources as inert does not touch it. Filed as **#233**, which also notes that a
    user-created VPC containing droplets would be this model's **first aligned
    `Hosts` edge** — declared, existentially coupled, and provider-enforced —
    i.e. the second example the taxonomy currently lacks.
@@ -101,7 +114,7 @@ along on it:
    while nothing models VPCs; live the moment a `network` driver adopts existing
    ones. Recorded on #201, which owns deployment identity.
 
-Nothing is built for the third source and this spec proposes nothing beyond
+Nothing is built for intrinsic resources and this spec proposes nothing beyond
 recording it and the reasoning above. It stays in the table because a future
 `network`/VPC driver has to reckon with the shape — a resource that already exists,
 unmanaged and undeletable, as a dependency of things `aiform` does manage — and

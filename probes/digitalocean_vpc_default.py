@@ -13,11 +13,14 @@ absent, except one on an account this token can no longer see.
 That matters because `drivers/digitalocean/compute.py` never sends `vpc_uuid`
 at all: it is not in PARAM_SCHEMA and not in the create body. So **every
 droplet aiform has ever created** took whatever default DigitalOcean applies,
-and specs/resource_dependencies.md calls that a "provider default" edge -- a
-dependency neither declared nor referenced. The spec currently grades the
-claim that those droplets land in the region default as INFERRED, from
-DigitalOcean's "all applicable resources are placed into the default VPC
-network unless otherwise specified" plus the absence of the field in our code.
+and specs/resource_dependencies.md calls that an edge to an INTRINSIC resource:
+one the provider creates on the user's behalf, that no configuration requested
+and that cannot be deleted. A dependency neither declared nor referenced.
+
+Before this session ran, the spec graded "aiform's droplets sit in the region
+default" as INFERRED -- from DigitalOcean's "all applicable resources are placed
+into the default VPC network unless otherwise specified" plus the absence of the
+field in our code. This session is what makes it verified.
 
 This settles it: create a droplet the way aiform does -- no `vpc_uuid` --
 wait for it to converge, and read where it went.

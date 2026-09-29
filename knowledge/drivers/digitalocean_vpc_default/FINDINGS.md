@@ -14,6 +14,10 @@ nobody says which VPC?** It matters because
 
 ## Resource-specific (stay here)
 
+The region default is what `specs/resource_dependencies.md` calls an **intrinsic
+resource** — one the provider creates on the user's behalf, that no configuration
+requested and that cannot be deleted.
+
 - **A droplet created with no `vpc_uuid` lands in the region's `default: true`
   VPC** (`01`, `06`, `07`). The create body was exactly `compute.py`'s shape:
   `name`, `region`, `size`, `image`, `backups`, `monitoring`, `tags`, and no VPC
