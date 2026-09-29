@@ -4,13 +4,20 @@ Each cites the transcript that established it, in
 `probes/transcripts/digitalocean_vpc_peering/`. Promotion into `knowledge/` needs
 a **second** observation (`specs/driver_creation.md`, "How the loop learns").
 
-No peering driver exists and none is being written. This session was run because
-`specs/resource_dependencies.md`'s model is built entirely on resources that
-*reference* other resources, and a peering is not that: its whole content **is** a
-relationship. Nothing in the driver set has that shape.
+No peering driver exists and none is being written. This session was run to test
+whether `specs/resource_dependencies.md`'s model can order a resource whose whole
+content is a relationship between two others — a shape the driver set has no
+example of. **It can**, with no new concept; see "What a peering is" below. The
+findings worth keeping turned out to be the mundane provider facts rather than the
+modelling ones.
 
 Free — VPCs and peerings cost nothing and no droplet was created, so this session
 is cheap to re-run.
+
+**Status: knowledge only.** By the repo owner's decision, nothing here enters
+`specs/resource_dependencies.md` until there are clear use cases and requirements
+for peering. These are observations about a provider, not a proposal. A future
+session that identifies the use cases is what promotes them.
 
 ## The headline: two relationship kinds on one resource, two different statuses
 
@@ -79,39 +86,60 @@ generalisation.
 
 ## What a peering is, relative to its two VPCs
 
-The session's reason for existing. Four relationships, only the first of which is
-a `depends_on` edge:
+The session's reason for existing. Written after the repo owner pushed back on a
+first draft of this section that overreached — the corrections are marked, because
+the overreach is more instructive than the conclusion.
 
-1. **The peering depends on both VPCs.** Both must pre-exist (`04`), and neither
-   can be deleted while it exists (`10`). Directionally this is the same shape as
-   containment: the *target* is protected from removal while a dependent
-   references it.
+**It depends on both VPCs, and that is nearly the whole story for provisioning.**
+Both must pre-exist (`04`), and neither can be deleted while it exists (`10`). The
+edges are `peering → VPC A` and `peering → VPC B`: both directed, both toward
+targets that already exist, no cycle. A topological sort gives A, B, then the
+peering; the reverse gives the peering first — **and the `412` proves that reverse
+order is required rather than merely tidy.**
 
-2. **The two edges are symmetric.** `vpc_ids: [a, b]` means what `[b, a]` means,
-   and the provider proves it by reordering them (`08`). There is no parent and no
-   child. Every edge `specs/resource_dependencies.md` currently describes has a
-   direction, because `depends_on` is inherently directional — so a symmetric
-   relationship has no natural representation in that graph, which is the concrete
-   case behind that spec's open "one graph, or two?" question.
+So the existing Phase 1 machinery orders this correctly with no new concept. That
+is the useful finding: a resource shape that looked novel turns out to be a
+resource with two dependencies.
 
-3. **The relationship is independently manageable, and that is what makes it new.**
-   A peering can be created and destroyed without touching either VPC. Containment
-   cannot: a droplet is in a VPC or it is not, and changing that means changing the
-   droplet. So a peering is **a relationship with its own lifecycle** — CRUD-able,
-   nameable, with its own id and status. Every other relationship in the driver set
-   is a property of one of its endpoints.
+**Retracted: that the symmetry breaks the DAG.** A first draft argued that because
+`vpc_ids: [a, b]` means what `[b, a]` means, a symmetric relationship "has no
+natural representation" in a directed graph, and cited
+`specs/resource_dependencies.md`'s open "one graph, or two?" question. That is
+wrong. The symmetry is between the two **VPCs** — a fact about what a peering
+*means*. It never enters `depends_on`, where the only edges are peering→VPC, and
+those are ordinary directed ones. The provisioning graph is a plain DAG.
 
-4. **The operational fan-out is unstated and is the largest in the driver set.**
-   Every member of VPC A can reach every member of VPC B *because* the peering
-   exists. Destroy it and cross-VPC traffic stops, for resources whose
-   configuration never mentions the peering, the other VPC, or each other. Blast
-   radius here is the cross-product of two memberships, not a list of dependents.
+What the symmetry does cost is concrete and small: the provider reorders `vpc_ids`
+(`05` vs `08`), so a driver needs it in `UNORDERED_FIELDS`. That is the whole
+consequence.
 
-And one relationship that is **not** a dependency, worth naming separately because
-no edge kind can express it: the two VPCs must have **non-overlapping `ip_range`s**.
-That is a *compatibility constraint over a pair* — a predicate, not an arrow.
-`depends_on` cannot say "these two must remain mutually compatible", and adding a
-third edge kind would not help.
+**Demoted to a note: that a peering is a "reified edge" with its own lifecycle.**
+True — a peering can be created and destroyed without touching either VPC, which no
+other relationship in the driver set allows, since a droplet cannot change VPC
+without changing the droplet. But it changes *nothing* about create or destroy
+ordering, which is what the model is for. Recorded as an observation, not as a
+model concept.
+
+**Demoted to a note: the operational fan-out.** Every member of A can reach every
+member of B because the peering exists, so destroying it stops traffic for resources
+whose configuration never mentions it. Real, and it is the already-deferred UC-D
+blast-radius case. Peering makes the radius larger without changing whether that
+capability gets built.
+
+**Not aiform's to model: the `ip_range` non-overlap requirement.** Two peered VPCs
+must not have overlapping ranges. DigitalOcean enforces it, so an apply fails
+loudly; there is nothing `aiform` can add by re-checking a predicate the provider
+already owns.
+
+**Cross-account peering needs no new concept either.** DigitalOcean permits a
+peering between VPCs in two different accounts, and the owner's point is that
+`aiform` has nothing to model that with. Correct — and
+`specs/resource_dependencies.md`'s Scope section already says so: *"Cross-deployment
+orchestration is not a deferred item; it is not a thing this model has."* A peer in
+another account is outside the deployment, so `_resolve_dependency_edges()` raises
+`PlanBlockedError` — "neither a file in this run nor a resource tracked in state."
+Refusing to model what it cannot see is the right answer. So this is an **instance
+of an existing declared boundary**, not a gap.
 
 ## Not probed
 

@@ -34,12 +34,14 @@ deleted, with **412 "Can not delete VPC with peerings"** where a member gives 40
 back **reordered**, so it needs UNORDERED_FIELDS; and the relationship IS readable
 from the VPC side. See knowledge/drivers/digitalocean_vpc_peering/FINDINGS.md.
 
-What makes this worth probing beyond a resource kind: a peering is the first
-**symmetric** relationship available. The two `vpc_ids` are indistinguishable in
-role -- there is no parent and no child -- while every edge the model currently
-describes has a direction. `specs/resource_dependencies.md`'s "Out of scope"
-raises whether one acyclic graph can serve both provisioning and operations; a
-symmetric relationship is the concrete case behind that question.
+A note on what this session was originally written to test, and got wrong. It
+argued that a peering is the first **symmetric** relationship available, and that a
+symmetric relationship therefore has no natural place in a directed acyclic graph.
+That is false: the symmetry is between the two VPCs, and it never enters
+depends_on, where the only edges are peering->VPC and both are ordinary directed
+ones. The provisioning graph is a plain DAG and the existing Phase 1 sort orders it
+correctly. The symmetry's only real cost is that the provider reorders vpc_ids, so
+a driver needs it in UNORDERED_FIELDS.
 
 DELIBERATELY NOT PROBED: cross-account peering. DigitalOcean allows a peering
 between VPCs in two different accounts, which breaks the assumption that every
