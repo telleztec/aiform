@@ -95,10 +95,31 @@ is the corrected session.
   created exactly that situation and the session did not ask; the droplet went
   on to delete normally at `09`. Whether it fell back to the region default or
   kept a dangling `vpc_uuid` is unknown.
-- **Whether two default VPCs observed at recon time were provider-created.**
-  `default-nyc3` and `default-sfo3` both carry `default: true` and
-  `created_at` dates matching when droplets were first made in those regions,
-  which is suggestive, not evidence. Nothing in this session created them and
-  nothing probed how they came to exist. DigitalOcean documents that a region
-  *has* a default VPC, so their existence is expected; what is recorded nowhere
-  is that `aiform`'s droplets depend on one.
+- **How the two default VPCs observed at recon time came to exist.** Recorded as
+  **unknown**, after an earlier draft of this file guessed. `default-nyc3` and
+  `default-sfo3` both carry `default: true`, created `2026-09-15T19:46:04Z` and
+  `2026-09-11T00:04:56Z`. The guess was that each appeared when a droplet was
+  first created in its region; three facts refute it:
+
+  1. `default-sfo3` postdates this repo's earliest `sfo3` droplet
+     (`digitalocean_firewall_attach`, `2026-09-10T23:13:19Z`) by 51 minutes.
+  2. **No live call in this repo has ever used `nyc3`** — the string appears only
+     as mocked data in offline unit tests.
+  3. The one archived droplet that reports a `vpc_uuid` at all
+     (`digitalocean_compute_monitoring`, `2026-09-15`) names
+     `b57810f7-ac82-4428-906d-baca2a95553d`, which the current token cannot see
+     because it was repointed to a different team since. So the dates being
+     compared came from two different accounts.
+
+     **That id is not a third VPC.** It is the production team's own
+     `default-sfo3` — owner-reported, and consistent with the droplet being
+     `telleztec-wordpress`. Each team has a per-region default, so two distinct
+     VPCs share the name. See
+     `knowledge/drivers/digitalocean_vpc_default/FINDINGS.md` for why that makes
+     `aiform`'s `provider.resource_type.name` key ambiguous across teams.
+
+  DigitalOcean's "How to Set a Default VPC" page states that every region
+  containing resources has a default but does not say how one arises, so the
+  documentation does not settle it either. Probing it would mean creating a
+  resource in a region that has none and watching what appears — cheap, and worth
+  doing before any VPC driver is written.

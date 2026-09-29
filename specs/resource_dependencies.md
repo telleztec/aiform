@@ -178,6 +178,31 @@ DigitalOcean documents the existence of a per-region default — its
 deleted"* — so the defaults themselves are expected rather than anomalous. What is
 recorded nowhere is that `aiform`'s own resources depend on one.
 
+**Every droplet `aiform` creates is in one.** Verified, not inferred:
+`drivers/digitalocean/compute.py` has no `vpc_uuid` in `PARAM_SCHEMA` and never
+sends one, and a droplet created with exactly that body converges reporting the
+region's `default: true` VPC, which in turn lists it as a member
+(`knowledge/drivers/digitalocean_vpc_default/`). So the third edge source is not a
+curiosity at the margin — it is on **every** compute resource this tool has ever
+created.
+
+Two further properties make it unlike the other two sources. The target
+**cannot be deleted** — DigitalOcean documents that for a region default, and the
+repo owner reports the account offers no delete — so unlike an explicit or implicit
+edge, this one's target is permanent. And `aiform` **cannot express it**: with no
+`vpc_uuid` in `PARAM_SCHEMA`, a user cannot choose a VPC, cannot record which one a
+droplet is in, and cannot see the edge in any plan.
+
+**And their origin cannot be determined from here**, which is the sharper point.
+DigitalOcean's documentation does not say how a region's default arises; the repo
+has never created a resource in one of the two regions at all; and the one archived
+droplet that reports a `vpc_uuid` names a VPC the current token cannot see, because
+the token was repointed at a different team in between. So `aiform` has resources
+whose containing VPC it did not create, cannot explain, and — before these probes —
+did not know existed. That is what makes a provider default a distinct edge source
+rather than a variant of the other two: for the first time, the graph has a node
+`aiform` can neither account for nor reach.
+
 Nothing is built for the third source and this spec proposes nothing. It is
 recorded because a model that claims two sources is wrong, and because it is
 the shape a future `network`/VPC driver has to reckon with — a driver for a
@@ -1233,8 +1258,11 @@ claims are covered by this spec's own tests.
 | Terraform scopes dependencies to ordering — "so that resources are created and destroyed in the correct order" | **verified** | `developer.hashicorp.com/terraform/tutorials/configuration-language/dependencies`, read 2026-09-29. An earlier draft of this spec attributed this phrase to the two pages above; it is the tutorial's, verbatim |
 | A dependent of a changing resource is reported as changing, at zero LLM cost | **verified** | `tests/test_orchestrator.py`'s `test_tracked_resource_with_an_unresolved_reference_updates_without_an_llm_call` — asserts the dependent's `UPDATE` and zero calls. Its target is a `CREATE`, so it does not cover the "or not" half |
 | …including when the consumed value did **not** move | **verified** | `test_a_target_planned_update_in_place_also_withholds_its_dependent` in the same file — an in-place `UPDATE` of the target, dependent still withheld, one call for the target and none for the dependent. This is the test the "Change propagation" section is actually describing |
-| Two `default: true` VPCs exist that `aiform` did not create | **verified** | observed on the account 2026-09-29, read-only |
-| Those defaults were created by the provider when droplets were first made in each region | **inferred** | their `created_at` dates match, which is suggestive and not evidence |
+| Two `default: true` VPCs exist that `aiform` did not create and no `.aiform.md` mentions | **verified** | observed on the account 2026-09-29, read-only |
+| **How they came to exist is unknown** | — | An earlier draft said they were provider-created when droplets were first made in each region, graded `inferred` from matching `created_at` dates. That does not hold: `default-sfo3` postdates this repo's earliest `sfo3` droplet by 51 minutes, nothing in the repo has ever made an `nyc3` resource (the string appears only in offline unit tests), and the archived droplet that *does* report a `vpc_uuid` names a third VPC not visible to the current token — because the token has since been repointed at a different team. The correlation compared two accounts |
+| DigitalOcean's documentation does not state how a region's default VPC comes to exist | **verified** | its "How to Set a Default VPC" page says only that every region containing resources *has* one |
+| **Every droplet `aiform` creates lands in the region's default VPC** | **verified** | `knowledge/drivers/digitalocean_vpc_default/`, transcripts `06` and `07`. A droplet created with `compute.py`'s exact body — no `vpc_uuid` — converged reporting the `default: true` VPC, and that VPC listed it as a member. Previously graded `inferred` from documentation plus the field's absence in our code |
+| A region's default VPC cannot be deleted | **documented, owner-confirmed** | DigitalOcean's `vpcs_delete` description, and the repo owner reports no delete is available on the account. Not probed — a passing attempt would destroy a region default |
 | An explicit edge is the better signal of operational coupling | **inferred** | reasoning from why one would be declared. **No explicit-only edge exists in the driver set** to check it against |
 | A firewall does not break when a droplet in it is removed | **owner-reported** | stated by the repo owner 2026-09-26. Not probed — and note transcript `13` verifies the *reference* goes stale, which is a different claim |
 | DigitalOcean cloud-firewall filtering semantics — that a deleted firewall leaves a droplet more exposed rather than less | **owner-reported** | not probed in this repo. The `Protects` row rests on it |
