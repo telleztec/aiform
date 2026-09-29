@@ -1,13 +1,9 @@
-# specs/resource_dependencies.md — declared resource dependencies (`aiform/graph.py`, + `models.py`/`orchestrator.py`/`cli.py`/`state.py`)
+# Resource Dependencies Detailed Design Specification
 
-**Naming note**: like `specs/unordered_fields.md` and
-`specs/resource_tagging.md`, this filename deliberately doesn't follow
-`specs/README.md`'s per-module mirroring rule. The change is one feature spread
-across four already-specced modules (`specs/models.md`, `specs/orchestrator.md`,
-`specs/cli.md`, `specs/state.md`) plus one tiny new one. Named for the feature
-so it's discoverable from any of them, with each cross-referencing it.
+Implemented across `aiform/graph.py`, `models.py`, `orchestrator.py`, `cli.py`
+and `state.py`.
 
-Closes #200. Phase 1 of `MULTI_RESOURCE_PRD.md`.
+Closes #200. Phase 1 of `specs/MULTI_RESOURCE_PRD.md`.
 
 ## Purpose
 
@@ -43,15 +39,11 @@ destroy ordering buy **efficiency and accuracy**, and failure impact is where
 
 ## Definitions
 
-Vocabulary this spec uses, and the two distinctions the rest of it rests on.
-`aiform` adopts Terraform's names rather than inventing its own, because the
-distinction is the same one.
+Vocabulary this spec uses, and the distinctions the rest of it rests on.
 
 ### Dependency types
 
-`aiform` adopts Terraform's vocabulary rather than inventing its own, because
-the distinction is the same one and the names are already in the industry's
-mouth.
+`aiform` adopts Terraform's vocabulary rather than inventing its own.
 
 | Source | Written as | Carries a value? | Terraform's equivalent |
 |---|---|---|---|
@@ -61,10 +53,7 @@ mouth.
 
 **Intrinsic resource** — one the provider creates on the user's behalf, that no
 configuration requested and that cannot be deleted. `aiform` never creates, tracks
-or manages one. The term is this project's; it is not established IaC vocabulary,
-and it replaces an earlier "provider default", which borrowed DigitalOcean's own
-`default: true` flag name into a provider-agnostic spec and was too narrow — not
-every implicitly created CSP object is flagged a default.
+or manages one. The term is this project's, not established IaC vocabulary.
 
 Say **"an edge to an intrinsic resource"** rather than "an intrinsic edge".
 *Implicit* and *intrinsic* read as near-synonyms in ordinary speech while the
@@ -72,65 +61,30 @@ distinction here is load-bearing: an implicit edge comes from a reference the us
 **wrote**, an intrinsic one exists with **no configuration at all**. Keeping the
 three-way parallel out of the sentence keeps them apart.
 
-**One name, and the synonyms already in the tree.** This spec says **implicit**.
-Other specs call the same thing *reference-derived* (`specs/orchestrator.md`,
-`specs/resource_references.md`, `specs/dependency_detection.md`,
-`specs/system_test_references.md`) or a *derived edge* (those plus `PLAN.md`), and
-`specs/resource_references.md` also calls the syntax a *cross-resource attribute
-reference*. All name the second row above; this spec does not rename them in
-place, and a reader meeting any of them should read "implicit".
+**Explicit and implicit are Terraform's; intrinsic is not**, and the DigitalOcean
+region default VPC is the verified example — every droplet `aiform` creates lands in one
+it never named, which makes it a dependency that is neither declared nor
+referenced (`knowledge/drivers/digitalocean_vpc_default/FINDINGS.md`, and
+`knowledge/drivers/digitalocean_vpc_member/FINDINGS.md` for the containment
+rules).
 
-**Do not read `inferred` as a synonym.** That word already does two other jobs — a
-confidence grade in every spec's Knowledge-confidence table, and Phase 3's
-matching of a *literal* value against tracked resources
-(`specs/dependency_detection.md`'s "declared vs inferred" axis). An implicit edge
-is written by the user, in the text of `params`; an inferred one would be guessed
-by `aiform` from a value the user never marked as a reference. Conflating the two
-makes Phase 3 look already shipped.
-
-The first two are Terraform's. **Intrinsic is not, and it is real.** At the time
-this section was written the DigitalOcean account carried two VPCs —
-`default-nyc3` and `default-sfo3`, both flagged `default: true` — that `aiform`
-never created and no `.aiform.md` mentions. Every droplet `aiform` has created
-sits in one. So a resource can have a dependency that is neither declared nor
-referenced, created by the provider on the user's behalf, and invisible to the
-graph.
-
-DigitalOcean documents the existence of a per-region default — its
-`vpcs_delete` description states that *"the default VPC for a region can not be
-deleted"* — so the defaults themselves are expected rather than anomalous. What is
-recorded nowhere is that `aiform`'s own resources depend on one.
-
-**Every droplet `aiform` creates is in one.** Verified, not inferred:
-`drivers/digitalocean/compute.py` has no `vpc_uuid` in `PARAM_SCHEMA` and never
-sends one, and a droplet created with exactly that body converges reporting the
-region's `default: true` VPC, which in turn lists it as a member
-(`knowledge/drivers/digitalocean_vpc_default/`).
-
-**And an edge to an intrinsic resource is inert, by construction.** An intrinsic
-resource — a region default, and any other CSP object created implicitly on the
-user's behalf — is a **NOOP as far as `aiform` is concerned**. The repo owner's
-scoping decision, and it follows from two probed properties rather than from
-convenience. Against each of the three effects:
-
-| Effect | Why an intrinsic resource cannot participate |
-|---|---|
-| **Create order** | The target always pre-exists. It is generated on first use in a region, so it can never be absent when a dependent is created — there is no ordering to get wrong |
-| **Destroy order** | The target **cannot be deleted** (DigitalOcean documents it; the owner confirms the account offers no delete). `aiform` never destroys it, so no dependent can be orphaned by its removal |
-| **Failure impact** | `aiform` cannot observe it, repair it, or remove it. Nothing actionable follows from knowing the edge exists |
-
-So this source is named for completeness — a model claiming two sources would be
-wrong — and then deliberately dropped. It is the one edge kind that needs no
-ordering, no refusal, and no repair.
+**An edge to an intrinsic resource is a NOOP.** `aiform` does not order it, refuse
+a destroy for it, or repair it. The repo owner's scoping decision; the properties
+it rests on are in those findings.
 
 **Two things this decision does not cover**, kept separate so they do not ride
 along on it:
 
-1. **A user cannot choose a VPC**, so a deployment cannot be network-isolated.
-   `compute.py` has no `vpc_uuid` in `PARAM_SCHEMA`, so every droplet joins the
-   region default and the file cannot say so, change it, or record it. That is an
-   expressiveness gap about *user-chosen* VPCs, not about intrinsic ones, and
-   treating intrinsic resources as inert does not touch it. Filed as **#233**, which also notes that a
+1. **An `aiform` user cannot choose a VPC**, so a deployment cannot be
+   network-isolated. The limit is `aiform`'s, not the provider's: DigitalOcean
+   accepts `vpc_uuid` on droplet create and this repo's probes have used it
+   (`probes/digitalocean_vpc.py`, step `04`), but `compute.py`'s `create()` builds
+   its request body from a fixed allowlist — `name`, `region`, `size`, `image`,
+   then `ssh_keys`, `backups`, `monitoring`, `tags` — so a `vpc_uuid` written into
+   `params` is dropped rather than sent, and every droplet joins the region
+   default. That is an expressiveness gap about *user-chosen* VPCs, not about
+   intrinsic ones, and treating intrinsic resources as inert does not touch it.
+   Filed as **#233**, which also notes that a
    user-created VPC containing droplets would be this model's **first aligned
    `Hosts` edge** — declared, existentially coupled, and provider-enforced —
    i.e. the second example the taxonomy currently lacks.
@@ -141,17 +95,39 @@ along on it:
    ones. Recorded on #201, which owns deployment identity.
 
 Nothing is built for intrinsic resources and this spec proposes nothing beyond
-recording it and the reasoning above. It stays in the table because a future
-`network`/VPC driver has to reckon with the shape — a resource that already exists,
-unmanaged and undeletable, as a dependency of things `aiform` does manage — and
-because the inertness argument depends on properties a different provider may not
-share.
-
+recording them. The row stays in the table because a future `network`/VPC driver
+has to reckon with the shape — a resource that already exists, unmanaged and
+undeletable, as a dependency of things `aiform` does manage — and because the NOOP
+decision rests on DigitalOcean's properties, which another provider may not share.
 
 **The type is not retained.** `_dependency_targets()` computes it and
 `StateEntry.depends_on` persists only the union, so nothing downstream can tell an
 explicit edge from an implicit one. That is a design constraint rather than
 something this spec proposes to change — filed as **#234**.
+
+### Other Historical Terms
+
+Terms already in this tree that a reader may take for one of the three above.
+This spec uses **explicit**, **implicit** and **intrinsic**, and does not rename
+these in place.
+
+| Term | Where it appears | Synonym? |
+|---|---|---|
+| **reference-derived** | `specs/orchestrator.md`, `specs/resource_references.md`, `specs/dependency_detection.md`, `specs/system_test_references.md` | **Yes** — read it as *implicit* |
+| **derived edge** | those four, plus `PLAN.md` | **Yes** — read it as *implicit* |
+| **cross-resource attribute reference** | `specs/resource_references.md` | **Yes**, of the syntax rather than the edge: it is what writing one produces an *implicit* edge from |
+| **declared** | `specs/dependency_detection.md`'s "declared vs inferred" axis | **Yes** — read it as *explicit* |
+| **provider default** | this spec, before #228 | **Yes** — superseded by *intrinsic resource*, which is wider: not every implicitly created CSP object carries a `default` flag |
+| **inferred** | every spec's Knowledge-confidence table; `specs/dependency_detection.md:202-224` | **No.** Two unrelated jobs, neither of them *implicit* — see below |
+
+**`inferred` is the one to watch.** It means a confidence grade in every
+Knowledge-confidence table, and separately it is Phase 3's name for an edge
+`aiform` derives on its own by matching a *literal* value against tracked
+resources. An implicit edge is written by the user, in the text of `params`; an
+inferred one is guessed from a value the user never marked as a reference.
+`specs/dependency_detection.md:224` draws exactly that line — a declared edge
+"honors an instruction; an inferred one asserts a relationship nobody claimed."
+Reading the two as synonyms makes Phase 3 look shipped when it is paused.
 
 ### Roles belong to edges, not to resources
 
@@ -190,7 +166,7 @@ transcript `10`). The paired `204` at `14` shows the refusal is about membership
 A design that recognised this refusal by status would have matched the wrong one
 had it trusted the documentation.
 
-Be precise about the `Hosts` row's last cell, because an earlier draft was not. Nothing observed a droplet *after*
+Be precise about the `Hosts` row's last cell. Nothing observed a droplet *after*
 losing its VPC, because the provider does not allow that state to arise — so
 "the dependent cannot survive" is an inference from the refusal, not a
 measurement. The one time a VPC was deleted with a droplet nominally inside
@@ -306,25 +282,10 @@ explicit-only edge in the driver set** to check it against. Graded `inferred`
 below.
 
 
-### Relationship to PLAN.md §10
-
-§10's "No dependency graph" entry named this an explicit, undesigned gap, and
-§486 called the one-file-one-resource model "the natural extension point for a
-future graph, deliberately not built now". This is that extension point being
-built; §10, §73 and §486 are updated rather than left claiming it doesn't
-exist. What remains deferred there, now phase by phase: attribute references
-shipped as Phase 2 (`specs/resource_references.md`), automatic detection from
-driver metadata is Phase 3 — paused by decision behind #216, see
-`specs/dependency_detection.md` — then orphan refusal and partial-failure
-recovery (Phase 4), concurrency-safe state (Phase 5), parallel execution
-(Phase 6), graphical visualization (Phase 7).
-
-
 ## Use cases
 
-**The use cases live in `MULTI_RESOURCE_PRD.md`**, in one priority-ordered table,
-and are deliberately not restated here. That table is the single home for them; an
-earlier draft of this spec kept a second list, which drifted from the first.
+**The use cases live in `specs/MULTI_RESOURCE_PRD.md`**, in one priority-ordered
+table, and are deliberately not restated here. That table is their single home.
 
 This spec covers **UC-A** and **UC-B** (create and delete in dependency order),
 contributes the declaration half of **UC2**, and delivers **UX1 — textual
@@ -332,17 +293,15 @@ dependency display**: a `plan` that silently reorders resources without showing 
 graph it derived is not reviewable, and a user cannot correct a dependency they
 cannot see.
 
-**UC-C**, **UC-D** and **UC-E** are named there and are the open work. The
-requirements below are what this spec holds itself to.
+**UC-C**, **UC-D**, **UC-E** and **UX2 — graphical visualization** are named
+there and are the open work. The requirements below are what this spec holds
+itself to.
 
 ## Requirements
 
 Numbered `D` for dependency, so they do not collide with the PRD's `R1`-`R4`.
 Each is a property a test can assert, and each traces to a use case in
-`MULTI_RESOURCE_PRD.md`.
-
-Numbered `D` for dependency, so they do not collide with the PRD's `R1`-`R4`.
-Each is a property a test can assert.
+`specs/MULTI_RESOURCE_PRD.md`.
 
 | | Requirement | From | State |
 |---|---|---|---|
@@ -355,10 +314,20 @@ Each is a property a test can assert.
 | **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
 | **D8** | Re-running after a partial failure never destroys or duplicates a resource that succeeded. | UC-E | met for the succeeded prefix — a live read plus the dependency-closed-prefix invariant; **not** met for a resource whose create succeeded on the provider but never reached state |
 | **D9** | A resource recreated after drift does not silently lose a relationship a dependent's params expressed. | UC-B, UC-D | **met for an implicit edge, not met for a literal** — see "Drift" below. The literal case is #232 |
+| **D10** | `aiform` must provide a way for an end-user to describe a dependency. | UC-A, UC-B | met, two ways — `depends_on: [key]` for an explicit edge, and a `${provider.type.name:attribute}` reference in `params` for an implicit one |
+| **D11** | `aiform` must provide a way to observe the dependency graph. | UX1, UX2 | **partially met** — D11.1 and D11.2 below are the two halves |
+| **D11.1** | `aiform` must provide a CLI mechanism that describes the graph. | UX1 | **partially met** — `plan create` and `plan apply` print a `depends on:` line per resource (`cli.py:176`) and `--json` carries `depends_on` (`:203`), which is all UX1 asks for. But both are plan-scoped adjacency lists: `plan show` prints no dependencies at all (`_print_state()`), so the graph of what is **deployed** is recorded in `StateEntry.depends_on` and displayable nowhere. The PRD names this gap itself — *"Neither UX1 nor UX2 covers a standalone command that prints the dependency graph"* — and assigns it to Phase 7 |
+| **D11.2** | `aiform` must provide a rich UI mechanism, such as HTML, to see the graph. | UX2 | **not met** — Phase 7; nothing is built or designed |
 
-D4, D6, D7, D8's exception and D9's literal half are the open work. Each is traceable to an issue:
-D4 to the orphan-reference issues, D6 to this spec's "Change propagation", D7
-to the absence of any dependency-aware observability, D8 to the PRD's R3.
+D4, D6, D7, D8's exception, D9's literal half, and D11's two halves are the open
+work. Each is traceable to an issue: D4 to the orphan-reference issues, D6 to this
+spec's "Change propagation", D7 to the absence of any dependency-aware
+observability, D8 to the PRD's R3.
+
+**D11.1's gap is the sharper of the two**, because the deployed graph already
+exists in `StateEntry.depends_on` — showing it is a presentation change rather
+than new machinery, and it is what a user needs to answer "what depends on this?"
+without first running a plan.
 
 
 ## Decisions
@@ -373,8 +342,7 @@ This is UC-C.
 **None of what follows is newly discovered.** `specs/resource_references.md`'s
 "A target this run will replace" already designs this deliberately and argues
 the trade, and a test pins the cost. This section exists to connect that design
-to the dependency model, not to report a defect — an earlier draft of it did the
-latter and was wrong about the mechanism, the cost and the grade.
+to the dependency model, not to report a defect.
 
 #### The mechanism
 
@@ -390,7 +358,7 @@ returns a deterministic `UPDATE` — the code's own words are "the answer is
 produced deterministically instead, at zero cost", because handing the model a
 literal `${...}` "would invite it to categorize the placeholder".
 
-#### What that costs, exactly
+#### What that costs
 
 - **No stale value is ever shown or sent**, which is the direction that matters.
   `specs/resource_references.md` records what the alternative cost: a narrower
@@ -782,7 +750,7 @@ compute the key, note whether it is delete-marked. Then, in this order:
 The existing loop then iterates **the computed order**, calling `_plan_one()` /
 `_plan_delete_marked()` unchanged — which means the loop re-derives each record
 from its path rather than reusing the pass's, so every file is read and parsed
-again. An earlier draft said the loop "iterates those records"; it does not.
+again.
 
 Counting honestly, a **tracked** file is now read three times: once by the
 discovery pass, once by the loop, and once more by `parse_file()` inside it. The
@@ -810,9 +778,9 @@ ordering constraint.
 Resolution and edges are both decided **per target**, not per resource, so one
 resource may legally have a mix.
 
-An earlier draft of this table omitted the declaring file's kind, which made
-its first rows read as though they applied to any declarer — contradicting the
-prose below it for one combination. Both columns are now explicit:
+Both columns are explicit, because resolvability turns on the **declaring**
+file's kind as well as the target's — a row naming only the target would be
+ambiguous for one combination:
 
 | Declaring file | Target is | Resolvable | Edge |
 |---|---|---|---|
@@ -853,8 +821,7 @@ Live entries in topological order, then delete-marked destroys in **reverse**
 topological order.
 
 **Destroys-last is a behavior change this phase makes, not a pre-existing
-invariant.** An earlier draft of this spec said destroys "already" ran last;
-they did not. `discover_files()` returns `sorted(cwd.glob(...))`, and
+invariant.** `discover_files()` returns `sorted(cwd.glob(...))`, and
 `AIFORM-DELETE-` sorts *before* any lowercase name (`'A'` is 65, `'a'` is 97),
 so a delete-marked file was previously planned and applied **first**. The
 change is deliberate and is the better order — destroying a resource before
@@ -864,8 +831,8 @@ told otherwise. A test pins it.
 
 Note the two claims here are independent, not mutually supporting: rule 3
 guarantees no *live* resource depends on a same-run destroy, and the returned
-order guarantees destroys follow live actions. An earlier draft justified each
-by the other, which is circular; both are separately true of the ordering code.
+order guarantees destroys follow live actions. Do not justify either by the
+other — that is circular; both are separately true of the ordering code.
 
 ### Destroy ordering, all three producers
 
@@ -888,8 +855,8 @@ three are covered:
   already gone — so **the apply aborted part-way through and file 2 stayed on
   disk**, ready to recreate the resource on the next `plan create`.
 
-  An earlier draft offered a second possible failure here, the provider 404ing
-  into a `DriverExecutionError`. **That arm is unreachable with any shipped
+  A second failure looks possible here — the provider 404ing into a
+  `DriverExecutionError` — and **that arm is unreachable with any shipped
   driver**: all three DigitalOcean drivers deliberately swallow a 404 on DELETE
   as "already gone" (`compute.py`, `domain.py`, `firewall.py` — the last of
   which notes "Verified live: a second delete 404s. Idempotent by ..."), so
@@ -900,10 +867,6 @@ three are covered:
   anything worse than a collapse: a half-completed destroy that fails mid-apply.
   Refusing at plan time is the same answer for the same reason.
 
-  (An earlier draft of this paragraph said the entries "used to collapse into
-  one, attributed to whichever came last." That described *this* tree with the
-  check removed, not the history — there was no `by_key` dict before this PR.
-  Corrected after review caught it.)
 - **`build_destroy_plan()`'s state-driven destroy-all path** — reads
   `StateEntry.depends_on` and orders in reverse topological. This is the
   invocation a user actually types (`aiform plan destroy`, no arguments), so
@@ -974,11 +937,12 @@ Written at **three** sites, and all three are needed:
   resource is already tracked — unconditionally, regardless of the action
   decided below it.
 
-That third write is not redundant, and an earlier draft of this spec omitted it
-and shipped the bug it exists to prevent.
+That third write is not redundant: without it, an already-tracked resource whose
+`depends_on` changed keeps the old list in state until an apply happens to rewrite
+it, so a `plan destroy` in between orders against a stale graph.
 
-**This is not a migration case, and the wording matters because it was read as
-one.** `MULTI_RESOURCE_PRD.md`'s "Non-requirements" section says backward
+**This is not a migration case.** `specs/MULTI_RESOURCE_PRD.md`'s
+"Non-requirements" section says backward
 compatibility is not owed in any form — correctly, since there are zero
 resources in production. That rule does **not** cover this. "Already tracked"
 means "has a state entry", which the *current* version writes on every apply;
@@ -1020,9 +984,7 @@ no file arguments.** That form reads `StateEntry.depends_on`, so a
 first and it is. Every other producer reads the current frontmatter and is
 never stale: `plan destroy <files>` builds its edges from
 `entry.spec.depends_on`, and `build_create_plan`'s delete-marked branch does
-the same. An earlier draft of this paragraph attached the staleness to
-`plan destroy <files>`, which was wrong in a way that contradicted this spec's
-own "Destroy ordering, all three producers" section three paragraphs above.
+the same.
 
 Reading files during a destroy that explicitly ignores files remains the worse
 alternative, so destroy-all keeps reading state.
@@ -1119,12 +1081,10 @@ one.
 
 - **`tests/test_graph.py`** (new), modeled on `tests/test_compare.py` — pure
   imports and behavior-named `Test*` classes, with the reason for each case
-  stated inline. (Two style claims in earlier drafts of this line were both
-  wrong and are not worth a third guess: it is not `test_compare.py`'s strict
-  `is True`/`is False` — `topological_order()` returns a list and raises, so
-  there is no boolean to assert on — and the cases carry `#` comments rather
-  than docstrings. Read the file for its conventions; this spec pins the
-  coverage below, not the prose style.)
+  stated inline as `#` comments. It does not use `test_compare.py`'s strict
+  `is True`/`is False`, because `topological_order()` returns a list and raises,
+  so there is no boolean to assert on. Read the file for its conventions; this
+  spec pins the coverage below, not the prose style.
   - order correct, and **deterministic across input permutations**;
   - **fan-in**: one node with several dependencies, all of which precede it;
   - fan-out; diamond; disconnected components;

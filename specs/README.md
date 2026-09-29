@@ -42,6 +42,12 @@ contract), point at the section instead of restating it.
 `specs/digitalocean_compute.md` (matching the existing
 `tests/drivers/test_digitalocean_compute.py` naming from `PLAN.md` §1).
 
+A feature spread across several already-specced modules is named for the
+feature instead, and cross-referenced from each module's own spec —
+`resource_dependencies.md`, `resource_references.md`, `unordered_fields.md`,
+`resource_tagging.md`. Naming those after one of their modules would hide them
+from the others.
+
 ## Lifecycle
 
 A spec is written once, before its module's first implementation, and
