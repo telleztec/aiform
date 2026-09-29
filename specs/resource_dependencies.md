@@ -15,129 +15,13 @@ Let a user declare that one resource must exist before another, and have
 `aiform` order the plan accordingly — dependencies created before dependents,
 destroys in reverse, cycles refused at plan time.
 
-## Use cases
+## Definitions
 
-### As `MULTI_RESOURCE_PRD.md` states them
+Vocabulary this spec uses, and the two distinctions the rest of it rests on.
+`aiform` adopts Terraform's names rather than inventing its own, because the
+distinction is the same one.
 
-Copied verbatim for traceability to the committed record:
-
-> **UC1 — Automatic dependency detection.** As a user of aiform, I want the
-> system to automatically know that one resource depends on another, and why,
-> without me having to declare every relationship by hand.
->
-> **UC2 — Manual dependency override.** As a user of aiform, I want to be able
-> to declare or correct a dependency myself, for the case where automatic
-> detection misses an unspecified/undetectable dependency.
->
-> **UC3 — Parallel execution.** As a user of aiform, I want resources that have
-> no dependency relationship to each other to be created/started in parallel
-> rather than serialized, so applying a graph of N independent resources
-> doesn't take N times as long as applying one.
-
-Phase 1 delivers UC2's declaration half; value flow shipped as Phase 2
-(`specs/resource_references.md`); automatic detection is Phase 3, paused by
-decision (`specs/dependency_detection.md`). This spec also delivers **UX1 —
-textual dependency display**: a `plan` that silently reorders resources without
-showing the graph it derived is not reviewable, and a user cannot correct a
-dependency they cannot see.
-
-### Why those three have been hard to build against
-
-Stated plainly, because it explains a pattern in this repo's issue history.
-**UC1 and UC2 describe how the tool works, not what must be true.**
-"Automatically know that one resource depends on another" names a mechanism and
-is not falsifiable — there is no run whose output proves or disproves it. And
-UC2 is framed as an *override* of UC1, a feature that does not exist, which is
-why the PRD has to note the inversion in its own phasing.
-
-UC3 is the exception: "N resources shouldn't take N times as long" is an
-outcome, and you can write a test for it.
-
-The consequence has been concrete. #223, #224, #225, #226 and #227 were filed
-on one day, from one review of one PR, and most needed a fresh
-judgement about what should happen on destroy, because no use case said what
-*must be true* for a destroy to be correct. Two of the five turn out not to be
-destroy questions at all — see the addendum — which is itself the symptom: with
-no definition to check against, related-looking issues were filed as one cluster.
-
-### Outcome-framed use cases
-
-The same intent, restated as properties a run either has or does not have.
-These are what the requirements below are derived from.
-
-- **UC-A — Create in dependency order.** Applying a set of resources with
-  dependencies between them produces no error caused by a resource being absent
-  when something that needs it is created.
-- **UC-B — Delete in dependency order.** Destroying a set of resources produces
-  no error caused by removing a resource that something still references.
-- **UC-C — Know what a change touches.** A plan that will alter a resource
-  other resources depend on shows that consequence before it is applied.
-- **UC-D — Know what a failure touches.** When a resource fails or degrades,
-  an operator can learn what else is affected without reading the
-  configuration by hand.
-- **UC-E — Recover in dependency order.** After a partial failure, a re-run
-  completes the work rather than compounding the damage.
-
-UC-A is delivered. UC-B is delivered **within a single run** and not across
-runs — the requirements derived from it, D3 and D4, are respectively qualified
-and unmet. UC-C is delivered and deliberately over-reports (see
-"Change propagation"). UC-D and UC-E are **not** delivered; UC-D has no
-implementation at all.
-
-### Requirements derived from them
-
-Numbered `D` for dependency, so they do not collide with the PRD's `R1`-`R4`.
-Each is a property a test can assert.
-
-| | Requirement | From | State |
-|---|---|---|---|
-| **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
-| **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
-| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; **not** met across runs — a dependent outside the run is not consulted by the create-path delete-marker route |
-| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall keeps a deleted droplet's id and reports itself converged |
-| **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
-| **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
-| **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
-| **D8** | Re-running after a partial failure never destroys or duplicates a resource that succeeded. | UC-E | met for the succeeded prefix — a live read plus the dependency-closed-prefix invariant; **not** met for a resource whose create succeeded on the provider but never reached state |
-| **D9** | A resource recreated after drift does not silently lose a relationship a dependent's params expressed. | UC-B, UC-D | **met for an implicit edge, not met for a literal** — see "Drift" below. The literal case is #232 |
-
-D4, D6, D7, D8's exception and D9's literal half are the open work. Each is traceable to an issue:
-D4 to the orphan-reference issues, D6 to this spec's "Change propagation", D7
-to the absence of any dependency-aware observability, D8 to the PRD's R3.
-
-## The gap this closes
-
-`orchestrator.discover_files()` returns `sorted(cwd.glob("*.aiform.md"))`, and
-`build_create_plan()` walks that list straight through, so **execution order is
-alphabetical filename order** and nothing can be told otherwise. With
-`app.aiform.md` and `db.aiform.md` in one directory, `app` is created first
-because `a` sorts before `d`. The user's only recourse is renaming files until
-the alphabet agrees with their topology.
-
-Destroy is worse: `aiform plan destroy` with no arguments — the common
-invocation — iterates `state.resources` in dict order, tearing resources down
-with no regard for what still points at them.
-
-## Relationship to PLAN.md §10
-
-§10's "No dependency graph" entry named this an explicit, undesigned gap, and
-§486 called the one-file-one-resource model "the natural extension point for a
-future graph, deliberately not built now". This is that extension point being
-built; §10, §73 and §486 are updated rather than left claiming it doesn't
-exist. What remains deferred there, now phase by phase: attribute references
-shipped as Phase 2 (`specs/resource_references.md`), automatic detection from
-driver metadata is Phase 3 — paused by decision behind #216, see
-`specs/dependency_detection.md` — then orphan refusal and partial-failure
-recovery (Phase 4), concurrency-safe state (Phase 5), parallel execution
-(Phase 6), graphical visualization (Phase 7).
-
-## The dependency model
-
-Everything above this point describes a *mechanism*. This section says what a
-dependency **means**, which nothing in this repo previously did — and the cost
-of that omission is the issue history quoted under "Use cases".
-
-### An edge has a source, and there are three of them
+### Dependency types
 
 `aiform` adopts Terraform's vocabulary rather than inventing its own, because
 the distinction is the same one and the names are already in the industry's
@@ -184,7 +68,9 @@ sends one, and a droplet created with exactly that body converges reporting the
 region's `default: true` VPC, which in turn lists it as a member
 (`knowledge/drivers/digitalocean_vpc_default/`).
 
-**And the edge is inert, by construction.** The repo owner's scoping decision, and
+**And the edge is inert, by construction.** A provider-created default — and any
+other CSP object created implicitly on the user's behalf — is a **NOOP as far as
+`aiform` is concerned**. The repo owner's scoping decision, and
 it follows from two probed properties rather than from convenience. Against each of
 the three effects:
 
@@ -222,43 +108,11 @@ unmanaged and undeletable, as a dependency of things `aiform` does manage — an
 because the inertness argument depends on properties a different provider may not
 share.
 
-### The type is computed and then discarded
 
-`_dependency_targets()` returns `declared + sorted(referenced - set(declared))`
-— one undifferentiated list — and `StateEntry.depends_on` persists that union.
-**After that nothing downstream can tell an explicit edge from an implicit
-one.**
-
-This is worth stating as a defect rather than as an absence: the distinction
-*is* computed, at the one place that knows it, and thrown away on the next line.
-Terraform keeps the two kinds distinguishable and recommends the implicit one,
-because it says an expression reference *"let[s] Terraform understand which value
-the reference derives from"* — but note that is a per-**attribute** property, not
-merely a per-edge one, and per-attribute granularity is a separate gap this spec
-treats under "Change propagation". Retaining the type is worth doing; it would not
-on its own buy what Terraform gets.
-
-One consequence is visible elsewhere in this spec: `specs/cli.md` describes the
-`depends_on` in `--json` output as "the declared list verbatim, in declared
-order". It is the union.
-
-**A tempting second consequence does not hold, and the reason is instructive.**
-It is natural to say "only an implicit edge has a value that can go stale, so
-retaining the type would tell `aiform` whether there is anything to repair". On
-`main` that is false in exactly the case that motivates it. A firewall's
-`droplet_ids` cannot hold a reference — integer-typed field, string `id` — so the
-firewall→droplet edge is an **explicit** `depends_on` plus a literal integer, and
-transcript `13`'s stale `droplet_ids: [604557432]` is a literal going stale on an
-explicit edge.
-
-So the edge type does not by itself decide whether a repair is possible. What
-decides it is whether the *field* holds a value derived from the target, which is
-a per-field property and exactly what a relationship-kind declaration would carry
-— not something recoverable from the explicit/implicit distinction alone. The
-type is still worth retaining; it is just not sufficient for this.
-
-The same case also refutes "there is no explicit-only edge in the driver set":
-that is the only kind this edge can currently be.
+**The type is not retained.** `_dependency_targets()` computes it and
+`StateEntry.depends_on` persists only the union, so nothing downstream can tell an
+explicit edge from an implicit one. That is a design constraint rather than
+something this spec proposes to change — filed as **#234**.
 
 ### Roles belong to edges, not to resources
 
@@ -266,7 +120,14 @@ A droplet is a *dependent* of the VPC that hosts it and a *target* of the
 firewall that lists it, simultaneously. Any vocabulary that classifies
 *resources* rather than *edges* will contradict itself on the second example.
 
-### Relationship kinds, and the one this repo has
+
+## Background
+
+What exists today, and the evidence it rests on. Everything in this section is
+observation or prior art; nothing here is a commitment. The commitments are the
+requirements below.
+
+### Relationship kinds observed in the current driver set
 
 Terraform has one relationship. ITSM practice has many — a CMDB joins items
 with named types (`Depends on :: Used by`, `Hosted on`, `Connects to`), stores
@@ -312,7 +173,8 @@ identity, which reaches the reference namespace as `id` (`referenceable()`). On
 records — so today this edge is written as `depends_on` plus a literal integer.
 That has a consequence for the model, below.
 
-### `Protects` is the kind that does not fit, and it explains the issue history
+
+### Why `Protects` does not fit the single relationship type
 
 A firewall's relationship to a droplet is two relationships, and they point
 opposite ways:
@@ -333,6 +195,7 @@ droplet's delete then fails, the window does not close. A tag-targeted firewall
 can be created first and avoids it; one using `droplet_ids` cannot, because
 `droplet_ids` needs an id that does not exist until the droplet does.
 
+
 ### `aiform`'s graph has to be its own
 
 Tempting alternative: ask the provider. `GET /v2/vpcs/{id}/members` exists, so
@@ -352,6 +215,7 @@ after creation — absent, not null, which is a different thing to code against 
 and the key appears within a poll or two, while its status is still
 `new`, so a graph built by asking the provider is empty exactly when a plan is
 being applied.
+
 
 ### What a dependency determines
 
@@ -374,7 +238,67 @@ from *why someone would declare one*, not an observation: there is **no
 explicit-only edge in the driver set** to check it against. Graded `inferred`
 below.
 
-## Change propagation
+
+### Relationship to PLAN.md §10
+
+§10's "No dependency graph" entry named this an explicit, undesigned gap, and
+§486 called the one-file-one-resource model "the natural extension point for a
+future graph, deliberately not built now". This is that extension point being
+built; §10, §73 and §486 are updated rather than left claiming it doesn't
+exist. What remains deferred there, now phase by phase: attribute references
+shipped as Phase 2 (`specs/resource_references.md`), automatic detection from
+driver metadata is Phase 3 — paused by decision behind #216, see
+`specs/dependency_detection.md` — then orphan refusal and partial-failure
+recovery (Phase 4), concurrency-safe state (Phase 5), parallel execution
+(Phase 6), graphical visualization (Phase 7).
+
+
+## Use cases
+
+**The use cases live in `MULTI_RESOURCE_PRD.md`**, in one priority-ordered table,
+and are deliberately not restated here. That table is the single home for them; an
+earlier draft of this spec kept a second list, which drifted from the first.
+
+This spec covers **UC-A** and **UC-B** (create and delete in dependency order),
+contributes the declaration half of **UC2**, and delivers **UX1 — textual
+dependency display**: a `plan` that silently reorders resources without showing the
+graph it derived is not reviewable, and a user cannot correct a dependency they
+cannot see.
+
+**UC-C**, **UC-D** and **UC-E** are named there and are the open work. The
+requirements below are what this spec holds itself to.
+
+## Requirements
+
+Numbered `D` for dependency, so they do not collide with the PRD's `R1`-`R4`.
+Each is a property a test can assert, and each traces to a use case in
+`MULTI_RESOURCE_PRD.md`.
+
+Numbered `D` for dependency, so they do not collide with the PRD's `R1`-`R4`.
+Each is a property a test can assert.
+
+| | Requirement | From | State |
+|---|---|---|---|
+| **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
+| **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
+| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; **not** met across runs — a dependent outside the run is not consulted by the create-path delete-marker route |
+| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall keeps a deleted droplet's id and reports itself converged |
+| **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
+| **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
+| **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
+| **D8** | Re-running after a partial failure never destroys or duplicates a resource that succeeded. | UC-E | met for the succeeded prefix — a live read plus the dependency-closed-prefix invariant; **not** met for a resource whose create succeeded on the provider but never reached state |
+| **D9** | A resource recreated after drift does not silently lose a relationship a dependent's params expressed. | UC-B, UC-D | **met for an implicit edge, not met for a literal** — see "Drift" below. The literal case is #232 |
+
+D4, D6, D7, D8's exception and D9's literal half are the open work. Each is traceable to an issue:
+D4 to the orphan-reference issues, D6 to this spec's "Change propagation", D7
+to the absence of any dependency-aware observability, D8 to the PRD's R3.
+
+
+## Decisions
+
+What this spec commits to, as distinct from the Background above.
+
+### Change propagation
 
 What a plan says when one resource's change alters a value another consumes.
 This is UC-C.
@@ -385,7 +309,7 @@ the trade, and a test pins the cost. This section exists to connect that design
 to the dependency model, not to report a defect — an earlier draft of it did the
 latter and was wrong about the mechanism, the cost and the grade.
 
-### The mechanism
+#### The mechanism
 
 `references._resolve_text()` sets `deferred = True` for **any** target in
 `volatile`, and `_will_get_new_attributes()` puts every `CREATE` *and* every
@@ -399,7 +323,7 @@ returns a deterministic `UPDATE` — the code's own words are "the answer is
 produced deterministically instead, at zero cost", because handing the model a
 literal `${...}` "would invite it to categorize the placeholder".
 
-### What that costs, exactly
+#### What that costs, exactly
 
 - **No stale value is ever shown or sent**, which is the direction that matters.
   `specs/resource_references.md` records what the alternative cost: a narrower
@@ -416,7 +340,7 @@ literal `${...}` "would invite it to categorize the placeholder".
 The existing spec's verdict on the trade is "not close", and this spec agrees.
 Over-reporting a no-op update is cheap; under-reporting a dead address is a P1.
 
-### Where it connects to the model
+#### Where it connects to the model
 
 The distinction the code cannot make is **whether the referenced attribute is
 among the ones this change will alter.** `volatile` is per-resource; the question
@@ -429,7 +353,8 @@ to do with edge typing: it is a granularity gap, not a taxonomy gap. Worth
 stating because the rest of this model is about typing edges, and this is the one
 requirement typing would not fix.
 
-## Drift, and why the two edge kinds diverge here
+
+### Drift, and why the two edge kinds diverge
 
 D4 is scoped to a destroy. **Drift** is the case where aiform destroyed nothing and
 the relationship breaks anyway, and the two edge kinds behave oppositely — which
@@ -468,11 +393,12 @@ broken one. That is a **safety** argument for #216, which is what makes
 `droplet_ids` expressible as a reference at all. Until it lands, the unsafe form is
 the only form available for that field.
 
-## What the model means for each remaining phase
+
+### What this means for each remaining phase
 
 The point of writing this down is that the phases stop being re-argued.
 
-### Phase 3 — automatic detection (paused, #220)
+#### Phase 3 — automatic detection (paused, #220)
 
 **The model tells us how to implement it, and sharpens why it was paused.**
 
@@ -510,7 +436,7 @@ What does **not** change: detection still buys nothing for ordering, and it stil
 needs the declaration during `_order_files()`, which runs before the driver cache
 is built — so it pays a driver-load cost the operational uses do not.
 
-### Phase 4 — orphan refusal, partial-failure recovery, restartability
+#### Phase 4 — orphan refusal, partial-failure recovery, restartability
 
 Orphan refusal is **D3** and **D4**. The model supplies what the current
 behaviour lacks: whether to refuse or to repair is decided by whether the
@@ -527,7 +453,7 @@ every resource in state has all of its dependencies in state, and no dangling
 edge can exist after a partial apply. That is an invariant, not an aspiration,
 and it is what makes **D8** achievable by re-running rather than by unwinding.
 
-### Phase 5 and 6 — concurrency and parallelism
+#### Phase 5 and 6 — concurrency and parallelism
 
 The model adds one constraint and removes none. Independent resources may run
 concurrently; an edge is exactly the thing that forbids it. But note that
@@ -536,11 +462,12 @@ concurrently; an edge is exactly the thing that forbids it. But note that
 is classified before any dependent of it is planned. A parallel planner has to
 preserve that property or reference withholding breaks.
 
-### Phase 7 — visualization
+#### Phase 7 — visualization
 
 Typed edges are what make a rendered graph worth looking at. An untyped graph
 draws the firewall below the droplet and is *correct about ordering* while being
 misleading about consequence.
+
 
 ## Scope: what a "deployment" is
 
@@ -1281,16 +1208,21 @@ claims are covered by this spec's own tests.
 | A firewall does not break when a droplet in it is removed | **owner-reported** | stated by the repo owner 2026-09-26. Not probed — and note transcript `13` verifies the *reference* goes stale, which is a different claim |
 | DigitalOcean cloud-firewall filtering semantics — that a deleted firewall leaves a droplet more exposed rather than less | **owner-reported** | not probed in this repo. The `Protects` row rests on it |
 
-## Addendum: which open issues this model helps
+## Addendum: the filed work this model bears on
 
-Recorded because the model's value is easiest to judge against work already
-filed, and because two rows are honest "no"s.
+Every issue this spec's reasoning produced or touches, in one place, so a reader
+does not have to reconstruct it from prose. Two rows are honest "no"s.
 
-| Issue | Does the model help? |
-|---|---|
-| Repair a stale reference after a forced destroy | **Decisive.** The relationship kind picks refuse-versus-repair; the edge type says whether a value needs repairing. Cannot be settled without both — and transcript `13` now proves there *is* something to repair |
-| Automatic detection (#220) | **Mechanism yes, decision partly.** See "Phase 3" above |
-| Silent orphaning via the delete-marker route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
-| A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — which is the one-graph-or-two question |
-| A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is about resolution order versus replacement, not typing. Knowing the edge is implicit says a value is needed; it does not say to defer |
-| A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
+| Issue | Priority | What it is | Does this model help? |
+|---|---|---|---|
+| **#232** | P0-safety | A recreated droplet comes back unprotected and the plan reports the firewall as `no-op` | **Decisive.** It is the literal half of **D9**; the implicit half already self-heals. See "Drift" |
+| **#225** | P1 | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
+| **#226** | P1 | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
+| **#224** | P1 | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
+| **#227** | P2 | Repair a firewall's live `droplet_ids` on force-destroy, and warn instead of refusing | **Decisive.** Needs the relationship kind for refuse-versus-repair, and `digitalocean_vpc` transcript `13` now proves there *is* something to repair |
+| **#233** | P2 | A deployment cannot be network-isolated; no file can choose a VPC | **Indirectly.** A user-created VPC containing droplets would be this model's first *aligned* `Hosts` edge — the second example the taxonomy lacks |
+| **#223** | P2 | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
+| **#201** | P2 | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
+| **#220** | — | Automatic detection, paused | **Mechanism yes, decision partly.** See "Phase 3" |
+| **#234** | P3 | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Named in "Definitions"; every per-edge behaviour this model describes would need it |
+| **#206** | — | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |

@@ -43,7 +43,7 @@ ITSM/CMDB rather than IaC.
 2. It must crisply inform the remaining phases, **including Phase 3**.
 3. **Do not build the VPC driver**, but run probes against the VPC resource and
    keep them for a future driver. Use them to understand implied dependencies.
-4. **Copy the use cases from `MULTI_RESOURCE_PRD.md`** and derive explicit
+4. **Copy the use cases from `specs/MULTI_RESOURCE_PRD.md`** and derive explicit
    requirements from them — of the form "delete in order must produce no errors
    due to removing resources that still have references".
 5. The document **must not prevent completing Phase 3 (#220)** — it should help.
