@@ -262,16 +262,52 @@ Each is a property a test can assert, and each traces to a use case in
 | **D11** | `aiform` must provide a way to observe the dependency graph. | UX1, UX2 | **partially met** — D11.1 and D11.2 below are the two halves |
 | **D11.1** | `aiform` must provide a CLI mechanism that describes the graph. | UX1 | **partially met** — `plan create` and `plan apply` print a `depends on:` line per resource (`cli.py:176`) and `--json` carries `depends_on` (`:203`), which is all UX1 asks for. But both are plan-scoped adjacency lists: `plan show` prints no dependencies at all (`_print_state()`), so the graph of what is **deployed** is recorded in `StateEntry.depends_on` and displayable nowhere. The PRD names this gap itself — *"Neither UX1 nor UX2 covers a standalone command that prints the dependency graph"* — and assigns it to Phase 7 |
 | **D11.2** | `aiform` must provide a rich UI mechanism, such as HTML, to see the graph. | UX2 | **not met** — Phase 7; nothing is built or designed |
+| **D12** | An invalid `depends_on` declaration is refused before any provider call or model call, naming what is wrong. | UC2 | met, for four kinds — see below. Reported clumsily for one of them (**#236**) |
+| **D13** | `aiform` tells the user when a declared dependency is well-formed but disagrees with the configuration it sits beside. | UC2 (its failure mode) | **not met** — the "Verify" use of a driver's reference declaration, which is Phase 3 (#220) |
 
-D4, D6, D7, D8's exception, D9's literal half, and D11's two halves are the open
-work. Each is traceable to an issue: D4 to the orphan-reference issues, D6 to this
-spec's "Change propagation", D7 to the absence of any dependency-aware
-observability, D8 to the PRD's R3.
+D4, D6, D7, D8's exception, D9's literal half, D11's two halves and D13 are the
+open work. Each is traceable to an issue: D4 to the orphan-reference issues, D6 to
+this spec's "Change propagation", D7 to the absence of any dependency-aware
+observability, D8 to the PRD's R3, D13 to #220.
 
 **D11.1's gap is the sharper of the two**, because the deployed graph already
 exists in `StateEntry.depends_on` — showing it is a presentation change rather
 than new machinery, and it is what a user needs to answer "what depends on this?"
 without first running a plan.
+
+### D12: the four kinds of invalid declaration
+
+All four are refused before any driver is loaded, any provider is called, or any
+model is called. `tests/test_orchestrator.py` asserts that directly, with
+`FakeClient([])` plus a fake driver that recorded nothing.
+
+| What the user wrote | Refused by | At |
+|---|---|---|
+| A key that is not `provider.resource_type.name` | `ResourceSpec`'s `depends_on` validator → `parse_dependency_key()`, which checks every element, not just the first | parse, before planning begins |
+| A target that is neither a file in this run nor a resource tracked in state | `_resolve_dependency_edges()` → `PlanBlockedError`, naming the offending target; `graph.topological_order()` enforces the same precondition independently → `UnknownDependencyError` | plan |
+| A cycle | `graph.CycleError`, carrying the cycle as a walkable path so the message renders `a -> b -> c -> a` | plan |
+| A resource depending on itself | the same, as a length-1 cycle | plan |
+
+The first kind reaches the user wrapped in pydantic's own rendering, including a
+`pydantic.dev` URL — the refusal is right and the message is not. **#236**.
+
+### D13: a declaration can be valid and still be wrong
+
+D12 catches a declaration that is **malformed**; nothing catches one that is
+**mistaken**. A `depends_on` naming `web-01` beside a `droplet_ids` literal holding
+`web-02`'s id is well-formed, resolvable and acyclic, so it passes every check
+above — and the ordering graph then gains an edge that buys nothing while the real
+dependency on `web-02` goes unrecorded, so a destroy can take `web-02` out from
+under the firewall. `specs/dependency_detection.md`'s "A wrong `depends_on` is
+worse than none" works the case through.
+
+**D13 is stated ahead of its use case, deliberately and visibly.**
+`specs/dependency_detection.md` holds that verifying a declared edge "needs its own
+use case rather than inheriting UC1's", and `specs/MULTI_RESOURCE_PRD.md` does not
+have one yet. It is traced to UC2's failure mode here because that is the closest
+honest anchor: UC2 promises a hand-declared relationship is *honoured*, and a wrong
+one is honoured faithfully. Earning a phase should mean getting a PRD use case
+first.
 
 
 ## Decisions
@@ -1200,5 +1236,6 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | **#223** | P2 | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
 | **#201** | P2 | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
 | **#220** | — | Automatic detection, paused | **Mechanism yes, decision partly.** See "Phase 3" |
+| **#236** | P3 | A malformed `depends_on` key is reported with pydantic's internals and a `pydantic.dev` URL | **None.** D12's refusal is correct; only its rendering is wrong |
 | **#234** | P3 | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Named in "Definitions"; every per-edge behaviour this model describes would need it |
 | **#206** | — | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |
