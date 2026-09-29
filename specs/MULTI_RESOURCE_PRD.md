@@ -163,9 +163,10 @@ that gap alongside UX2's original graphical scope.
   never a model call on the hot path. `specs/dependency_detection.md` treats
   an LLM-inferred edge as permanently excluded rather than deferred, since it
   would also be nondeterministic across runs.
-- **Backward compatibility — not required at all.** See
-  "Non-requirements" below; it is stated there rather than here because
-  it governs what we deliberately will *not* spend effort on.
+- **Backward compatibility — not required while nothing `aiform` created is
+  in production.** That is the condition the exemption rests on, not a
+  permanent property. See "Non-requirements" below, which states it and the
+  note on when it expires.
 - **Concurrency scope — decided.** This phase addresses only concurrency
   *within a single `aiform` process on a single machine* (e.g. threads/
   tasks inside one `apply` invocation). It explicitly does **not** support
@@ -208,11 +209,18 @@ Distinguish two kinds. A **non-requirement** is something we will never
 owe. A **deferred item** is something we will owe later — those live in
 "Delivery phasing" and "Open questions", not here.
 
-### Backward compatibility, in every form
+### Backward compatibility
 
 **There are zero resources in production and no users but the repo owner,
 so nothing in this project owes compatibility with anything it shipped
-earlier.** That covers, non-exhaustively:
+earlier.**
+
+**NOTE:** Once `aiform` is published and receives any kind of adoption, this
+rule will become stale immediately, and modifications to the naming, syntax,
+storage, and other form of backward compatibility limitations will come into
+play. Designing structures that are easier to migrate is important.
+
+The exemption covers, non-exhaustively:
 
 - **The `.aiform.md` file format.** Breaking it is acceptable if the design
   calls for it. Update the system-test and unit-test generators to match

@@ -1,13 +1,13 @@
-# specs/dependency_detection.md — automatic dependency detection, and why it is paused
+# Detailed Design Specification for Resource Dependency Detection
 
-**Naming note**: like `specs/resource_dependencies.md`,
-`specs/resource_references.md`, `specs/unordered_fields.md` and
-`specs/resource_tagging.md`, this filename deliberately doesn't follow
-`specs/README.md`'s per-module mirroring rule. It describes one feature that
-would span `aiform/driver.py`, `aiform/orchestrator.py` and every driver, and
-it is named for the feature so it is discoverable from any of them.
+Would span `aiform/driver.py`, `aiform/orchestrator.py` and every driver.
 
-Closes #220. Phase 3 of `MULTI_RESOURCE_PRD.md`.
+Closes #220. Phase 3 of `specs/MULTI_RESOURCE_PRD.md`.
+
+## Introduction
+
+This document contains the detailed requirements, interfaces, algorithms, and
+design decisions for the implementation of automatic dependency detection.
 
 **Build status.** **Not built, and paused by decision** — not pending, not in
 progress, not next. This file is the decision record and the contract a
@@ -45,14 +45,6 @@ never declares it separately, and `aiform` derives the edge without being
 told. What remains is inferring an edge from a value that is *not* written as
 a reference: a literal the user pasted. That residue is what this spec is
 about, and the whole question is how much of it is real.
-
-## Relationship to PLAN.md §10
-
-§10's "Dependency graph: ordering exists, value flow does not" entry lists
-automatic detection as Phase 3, phrased as deferred-but-coming. This spec
-**narrows** that entry: the mechanism is unchanged, but the phase is paused by
-decision behind a named prerequisite rather than merely sequenced, and §10 is
-updated to say so. §10's *delivered* claims for Phases 1 and 2 are untouched.
 
 ## The decision
 
@@ -114,7 +106,7 @@ earlier draft of this table missed one row and misclassified another.
 | Field | Points at | Match kind | Verdict |
 |---|---|---|---|
 | `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Exactly the edge #216 blocks from being a reference |
-| `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:210`) | **attribute** | A *user-chosen* value, writable before its referent exists. Phase 2 references already work here (`specs/digitalocean_firewall.md:341-347`) |
+| `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:210`) | **attribute** | A *user-chosen* value, writable before the droplet carrying it exists — though the **tag itself** must already exist, or the create 422s `"tag <name> does not exist"` (`specs/digitalocean_firewall.md:175-179`). `compute.py:210` declares `tags` referenceable, so Phase 2 references work here |
 | `addresses` (`firewall.py:51`) | a droplet, via `ipv4_address` (`compute.py:211`) | **attribute** | Same class as `records[].data`. Missed by this table's first draft |
 | `records[].data` (`domain.py:103`) | a droplet, via `ipv4_address` | **attribute** | Phase 2's canonical case; references work |
 | `ssh_keys` (`compute.py:170`) | a DigitalOcean SSH key | id | No `ssh_key` driver exists; no node to point at |
@@ -197,7 +189,9 @@ Owner-reported, not probed — see "Knowledge-confidence". The second half is
 scoped to tag targeting deliberately: it cannot be true of `droplet_ids`,
 which 422s on an id that does not exist yet.
 
-This closes the question `specs/digitalocean_firewall.md:296-298` left open.
+The question `specs/digitalocean_firewall.md`'s "Resource graph" section left
+open is now **answered** there, by this PR's probes: the reference does not
+shrink, and the firewall reports itself converged anyway.
 
 ### An inferred edge would cost more than it pays
 
@@ -349,7 +343,9 @@ None is resolved here.
   the same rule or the two mechanisms disagree.
 - **A stale literal after a replace.** The id matches nothing, so detection
   silently finds no edge where the user believes one exists. Silence here is
-  worse than an unhelpful edge.
+  worse than an unhelpful edge — and this is no longer hypothetical: the
+  provider is now **verified** to keep the dead id while reporting the resource
+  converged, so nothing anywhere surfaces the break. Filed as **#232**, P0.
 - **Precedence against a declared edge.** Declared must win the *ordering* — UC2
   exists as the correction mechanism. But "declared wins" must not mean the
   disagreement is discarded: see "A wrong `depends_on` is worse than none" above.
@@ -370,18 +366,27 @@ None is resolved here.
 Nothing to test — nothing is built. What this decision rests on, and what a
 future Phase 3 would need:
 
-**The named probe, not run.** It would promote the owner-reported firewall
-behavior to `verified` and close
-`specs/digitalocean_firewall.md:296-298`'s open note. Shape: create a
-disposable droplet and a firewall carrying its id in `droplet_ids`, `DELETE`
-the droplet, then `GET` the firewall and observe whether `droplet_ids` still
-carries the dead id, and whether a later `PUT` carrying it returns 422.
-Follow `specs/driver_creation.md`'s loop, transcript under
-`probes/transcripts/`, findings in `knowledge/drivers/<session>/FINDINGS.md`.
+**The named probe has since run, and answered half of its two questions.** It
+asked whether a firewall's `droplet_ids` still carries a deleted droplet's id,
+and whether a later `PUT` carrying that id returns `422`.
 
-It is **not** a decision gate. The pause holds whichever way it comes out; a
-dangling reference that *did* break would restore the destroy-ordering case,
-which is why it appears under "Conditions that reopen this".
+- **Question one: answered, `verified`.** The id stays, and the firewall reports
+  itself converged — `status: "succeeded"`, `pending_changes: []`
+  (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`).
+  `specs/digitalocean_firewall.md`'s open note is closed on that basis. **The
+  provider does not self-heal a stale reference.**
+- **Question two: still unrun.** Whether a `PUT` carrying a dead id returns
+  `422` is graded `inferred` in `specs/digitalocean_firewall.md`'s
+  knowledge table, extrapolated from a create-time `422` and never observed on
+  an update.
+
+The answer to question one **sharpens** the stale-literal argument rather than
+settling the phase. A literal that goes stale is now known to be invisible
+rather than merely suspected: the live read and the stale file agree, so the
+diff finds nothing and the resource plans `NO_OP`. That is **#232**, filed at
+P0. A future Phase 3 inherits a verified hazard here, not a hypothesis.
+
+It remains **not** a decision gate. The pause holds either way.
 
 ## Conditions that reopen this
 
@@ -390,9 +395,17 @@ which is why it appears under "Conditions that reopen this".
   reference. Then the literal is permanent, and this is the reassessment the
   decision defers to.
 - **A resource type that genuinely breaks when its referent is deleted.**
-  Restores the destroy-ordering and orphan-refusal cases.
+  Restores the destroy-ordering and orphan-refusal cases. **Such a type is now
+  known to exist at the provider** — a VPC refuses deletion while it holds a
+  member, `409 "Can not delete VPC with members"` — but this condition is about
+  the **driver set**, and no `network` driver exists, so it is not met. #233
+  notes that a user-created VPC holding droplets would be the first such edge
+  with a driver at both ends.
 - **A reference that fails silently rather than loudly.** The stale-literal
-  argument assumes a 422; a silent wrong answer inverts it.
+  argument assumes a `422` on write. Note this condition is now **partly
+  triggered**: a stale reference is verified to fail silently on *read* — the
+  firewall reports itself converged — while the write-path `422` remains
+  `inferred`. It is the read-side silence that #232 is filed for.
 - **A driver set where the id-match inventory is more than one row** — an
   `ssh_key`, `load_balancer` or k8s driver. A `load_balancer` additionally
   sorts after `firewall`, flipping the destroy-order accident above.
