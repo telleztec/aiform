@@ -182,32 +182,45 @@ recorded nowhere is that `aiform`'s own resources depend on one.
 `drivers/digitalocean/compute.py` has no `vpc_uuid` in `PARAM_SCHEMA` and never
 sends one, and a droplet created with exactly that body converges reporting the
 region's `default: true` VPC, which in turn lists it as a member
-(`knowledge/drivers/digitalocean_vpc_default/`). So the third edge source is not a
-curiosity at the margin — it is on **every** compute resource this tool has ever
-created.
+(`knowledge/drivers/digitalocean_vpc_default/`).
 
-Two further properties make it unlike the other two sources. The target
-**cannot be deleted** — DigitalOcean documents that for a region default, and the
-repo owner reports the account offers no delete — so unlike an explicit or implicit
-edge, this one's target is permanent. And `aiform` **cannot express it**: with no
-`vpc_uuid` in `PARAM_SCHEMA`, a user cannot choose a VPC, cannot record which one a
-droplet is in, and cannot see the edge in any plan.
+**And the edge is inert, by construction.** The repo owner's scoping decision, and
+it follows from two probed properties rather than from convenience. Against each of
+the three effects:
 
-**And their origin cannot be determined from here**, which is the sharper point.
-DigitalOcean's documentation does not say how a region's default arises; the repo
-has never created a resource in one of the two regions at all; and the one archived
-droplet that reports a `vpc_uuid` names a VPC the current token cannot see, because
-the token was repointed at a different team in between. So `aiform` has resources
-whose containing VPC it did not create, cannot explain, and — before these probes —
-did not know existed. That is what makes a provider default a distinct edge source
-rather than a variant of the other two: for the first time, the graph has a node
-`aiform` can neither account for nor reach.
+| Effect | Why a provider default cannot participate |
+|---|---|
+| **Create order** | The target always pre-exists. It is generated on first use in a region, so it can never be absent when a dependent is created — there is no ordering to get wrong |
+| **Destroy order** | The target **cannot be deleted** (DigitalOcean documents it; the owner confirms the account offers no delete). `aiform` never destroys it, so no dependent can be orphaned by its removal |
+| **Failure impact** | `aiform` cannot observe it, repair it, or remove it. Nothing actionable follows from knowing the edge exists |
 
-Nothing is built for the third source and this spec proposes nothing. It is
-recorded because a model that claims two sources is wrong, and because it is
-the shape a future `network`/VPC driver has to reckon with — a driver for a
-resource that already exists, unmanaged, as a dependency of things `aiform`
-does manage.
+So this source is named for completeness — a model claiming two sources would be
+wrong — and then deliberately dropped. It is the one edge kind that needs no
+ordering, no refusal, and no repair.
+
+**Two things this decision does not cover**, kept separate so they do not ride
+along on it:
+
+1. **A user cannot choose a VPC**, so a deployment cannot be network-isolated.
+   `compute.py` has no `vpc_uuid` in `PARAM_SCHEMA`, so every droplet joins the
+   region default and the file cannot say so, change it, or record it. That is an
+   expressiveness gap about *user-chosen* VPCs, not about defaults, and treating
+   defaults as inert does not touch it. Filed as **#233**, which also notes that a
+   user-created VPC containing droplets would be this model's **first aligned
+   `Hosts` edge** — declared, existentially coupled, and provider-enforced —
+   i.e. the second example the taxonomy currently lacks.
+2. **The name collision returns if VPCs are ever modelled.** Every team has a
+   `default-<region>`, so `digitalocean.network.default-sfo3` names a different
+   resource in each — and a resource key carries no account or team component. Inert
+   while nothing models VPCs; live the moment a `network` driver adopts existing
+   ones. Recorded on #201, which owns deployment identity.
+
+Nothing is built for the third source and this spec proposes nothing beyond
+recording it and the reasoning above. It stays in the table because a future
+`network`/VPC driver has to reckon with the shape — a resource that already exists,
+unmanaged and undeletable, as a dependency of things `aiform` does manage — and
+because the inertness argument depends on properties a different provider may not
+share.
 
 ### The type is computed and then discarded
 
