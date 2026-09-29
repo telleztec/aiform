@@ -34,19 +34,27 @@ Costs: one droplet, the cheapest DigitalOcean sells, for roughly five minutes
 -- longer than digitalocean_vpc.py because this one waits for convergence
 rather than racing it. VPCs are free.
 
-The registered teardown cannot fully honour that ordering, and this is a known
-limit rather than an oversight. `Probe.__exit__` fires cleanups in reverse
-registration order -- droplet, then VPC -- but sends each once with no wait, and
-a droplet DELETE is accepted asynchronously. So on a crash path between the
-droplet create and this session's own final VPC delete, the cleanup VPC DELETE
-will 409 and the VPC is left behind. Fixing that properly means teaching the
-shared harness to wait, which would change every existing session's teardown, so
-it is out of scope here. `--sweep` is the backstop and does wait; a VPC costs
-nothing while it waits to be swept.
+The registered teardown does not honour that ordering, and the fix was
+**deferred by choice** rather than being unavailable. `Probe.__exit__` fires
+cleanups in reverse registration order -- droplet, then VPC -- but sends each
+once with no wait, and a droplet DELETE is accepted asynchronously. Two paths
+therefore leave the VPC behind on a 409: a crash between the droplet create and
+this session's own final VPC delete, and a **timeout**, where the poll gives up
+while the droplet is still going and every later VPC delete 409s without
+anything having crashed.
+
+A session-local `try/finally` polling the droplet to 404 would close both
+without touching the shared harness, so "the harness would have to change" is
+not the reason -- the reason is that a VPC is free and the leak is bounded.
+`--sweep` is the backstop, and be precise about its limits: it waits only for
+droplets *it* deleted in that run, and skips anything younger than
+SWEEP_MIN_AGE_MINUTES, so a leak is cleaned on a later invocation rather than
+this one.
 
 Step comments below name the TRANSCRIPT number, not the call ordinal: the
 convergence and teardown polls are `record=False` and consume sequence numbers
-without writing a file, so the recorded set is 01, 02, 09, 10, 11, 14.
+without writing a file, so the recorded set is 01, 02, 09, 10, 11, 14. Those
+are this run's numbers; a re-run that converges in fewer polls shifts them.
 
 Run:  python probes/digitalocean_vpc_member.py --dry-run
       python probes/digitalocean_vpc_member.py --mutate
@@ -244,7 +252,7 @@ def run(probe: Probe) -> None:
         predict={
             "status": 204,
             "notes": "if step 10 was refused, this is the pair that shows the refusal was "
-            "about membership. If step 04 succeeded, this will 404 and says nothing",
+            "about membership. If step 10 succeeded, this will 404 and says nothing",
         },
     )
 

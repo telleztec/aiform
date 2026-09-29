@@ -3,6 +3,25 @@
 **Status: approved 2026-09-29 by the repo owner, in seven numbered decisions.
 Implemented by the PR that carries this file.**
 
+## Amendment, 2026-09-29 — after review round 1
+
+`plans/README.md` makes a plan a point-in-time record, so the body below is left
+as it was approved. Three of its claims were refuted by the Fable 5.1 review and
+are corrected in the spec itself, not here:
+
+- "within hours of each other ... changing its recommendation three times" —
+  the issues span one day, and the recommendation changes happened in
+  conversation, not on the issues, so they are unverifiable from the record.
+- "The first verified existentially-coupled edge in the repo" — what is verified
+  is that DigitalOcean **refuses to delete** the VPC. No probe observed a droplet
+  after losing its VPC, because the provider prevents that state.
+- "*Change propagation* — the diffing answer, and it is a defect" — the opposite
+  of what shipped. `specs/resource_references.md` already documented the
+  behaviour as a deliberate trade, with a test pinning its zero-LLM cost; the
+  section now connects that design to the model rather than reporting a defect.
+
+Read the spec for what is true; read this for what was planned.
+
 ## Context
 
 `specs/resource_dependencies.md` is 826 lines of ordering machinery with no

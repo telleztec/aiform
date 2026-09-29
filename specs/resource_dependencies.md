@@ -420,8 +420,11 @@ is built — so it pays a driver-load cost the operational uses do not.
 
 Orphan refusal is **D3** and **D4**. The model supplies what the current
 behaviour lacks: whether to refuse or to repair is decided by whether the
-dependent survives its target, which is the `Hosts`-versus-`Uses` distinction,
-now verified on both sides.
+dependent survives its target. The `Hosts`-versus-`Uses` distinction is the
+shape of that question, and note what is actually established on each side: for
+`Uses`, survival is observed (a firewall outlives its droplet, transcript `13`);
+for `Hosts`, only the provider's refusal is observed, and survival is
+unobservable because the provider prevents the state.
 
 Recovery inherits one property worth naming, because it is stronger than it
 looks. `apply_plan()` stops at the first failure and saves state per resource, so
@@ -1140,8 +1143,8 @@ one.
   health propagation, recovery ordering — is named so the next design pass
   inherits the question rather than re-deriving it.
 - **A VPC / `network` driver.** Probed, not built. `probes/digitalocean_vpc.py`
-  and `probes/digitalocean_vpc_member.py` exist so the model has one verified
-  existentially-coupled edge to reason about; the transcripts and findings are
+  and `probes/digitalocean_vpc_member.py` exist so the model has one edge whose
+  parent the provider refuses to release; the transcripts and findings are
   deliberately durable so a future driver author recalls them instead of paying
   for the droplet again.
 - **Criticality.** CMDB impact analysis needs it and it is the one concept the
@@ -1170,8 +1173,9 @@ claims are covered by this spec's own tests.
 | The key then appears while the droplet is still `new`, before it reaches `active` | **inferred** | `digitalocean_vpc_member`'s polls showed it, but those calls were `record=False` and left no transcript, which `specs/driver_creation.md` does not permit grading `verified` |
 | The type of an edge is discarded by `_dependency_targets()`'s union | **verified** | `orchestrator.py`, the one return statement, and `StateEntry.depends_on` |
 | Terraform treats implicit as the default and `depends_on` as a last resort ("only use `depends_on` as a last resort") | **verified** | `developer.hashicorp.com/terraform/language/meta-arguments/depends_on`, read 2026-09-29 |
-| Terraform's graph is used for provisioning operations only — plans, applies, destroys, refreshes | **verified** | `developer.hashicorp.com/terraform/internals/graph` and the dependencies tutorial, read 2026-09-29. Neither page uses the phrase an earlier draft of this spec quoted; it paraphrased them |
-| Every dependent of a changing resource is reported as changing, whether the consumed value moved or not | **inferred** | `references.py`'s `deferred` assignment plus `_will_get_new_attributes()`. No test asserts it; the check that would settle it is named under "Change propagation" |
+| Terraform's graph is used for provisioning operations — "generate plans and refresh state" | **verified** | `developer.hashicorp.com/terraform/internals/graph`, read 2026-09-29 |
+| Terraform scopes dependencies to ordering — "so that resources are created and destroyed in the correct order" | **verified** | `developer.hashicorp.com/terraform/tutorials/configuration-language/dependencies`, read 2026-09-29. An earlier draft of this spec attributed this phrase to the two pages above; it is the tutorial's, verbatim |
+| Every dependent of a changing resource is reported as changing, whether the consumed value moved or not, at zero LLM cost | **verified** | `tests/test_orchestrator.py`'s `test_tracked_resource_with_an_unresolved_reference_updates_without_an_llm_call`, which asserts the dependent's `UPDATE` and zero calls; plus `references.py`'s `deferred` assignment and `_will_get_new_attributes()` |
 | Two `default: true` VPCs exist that `aiform` did not create | **verified** | observed on the account 2026-09-29, read-only |
 | Those defaults were created by the provider when droplets were first made in each region | **inferred** | their `created_at` dates match, which is suggestive and not evidence |
 | An explicit edge is the better signal of operational coupling | **inferred** | reasoning from why one would be declared. **No explicit-only edge exists in the driver set** to check it against |

@@ -7,4 +7,4 @@
 2026-09-29T05:10:00Z step=spec ref=model/reverse-edge cites=03,06 msg="GET /vpcs/{id}/members exists, so a VPC answers what-depends-on-me natively"
 2026-09-29T05:10:00Z step=spec ref=model/stale-reference cites=13 msg="firewall keeps a deleted droplet id and reports succeeded with empty pending_changes"
 2026-09-29T05:10:00Z step=spec ref=model/edges-lag-create cites=05 msg="droplet record carries no vpc_uuid key immediately after create; absent, not null"
-2026-09-29T05:10:00Z step=probe ref=07 verdict=misdesigned cites=05,06 msg="raced convergence; VPC was empty per 05/06 so the 204 says nothing about the members rule"
+2026-09-29T05:10:00Z step=note ref=07 msg="step 07 raced convergence; 05 and 06 show the VPC was empty, so its 204 says nothing about the members rule. digitalocean_vpc_member is the corrected session"

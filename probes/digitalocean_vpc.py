@@ -38,19 +38,27 @@ Costs: one droplet, the cheapest DigitalOcean sells, for roughly four
 minutes. VPCs and firewalls are free. The droplet is never logged into and
 generates no traffic; it exists to be a VPC member and a firewall target.
 
-The registered teardown cannot fully honour that ordering, and this is a known
-limit rather than an oversight. `Probe.__exit__` fires cleanups in reverse
-registration order -- droplet, then VPC -- but sends each once with no wait, and
-a droplet DELETE is accepted asynchronously. So on a crash path between the
-droplet create and this session's own final VPC delete, the cleanup VPC DELETE
-will 409 and the VPC is left behind. Fixing that properly means teaching the
-shared harness to wait, which would change every existing session's teardown, so
-it is out of scope here. `--sweep` is the backstop and does wait; a VPC costs
-nothing while it waits to be swept.
+The registered teardown does not honour that ordering, and the fix was
+**deferred by choice** rather than being unavailable. `Probe.__exit__` fires
+cleanups in reverse registration order -- droplet, then VPC -- but sends each
+once with no wait, and a droplet DELETE is accepted asynchronously. Two paths
+therefore leave the VPC behind on a 409: a crash between the droplet create and
+this session's own final VPC delete, and a **timeout**, where the poll gives up
+while the droplet is still going and every later VPC delete 409s without
+anything having crashed.
+
+A session-local `try/finally` polling the droplet to 404 would close both
+without touching the shared harness, so "the harness would have to change" is
+not the reason -- the reason is that a VPC is free and the leak is bounded.
+`--sweep` is the backstop, and be precise about its limits: it waits only for
+droplets *it* deleted in that run, and skips anything younger than
+SWEEP_MIN_AGE_MINUTES, so a leak is cleaned on a later invocation rather than
+this one.
 
 Step comments below name the TRANSCRIPT number, which is not the call ordinal:
 the `record=False` polls between the droplet delete and the checks after it
-consume sequence numbers without writing a file, so 10 and 11 are absent.
+consume sequence numbers without writing a file, so 10 and 11 are absent. The numbers are this
+run's: a re-run that converges in a different number of polls shifts them.
 
 Run:  python probes/digitalocean_vpc.py --dry-run
       python probes/digitalocean_vpc.py --mutate
