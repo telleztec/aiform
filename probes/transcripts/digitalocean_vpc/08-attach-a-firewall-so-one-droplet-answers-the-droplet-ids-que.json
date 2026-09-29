@@ -1,0 +1,71 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 696,
+ "note": "attach a firewall, so one droplet answers the droplet_ids question too",
+ "prediction": {
+  "notes": "free",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:45:54.325239+00:00",
+ "request": {
+  "body": {
+   "droplet_ids": [
+    604557432
+   ],
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-system-test-fw-vpcprobe-20260929T044554Z-e40c28"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-09-29T04:45:54Z",
+    "droplet_ids": [
+     604557432
+    ],
+    "id": "29efb34f-2c30-4d20-ab97-ad6d26287fa2",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aiform-system-test-fw-vpcprobe-20260929T044554Z-e40c28",
+    "outbound_rules": [],
+    "pending_changes": [
+     {
+      "droplet_id": 604557432,
+      "removing": false,
+      "status": "waiting"
+     }
+    ],
+    "status": "waiting",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 8
+}

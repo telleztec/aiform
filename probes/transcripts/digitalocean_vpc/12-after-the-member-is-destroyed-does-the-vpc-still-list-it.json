@@ -1,0 +1,28 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 244,
+ "note": "after the member is destroyed, does the VPC still list it",
+ "prediction": {
+  "notes": "expected empty -- membership is derived from live resources rather than stored on the VPC, so there should be nothing to go stale",
+  "status": 200
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-29T04:46:06.856961+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/vpcs/d9e0cac2-2c40-495b-b4c5-40ab6892bd96/members"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "VPC not found",
+   "request_id": "430d6a08-030f-4c30-bf04-3fc8e982e896"
+  },
+  "status": 404
+ },
+ "seq": 12
+}

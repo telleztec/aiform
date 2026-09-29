@@ -1,0 +1,40 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 542,
+ "note": "create a non-default VPC",
+ "prediction": {
+  "notes": "free; default=false",
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:50:43.718705+00:00",
+ "request": {
+  "body": {
+   "ip_range": "10.201.0.0/24",
+   "name": "aiform-system-test-vpc-member-20260929T045043Z-8ecac6",
+   "region": "sfo3"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/vpcs"
+ },
+ "response": {
+  "body": {
+   "vpc": {
+    "created_at": "2026-09-29T04:50:43.971464278Z",
+    "default": false,
+    "description": "",
+    "id": "5c4abd22-c6d5-45cd-b09e-7320101f108d",
+    "ip_range": "10.201.0.0/24",
+    "name": "aiform-system-test-vpc-member-20260929T045043Z-8ecac6",
+    "region": "sfo3",
+    "resolver_ip": "10.201.0.254",
+    "urn": "do:vpc:5c4abd22-c6d5-45cd-b09e-7320101f108d"
+   }
+  },
+  "status": 201
+ },
+ "seq": 1
+}

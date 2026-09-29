@@ -387,7 +387,9 @@ which is why it appears under "Conditions that reopen this".
 | Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:399`, `:602` |
 | The zero-edge destroy order puts firewalls first today | **verified, single-provider** | `graph.py:56-61`, `orchestrator.py:45`; holds because one provider exists |
 | The edge inventory is *complete* | **inferred** | Fields read from source, but completeness is a judgement; the first draft missed `addresses` and misclassified `tags` |
-| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220 |
+| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220. Note what *was* since probed is a narrower claim — the firewall keeps the dead id and still reports `succeeded` (`knowledge/drivers/digitalocean_vpc/`, transcript `13`) — which is about the reference going stale, not about the firewall's rules ceasing to work |
+| A deleted droplet's id stays in `droplet_ids`, and the firewall reports itself converged | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13`. Supersedes this table's earlier framing of the question as unprobed |
+| A VPC refuses deletion while it has a converged member, `409 "Can not delete VPC with members"` | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`. The first verified existentially-coupled edge in the repo, and the counterexample the edge inventory lacked |
 | A tag-targeted firewall can exist ahead of its droplets, config inert | **owner-reported** | Same conversation, 2026-09-27. Not probed, and scoped to tag targeting |
 | Detection would force a driver load, or an AST read, before the ordering pass | **inferred** | Follows from `orchestrator.py:473` preceding `:475`; no implementation has tested it |
 

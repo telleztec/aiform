@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 550,
+ "note": "delete the VPC now that it is genuinely empty",
+ "prediction": {
+  "notes": "if step 04 was refused, this is the pair that shows the refusal was about membership. If step 04 succeeded, this will 404 and says nothing",
+  "status": 204
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:51:36.185581+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/5c4abd22-c6d5-45cd-b09e-7320101f108d"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 14
+}

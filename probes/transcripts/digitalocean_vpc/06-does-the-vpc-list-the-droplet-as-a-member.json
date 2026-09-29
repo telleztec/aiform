@@ -1,0 +1,30 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 240,
+ "note": "does the VPC list the droplet as a member",
+ "prediction": {
+  "notes": "the droplet appears -- the provider answers 'what depends on me' natively here, unlike a firewall",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:45:53.420284+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/vpcs/d9e0cac2-2c40-495b-b4c5-40ab6892bd96/members"
+ },
+ "response": {
+  "body": {
+   "links": {},
+   "members": [],
+   "meta": {
+    "total": 0
+   }
+  },
+  "status": 200
+ },
+ "seq": 6
+}

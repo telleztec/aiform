@@ -293,9 +293,31 @@ Edges from `firewall` to other resource kinds, as observed:
 
 Every edge that was probed requires its referent to already exist, which
 makes a firewall a pure *consumer* of other resources — it is a leaf in
-any future dependency graph, never a thing others point at. Whether a
-reference silently shrinks when its referent is deleted is **not yet
-probed**; doing so needs a disposable droplet or tag and is worth adding.
+any future dependency graph, never a thing others point at.
+
+Whether a reference silently shrinks when its referent is deleted is now
+**probed, and it does not**
+(`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`).
+After a droplet was destroyed and a subsequent `GET` returned 404, its
+firewall read back:
+
+```
+droplet_ids:     [604557432]
+status:          "succeeded"
+pending_changes: []
+```
+
+So a stale `droplet_ids` entry is **permanent until something rewrites
+it**, and the firewall's own status is useless as a signal — `succeeded`
+with empty `pending_changes` is exactly what a healthy firewall reports.
+Two consequences for this driver: `read()` will return the dead id
+faithfully, so it reaches `StateEntry.attributes` and any diff against a
+desired list that has dropped it; and nothing in `health()` would notice,
+because a firewall with a dead member is not unhealthy by any measure
+DigitalOcean exposes.
+
+The probe rode along on a session run for `specs/resource_dependencies.md`'s
+dependency model rather than costing a droplet of its own.
 
 ### `apply` returns before the rules are in force
 
