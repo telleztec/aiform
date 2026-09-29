@@ -56,7 +56,9 @@ is the corrected session.
 
 - **A firewall keeps a deleted droplet's id in `droplet_ids`, and reports
   itself as converged** (`13`). After `DELETE /v2/droplets/{id}` returned
-  204 and a subsequent `GET` returned 404, the firewall read back:
+  204 — and a subsequent `GET` returned 404, though on an **unrecorded** poll
+  (seqs `10`/`11`, `record=False`), so only the `204` is transcript-backed — the
+  firewall read back:
 
   ```
   droplet_ids:     [604557432]
@@ -96,16 +98,29 @@ is the corrected session.
 
 ## Not probed, deliberately
 
-- **Whether a stale `droplet_ids` entry is permanent.** The session's own read at
-  `13` cannot answer it, for the timing reasons above. The probe that would:
-  create a droplet and **wait for `active`**; attach a firewall and **wait for
+- **How long a stale `droplet_ids` entry survives.** The session's own read at
+  `13` cannot answer it, for the timing reasons above. A probe that would narrow
+  it: create a droplet and **wait for `active`**; attach a firewall and **wait for
   its `status` to reach `succeeded` with `pending_changes: []` on a live
   member**, so the baseline is a genuinely converged firewall; `DELETE` the
-  droplet and poll it to 404; then read the firewall **immediately, at one
-  minute, and at ten**, recording each. Three recorded reads separate "the id
-  survives convergence" from "the id survives indefinitely", and only the second
-  supports the word *permanent*. Cheap — one droplet of the smallest size, one
-  firewall, both free or near-free — and it is the read `#232` rests on.
+  droplet and poll it to 404 with **`record=True`**; then read the firewall
+  immediately, at one minute, and at ten — every call recorded.
+
+  **Be honest about what that buys, because the obvious overstatement is the one
+  this session already made once.** Three reads ending at ten minutes establish
+  that the id *survives well past convergence*, and nothing more. A reaper on an
+  hourly or daily sweep passes all three unchanged. So the probe can raise
+  "survives convergence" to "survives ten minutes at least"; it **cannot** reach
+  *permanent*, and no cheap probe can — an unbounded claim needs either a read
+  horizon nobody wants to pay for or a statement from DigitalOcean.
+
+  Note the `record=True`: this session's own 404 confirmation came from
+  `record=False` polls (seqs `10` and `11`, which is why they are absent from the
+  transcript directory), and `specs/driver_creation.md` does not permit grading a
+  claim `verified` on calls that left no transcript.
+
+  Cheap — one droplet of the smallest size, one firewall, both free or
+  near-free — and it is the read **#232**'s severity depends on.
 - **Whether a `default` VPC can be deleted.** DigitalOcean documents that it
   cannot — its `vpcs_delete` description says *"the default VPC for a region can
   not be deleted"* — and a passing result would be a destroyed region default,

@@ -298,7 +298,9 @@ any future dependency graph, never a thing others point at.
 Whether a reference silently shrinks when its referent is deleted was probed,
 and the honest answer is narrower than the first reading of it
 (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`). **Twelve
-seconds** after an accepted `DELETE`, with a subsequent `GET` returning 404,
+seconds** after a `DELETE` that returned `204` (the follow-up `GET` that saw 404
+was an unrecorded poll, so the *acceptance* is transcript-backed and the
+confirmation is not),
 the firewall read back:
 
 ```
@@ -321,7 +323,11 @@ transcript `13` catches that pending attach resolving, 12s later, with the id
 retained. Nothing observed a steady state, and this spec's own
 "Convergence is slower than it looks" note puts firewall convergence at tens of
 seconds. Whether DigitalOcean reaps a dead id on a slower sweep is **unknown**,
-not answered — graded `inferred` below, with the probe that would settle it.
+not answered. It is graded `inferred` in `specs/resource_dependencies.md`'s
+Knowledge-confidence table, and the probe that would narrow it is under
+"Not probed, deliberately" in `knowledge/drivers/digitalocean_vpc/FINDINGS.md`
+— neither is in this file, and this spec's own Knowledge-confidence section
+above carries no row for it.
 Two consequences for this driver: `read()` will return the dead id
 faithfully, so it reaches `StateEntry.attributes` and any diff against a
 desired list that has dropped it; and no observability surface would notice —

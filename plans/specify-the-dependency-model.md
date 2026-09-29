@@ -116,8 +116,10 @@ change. No VPC driver. Criticality, health propagation, recovery ordering and
   the grounds that no `tests/**` path changed. That became false when the
   `MULTI_RESOURCE_PRD.md` move repointed one docstring line in
   `tests/system/test_cli_references.py`, which is on the gate's runtime-path
-  list. The check reads paths, not content, deliberately — `PROCESS.md`: *"A
-  false N/A is what this gate exists to prevent."* Ran green on `94766c2`:
+  list. The check reads paths, not content, deliberately —
+  `.claude/skills/github-commit-process/SKILL.md:112`: *"A false N/A is what
+  this gate exists to prevent."* (`PROCESS.md:501` says the same in different
+  words.) Ran green on `94766c2`:
   15 passed in 764.97s, `system-test-20260929T225410Z.log`.
 
 ## Process
