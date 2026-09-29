@@ -34,6 +34,20 @@ Costs: one droplet, the cheapest DigitalOcean sells, for roughly five minutes
 -- longer than digitalocean_vpc.py because this one waits for convergence
 rather than racing it. VPCs are free.
 
+The registered teardown cannot fully honour that ordering, and this is a known
+limit rather than an oversight. `Probe.__exit__` fires cleanups in reverse
+registration order -- droplet, then VPC -- but sends each once with no wait, and
+a droplet DELETE is accepted asynchronously. So on a crash path between the
+droplet create and this session's own final VPC delete, the cleanup VPC DELETE
+will 409 and the VPC is left behind. Fixing that properly means teaching the
+shared harness to wait, which would change every existing session's teardown, so
+it is out of scope here. `--sweep` is the backstop and does wait; a VPC costs
+nothing while it waits to be swept.
+
+Step comments below name the TRANSCRIPT number, not the call ordinal: the
+convergence and teardown polls are `record=False` and consume sequence numbers
+without writing a file, so the recorded set is 01, 02, 09, 10, 11, 14.
+
 Run:  python probes/digitalocean_vpc_member.py --dry-run
       python probes/digitalocean_vpc_member.py --mutate
       python probes/digitalocean_vpc_member.py --sweep --mutate
@@ -161,7 +175,7 @@ def run(probe: Probe) -> None:
             "record it as such rather than as a refutation."
         )
 
-    # --- 03: membership, now that it has settled -----------------------
+    # --- 09: membership, now that it has settled -----------------------
     probe.call(
         "GET",
         f"/vpcs/{vpc_id}/members",
@@ -173,7 +187,7 @@ def run(probe: Probe) -> None:
         },
     )
 
-    # --- 04: THE EMPTY REQUIREMENT, for real ---------------------------
+    # --- 10: THE EMPTY REQUIREMENT, for real ---------------------------
     refused = probe.call(
         "DELETE",
         f"/vpcs/{vpc_id}",
@@ -204,7 +218,7 @@ def run(probe: Probe) -> None:
             },
         )
 
-    # --- 05: tear the member down --------------------------------------
+    # --- 11: tear the member down --------------------------------------
     probe.call(
         "DELETE",
         f"/droplets/{droplet_id}",
@@ -222,14 +236,14 @@ def run(probe: Probe) -> None:
                 break
             time.sleep(POLL_SECONDS)
 
-    # --- 06: and now the VPC should go ---------------------------------
+    # --- 14: and now the VPC should go ---------------------------------
     probe.call(
         "DELETE",
         f"/vpcs/{vpc_id}",
         note="delete the VPC now that it is genuinely empty",
         predict={
             "status": 204,
-            "notes": "if step 04 was refused, this is the pair that shows the refusal was "
+            "notes": "if step 10 was refused, this is the pair that shows the refusal was "
             "about membership. If step 04 succeeded, this will 404 and says nothing",
         },
     )

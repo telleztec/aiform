@@ -38,6 +38,20 @@ Costs: one droplet, the cheapest DigitalOcean sells, for roughly four
 minutes. VPCs and firewalls are free. The droplet is never logged into and
 generates no traffic; it exists to be a VPC member and a firewall target.
 
+The registered teardown cannot fully honour that ordering, and this is a known
+limit rather than an oversight. `Probe.__exit__` fires cleanups in reverse
+registration order -- droplet, then VPC -- but sends each once with no wait, and
+a droplet DELETE is accepted asynchronously. So on a crash path between the
+droplet create and this session's own final VPC delete, the cleanup VPC DELETE
+will 409 and the VPC is left behind. Fixing that properly means teaching the
+shared harness to wait, which would change every existing session's teardown, so
+it is out of scope here. `--sweep` is the backstop and does wait; a VPC costs
+nothing while it waits to be swept.
+
+Step comments below name the TRANSCRIPT number, which is not the call ordinal:
+the `record=False` polls between the droplet delete and the checks after it
+consume sequence numbers without writing a file, so 10 and 11 are absent.
+
 Run:  python probes/digitalocean_vpc.py --dry-run
       python probes/digitalocean_vpc.py --mutate
       python probes/digitalocean_vpc.py --sweep --mutate
@@ -261,7 +275,7 @@ def run(probe: Probe) -> None:
             "clear' answers below are inconclusive, not negative"
         )
 
-    # --- 10: does VPC membership clear itself? ------------------------
+    # --- 12: does VPC membership clear itself? ------------------------
     probe.call(
         "GET",
         f"/vpcs/{vpc_id}/members",
@@ -273,7 +287,7 @@ def run(probe: Probe) -> None:
         },
     )
 
-    # --- 11: does a firewall's droplet_ids clear itself? ---------------
+    # --- 13: does a firewall's droplet_ids clear itself? ---------------
     # specs/digitalocean_firewall.md's pre-existence table names this as not yet probed, and
     # #227 turns on the answer: if DigitalOcean drops the dead id itself,
     # there is nothing for aiform to repair.
@@ -289,7 +303,7 @@ def run(probe: Probe) -> None:
         },
     )
 
-    # --- 12: and now the VPC deletes ----------------------------------
+    # --- 14: and now the VPC deletes ----------------------------------
     probe.call(
         "DELETE",
         f"/vpcs/{vpc_id}",
