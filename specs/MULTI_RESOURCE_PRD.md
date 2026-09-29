@@ -25,29 +25,50 @@ a compute resource's IPv4 address) to feed into another resource's
 
 ## Use cases
 
-**UC1 — Automatic dependency detection.** As a user of aiform, I want the
-system to automatically know that one resource depends on another, and
-why, without me having to declare every relationship by hand.
+This table is the single home for the dependency use cases; specs reference it
+rather than restating it. Each is stated as an outcome a run either has or does
+not have, so a test can settle it.
 
-> UC1 has **no committed phase.** It remains a use case worth wanting; Phase
-> 3, which would have delivered it, is paused by decision pending #216 — see
-> `specs/dependency_detection.md`. Note that Phase 2 delivers a *partial*
-> UC1 already: writing a reference implies its edge, so a user who expresses
-> a relationship as a reference never declares it separately. What is missing
-> is inference from a value that is *not* written as a reference.
+Ordered by priority, not by number. **Priorities are proposed, not decided** — the
+scale is the repo's own `P0`-`P3` from `.claude/skills/prioritize-issue`, reused so
+a second vocabulary is not invented.
 
-**UC2 — Manual dependency override.** As a user of aiform, I want to be
-able to declare or correct a dependency myself, for the case where
-automatic detection misses an unspecified/undetectable dependency. With UC1
-only partly delivered, `depends_on:` is less an override than one of the two
-ways an edge comes into existence today — the other being a Phase 2
-reference, which implies its edge. What `depends_on:` uniquely expresses is
-ordering with **no** value flow.
+| Use case | What must be true | Priority | State |
+|---|---|---|---|
+| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run only |
+| **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
+| **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
+| **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
+| **UC2 — Declare a dependency by hand** | A user can state a relationship `aiform` cannot see, and have it honoured. Uniquely expresses ordering with **no** value flow. | **P1** | delivered |
+| **UC-D — Know what a failure touches** | When a resource fails or degrades, an operator can learn what else is affected without reading the configuration by hand. | **P2** | **not delivered** — no implementation |
+| **UC3 — Parallel execution** | Resources with no dependency between them are applied concurrently, so N independent resources do not take N times as long as one. | **P2** | not delivered — Phase 6 |
+| **UC1 — Automatic dependency detection** | `aiform` knows that one resource depends on another, and why, without every relationship being declared by hand. | **P3** | **half delivered** — see below |
 
-**UC3 — Parallel execution.** As a user of aiform, I want resources that
-have no dependency relationship to each other to be created/started in
-parallel rather than serialized, so applying a graph of N independent
-resources doesn't take N times as long as applying one.
+### Why those priorities
+
+- **UC-B is P0** because getting a destroy order wrong destroys or orphans real
+  resources, and the rubric's first test is whether something bad and
+  hard-to-reverse happens unnoticed.
+- **UC-A, UC-C, UC-E and UC2 are P1**: each is about the tool being *correct* or
+  *reviewable*. A wrong create order fails loudly; an under-reporting plan gets
+  approval for a change the user did not see; a re-run that compounds damage turns
+  one failure into two.
+- **UC-D is P2** rather than P1 because nothing malfunctions without it — an
+  operator is merely unaided. It is the only use case with no implementation at all.
+- **UC1 is P3** because Phase 2 already delivers its useful half, and the
+  remaining half was assessed as marginal: see `specs/dependency_detection.md`.
+
+### Two of these need their scope stated precisely
+
+**UC1 is half delivered.** Writing a reference implies its edge, so a user who
+expresses a relationship as `${provider.type.name:attribute}` never declares it
+separately. What is missing is inference from a value *not* written as a reference
+— a literal the user pasted. Phase 3 would have delivered that and is paused by
+decision (#220).
+
+**UC2 is not really an override.** It was framed as correcting what UC1's detection
+missed, but detection does not exist, so `depends_on:` is one of the two ways an
+edge comes into existence rather than a correction to the other.
 
 ## Requirements implied by the use cases
 
@@ -142,9 +163,10 @@ that gap alongside UX2's original graphical scope.
   never a model call on the hot path. `specs/dependency_detection.md` treats
   an LLM-inferred edge as permanently excluded rather than deferred, since it
   would also be nondeterministic across runs.
-- **Backward compatibility — not required at all.** See
-  "Non-requirements" below; it is stated there rather than here because
-  it governs what we deliberately will *not* spend effort on.
+- **Backward compatibility — not required while nothing `aiform` created is
+  in production.** That is the condition the exemption rests on, not a
+  permanent property. See "Non-requirements" below, which states it and the
+  note on when it expires.
 - **Concurrency scope — decided.** This phase addresses only concurrency
   *within a single `aiform` process on a single machine* (e.g. threads/
   tasks inside one `apply` invocation). It explicitly does **not** support
@@ -187,11 +209,18 @@ Distinguish two kinds. A **non-requirement** is something we will never
 owe. A **deferred item** is something we will owe later — those live in
 "Delivery phasing" and "Open questions", not here.
 
-### Backward compatibility, in every form
+### Backward compatibility
 
 **There are zero resources in production and no users but the repo owner,
 so nothing in this project owes compatibility with anything it shipped
-earlier.** That covers, non-exhaustively:
+earlier.**
+
+**NOTE:** Once `aiform` is published and receives any kind of adoption, this
+rule will become stale immediately, and modifications to the naming, syntax,
+storage, and other form of backward compatibility limitations will come into
+play. Designing structures that are easier to migrate is important.
+
+The exemption covers, non-exhaustively:
 
 - **The `.aiform.md` file format.** Breaking it is acceptable if the design
   calls for it. Update the system-test and unit-test generators to match

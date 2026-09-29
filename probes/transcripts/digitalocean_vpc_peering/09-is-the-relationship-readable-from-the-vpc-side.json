@@ -1,0 +1,41 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 267,
+ "note": "is the relationship readable from the VPC side",
+ "prediction": {
+  "notes": "if this answers, DigitalOcean supplies BOTH directions for this relationship -- unlike a firewall, where a droplet cannot be asked what protects it. That asymmetry is recorded in digitalocean_vpc's findings",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T19:56:57.108571+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/vpcs/b07339a1-e78a-48e4-a479-4cd56c5f61ef/peerings"
+ },
+ "response": {
+  "body": {
+   "links": {},
+   "meta": {
+    "total": 1
+   },
+   "vpc_peerings": [
+    {
+     "created_at": "2026-09-29T19:56:46Z",
+     "id": "e1829e52-5c98-4872-b139-197313a088d1",
+     "name": "aiform-system-test-peering-20260929T195644Z-65ebb7",
+     "status": "ACTIVE",
+     "vpc_ids": [
+      "9cf0a263-4fa8-45ac-a462-013ea2e2a4a6",
+      "b07339a1-e78a-48e4-a479-4cd56c5f61ef"
+     ]
+    }
+   ]
+  },
+  "status": 200
+ },
+ "seq": 9
+}

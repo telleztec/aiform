@@ -3,6 +3,10 @@
 .aiform/state.json.backup
 .aiform/testlog/*.log
 .aiform/logs/
+# Destroyed resources' .aiform.md files, moved here by `plan destroy`. Local
+# run artifacts like the state file above, and a broad `git add -A` staged
+# three of them onto a docs branch before this line existed.
+.aiform/trash/
 __pycache__/
 *.pyc
 .env

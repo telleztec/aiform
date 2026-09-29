@@ -1,0 +1,38 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 1173,
+ "note": "create a droplet naming a VPC that does not exist",
+ "prediction": {
+  "notes": "a droplet's vpc_uuid must pre-exist, so this is an implied edge of the same shape as firewall.droplet_ids -- refused, not auto-created",
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:45:48.857074+00:00",
+ "request": {
+  "body": {
+   "backups": false,
+   "image": "ubuntu-24-04-x64",
+   "monitoring": false,
+   "name": "aiform-system-test-vpcdrop-probe-20260929T044548Z-227652",
+   "region": "sfo3",
+   "size": "s-1vcpu-512mb-10gb",
+   "tags": [
+    "aiform-system-test"
+   ],
+   "vpc_uuid": "00000000-0000-0000-0000-000000000000"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/droplets"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "Failed to resolve VPC"
+  },
+  "status": 404
+ },
+ "seq": 1
+}

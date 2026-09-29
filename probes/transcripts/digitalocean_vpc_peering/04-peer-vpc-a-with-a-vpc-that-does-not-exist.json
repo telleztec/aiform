@@ -1,0 +1,34 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 250,
+ "note": "peer VPC A with a VPC that does not exist",
+ "prediction": {
+  "notes": "every probed DigitalOcean edge refuses an absent referent -- droplet.vpc_uuid 404s, firewall.droplet_ids 422s. A peering should too, and if it does not, a peering can be created half-dangling, which is a finding",
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T19:56:44.711646+00:00",
+ "request": {
+  "body": {
+   "name": "aiform-system-test-peering-ghost-20260929T195644Z-8a7611",
+   "vpc_ids": [
+    "b07339a1-e78a-48e4-a479-4cd56c5f61ef",
+    "00000000-0000-0000-0000-000000000000"
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/vpc_peerings"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "VPC ID 00000000-0000-0000-0000-000000000000 not found",
+   "request_id": "aad18c53-bab0-459f-abd4-a3c668747840"
+  },
+  "status": 404
+ },
+ "seq": 4
+}

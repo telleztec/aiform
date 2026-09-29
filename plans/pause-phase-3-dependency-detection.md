@@ -8,7 +8,7 @@ Closes #220.
 
 ## The ask
 
-Write a plan for `MULTI_RESOURCE_PRD.md`'s Phase 3 — automatic dependency
+Write a plan for `specs/MULTI_RESOURCE_PRD.md`'s Phase 3 — automatic dependency
 detection — with the repo owner's framing taken as the brief:
 
 > highly speculative, and of marginal benefit as it primarily improves the user

@@ -1,0 +1,6 @@
+2026-09-29T04:50:43Z step=recall provider=digitalocean skipped=0 traps=0 conf=10 msg="knowledge base not built; nothing to recall"
+2026-09-29T04:51:19Z step=probe ref=10 verdict=contradicted conf=10 msg="delete the VPC while a CONVERGED member is alive: predicted 403, got 409"
+2026-09-29T04:51:36Z step=probe count=14 contradicted=1 msg="session digitalocean_vpc_member"
+2026-09-29T05:10:00Z step=spec ref=model/hosts-refusal cites=10,14 msg="documented 403, observed 409 conflict Can not delete VPC with members; 204 once empty"
+2026-09-29T05:10:00Z step=spec ref=model/reverse-edge-urn cites=09 msg="member identified by URN, a namespace nothing in aiform records"
+2026-09-29T05:10:00Z step=spec ref=model/hosts-survivability cites=10 msg="survivability NOT established; provider prevents the state so it cannot be observed"

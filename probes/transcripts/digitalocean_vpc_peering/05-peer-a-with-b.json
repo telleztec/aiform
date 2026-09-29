@@ -1,0 +1,41 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 1001,
+ "note": "peer A with B",
+ "prediction": {
+  "notes": "202 accepted, status PROVISIONING; 202 says nothing about success, so the poll below is what establishes it worked",
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T19:56:44.962742+00:00",
+ "request": {
+  "body": {
+   "name": "aiform-system-test-peering-20260929T195644Z-65ebb7",
+   "vpc_ids": [
+    "b07339a1-e78a-48e4-a479-4cd56c5f61ef",
+    "9cf0a263-4fa8-45ac-a462-013ea2e2a4a6"
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/vpc_peerings"
+ },
+ "response": {
+  "body": {
+   "vpc_peering": {
+    "created_at": "2026-09-29T19:56:45.811078061Z",
+    "id": "e1829e52-5c98-4872-b139-197313a088d1",
+    "name": "aiform-system-test-peering-20260929T195644Z-65ebb7",
+    "status": "PROVISIONING",
+    "vpc_ids": [
+     "9cf0a263-4fa8-45ac-a462-013ea2e2a4a6",
+     "b07339a1-e78a-48e4-a479-4cd56c5f61ef"
+    ]
+   }
+  },
+  "status": 202
+ },
+ "seq": 5
+}

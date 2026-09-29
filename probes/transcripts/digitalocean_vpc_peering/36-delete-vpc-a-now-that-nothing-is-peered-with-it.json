@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 456,
+ "note": "delete VPC A now that nothing is peered with it",
+ "prediction": {
+  "notes": "if step 08 was refused, this is the pair that shows the refusal was about the peering and not about the VPC",
+  "status": 204
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T20:01:05.283562+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/b07339a1-e78a-48e4-a479-4cd56c5f61ef"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 36
+}

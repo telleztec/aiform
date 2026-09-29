@@ -293,9 +293,50 @@ Edges from `firewall` to other resource kinds, as observed:
 
 Every edge that was probed requires its referent to already exist, which
 makes a firewall a pure *consumer* of other resources — it is a leaf in
-any future dependency graph, never a thing others point at. Whether a
-reference silently shrinks when its referent is deleted is **not yet
-probed**; doing so needs a disposable droplet or tag and is worth adding.
+any future dependency graph, never a thing others point at.
+
+Whether a reference silently shrinks when its referent is deleted was probed,
+and the honest answer is narrower than the first reading of it
+(`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`). **Twelve
+seconds** after a `DELETE` that returned `204` (the follow-up `GET` that saw 404
+was an unrecorded poll, so the *acceptance* is transcript-backed and the
+confirmation is not),
+the firewall read back:
+
+```
+droplet_ids:     [604557432]
+status:          "succeeded"
+pending_changes: []
+```
+
+**What that verifies**, and it is the part that matters for this driver: the
+dead id is still listed *while the firewall reports itself converged*.
+`succeeded` with empty `pending_changes` is exactly what a healthy firewall
+reports, so **the firewall's own status is useless as a signal** that a member
+is gone.
+
+**What it does not verify: permanence.** Read the timing before relying on it.
+The droplet never reached `active` — created at `04:45:51`, still `new` at
+`:52`, deleted at `:55` — and the firewall was created at `:54` with
+`status: "waiting"` and a *pending* change to add that very droplet. So
+transcript `13` catches that pending attach resolving, 12s later, with the id
+retained. Nothing observed a steady state, and this spec's own
+"Convergence is slower than it looks" note puts firewall convergence at tens of
+seconds. Whether DigitalOcean reaps a dead id on a slower sweep is **unknown**,
+not answered. It is graded `inferred` in `specs/resource_dependencies.md`'s
+Knowledge-confidence table, and the probe that would narrow it is under
+"Not probed, deliberately" in `knowledge/drivers/digitalocean_vpc/FINDINGS.md`
+— neither is in this file, and this spec's own Knowledge-confidence section
+above carries no row for it.
+Two consequences for this driver: `read()` will return the dead id
+faithfully, so it reaches `StateEntry.attributes` and any diff against a
+desired list that has dropped it; and no observability surface would notice —
+this driver implements neither `health()` nor `metrics()`, and even if it did, a
+firewall with a dead member is not unhealthy by any measure DigitalOcean
+exposes.
+
+The probe rode along on a session run for `specs/resource_dependencies.md`'s
+dependency model rather than costing a droplet of its own.
 
 ### `apply` returns before the rules are in force
 

@@ -195,7 +195,7 @@ to make something easier to build.
   (`specs/resource_references.md`). What still does not exist: automatic
   edge detection from driver metadata, anything running in parallel, and
   any refusal to orphan a dependent. `PLAN.md` §10 and
-  `MULTI_RESOURCE_PRD.md` name what's deferred, phase by phase, and why;
+  `specs/MULTI_RESOURCE_PRD.md` name what's deferred, phase by phase, and why;
   don't quietly start building toward a later phase early.
 - Follow the `ResourceDriver` interface in `PLAN.md` §4 exactly — method
   names, argument order, both exception types and their fields
