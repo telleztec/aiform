@@ -193,7 +193,7 @@ class TestCollectScope:
             make_state_entry(name="web-01"),
             make_state_entry(name="db-01", id="987"),
         )
-        result = observability.collect(state_path=path, want_metrics=False)
+        result = observability.collect(state_path=path, want_metrics=False, deployment="default")
         assert [r.resource_key for r in result.readings] == [
             "digitalocean.compute.web-01",
             "digitalocean.compute.db-01",
@@ -209,12 +209,15 @@ class TestCollectScope:
             make_state_entry(name="db-01", id="987"),
         )
         result = observability.collect(
-            keys=["digitalocean.compute.db-01"], state_path=path, want_metrics=False
+            keys=["digitalocean.compute.db-01"],
+            state_path=path,
+            want_metrics=False,
+            deployment="default",
         )
         assert [r.resource_key for r in result.readings] == ["digitalocean.compute.db-01"]
 
     def test_a_missing_state_file_is_an_empty_result_not_an_error(self, tmp_path):
-        result = observability.collect(state_path=tmp_path / "absent.json")
+        result = observability.collect(state_path=tmp_path / "absent.json", deployment="default")
         assert result.readings == []
         assert result.errors == []
 
@@ -223,7 +226,9 @@ class TestCollectScope:
             health_result=OK_REPORT
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
-        reading = observability.collect(state_path=path, want_metrics=False).readings[0]
+        reading = observability.collect(
+            state_path=path, want_metrics=False, deployment="default"
+        ).readings[0]
         assert (reading.provider, reading.resource_type, reading.name, reading.id) == (
             "digitalocean",
             "compute",
@@ -236,7 +241,7 @@ class TestCollectScope:
             health_result=OK_REPORT
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
-        result = observability.collect(state_path=path, want_metrics=False)
+        result = observability.collect(state_path=path, want_metrics=False, deployment="default")
         assert isinstance(result.elapsed_seconds, float)
         assert result.elapsed_seconds >= 0.0
 
@@ -249,7 +254,7 @@ class TestCollectCallsOnlyWhatWasAskedFor:
         )
         stub_environment["drivers"][("digitalocean", "compute")] = driver
         path = write_state(tmp_path / "state.json", make_state_entry())
-        observability.collect(state_path=path, **flags)
+        observability.collect(state_path=path, deployment="default", **flags)
         return driver
 
     def test_check_calls_health_only(self, tmp_path, stub_environment):
@@ -287,7 +292,7 @@ class TestCollectCaching:
             make_state_entry(name="db-01", id="987"),
             make_state_entry(name="cache-01", id="654"),
         )
-        observability.collect(state_path=path, want_metrics=False)
+        observability.collect(state_path=path, want_metrics=False, deployment="default")
         assert stub_environment["load_calls"] == [("digitalocean", "compute")]
         assert stub_environment["credential_calls"] == ["digitalocean"]
 
@@ -300,7 +305,7 @@ class TestCollectNeverWritesState:
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
         before = path.read_bytes()
-        observability.collect(state_path=path)
+        observability.collect(state_path=path, deployment="default")
         assert path.read_bytes() == before
 
     def test_no_backup_file_is_written(self, tmp_path, stub_environment):
@@ -309,7 +314,7 @@ class TestCollectNeverWritesState:
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
         (tmp_path / "state.json.backup").unlink(missing_ok=True)
-        observability.collect(state_path=path, want_metrics=False)
+        observability.collect(state_path=path, want_metrics=False, deployment="default")
         assert not (tmp_path / "state.json.backup").exists()
 
 
@@ -325,14 +330,14 @@ class TestCollectMakesZeroLLMCalls:
             metrics_result=[Sample(name="memory_bytes", kind=MetricKind.GAUGE, value=1.0)],
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
-        observability.collect(state_path=path)
+        observability.collect(state_path=path, deployment="default")
 
 
 class TestCollectPartialFailure:
     def _one(self, tmp_path, stub_environment, driver, **flags):
         stub_environment["drivers"][("digitalocean", "compute")] = driver
         path = write_state(tmp_path / "state.json", make_state_entry())
-        return observability.collect(state_path=path, **flags).readings[0]
+        return observability.collect(state_path=path, deployment="default", **flags).readings[0]
 
     def test_health_declining_records_the_reason_and_still_attempts_metrics(
         self, tmp_path, stub_environment
@@ -416,7 +421,7 @@ class TestCollectPartialFailure:
             make_state_entry(name="web-01"),
             make_state_entry(name="zone-01", resource_type="domain", id="example.com"),
         )
-        result = observability.collect(state_path=path, want_metrics=False)
+        result = observability.collect(state_path=path, want_metrics=False, deployment="default")
         by_key = {r.resource_key: r for r in result.readings}
         broken = by_key["digitalocean.domain.zone-01"]
         assert broken.health is None
@@ -438,7 +443,9 @@ class TestCollectPartialFailure:
 
         monkeypatch.setattr(config, "resolve_credentials", refuse)
         path = write_state(tmp_path / "state.json", make_state_entry())
-        reading = observability.collect(state_path=path, want_metrics=False).readings[0]
+        reading = observability.collect(
+            state_path=path, want_metrics=False, deployment="default"
+        ).readings[0]
         assert reading.health is None
         assert any("DIGITALOCEAN_TOKEN" in e for e in reading.errors)
 
@@ -455,7 +462,9 @@ class TestSampleValidation:
             metrics_result=samples
         )
         path = write_state(tmp_path / "state.json", make_state_entry())
-        return observability.collect(state_path=path, want_health=False).readings[0]
+        return observability.collect(
+            state_path=path, want_health=False, deployment="default"
+        ).readings[0]
 
     def test_a_valid_sample_survives(self, tmp_path, stub_environment):
         reading = self._samples(
@@ -616,7 +625,7 @@ class TestFamilyCollision:
             make_state_entry(name="web-01"),
             make_state_entry(name="web-fw", resource_type="firewall", id="fw-1"),
         )
-        result = observability.collect(state_path=path, want_health=False)
+        result = observability.collect(state_path=path, want_health=False, deployment="default")
         surviving = {s.name for r in result.readings for s in r.samples}
         assert surviving == {"memory_bytes"}
         assert len(result.errors) == 1
@@ -639,7 +648,7 @@ class TestFamilyCollision:
             make_state_entry(name="web-01"),
             make_state_entry(name="web-fw", resource_type="firewall", id="fw-1"),
         )
-        result = observability.collect(state_path=path, want_health=False)
+        result = observability.collect(state_path=path, want_health=False, deployment="default")
         assert all(r.errors == [] for r in result.readings)
 
     def test_the_same_name_and_kind_from_two_drivers_is_fine(self, tmp_path, stub_environment):
@@ -654,7 +663,7 @@ class TestFamilyCollision:
             make_state_entry(name="web-01"),
             make_state_entry(name="web-fw", resource_type="firewall", id="fw-1"),
         )
-        result = observability.collect(state_path=path, want_health=False)
+        result = observability.collect(state_path=path, want_health=False, deployment="default")
         assert result.errors == []
         assert len([s for r in result.readings for s in r.samples]) == 2
 
@@ -719,7 +728,9 @@ params:
             make_state_entry(name="db-01", id="987", attributes={"size": "s-2vcpu-4gb"}),
         )
 
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.in_sync is True
         assert report.config.drifted_fields == []
 
@@ -743,7 +754,9 @@ params:
             ),
         )
 
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.in_sync is None
         assert "digitalocean.compute.db-01" in report.config.detail
 
@@ -753,7 +766,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.deployed_at == datetime(2026, 9, 10, 14, 2, 11, tzinfo=UTC)
         assert report.id == "123456789"
         assert report.live == "present"
@@ -768,7 +783,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.provider == "digitalocean"
         assert report.resource_type == "compute"
         assert report.name == "web-01"
@@ -779,7 +796,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.spec_file == str(tmp_path / "web.aiform.md")
         assert report.config.drifted_fields == []
         assert report.config.detail is None
@@ -792,7 +811,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.health.status is HealthStatus.FAILING
         assert report.config.in_sync is True
 
@@ -802,7 +823,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-4vcpu-8gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.health.status is HealthStatus.OK
         assert report.config.in_sync is False
         assert report.config.drifted_fields == ["size"]
@@ -813,7 +836,9 @@ params:
             read_result={"id": "123456789", "region": "nyc1", "size": "s-4vcpu-8gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.drifted_fields == ["region", "size"]
 
     def test_a_missing_source_file_reports_no_source_file_found(self, tmp_path, stub_environment):
@@ -824,7 +849,9 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=None)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.in_sync is None
         assert report.config.detail == "no source file found"
         assert report.live == "present"
@@ -838,7 +865,9 @@ params:
             health_exception=ResourceNotFoundError("gone"),
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.live == "missing on the provider"
         assert report.config.in_sync is None
         assert report.config.detail == "not applicable: resource is gone"
@@ -851,7 +880,9 @@ params:
             health_result=OK_REPORT, read_exception=RuntimeError("HTTP 503 from the API")
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert "HTTP 503" in report.live
         assert report.health is OK_REPORT
 
@@ -862,7 +893,9 @@ params:
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
         before = path.read_bytes()
-        observability.status_for("digitalocean.compute.web-01", state_path=path)
+        observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert path.read_bytes() == before
 
     def test_makes_zero_llm_calls_even_though_it_parses_the_source_file(
@@ -875,12 +908,16 @@ params:
             read_result={"id": "123456789", "region": "sfo3", "size": "s-1vcpu-2gb"},
         )
         path = self._setup(tmp_path, stub_environment, driver, source=self.SOURCE)
-        observability.status_for("digitalocean.compute.web-01", state_path=path)
+        observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
 
     def test_raises_for_a_key_that_is_not_tracked(self, tmp_path, stub_environment):
         path = write_state(tmp_path / "state.json", make_state_entry())
         with pytest.raises(ValueError):
-            observability.status_for("digitalocean.compute.absent", state_path=path)
+            observability.status_for(
+                "digitalocean.compute.absent", state_path=path, deployment="default"
+            )
 
 
 class TestRenderCheckText:
@@ -1594,13 +1631,17 @@ class TestStatusForLoadsTheDriverOnce:
         md = tmp_path / "web.aiform.md"
         md.write_text(TestStatusFor.SOURCE, encoding="utf-8")
         path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
-        observability.status_for("digitalocean.compute.web-01", state_path=path)
+        observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert stub_environment["load_calls"] == [("digitalocean", "compute")]
         assert stub_environment["credential_calls"] == ["digitalocean"]
 
     def test_a_missing_driver_answers_every_live_line_once(self, tmp_path, stub_environment):
         path = write_state(tmp_path / "state.json", make_state_entry())
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert "no driver found" in report.live
         assert report.config.in_sync is None
         assert report.config.detail == "not applicable: the resource could not be read"
@@ -1670,7 +1711,7 @@ class TestAgainstARealDriverOnDisk:
         )
 
     def test_a_real_driver_declines_both_and_the_sweep_still_renders(self, tmp_path):
-        result = observability.collect(state_path=self._decliner(tmp_path))
+        result = observability.collect(state_path=self._decliner(tmp_path), deployment="default")
         reading = result.readings[0]
         assert reading.health is None
         assert "does not implement health()" in reading.health_unsupported
@@ -1679,7 +1720,9 @@ class TestAgainstARealDriverOnDisk:
         assert reading.errors == []
 
     def test_check_over_a_fleet_of_decliners_exits_two(self, tmp_path):
-        result = observability.collect(state_path=self._decliner(tmp_path), want_metrics=False)
+        result = observability.collect(
+            state_path=self._decliner(tmp_path), want_metrics=False, deployment="default"
+        )
         text, code = observability.render_check(result.readings, "text", fleet=True)
         # Leniency about some resources declining must not become a gate
         # that passes having assessed nothing.
@@ -1704,7 +1747,7 @@ class TestReviewRound1Regressions:
     def _reading(self, tmp_path, stub_environment, driver, **flags):
         stub_environment["drivers"][("digitalocean", "compute")] = driver
         path = write_state(tmp_path / "state.json", make_state_entry())
-        return observability.collect(state_path=path, **flags).readings[0]
+        return observability.collect(state_path=path, deployment="default", **flags).readings[0]
 
     def test_a_trailing_newline_does_not_pass_the_metric_name_check(
         self, tmp_path, stub_environment
@@ -1756,7 +1799,7 @@ class TestReviewRound1Regressions:
             make_state_entry(name="web-01"),
             make_state_entry(name="fw", resource_type="firewall", id="f1"),
         )
-        result = observability.collect(state_path=path, want_health=False)
+        result = observability.collect(state_path=path, want_health=False, deployment="default")
         by_key = {r.resource_key: r for r in result.readings}
         assert by_key["digitalocean.compute.web-01"].samples == []
         assert "list[Sample]" in by_key["digitalocean.compute.web-01"].errors[0]
@@ -1799,7 +1842,7 @@ class TestReviewRound1Regressions:
 
         monkeypatch.setattr(orchestrator, "load_driver", explode)
         path = write_state(tmp_path / "state.json", make_state_entry())
-        result = observability.collect(state_path=path)
+        result = observability.collect(state_path=path, deployment="default")
         assert "invalid syntax" in result.readings[0].errors[0]
 
     def test_a_multi_line_error_renders_as_one_line_per_resource(self, tmp_path, stub_environment):
@@ -1822,7 +1865,7 @@ class TestReviewRound1Regressions:
         # driver file, so this is the no-verdict-no-decline case rather
         # than a decline.
         path = write_state(tmp_path / "state.json", make_state_entry(resource_type="network"))
-        result = observability.collect(state_path=path, want_metrics=False)
+        result = observability.collect(state_path=path, want_metrics=False, deployment="default")
         text, code = observability.render_check(result.readings, "text", fleet=True)
         assert text.splitlines()[0].startswith("error  ")
         assert text.splitlines()[-1] == "0 of 1 resources reported a health verdict"
@@ -1840,7 +1883,9 @@ class TestStatusForRound1Regressions:
         if source is not None:
             md.write_text(source, encoding="utf-8")
         state_path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
-        return observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+        return observability.status_for(
+            "digitalocean.compute.web-01", state_path=state_path, deployment="default"
+        )
 
     def test_a_read_failure_does_not_claim_the_resource_is_gone(self, tmp_path, stub_environment):
         # live said "HTTP 503" while config said "resource is gone" --
@@ -1889,7 +1934,9 @@ class TestStatusForRound1Regressions:
         md.write_bytes(b"---\nprovider: digitalocean\n\xff\xfe\n---\n")
         state_path = write_state(tmp_path / "state.json", make_state_entry(aiform_md_path=str(md)))
 
-        report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=state_path, deployment="default"
+        )
 
         assert report.config.detail.startswith("source file is malformed")
 
@@ -1920,7 +1967,9 @@ class TestStatusForRound1Regressions:
             tmp_path / "state.json",
             make_state_entry(aiform_md_path=str(md), last_applied_at="2026-09-10T14:02:11+05:00"),
         )
-        report = observability.status_for("digitalocean.compute.web-01", state_path=state_path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=state_path, deployment="default"
+        )
         # The offset is preserved on the report and normalised where it is
         # stamped, which is now the renderer rather than status_for().
         assert report.deployed_at.utcoffset() == timedelta(hours=5)
@@ -2005,7 +2054,9 @@ params:
                 attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "ssh_keys": ["aa:bb:cc"]},
             ),
         )
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert report.config.in_sync is True
         assert report.config.drifted_fields == []
 
@@ -2021,7 +2072,9 @@ params:
 
         monkeypatch.setattr(config, "resolve_credentials", refuse)
         path = write_state(tmp_path / "state.json", make_state_entry())
-        report = observability.status_for("digitalocean.compute.web-01", state_path=path)
+        report = observability.status_for(
+            "digitalocean.compute.web-01", state_path=path, deployment="default"
+        )
         assert "DIGITALOCEAN_TOKEN" in report.live
         assert report.config.detail == "not applicable: the resource could not be read"
         assert report.health is None
@@ -2113,7 +2166,7 @@ class TestReviewRound2Regressions:
             make_state_entry(name="web-01"),
             make_state_entry(name="fw", resource_type="firewall", id="f1"),
         )
-        result = observability.collect(state_path=path, want_health=False)
+        result = observability.collect(state_path=path, want_health=False, deployment="default")
         assert result.errors == [
             "dropped family 'q_total': digitalocean.firewall says counter, "
             "digitalocean.compute says gauge"
@@ -2139,12 +2192,12 @@ class TestStatusReports:
 
     def test_reports_every_tracked_resource_when_keys_is_none(self, tmp_path, stub_environment):
         path = self._fleet(tmp_path, stub_environment)
-        reports = observability.status_reports(state_path=path)
+        reports = observability.status_reports(state_path=path, deployment="default")
         assert [r.name for r in reports] == ["web-00", "web-01", "web-02"]
 
     def test_loads_the_driver_once_for_the_whole_fleet(self, tmp_path, stub_environment):
         path = self._fleet(tmp_path, stub_environment)
-        observability.status_reports(state_path=path)
+        observability.status_reports(state_path=path, deployment="default")
         assert stub_environment["load_calls"] == [("digitalocean", "compute")]
         assert stub_environment["credential_calls"] == ["digitalocean"]
 
@@ -2153,25 +2206,46 @@ class TestStatusReports:
         # regress to it: one load per resource.
         path = self._fleet(tmp_path, stub_environment)
         for i in range(3):
-            observability.status_for(f"digitalocean.compute.web-{i:02d}", state_path=path)
+            observability.status_for(
+                f"digitalocean.compute.web-{i:02d}", state_path=path, deployment="default"
+            )
         assert len(stub_environment["load_calls"]) == 3
 
     def test_reports_only_the_named_keys(self, tmp_path, stub_environment):
         path = self._fleet(tmp_path, stub_environment)
-        reports = observability.status_reports(["digitalocean.compute.web-01"], state_path=path)
+        reports = observability.status_reports(
+            ["digitalocean.compute.web-01"], state_path=path, deployment="default"
+        )
         assert [r.name for r in reports] == ["web-01"]
 
     def test_an_empty_state_reports_nothing(self, tmp_path, stub_environment):
         path = write_state(tmp_path / "state.json")
-        assert observability.status_reports(state_path=path) == []
+        assert observability.status_reports(state_path=path, deployment="default") == []
 
     def test_raises_for_an_untracked_key(self, tmp_path, stub_environment):
         path = self._fleet(tmp_path, stub_environment)
         with pytest.raises(ValueError):
-            observability.status_reports(["digitalocean.compute.absent"], state_path=path)
+            observability.status_reports(
+                ["digitalocean.compute.absent"], state_path=path, deployment="default"
+            )
 
     def test_writes_no_state(self, tmp_path, stub_environment):
         path = self._fleet(tmp_path, stub_environment)
         before = path.read_bytes()
-        observability.status_reports(state_path=path)
+        observability.status_reports(state_path=path, deployment="default")
         assert path.read_bytes() == before
+
+
+class TestDeploymentIsRequired:
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda p: observability.collect(state_path=p),
+            lambda p: observability.status_reports(state_path=p),
+            lambda p: observability.status_for("digitalocean.compute.web-01", state_path=p),
+        ],
+        ids=["collect", "status_reports", "status_for"],
+    )
+    def test_omitting_deployment_is_a_type_error(self, tmp_path: Path, call):
+        with pytest.raises(TypeError, match="deployment"):
+            call(tmp_path / "state.json")

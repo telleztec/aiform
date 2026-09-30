@@ -282,9 +282,7 @@ def refresh_resource(
     return attrs, False
 
 
-def refresh_state(
-    *, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str = state.DEFAULT_DEPLOYMENT
-) -> State:
+def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str) -> State:
     st = state.load(state_path, deployment=deployment)
     driver_cache: dict[tuple[str, str], ResourceDriver] = {}
     credentials_cache: dict[str, dict[str, str]] = {}
@@ -467,7 +465,7 @@ def build_create_plan(
     *,
     cwd: Path = Path("."),
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> tuple[list[PlannedResource], list[str]]:
@@ -865,7 +863,7 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     force: bool = False,
 ) -> tuple[list[PlannedResource], list[str]]:
     st = state.load(state_path, deployment=deployment)
@@ -1028,7 +1026,7 @@ def apply_plan(
     planned: list[PlannedResource],
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
     on_review: OnReviewFn | None = None,

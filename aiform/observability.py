@@ -331,7 +331,7 @@ def collect(
     want_health: bool = True,
     want_metrics: bool = True,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
 ) -> Collection:
     """Read tracked resources: exactly those in `keys`, or every one when
     `keys` is None. Reads state; never writes it. Makes zero Anthropic
@@ -437,7 +437,7 @@ def status_reports(
     keys: list[str] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
 ) -> list[StatusReport]:
     """`status` for exactly `keys`, or every tracked resource when None.
 
@@ -459,7 +459,7 @@ def status_for(
     key: str,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
 ) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and

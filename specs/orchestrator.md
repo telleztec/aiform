@@ -264,9 +264,7 @@ def refresh_resource(
 ) -> tuple[dict[str, Any], bool]: ...
 
 
-def refresh_state(
-    *, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str = state.DEFAULT_DEPLOYMENT
-) -> State: ...
+def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str) -> State: ...
 
 
 # --- planning context (judgment call 8) ---
@@ -295,7 +293,7 @@ def build_create_plan(
     *,
     cwd: Path = Path("."),
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> tuple[list[PlannedResource], list[str]]: ...
@@ -308,7 +306,7 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     force: bool = False,
 ) -> tuple[list[PlannedResource], list[str]]: ...
 
@@ -333,7 +331,7 @@ def apply_plan(
     planned: list[PlannedResource],
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
-    deployment: str = state.DEFAULT_DEPLOYMENT,
+    deployment: str,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
     on_review: OnReviewFn | None = None,
@@ -503,7 +501,7 @@ other exception from `driver.read()` is wrapped: `raise
 DriverExecutionError(state_entry.provider, state_entry.resource_type,
 "read", exc) from exc`.
 
-### `refresh_state(*, state_path=state.DEFAULT_STATE_PATH, deployment=state.DEFAULT_DEPLOYMENT) -> State`
+### `refresh_state(*, state_path=state.DEFAULT_STATE_PATH, deployment) -> State`
 
 `aiform plan refresh` (`PLAN.md` §7): **zero LLM calls, no `.aiform.md`
 parsing, no plan** — for every entry in `state.load(state_path, deployment=deployment).resources`,
@@ -1065,15 +1063,16 @@ Returns the destination path.
   of which `build_*_plan()` function produced it, matching `PLAN.md`'s
   "Both converge on the same underlying behavior in `orchestrator.py`."
 - **Deployment identity (#201).** All four top-level functions take
-  `deployment` (default `state.DEFAULT_DEPLOYMENT`) beside `state_path` and
+  a required keyword-only `deployment` beside `state_path` and
   hand it to `state.load()`, which is where the check lives
   (`specs/state.md`). Each one's `state.load()` is its **first** statement, so a
   state file belonging to another deployment raises `DeploymentMismatchError`
   before file discovery, parsing, any `intent-orchestration-model` call, any
   `load_driver()`, any credential resolution and any provider call — and, for
-  `apply_plan`, before gate #2. The default exists for parity with
-  `state_path`'s, not as a licence to omit it: `cli.py` always passes the
-  requested name, and a test per command family pins that.
+  `apply_plan`, before gate #2. `deployment` has no default, matching
+  `state.load`, so a caller that forgets it gets a `TypeError` instead of
+  silently acting on `default`: `cli.py` always passes the requested name, and
+  a test per command family pins that.
 - Every top-level function (`build_create_plan`, `build_destroy_plan`,
   `apply_plan`, `refresh_state`) independently calls
   `state.load(state_path, deployment=deployment)` at its own start and `state.save(...)` at its own end (once or

@@ -611,7 +611,7 @@ class TestRefreshState:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        result = orchestrator.refresh_state(state_path=state_path)
+        result = orchestrator.refresh_state(state_path=state_path, deployment="default")
 
         updated = result.resources["digitalocean.compute.telleztec-app-01"]
         assert updated.attributes == {"region": "sfo3", "size": "s-1vcpu-2gb"}
@@ -623,7 +623,7 @@ class TestRefreshState:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        orchestrator.refresh_state(state_path=state_path)
+        orchestrator.refresh_state(state_path=state_path, deployment="default")
 
         reloaded = state.load(state_path, deployment="default")
         assert (
@@ -640,7 +640,7 @@ class TestRefreshState:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        result = orchestrator.refresh_state(state_path=state_path)
+        result = orchestrator.refresh_state(state_path=state_path, deployment="default")
 
         assert "digitalocean.compute.telleztec-app-01" in result.resources
         assert result.resources["digitalocean.compute.telleztec-app-01"].attributes == {
@@ -657,7 +657,7 @@ class TestRefreshState:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.refresh_state(state_path=state_path)
+            orchestrator.refresh_state(state_path=state_path, deployment="default")
 
     def test_missing_driver_raises_plan_blocked_error(
         self, tmp_path: Path, drivers_dir: Path, monkeypatch
@@ -668,13 +668,15 @@ class TestRefreshState:
         save_state(state_path, **{"aws.compute.telleztec-app-01": entry})
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.refresh_state(state_path=state_path)
+            orchestrator.refresh_state(state_path=state_path, deployment="default")
 
     def test_empty_state_is_a_no_op(self, tmp_path: Path):
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        assert orchestrator.refresh_state(state_path=state_path).resources == {}
+        assert (
+            orchestrator.refresh_state(state_path=state_path, deployment="default").resources == {}
+        )
 
     def test_credentials_and_driver_resolved_once_across_shared_provider(
         self, tmp_path: Path, drivers_dir: Path, monkeypatch
@@ -709,7 +711,7 @@ class TestRefreshState:
         monkeypatch.setattr(orchestrator.config, "resolve_credentials", counting_resolve)
         monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
 
-        orchestrator.refresh_state(state_path=state_path)
+        orchestrator.refresh_state(state_path=state_path, deployment="default")
 
         assert credential_calls == ["digitalocean"]
         assert driver_calls == [("digitalocean", "compute")]
@@ -732,7 +734,7 @@ class TestBuildCreatePlan:
         # response the way it used to.
         client = FakeClient([])
         planned, warnings = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert len(planned) == 1
@@ -761,7 +763,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -801,7 +803,7 @@ class TestBuildCreatePlan:
             ]
         )
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -833,7 +835,9 @@ class TestBuildCreatePlan:
                 categorization_response(action="no-op", rationale="params unchanged"),
             ]
         )
-        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=first_client)
+        orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=first_client, deployment="default"
+        )
 
         # Pin the first run too, so this test distinguishes "the toll was
         # paid once and then cleared" from "the toll was never charged" --
@@ -842,7 +846,7 @@ class TestBuildCreatePlan:
 
         second_client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=second_client
+            [aiform_md], state_path=state_path, client=second_client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -889,7 +893,7 @@ class TestBuildCreatePlan:
             ]
         )
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=first_client
+            [aiform_md], state_path=state_path, client=first_client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -911,7 +915,9 @@ class TestBuildCreatePlan:
                 categorization_response(action="no-op", rationale="semantically identical"),
             ]
         )
-        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=second_client)
+        orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=second_client, deployment="default"
+        )
 
         assert len(second_client.messages.calls) == 2
         categorization_payload = json.loads(
@@ -952,7 +958,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -988,7 +994,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.UPDATE
@@ -1027,7 +1033,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
@@ -1063,7 +1069,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.UPDATE
@@ -1085,7 +1091,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.UPDATE
@@ -1099,7 +1105,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [delete_path], state_path=state_path, client=client
+            [delete_path], state_path=state_path, client=client, deployment="default"
         )
 
         assert len(planned) == 1
@@ -1120,7 +1126,7 @@ class TestBuildCreatePlan:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
         planned, _ = orchestrator.build_create_plan(
-            [delete_path], state_path=state_path, client=FakeClient([])
+            [delete_path], state_path=state_path, client=FakeClient([]), deployment="default"
         )
 
         assert planned[0].state_entry == entry
@@ -1153,7 +1159,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert [p.entry.action for p in planned] == [PlanAction.CREATE]
@@ -1186,7 +1192,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.CREATE
@@ -1207,7 +1213,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.CREATE
@@ -1231,7 +1237,9 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="create")])
         with pytest.raises(PlanBlockedError):
-            orchestrator.build_create_plan([aiform_md], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [aiform_md], state_path=state_path, client=client, deployment="default"
+            )
 
     def test_drifted_missing_is_planned_create_without_asking_the_model(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1259,7 +1267,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.CREATE
@@ -1280,7 +1288,9 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError):
-            orchestrator.build_create_plan([aiform_md], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [aiform_md], state_path=state_path, client=client, deployment="default"
+            )
 
     def test_missing_driver_raises_plan_blocked_error(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -1293,7 +1303,7 @@ class TestBuildCreatePlan:
 
         with pytest.raises(PlanBlockedError):
             orchestrator.build_create_plan(
-                [aiform_md], state_path=state_path, client=FakeClient([])
+                [aiform_md], state_path=state_path, client=FakeClient([]), deployment="default"
             )
 
     def test_driver_hash_mismatch_updates_provenance_without_a_call(
@@ -1309,7 +1319,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert len(client.messages.calls) == 1
@@ -1329,7 +1339,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [aiform_md_1, aiform_md_2], state_path=state_path, client=client
+            [aiform_md_1, aiform_md_2], state_path=state_path, client=client, deployment="default"
         )
 
         assert len(planned) == 2
@@ -1359,7 +1369,9 @@ class TestBuildCreatePlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        orchestrator.build_create_plan([aiform_md], state_path=state_path, client=FakeClient([]))
+        orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
 
         reloaded = state.load(state_path, deployment="default")
         assert reloaded.resources["digitalocean.compute.telleztec-app-01"].attributes == {
@@ -1376,7 +1388,7 @@ class TestBuildCreatePlan:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
         planned, warnings = orchestrator.build_create_plan(
-            None, cwd=tmp_path, state_path=state_path, client=FakeClient([])
+            None, cwd=tmp_path, state_path=state_path, client=FakeClient([]), deployment="default"
         )
 
         assert planned == []
@@ -1396,7 +1408,7 @@ class TestBuildCreatePlan:
 
         client = FakeClient([])
         _, warnings = orchestrator.build_create_plan(
-            [aiform_md], state_path=state_path, client=client
+            [aiform_md], state_path=state_path, client=client, deployment="default"
         )
 
         assert warnings == []
@@ -1409,7 +1421,7 @@ class TestBuildCreatePlan:
 
         with pytest.raises(ValueError):
             orchestrator.build_create_plan(
-                [aiform_md], state_path=state_path, client=FakeClient([])
+                [aiform_md], state_path=state_path, client=FakeClient([]), deployment="default"
             )
 
 
@@ -1436,7 +1448,10 @@ class TestBuildCreatePlanDependencyOrdering:
         # reorders rather than merely preserving an already-correct order.
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [app_path, db_path, cache_path], state_path=state_path, client=client
+            [app_path, db_path, cache_path],
+            state_path=state_path,
+            client=client,
+            deployment="default",
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -1467,7 +1482,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [app_path], state_path=state_path, client=client
+            [app_path], state_path=state_path, client=client, deployment="default"
         )
 
         assert len(planned) == 1
@@ -1496,7 +1511,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [app_path, db_path], state_path=state_path, client=client
+            [app_path, db_path], state_path=state_path, client=client, deployment="default"
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -1544,7 +1559,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
         planned, _ = orchestrator.build_create_plan(
-            [db_path, app_path], state_path=state_path, client=client
+            [db_path, app_path], state_path=state_path, client=client, deployment="default"
         )
 
         app_pr = next(
@@ -1557,7 +1572,9 @@ class TestBuildCreatePlanDependencyOrdering:
             "digitalocean.compute.db-01"
         ]
 
-        destroy_plan, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        destroy_plan, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
         destroy_keys = [pr.entry.resource_key for pr in destroy_plan]
         assert destroy_keys.index("digitalocean.compute.app-01") < destroy_keys.index(
             "digitalocean.compute.db-01"
@@ -1625,7 +1642,9 @@ class TestBuildCreatePlanDependencyOrdering:
         monkeypatch.setattr(state, "save", spy_save)
 
         client = FakeClient([categorization_response(action="no-op", rationale="no changes")])
-        orchestrator.build_create_plan([db_path, app_path], state_path=state_path, client=client)
+        orchestrator.build_create_plan(
+            [db_path, app_path], state_path=state_path, client=client, deployment="default"
+        )
 
         app_content = app_path.read_text(encoding="utf-8-sig")
         app_spec = parse_cache[app_content]
@@ -1672,7 +1691,10 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [app_path, db_path, cache_path], state_path=state_path, client=client
+            [app_path, db_path, cache_path],
+            state_path=state_path,
+            client=client,
+            deployment="default",
         )
 
         assert all(pr.entry.action == PlanAction.NO_OP for pr in planned)
@@ -1702,7 +1724,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [app_path, db_path], state_path=state_path, client=client
+            [app_path, db_path], state_path=state_path, client=client, deployment="default"
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -1726,7 +1748,10 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [differently_spelled, aiform_md], state_path=state_path, client=client
+            [differently_spelled, aiform_md],
+            state_path=state_path,
+            client=client,
+            deployment="default",
         )
 
         assert len(planned) == 1
@@ -1749,7 +1774,10 @@ class TestBuildCreatePlanDependencyOrdering:
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [first_path, second_path], state_path=state_path, client=client
+                [first_path, second_path],
+                state_path=state_path,
+                client=client,
+                deployment="default",
             )
 
         reason = exc_info.value.reason
@@ -1780,7 +1808,10 @@ class TestBuildCreatePlanDependencyOrdering:
 
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [live_path, delete_path], state_path=state_path, client=FakeClient([])
+                [live_path, delete_path],
+                state_path=state_path,
+                client=FakeClient([]),
+                deployment="default",
             )
 
         reason = exc_info.value.reason
@@ -1812,7 +1843,10 @@ class TestBuildCreatePlanDependencyOrdering:
 
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [real_path, link_path], state_path=state_path, client=FakeClient([])
+                [real_path, link_path],
+                state_path=state_path,
+                client=FakeClient([]),
+                deployment="default",
             )
 
         reason = exc_info.value.reason
@@ -1840,7 +1874,7 @@ class TestBuildCreatePlanDependencyOrdering:
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [db_path, app_path], state_path=state_path, client=client
+                [db_path, app_path], state_path=state_path, client=client, deployment="default"
             )
 
         reason = exc_info.value.reason
@@ -1860,7 +1894,7 @@ class TestBuildCreatePlanDependencyOrdering:
         state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
-            [delete_path], state_path=state_path, client=FakeClient([])
+            [delete_path], state_path=state_path, client=FakeClient([]), deployment="default"
         )
 
         assert planned[0].entry.action == PlanAction.DESTROY
@@ -1879,7 +1913,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [live_path, delete_path], state_path=state_path, client=client
+            [live_path, delete_path], state_path=state_path, client=client, deployment="default"
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -1908,7 +1942,7 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [delete_path, live_path], state_path=state_path, client=client
+            [delete_path, live_path], state_path=state_path, client=client, deployment="default"
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -1928,7 +1962,7 @@ class TestBuildCreatePlanDependencyOrdering:
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [app_path, delete_path], state_path=state_path, client=client
+                [app_path, delete_path], state_path=state_path, client=client, deployment="default"
             )
 
         reason = exc_info.value.reason
@@ -1951,7 +1985,9 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([a_path, b_path], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [a_path, b_path], state_path=state_path, client=client, deployment="default"
+            )
 
         reason = exc_info.value.reason
         assert "digitalocean.compute.a-01" in reason
@@ -1971,7 +2007,9 @@ class TestBuildCreatePlanDependencyOrdering:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([a_path], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [a_path], state_path=state_path, client=client, deployment="default"
+            )
 
         reason = exc_info.value.reason
         assert "digitalocean.compute.a-01" in reason
@@ -2006,7 +2044,10 @@ class TestBuildCreatePlanDependencyOrdering:
         # Given in dependency (create) order, to prove destroy reverses it.
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [db_path, cache_path, app_path], state_path=state_path, client=client
+            [db_path, cache_path, app_path],
+            state_path=state_path,
+            client=client,
+            deployment="default",
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -2080,7 +2121,7 @@ class TestReferenceDerivedEdges:
             {"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
         )
         planned, _ = orchestrator.build_create_plan(
-            [dependent, target], state_path=state_path, client=FakeClient([])
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         keys = [pr.entry.resource_key for pr in planned]
         assert keys == ["digitalocean.compute.zzz-01", "digitalocean.compute.aaa-01"]
@@ -2092,7 +2133,7 @@ class TestReferenceDerivedEdges:
             {"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
         )
         planned, _ = orchestrator.build_create_plan(
-            [dependent, target], state_path=state_path, client=FakeClient([])
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         assert by_key["digitalocean.compute.aaa-01"].depends_on == ["digitalocean.compute.zzz-01"]
@@ -2107,7 +2148,7 @@ class TestReferenceDerivedEdges:
             depends_on=["digitalocean.compute.zzz-01"],
         )
         planned, _ = orchestrator.build_create_plan(
-            [dependent, target], state_path=state_path, client=FakeClient([])
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         assert by_key["digitalocean.compute.aaa-01"].depends_on == ["digitalocean.compute.zzz-01"]
@@ -2131,7 +2172,10 @@ class TestReferenceDerivedEdges:
         state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
-            [dependent, one, two], state_path=state_path, client=FakeClient([])
+            [dependent, one, two],
+            state_path=state_path,
+            client=FakeClient([]),
+            deployment="default",
         )
         keys = [pr.entry.resource_key for pr in planned]
         dependent_at = keys.index("digitalocean.compute.aaa-01")
@@ -2154,7 +2198,9 @@ class TestReferenceDerivedEdges:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([zone], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [zone], state_path=state_path, client=client, deployment="default"
+            )
 
         reason = exc_info.value.reason
         assert "digitalocean.compute.nope" in reason
@@ -2181,7 +2227,9 @@ class TestReferenceDerivedEdges:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([zone, doomed], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [zone, doomed], state_path=state_path, client=client, deployment="default"
+            )
         reason = exc_info.value.reason
         assert "digitalocean.compute.web-01" in reason
         # Rule 3 (depends on something being destroyed this run), not rule 2
@@ -2205,7 +2253,9 @@ class TestReferenceDerivedEdges:
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_create_plan([zone], state_path=state_path, client=client)
+            orchestrator.build_create_plan(
+                [zone], state_path=state_path, client=client, deployment="default"
+            )
         assert "colon" in exc_info.value.reason.lower()
         assert len(client.messages.calls) == 0
 
@@ -2234,7 +2284,7 @@ class TestReferenceResolutionAtPlanTime:
         )
 
         planned, _ = orchestrator.build_create_plan(
-            [zone], state_path=state_path, client=FakeClient([])
+            [zone], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         assert planned[0].desired_params["data"] == "198.51.100.4"
         assert planned[0].unresolved_references == []
@@ -2257,7 +2307,7 @@ class TestReferenceResolutionAtPlanTime:
         state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=FakeClient([])
+            [zone, web], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         zone_pr = by_key["digitalocean.domain.example.com"]
@@ -2302,7 +2352,7 @@ class TestReferenceResolutionAtPlanTime:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=client
+            [zone, web], state_path=state_path, client=client, deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         zone_pr = by_key["digitalocean.domain.example.com"]
@@ -2339,7 +2389,7 @@ class TestReferenceResolutionAtPlanTime:
         )
 
         planned, _ = orchestrator.build_create_plan(
-            [zone], state_path=state_path, client=FakeClient([])
+            [zone], state_path=state_path, client=FakeClient([]), deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         zone_pr = by_key["digitalocean.domain.example.com"]
@@ -2378,7 +2428,9 @@ class TestReferenceResolutionAtPlanTime:
         )
 
         client = FakeClient([])
-        planned, _ = orchestrator.build_create_plan([zone], state_path=state_path, client=client)
+        planned, _ = orchestrator.build_create_plan(
+            [zone], state_path=state_path, client=client, deployment="default"
+        )
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(client.messages.calls) == 0
 
@@ -2410,7 +2462,9 @@ class TestReferenceEdgesOnTheDestroyPath:
             },
         )
 
-        planned, _ = orchestrator.build_destroy_plan([dependent, target], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            [dependent, target], state_path=state_path, deployment="default"
+        )
         keys = [pr.entry.resource_key for pr in planned]
         # Reverse dependency order: the referencing resource goes first. With
         # no edge, reverse-alphabetical would put zzz-01 first instead.
@@ -2470,7 +2524,7 @@ class TestReferenceToATargetThisRunWillReplace:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=client
+            [zone, web], state_path=state_path, client=client, deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.CREATE
@@ -2513,7 +2567,7 @@ class TestReferenceToATargetThisRunWillReplace:
 
         client = FakeClient([categorization_response(action="update", rationale="size change")])
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=client
+            [zone, web], state_path=state_path, client=client, deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.UPDATE
@@ -2558,7 +2612,7 @@ class TestReferenceToATargetThisRunWillReplace:
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=client
+            [zone, web], state_path=state_path, client=client, deployment="default"
         )
         by_key = {pr.entry.resource_key: pr for pr in planned}
         assert by_key["digitalocean.compute.web-01"].entry.action == PlanAction.CREATE
@@ -2595,7 +2649,7 @@ class TestReferenceToATargetThisRunWillReplace:
 
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
-                [zone, web], state_path=state_path, client=FakeClient([])
+                [zone, web], state_path=state_path, client=FakeClient([]), deployment="default"
             )
         assert "ipv4_addres" in exc_info.value.reason
         assert "ipv4_address" in exc_info.value.reason
@@ -2605,10 +2659,10 @@ class TestReferenceToATargetThisRunWillReplace:
     ):
         web, zone, state_path = self._zone_and_droplet(tmp_path, drivers_dir, droplet_id="MISSING")
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=FakeClient([])
+            [zone, web], state_path=state_path, client=FakeClient([]), deployment="default"
         )
 
-        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
 
         saved = state.load(state_path, deployment="default")
         new_ip = saved.resources["digitalocean.compute.web-01"].attributes["ipv4_address"]
@@ -2636,9 +2690,11 @@ class TestReferenceResolutionAtApplyTime:
         state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
-            [zone, web], state_path=state_path, client=FakeClient([])
+            [zone, web], state_path=state_path, client=FakeClient([]), deployment="default"
         )
-        result = orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+        result = orchestrator.apply_plan(
+            planned, state_path=state_path, yes=True, deployment="default"
+        )
 
         assert result.aborted is False
         saved = state.load(state_path, deployment="default")
@@ -2658,7 +2714,9 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
 
-        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            [aiform_md], state_path=state_path, deployment="default"
+        )
 
         assert len(planned) == 1
         pr = planned[0]
@@ -2680,7 +2738,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
 
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.app-01",
@@ -2704,7 +2764,9 @@ class TestBuildDestroyPlan:
         save_state(state_path, **{"digitalocean.compute.app-01": entry})
 
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_destroy_plan([first_path, second_path], state_path=state_path)
+            orchestrator.build_destroy_plan(
+                [first_path, second_path], state_path=state_path, deployment="default"
+            )
 
         reason = exc_info.value.reason
         assert str(first_path) in reason
@@ -2721,7 +2783,7 @@ class TestBuildDestroyPlan:
         differently_spelled = tmp_path / "." / "app.aiform.md"
 
         planned, _ = orchestrator.build_destroy_plan(
-            [aiform_md, differently_spelled], state_path=state_path
+            [aiform_md, differently_spelled], state_path=state_path, deployment="default"
         )
 
         assert len(planned) == 1
@@ -2740,7 +2802,9 @@ class TestBuildDestroyPlan:
         save_state(state_path, **{"digitalocean.compute.app-01": entry})
 
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_destroy_plan([link_path, real_path], state_path=state_path)
+            orchestrator.build_destroy_plan(
+                [link_path, real_path], state_path=state_path, deployment="default"
+            )
 
         reason = exc_info.value.reason
         assert str(real_path) in reason
@@ -2752,7 +2816,9 @@ class TestBuildDestroyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            [aiform_md], state_path=state_path, deployment="default"
+        )
 
         assert planned[0].state_entry is None
 
@@ -2764,7 +2830,7 @@ class TestBuildDestroyPlan:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
         original_content = state_path.read_text()
 
-        orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
+        orchestrator.build_destroy_plan([aiform_md], state_path=state_path, deployment="default")
 
         assert state_path.read_text() == original_content
 
@@ -2792,7 +2858,7 @@ class TestBuildDestroyPlan:
         # Given in dependency (create) order, to prove destroy reverses it
         # rather than merely preserving whatever order it was handed.
         planned, _ = orchestrator.build_destroy_plan(
-            [db_path, cache_path, app_path], state_path=state_path
+            [db_path, cache_path, app_path], state_path=state_path, deployment="default"
         )
 
         keys = [pr.entry.resource_key for pr in planned]
@@ -2817,7 +2883,9 @@ class TestBuildDestroyPlan:
         )
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+            orchestrator.build_destroy_plan(
+                [a_path, b_path], state_path=state_path, deployment="default"
+            )
 
     def test_state_driven_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
         # The invocation a user actually types: `aiform plan destroy`, no
@@ -2836,7 +2904,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
@@ -2860,7 +2930,7 @@ class TestBuildDestroyPlan:
         )
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.build_destroy_plan(None, state_path=state_path)
+            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
 
     def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
         # Pins that with no depends_on anywhere, destroy order inverts the
@@ -2879,7 +2949,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, _ = orchestrator.build_destroy_plan([a_path, b_path], state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            [a_path, b_path], state_path=state_path, deployment="default"
+        )
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
@@ -2894,7 +2966,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        planned, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys == ["digitalocean.compute.b-01", "digitalocean.compute.a-01"]
@@ -2914,7 +2988,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, warnings = orchestrator.build_destroy_plan([app_path], state_path=state_path)
+        planned, warnings = orchestrator.build_destroy_plan(
+            [app_path], state_path=state_path, deployment="default"
+        )
 
         assert warnings == []
         assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
@@ -2926,7 +3002,7 @@ class TestBuildDestroyPlan:
         save_state(state_path, **{"digitalocean.compute.app-01": make_state_entry(name="app-01")})
 
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_destroy_plan([app_path], state_path=state_path)
+            orchestrator.build_destroy_plan([app_path], state_path=state_path, deployment="default")
 
         assert "digitalocean.compute.ghost-01" in exc_info.value.reason
 
@@ -2942,7 +3018,7 @@ class TestBuildDestroyPlan:
         )
 
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_destroy_plan(None, state_path=state_path)
+            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
 
         assert "digitalocean.compute.ghost-01" in exc_info.value.reason
 
@@ -2961,7 +3037,7 @@ class TestBuildDestroyPlan:
         )
 
         with pytest.raises(PlanBlockedError) as exc_info:
-            orchestrator.build_destroy_plan(None, state_path=state_path)
+            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
 
         reason = exc_info.value.reason
         assert "digitalocean.compute.ghost-01" in reason
@@ -2982,7 +3058,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, force=True, deployment="default"
+        )
 
         assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.app-01"]
         assert len(warnings) == 2
@@ -3002,7 +3080,9 @@ class TestBuildDestroyPlan:
             },
         )
 
-        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path, force=True)
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, force=True, deployment="default"
+        )
 
         keys = [pr.entry.resource_key for pr in planned]
         assert keys.index("digitalocean.compute.app-01") < keys.index("digitalocean.compute.db-01")
@@ -3044,7 +3124,9 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, deployment="default"
+        )
 
         assert result.executed == []
         assert result.aborted is False
@@ -3055,7 +3137,9 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, deployment="default"
+        )
 
         assert result.executed == [pr.entry]
         saved = state.load(state_path, deployment="default")
@@ -3074,7 +3158,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         saved = state.load(state_path, deployment="default")
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
@@ -3092,7 +3176,7 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError) as exc_info:
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
         assert exc_info.value.operation == "create"
 
     def test_create_success_logs_provider_operation_and_outcome(self, tmp_path: Path, caplog):
@@ -3102,7 +3186,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         record = next(r for r in caplog.records if getattr(r, "operation", None) == "create")
         assert record.provider == "digitalocean"
@@ -3123,7 +3207,7 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         record = next(r for r in caplog.records if getattr(r, "operation", None) == "create")
         assert record.outcome == "error"
@@ -3145,7 +3229,9 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, deployment="default"
+        )
 
         saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].attributes["size"] == (
@@ -3174,7 +3260,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         saved = state.load(state_path, deployment="default")
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
@@ -3223,7 +3309,7 @@ class TestApplyPlan:
 
         monkeypatch.setattr(state, "save", spy_save)
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         in_memory_depends_on = (
             captured[-1].resources["digitalocean.compute.telleztec-app-01"].depends_on
@@ -3251,7 +3337,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         record = next(r for r in caplog.records if getattr(r, "operation", None) == "update")
         assert record.outcome == "success"
@@ -3280,7 +3366,7 @@ class TestApplyPlan:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
         with pytest.raises(DriverExecutionError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         record = next(r for r in caplog.records if getattr(r, "operation", None) == "update")
         assert record.outcome == "error"
@@ -3312,7 +3398,9 @@ class TestApplyPlan:
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         assert result.executed[0].likely_replace is False
         assert pr.entry.likely_replace is True
@@ -3347,7 +3435,9 @@ class TestApplyPlan:
             return True
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
-        orchestrator.apply_plan([pr], state_path=state_path, confirm=confirm, client=client)
+        orchestrator.apply_plan(
+            [pr], state_path=state_path, confirm=confirm, client=client, deployment="default"
+        )
 
         saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "new-2"
@@ -3387,7 +3477,12 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         orchestrator.apply_plan(
-            [pr], state_path=state_path, yes=True, confirm=confirm, client=client
+            [pr],
+            state_path=state_path,
+            yes=True,
+            confirm=confirm,
+            client=client,
+            deployment="default",
         )
 
         # yes=True skips the top-level confirmation entirely, but the
@@ -3471,6 +3566,7 @@ class TestApplyPlan:
             confirm=lambda p: events.append(("confirm", p)) or True,
             on_review=lambda flags: events.append(("review", list(flags))),
             client=client,
+            deployment="default",
         )
 
         assert result.aborted is False
@@ -3502,7 +3598,12 @@ class TestApplyPlan:
 
         with pytest.raises(PlanBlockedError):
             orchestrator.apply_plan(
-                [pr], state_path=state_path, yes=True, confirm=lambda p: True, client=client
+                [pr],
+                state_path=state_path,
+                yes=True,
+                confirm=lambda p: True,
+                client=client,
+                deployment="default",
             )
 
     def test_destroy_tracked_deletes_removes_from_state_and_moves_to_trash(
@@ -3539,7 +3640,9 @@ class TestApplyPlan:
         # (needs_review checks action type only, regardless of tracked
         # status), so a client must always be supplied here.
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
@@ -3583,7 +3686,9 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(RuntimeError, match="simulated filesystem failure"):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         # PLAN.md §5 apply step 4: "the trash-move happens... after the
         # state write" -- so even though the trash-move itself failed, the
@@ -3624,7 +3729,9 @@ class TestApplyPlan:
         # client IS still required though: DESTROY always triggers gate #2's
         # batch review regardless of tracked status.
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         assert not aiform_md.exists()
         assert result.executed == [pr.entry]
@@ -3635,7 +3742,9 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         assert len(client.messages.calls) == 0
         assert result.review_flags == []
@@ -3674,7 +3783,9 @@ class TestApplyPlan:
         client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[block_flag])])
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in saved.resources
@@ -3716,7 +3827,9 @@ class TestApplyPlan:
         }
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         assert len(result.review_flags) == 1
         assert result.review_flags[0].concern == "double check"
@@ -3759,7 +3872,9 @@ class TestApplyPlan:
         }
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[warning_flag])])
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+        orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
 
         record = next(r for r in caplog.records if hasattr(r, "safe_to_proceed"))
         assert record.safe_to_proceed is True
@@ -3801,7 +3916,9 @@ class TestApplyPlan:
         client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[block_flag])])
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         record = next(r for r in caplog.records if hasattr(r, "safe_to_proceed"))
         assert record.safe_to_proceed is False
@@ -3812,7 +3929,9 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, confirm=lambda p: False)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, confirm=lambda p: False, deployment="default"
+        )
 
         assert result.aborted is True
         assert result.executed == []
@@ -3826,7 +3945,9 @@ class TestApplyPlan:
         def confirm(prompt):
             raise AssertionError("should not be called when yes=True")
 
-        result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, confirm=confirm)
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, confirm=confirm, deployment="default"
+        )
 
         assert result.aborted is False
 
@@ -3855,6 +3976,7 @@ class TestApplyPlan:
             confirm=lambda p: events.append(("confirm", p)) or False,
             on_review=lambda flags: events.append(("review", flags)),
             client=client,
+            deployment="default",
         )
 
         assert result.aborted is True
@@ -3895,6 +4017,7 @@ class TestApplyPlan:
             confirm=confirm,
             on_review=lambda flags: seen.append(flags),
             client=client,
+            deployment="default",
         )
 
         assert result.aborted is False
@@ -3922,7 +4045,11 @@ class TestApplyPlan:
         # No on_review passed -- must default to a no-op rather than
         # raising, the same contract confirm/default_confirm has.
         result = orchestrator.apply_plan(
-            [pr], state_path=state_path, confirm=lambda p: False, client=client
+            [pr],
+            state_path=state_path,
+            confirm=lambda p: False,
+            client=client,
+            deployment="default",
         )
 
         assert result.aborted is True
@@ -3940,6 +4067,7 @@ class TestApplyPlan:
             yes=True,
             on_review=lambda flags: calls.append(flags),
             client=FakeClient([]),
+            deployment="default",
         )
 
         assert calls == []
@@ -3971,7 +4099,9 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError):
-            orchestrator.apply_plan([pr1, pr2], state_path=state_path, yes=True)
+            orchestrator.apply_plan(
+                [pr1, pr2], state_path=state_path, yes=True, deployment="default"
+            )
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.app-01" in saved.resources
@@ -3995,7 +4125,9 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
-        result = orchestrator.apply_plan([pr_no_op, pr_create], state_path=state_path, yes=True)
+        result = orchestrator.apply_plan(
+            [pr_no_op, pr_create], state_path=state_path, yes=True, deployment="default"
+        )
 
         assert result.executed == [create_entry]
 
@@ -4019,7 +4151,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
 
-        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
         saved = state.load(state_path, deployment="default")
         refreshed = saved.resources["digitalocean.compute.telleztec-app-01"].last_refreshed_at
@@ -4050,7 +4182,12 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         result = orchestrator.apply_plan(
-            [pr], state_path=state_path, yes=True, confirm=lambda p: True, client=client
+            [pr],
+            state_path=state_path,
+            yes=True,
+            confirm=lambda p: True,
+            client=client,
+            deployment="default",
         )
 
         assert result.executed[0].likely_replace is True
@@ -4077,7 +4214,9 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(DriverExecutionError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         # the old resource is verifiably gone (delete() succeeded) -- state
         # must not still claim the old, now-nonexistent id/attributes.
@@ -4117,7 +4256,9 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(DriverExecutionError) as exc_info:
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         assert exc_info.value.operation == "create"
         assert "during create" in str(exc_info.value)
@@ -4142,7 +4283,9 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(DriverExecutionError) as exc_info:
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         assert exc_info.value.operation == "delete"
         # delete() failed, so the entry must still be tracked: the
@@ -4190,7 +4333,9 @@ class TestApplyPlan:
         client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[warning_flag])])
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in saved.resources
@@ -4202,7 +4347,7 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError) as exc_info:
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
         assert exc_info.value.operation == "create"
 
     def test_update_of_resource_no_longer_in_state_raises_plan_blocked_error(self, tmp_path: Path):
@@ -4224,7 +4369,7 @@ class TestApplyPlan:
         state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(PlanBlockedError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+            orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
 
     def test_destroy_of_resource_no_longer_in_state_raises_plan_blocked_error(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -4259,7 +4404,9 @@ class TestApplyPlan:
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(PlanBlockedError):
-            orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
 
 
 class TestMoveToTrash:
@@ -4400,3 +4547,19 @@ class TestDefaultConfirm:
         result = orchestrator.default_confirm("Apply this plan?")
 
         assert result is False
+
+
+class TestDeploymentIsRequired:
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda p: orchestrator.refresh_state(state_path=p),
+            lambda p: orchestrator.build_create_plan(cwd=p.parent, state_path=p),
+            lambda p: orchestrator.build_destroy_plan(state_path=p),
+            lambda p: orchestrator.apply_plan([], state_path=p),
+        ],
+        ids=["refresh_state", "build_create_plan", "build_destroy_plan", "apply_plan"],
+    )
+    def test_omitting_deployment_is_a_type_error(self, tmp_path: Path, call):
+        with pytest.raises(TypeError, match="deployment"):
+            call(tmp_path / "state.json")

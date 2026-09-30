@@ -235,13 +235,6 @@ class TestFunctionsRefuseWithoutTheCli:
             observability.status_for(KEY, state_path=prod_state, deployment="scratch")
         assert reach.total() == 0, vars(reach)
 
-    def test_defaults_to_the_default_deployment(self, prod_state, reach):
-        with pytest.raises(DeploymentMismatchError) as caught:
-            orchestrator.refresh_state(state_path=prod_state)
-
-        assert caught.value.requested == "default"
-        assert caught.value.found == "prod"
-
 
 class TestInitNamesTheDeployment:
     def test_writes_an_empty_state_named_default(self, project, reach):

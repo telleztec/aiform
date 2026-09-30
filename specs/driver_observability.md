@@ -280,7 +280,7 @@ def collect(
     want_health=True,
     want_metrics=True,
     state_path=state.DEFAULT_STATE_PATH,
-    deployment=state.DEFAULT_DEPLOYMENT,
+    deployment,
 ) -> Collection:
     """Read tracked resources: exactly those in `keys`, or every one when
     `keys` is None. The two flags say which driver methods to call --
@@ -291,7 +291,7 @@ def collect(
 
 
 def status_reports(
-    keys=None, *, state_path=state.DEFAULT_STATE_PATH, deployment=state.DEFAULT_DEPLOYMENT
+    keys=None, *, state_path=state.DEFAULT_STATE_PATH, deployment
 ) -> list[StatusReport]:
     """`status` for exactly `keys`, or every tracked resource when None.
     The fleet form, and the one cli.py calls. Owns one State and one pair
@@ -300,9 +300,7 @@ def status_reports(
     cost N exec_module()s and N credential resolutions."""
 
 
-def status_for(
-    key: str, *, state_path=state.DEFAULT_STATE_PATH, deployment=state.DEFAULT_DEPLOYMENT
-) -> StatusReport:
+def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH, deployment) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
     health(). Adds no driver method of its own. Writes no state."""
