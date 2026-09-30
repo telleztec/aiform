@@ -104,9 +104,36 @@ one is harmless. `@` alone is an empty name and therefore invalid. A file whose
 name really starts with `@` is spelled `./@name.aiform.md`. Commands with no
 `files` positional do not accept the shorthand and `--deployment` is the only
 spelling: `plan refresh`/`show` and `init` reject `@prod` as an unrecognized
-argument, and `resource check`/`metrics`/`status` read it as a resource name
-and fail with `no tracked resource is named '@prod'`. The shorthand is a CLI
-convenience only; nothing below `cli.py` sees the `@`.
+argument. `resource check`/`metrics`/`status` take their own form of it, below.
+The shorthand is a CLI convenience only; nothing below `cli.py` sees the `@`.
+
+**`@deployment/resource` addressing (`resource check`/`metrics`/`status`).** The
+optional `name` positional is either a resource name or an address that starts
+with `@`. A resource name never starts with `@`, so the two cannot collide.
+`_split_address` (in `cli.py`) parses the address; its deployment part feeds
+the same resolution as `--deployment` and `plan`'s `@name`, its resource part
+replaces `args.name`.
+
+| Argument | Deployment | Resource |
+|---|---|---|
+| `web` | `--deployment`, else `default` | `web` (unchanged) |
+| `@prod/web` | `prod` | `web` |
+| `@prod` | `prod` | every tracked resource, as with no `name` |
+| `@prod/web --deployment prod` | `prod` (they agree) | `web` |
+| `@prod/web --deployment scratch` | usage error, exit 2, before any state or provider access | |
+| `@prod/`, `@/web`, `@Prod/web`, `@prod/web/x` | usage error, exit 2 | |
+
+`@prod/` and `@prod/web/x` have the wrong shape; the usage error says the
+grammar is `@<deployment>` or `@<deployment>/<resource>`. `@/web` and
+`@Prod/web` have a bad deployment part; the usage error is
+`validate_deployment_name`'s own text. The resource part is not validated here:
+one that names nothing tracked goes to the existing lookup and its existing
+`no tracked resource is named ...` error.
+
+The address only sets which deployment name is *asserted*. The guard is
+unchanged and stays in `state.load(path, deployment=...)`: a state file named
+`prod` addressed as `@scratch/web` raises the existing
+`DeploymentMismatchError` (exit 2), before any driver load or provider call.
 
 ### `aiform init [--provider digitalocean] [--deployment <name>]`
 
@@ -916,12 +943,12 @@ than `aiform plan`'s — none of these plans or applies anything, and none write
 state.
 
 ```
-aiform resource check   [<name>] [--format text|json] [--state-file <path>]
+aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
                         [--deployment <name>]
-aiform resource metrics [<name>] [--format text|json]
+aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
                         [--deployment <name>]
-aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
                         [--deployment <name>]
 ```
 

@@ -334,10 +334,10 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
 ### `aiform/cli.py`
 
 ```
-aiform resource check   [<name>] [--format text|json] [--state-file <path>]
-aiform resource metrics [<name>] [--format text|json]
+aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
-aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,

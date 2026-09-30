@@ -58,3 +58,30 @@ is recorded below as deferred.
 
 `--all`, typed-name prompts and header printing (PR 2 and PR 3). The existing
 `plan destroy --force` is unrelated and untouched.
+
+## Addendum: `@deployment/resource` on `aiform resource` (approved 2026-09-29)
+
+Amends PR 1. The `name` positional of `aiform resource check | metrics | status`
+was ambiguous: `@prod` was read as a resource called `@prod` and failed with
+"no tracked resource". It now also accepts an address that names the
+deployment, with the same `@` convention as the `plan` shorthand.
+
+| Argument | Deployment | Resource |
+|---|---|---|
+| `web` | `--deployment`, else `default` | `web` (unchanged) |
+| `@prod/web` | `prod` | `web` |
+| `@prod` | `prod` | all |
+| `@prod/web --deployment prod` | `prod` (they agree) | `web` |
+| `@prod/web --deployment scratch` | refused, exit 2, before any state or provider access | |
+| `@prod/`, `@/web`, `@Prod/web`, `@prod/web/x` | refused, exit 2 | |
+
+The designator only sets which deployment name is asserted. The guard does not
+move: `state.load(path, deployment=...)` still refuses when the loaded state
+names another deployment, so a state named `prod` addressed as `@scratch/web`
+raises the existing `DeploymentMismatchError`. An unrecognised resource part
+goes to the existing lookup and its existing error. Nothing changes in
+`state.py`, `orchestrator.py` or `observability.py`.
+
+Not built: `plan destroy @prod/web` (destroying one resource by name), `@name`
+on `plan show`/`plan refresh`, environment-variable or `~/aiform` lookup,
+multi-file deployments, state migration.

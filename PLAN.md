@@ -1364,7 +1364,7 @@ aiform plan show [--state-file <path>] [--deployment <name>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check   [<name>] [--format text|json] [--state-file <path>]
+aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
                         [--deployment <name>]
     driver.health() for one named resource, or for
     every tracked resource when <name> is omitted. An ASSERTION: this is
@@ -1393,7 +1393,7 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
     With nothing tracked at all, it prints "no resources tracked"
     instead (exit 2, unchanged).
 
-aiform resource metrics [<name>] [--format text|json]
+aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
                         [--deployment <name>]
     driver.metrics() for one named resource, or
@@ -1428,7 +1428,7 @@ aiform resource metrics [<name>] [--format text|json]
     recorded against that resource. Neither aborts the sweep: a single
     broken driver must not blank the whole report.
 
-aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
                         [--deployment <name>]
     Four independent answers for one named
     resource, or every tracked resource when <name> is omitted, each

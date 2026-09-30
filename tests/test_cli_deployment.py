@@ -426,15 +426,128 @@ class TestAtNameShorthand:
         assert prod_state.read_bytes() == before
         assert reach.total() == 0, vars(reach)
 
-    def test_resource_commands_read_it_as_a_resource_name(self, prod_state, reach, capsys):
-        code = cli.main(["resource", "status", "@prod", "--deployment", "prod"])
-
-        assert code == 2
-        assert "no tracked resource is named '@prod'" in capsys.readouterr().err
-
     @pytest.mark.parametrize("command", [["plan", "show"], ["plan", "refresh"], ["init"]])
     def test_commands_without_a_positional_do_not_accept_it(self, project, reach, command):
         with pytest.raises(SystemExit) as caught:
             cli.main([*command, "@prod"])
 
         assert caught.value.code == 2
+
+
+@pytest.fixture
+def resource_calls(monkeypatch) -> list[tuple[str, list[str] | None, str]]:
+    """Stand in for the provider-facing reads so a test sees what cli.py handed them."""
+    seen: list[tuple[str, list[str] | None, str]] = []
+
+    def collect(*, keys, deployment, **kwargs):
+        seen.append(("collect", keys, deployment))
+        return observability.Collection(readings=[], elapsed_seconds=0.0)
+
+    def status_reports(keys, *, deployment, **kwargs):
+        seen.append(("status", keys, deployment))
+        return []
+
+    monkeypatch.setattr(observability, "collect", collect)
+    monkeypatch.setattr(observability, "status_reports", status_reports)
+    return seen
+
+
+def save_state_named(project: Path, deployment: str) -> Path:
+    path = project / ".aiform" / "state.json"
+    state.save(state.State(deployment=deployment, resources={KEY: make_entry()}), path)
+    return path
+
+
+RESOURCE_VERBS = pytest.mark.parametrize(
+    ("verb", "reader"), [("check", "collect"), ("metrics", "collect"), ("status", "status")]
+)
+
+
+class TestResourceAddressing:
+    @RESOURCE_VERBS
+    @pytest.mark.parametrize(
+        ("argv", "deployment", "keys"),
+        [
+            (["web-01"], "default", [KEY]),
+            (["web-01", "--deployment", "prod"], "prod", [KEY]),
+            (["@prod/web-01"], "prod", [KEY]),
+            (["@prod"], "prod", None),
+            (["@prod/web-01", "--deployment", "prod"], "prod", [KEY]),
+            (["@prod", "--deployment", "prod"], "prod", None),
+        ],
+        ids=["bare", "flag", "address", "deployment-only", "address-and-flag", "only-and-flag"],
+    )
+    def test_the_grammar(self, project, resource_calls, verb, reader, argv, deployment, keys):
+        save_state_named(project, deployment)
+
+        cli.main(["resource", verb, *argv])
+
+        assert resource_calls == [(reader, keys, deployment)]
+
+    @RESOURCE_VERBS
+    def test_a_conflicting_flag_is_refused_before_any_state_or_provider_access(
+        self, prod_state, reach, resource_calls, monkeypatch, capsys, verb, reader
+    ):
+        loads = []
+        real_load = state.load
+        monkeypatch.setattr(
+            state, "load", lambda *a, **k: loads.append((a, k)) or real_load(*a, **k)
+        )
+        before = prod_state.read_bytes()
+
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["resource", verb, "@prod/web-01", "--deployment", "scratch"])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "@prod/web-01" in err and "--deployment scratch" in err
+        assert loads == []
+        assert resource_calls == []
+        assert prod_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    @RESOURCE_VERBS
+    @pytest.mark.parametrize("address", ["@/web-01", "@Prod/web-01", "@", "@a.b/web-01"])
+    def test_a_bad_deployment_part_states_the_name_rule(
+        self, project, resource_calls, capsys, verb, reader, address
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["resource", verb, address])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "use 1 to 63 lowercase letters, digits, '-' or '_'" in err
+        assert resource_calls == []
+
+    @RESOURCE_VERBS
+    @pytest.mark.parametrize("address", ["@prod/", "@prod/web-01/x", "@prod//"])
+    def test_a_bad_shape_states_the_grammar(
+        self, project, resource_calls, capsys, verb, reader, address
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["resource", verb, address])
+
+        assert caught.value.code == 2
+        assert "@<deployment>/<resource>" in capsys.readouterr().err
+        assert resource_calls == []
+
+    @pytest.mark.parametrize("verb", ["check", "metrics", "status"])
+    def test_an_address_naming_another_deployment_than_the_state_is_refused(
+        self, prod_state, reach, capsys, verb
+    ):
+        before = prod_state.read_bytes()
+
+        code = cli.main(["resource", verb, "@scratch/web-01"])
+
+        assert code == 2
+        assert "belongs to deployment 'prod', not 'scratch'" in capsys.readouterr().err
+        assert prod_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_an_unrecognised_resource_part_gets_the_existing_lookup_error(
+        self, prod_state, reach, capsys
+    ):
+        code = cli.main(["resource", "status", "@prod/nope"])
+
+        assert code == 2
+        assert "no tracked resource is named 'nope'; tracked: web-01" in capsys.readouterr().err

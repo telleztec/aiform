@@ -141,6 +141,20 @@ def _deployment_name(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _split_address(parser: argparse.ArgumentParser, address: str) -> tuple[str, str | None]:
+    deployment, separator, resource = address[1:].partition("/")
+    if (separator and not resource) or "/" in resource:
+        parser.error(
+            f"argument name: {address!r} is not of the form @<deployment> or "
+            "@<deployment>/<resource>"
+        )
+    try:
+        state.validate_deployment_name(deployment)
+    except ValueError as exc:
+        parser.error(f"argument {address}: {exc}")
+    return deployment, resource or None
+
+
 def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     designators = {f for f in getattr(args, "files", []) if f.startswith("@")}
     if designators:
@@ -151,6 +165,10 @@ def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespac
             state.validate_deployment_name(name)
         except ValueError as exc:
             parser.error(f"argument {designator}: {exc}")
+    address = getattr(args, "name", None)
+    if address is not None and address.startswith("@"):
+        deployment, args.name = _split_address(parser, address)
+        named.setdefault(deployment, address)
     if args.deployment is not None:
         named.setdefault(args.deployment, f"--deployment {args.deployment}")
     if len(named) > 1:
