@@ -6,9 +6,11 @@ merged 2026-09-25 as `6c5b2bd`, closing #200, spec at
 `specs/resource_dependencies.md`). **Phase 2 shipped** (PR #217, merged
 2026-09-27 as `15cbcb6`, closing #215, spec at
 `specs/resource_references.md`), with one known limitation tracked as #216.
+**#216 is fixed** (commit `0c71be6`, `plans/fix-216-reference-into-integer-field.md`).
 **Phase 3 is paused by decision** (issue #220,
-`specs/dependency_detection.md`) and keeps its number. **Next: fix #216**,
-then reassess Phase 3 from what that teaches. This
+`specs/dependency_detection.md`) and keeps its number. **Next:** reassess
+Phase 3 from what fixing #216 taught — `specs/dependency_detection.md`'s
+call, not decided here. This
 document is the durable record of what multi-resource support must do and
 the order it gets built in. `PLAN.md` remains the architecture spec —
 §10's "No dependency graph" entry points here, and each phase reconciles
@@ -35,10 +37,12 @@ a second vocabulary is not invented.
 
 | Use case | What must be true | Priority | State |
 |---|---|---|---|
-| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run only |
+| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run; across runs only for the paths-driven route (#225), not the delete-marker route (#226) |
+| **UC-F — Forget a dependent when deleting** | A user marks a resource for deletion but forgets to update another resource that still references it. `aiform` refuses before deleting, names the dependent, and the user can recover by editing that resource; it does not delete the referenced resource out from under it. | **P0** | partial — refused up front when the dependent's file is in the same run as the marker; **not** refused when the marker is given by path alone (#226). Not verified against a live provider (#239) |
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
+| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. No test and no live run (#239) |
 | **UC2 — Declare a dependency by hand** | A user can state a relationship `aiform` cannot see, and have it honoured. Uniquely expresses ordering with **no** value flow. | **P1** | delivered |
 | **UC-D — Know what a failure touches** | When a resource fails or degrades, an operator can learn what else is affected without reading the configuration by hand. | **P2** | **not delivered** — no implementation |
 | **UC3 — Parallel execution** | Resources with no dependency between them are applied concurrently, so N independent resources do not take N times as long as one. | **P2** | not delivered — Phase 6 |
@@ -49,10 +53,14 @@ a second vocabulary is not invented.
 - **UC-B is P0** because getting a destroy order wrong destroys or orphans real
   resources, and the rubric's first test is whether something bad and
   hard-to-reverse happens unnoticed.
-- **UC-A, UC-C, UC-E and UC2 are P1**: each is about the tool being *correct* or
+- **UC-F is P0** for the same reason as UC-B: the mistake it guards against is an
+  ordinary one (renaming one file and forgetting its neighbour), and the outcome is
+  a real resource deleted with something still pointing at it.
+- **UC-A, UC-C, UC-E, UC-G and UC2 are P1**: each is about the tool being *correct* or
   *reviewable*. A wrong create order fails loudly; an under-reporting plan gets
   approval for a change the user did not see; a re-run that compounds damage turns
-  one failure into two.
+  one failure into two. UC-G is UC-E applied to a delete: the interruption point is
+  the one where the provider has changed and `state.json` has not.
 - **UC-D is P2** rather than P1 because nothing malfunctions without it — an
   operator is merely unaided. It is the only use case with no implementation at all.
 - **UC1 is P3** because Phase 2 already delivers its useful half, and the
@@ -149,7 +157,8 @@ that gap alongside UX2's original graphical scope.
   error on a cycle — never a silent wrong-order apply.
 - **Destroy-order semantics.** Destroy runs in reverse dependency order.
   Refusing a destroy that would orphan a still-tracked dependent is a
-  separate, harder problem — see Phase 4.
+  separate, harder problem — see Phase 4, **partially delivered** for the
+  paths-driven destroy producer (#225).
 - **Partial-failure semantics for a graph apply.** If resource B fails
   after resource A succeeded, what does state look like, what does the
   user see, and how does a re-run recover cleanly (ties directly to R3)?
@@ -392,7 +401,8 @@ independently as issue #195 / PR #196 before this phase started.
 
 **Phase 2 — Cross-resource attribute references.** *(SHIPPED — PR #217,
 merged 2026-09-27 as `15cbcb6`, closing #215, spec at
-`specs/resource_references.md`; one known limitation tracked as #216.)* One resource's output
+`specs/resource_references.md`; one known limitation tracked as #216, since
+fixed.)* One resource's output
 attribute flowing into another's `params` — the canonical DNS-record-
 pointing-at-a-droplet-IP case. Depends on Phase 1's graph. Still
 sequential execution.
@@ -410,10 +420,16 @@ because neither is implied by "references exist":
   `additionalProperties: True` and `parser.py` already accommodates a
   cloud-init `user_data: |` block scalar. The dot-instead-of-colon typo is
   still refused, by a check those literals cannot reach.
-- **References into integer-typed fields do not work yet.** The
-  firewall's `droplet_ids` is typed `integer` while `compute`'s `id` is a
-  string, so a reference there resolves to a value its own validation
-  rejects. Filed separately rather than solved with a cast syntax.
+- **References into integer-typed fields, fixed by #216 for the top-level
+  case.** The firewall's `droplet_ids` is typed `integer` while `compute`'s
+  `id` is a string, so a reference to `:id` resolves to a value its own
+  validation rejects. Not solved with a cast syntax: `compute._flatten()`
+  instead gained a second, native-typed key, `provider_id`, so
+  `${digitalocean.compute.web-01:provider_id}` resolves to the real `int`.
+  The same reference nested inside a rule's `sources`/`destinations`
+  works too, but only one per list — a second one hits a sorted-list
+  requirement a reference can't generally satisfy (#224,
+  `specs/digitalocean_firewall.md`).
 
 **Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
 `specs/dependency_detection.md`.** The mechanism is unchanged from what this
@@ -428,14 +444,15 @@ found **one** inferable edge in the entire driver set — the firewall's
 `droplet_ids` naming a droplet — which provably cannot change create
 ordering and carries no destroy-order failure mode.
 
-That edge is also the one #216 blocks from being written as a reference at
-all, which is the reason for the ordering here: **fix #216 first, then
-reassess.** #216 is a prerequisite for Phase 3 either way — inference over a
-reference mechanism that cannot express the edge would be building on a
-known-broken foundation — and fixing it may remove the need for detection
-entirely, since a working reference implies its own edge. Whether Phase 3 is
-still worth doing is a question to answer from what #216 teaches, not before
-it.
+That edge is also the one #216 blocked from being written as a reference at
+all, which was the reason for the ordering here: **fix #216 first, then
+reassess.** #216 was a prerequisite for Phase 3 either way — inference over a
+reference mechanism that could not express the edge would have been building
+on a known-broken foundation. **#216 is now fixed**: the edge is reachable as
+`${digitalocean.compute.<name>:provider_id}`, so a working reference now
+implies its own edge here too, same as the `tags`/`addresses` rows already
+did. Whether Phase 3 is still worth doing given that is a question for
+`specs/dependency_detection.md` to answer, not decided here.
 
 `specs/dependency_detection.md` holds the evidence, the answer to open
 question #3 below, and the conditions that reopen this. **The phase keeps its
@@ -443,12 +460,34 @@ number while paused** — Phases 4-7 are not renumbered, and nothing else in
 the sequence moves.
 
 **Phase 4 — Orphan refusal, partial-failure recovery, restartability
-(R3).** Refusing (or explicitly forcing) a destroy that would orphan a
-still-tracked dependent, plus making `apply_plan()` survive a
-mid-sequence failure with a well-formed result and an idempotent re-run.
-Deliberately **before** concurrency: failure semantics are hard enough to
-get right serially, and concurrency multiplies the failure modes rather
-than creating them.
+(R3). PARTIALLY DELIVERED** — PR closing #225, `1ed84bf`, no spec updates
+at the time; reconciled here. Refusing (or explicitly forcing) a destroy
+that would orphan a still-tracked dependent, plus making `apply_plan()`
+survive a mid-sequence failure with a well-formed result and an idempotent
+re-run. Deliberately **before** concurrency: failure semantics are hard
+enough to get right serially, and concurrency multiplies the failure modes
+rather than creating them.
+
+What shipped, and what did not: `_build_destroy_plan_from_paths()` — the
+**paths-driven** destroy producer, i.e. `aiform plan destroy
+<file.aiform.md>` — now refuses unless `--force` when a tracked resource
+outside the run has a persisted `depends_on` naming a resource inside it
+(`_reverse_dependents()`/`_resolve_reverse_dependents()`,
+`specs/orchestrator.md`). A forced destroy also has `_apply_destroy()`
+prune the destroyed key out of exactly the dependents the `--force` warning
+named (`_prune_dependents_on()`) — `state.json` only, and only for those
+entries; a survivor's own `.aiform.md` frontmatter is left as the user wrote
+it, and the delete-marker and state-driven destroys prune nothing. The
+**delete-marker** destroy route
+(`AIFORM-DELETE-`, `specs/resource_dependencies.md`'s Mechanism B) still
+orphans a dependent silently — filed as **#226**, `priority:
+P1-correctness`, not fixed here. Partial-failure recovery and
+restartability are untouched; this phase's number stays as the owner
+directed, since it "is a list of 3 different robustness tests" and #225
+landing first does not mean the other two are done. See
+`specs/resource_dependencies.md` for the mechanism and its escape hatch,
+and `specs/dependency_detection.md` for whether this changes that spec's
+own destroy-ordering argument (it does not, for reasons recorded there).
 
 **Phase 5 — Concurrency-safe state (R1, and the R4 decision).** Make
 state reads/writes safe under concurrent mutation within one process, and

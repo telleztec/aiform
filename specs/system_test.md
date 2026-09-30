@@ -77,7 +77,7 @@ the curated one — not a separate concept.
   entry point `tests/test_cli.py` already uses), not a subprocess — so
   stdout/stderr capture and exit codes are asserted the same way the
   existing CLI tests do, and `--verbose`'s call-count line
-  (`aiform/cli.py:197`) is directly assertable.
+  (`aiform/cli.py:264`) is directly assertable.
 - **Cost/cleanup fixture**: a fixture that yields control to the test
   body inside a `try`/`finally`, and in the `finally` clause runs
   `aiform plan destroy --yes` (or, if nothing was ever created, a

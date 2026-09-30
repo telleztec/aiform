@@ -312,6 +312,20 @@ class TestSave:
         assert "\n" in raw
         assert '"resources": {' in raw
 
+    def test_int_attribute_survives_round_trip_uncoerced(self, tmp_path: Path):
+        # #216: provider_id is native-typed, not aiform's string id, and
+        # must not silently become a string through the JSON round-trip.
+        entry = make_state_entry(attributes={"provider_id": 123456789, "region": "sfo3"})
+        state = make_state(**{"digitalocean.compute.telleztec-app-01": entry})
+        path = tmp_path / "state.json"
+
+        save(state, path)
+        loaded = load(path, deployment="default")
+
+        attrs = loaded.resources["digitalocean.compute.telleztec-app-01"].attributes
+        assert attrs["provider_id"] == 123456789
+        assert isinstance(attrs["provider_id"], int)
+
     def test_backup_round_trips_non_ascii_content(self, tmp_path: Path):
         path = tmp_path / "state.json"
         entry = make_state_entry(attributes={"tags": ["café", "生産"]})

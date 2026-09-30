@@ -158,6 +158,7 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   ```python
   {
       "id": str(droplet["id"]),
+      "provider_id": droplet["id"],
       "region": droplet["region"]["slug"],
       "size": droplet["size_slug"],
       "image": droplet["image"]["slug"],
@@ -166,6 +167,98 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       "ipv4_address": <first networks.v4 entry where type == "public", or None>,
   }
   ```
+  **`provider_id` (#216).** Not a `PARAM_SCHEMA` key — it's an addition to
+  the "at least" floor `PLAN.md` §4's return contract sets, the same way
+  `firewall.py`'s `_project()` already adds `"name"`
+  (`specs/digitalocean_firewall.md`). `id`
+  is aiform's own identity token: `orchestrator._pop_id()` moves it to
+  `StateEntry.id`, which `models.py` types `str`, necessarily, since it has
+  to be uniform across every provider and resource kind — DigitalOcean's own
+  droplet id is an int, stringified here to satisfy that contract.
+  `provider_id` carries the same value a second time, in DigitalOcean's own
+  `int`, so a cross-resource reference (`specs/resource_references.md`) can
+  hand a droplet's id to an integer-typed field elsewhere — the firewall's
+  `droplet_ids` is the motivating case
+  (`specs/digitalocean_firewall.md`'s addendum). `create()`/`read()`/`update()`
+  all return it, since all three route through `_flatten()`
+  (`compute.py:387` for `create()`). `create()` is the load-bearing path: the
+  motivating case is a firewall referencing a droplet created in the *same*
+  `apply`, resolved from the create call's own returned attributes before
+  any `read()` ever runs.
+
+  Safe by the same argument `firewall.py`'s `_project()` comment already
+  makes for its own extra key: `planner.diff_attributes()` iterates
+  `desired.items()`, so a key absent from the user's `params` can never
+  enter a diff, defeat the zero-LLM no-op short-circuit, or reach
+  `categorize_diff()`'s payload. Three small, accepted costs, recorded so a
+  reviewer doesn't discover them: `cli.py`'s `_print_state()` dumps
+  attributes verbatim, so `aiform plan show`/`plan refresh` and
+  `state.json` now show the droplet's identity twice, once as each type;
+  **a droplet's `state.json` entry is rewritten to carry `provider_id` the
+  next time *that droplet* is refreshed** — every tracked droplet whose own
+  `.aiform.md` is part of the run, on the first `plan`/`apply` after
+  upgrading, or every tracked droplet at once via a bare `aiform plan
+  refresh` (`orchestrator.refresh_state()` iterates `st.resources` directly,
+  independent of which files are passed); one-time, since `provider_id` is
+  stable thereafter; and `references.py`'s `_require_attribute()` lists
+  `provider_id` among available attributes in its error, which is the
+  point — a user who typos or reaches for `:id` on an integer field sees it
+  as an option.
+
+  **The upgrade path this creates, and the remedy.** A droplet's entry only
+  gets refreshed when `refresh_resource()` is actually called against it,
+  and that function is only called from `_decide_action()`
+  (`orchestrator.py:733`), which `_plan_one()` calls for each resource
+  (`orchestrator.py:573`), which `build_create_plan()` only calls for a file
+  it discovered *this run* (`orchestrator.py:486-490` loops `ordered_files`,
+  itself derived from the paths passed in) — a target that is merely
+  *referenced*, and whose own `.aiform.md` is not part of the run, is never
+  passed to `_plan_one()` at all, so its `state.json` entry stays untouched.
+  (`_resolve_dependency_edges()`'s `continue` for a target `in st.resources`,
+  `orchestrator.py:426-427`, only governs whether the plan is *allowed to
+  proceed* referencing that target without an edge — it does not itself
+  decide refresh, and an earlier draft of this paragraph wrongly credited it
+  with the "never refreshed" behavior.) On a project that tracked a droplet
+  before this change, adding a firewall that references
+  `${digitalocean.compute.<name>:provider_id}` and planning **only the new
+  file** (`aiform plan create firewall.aiform.md`, or any invocation that
+  doesn't also pass the droplet's own file) resolves the reference against
+  that stale, pre-upgrade entry — `referenceable(st)` (`orchestrator.py:104`)
+  reads `st.resources` as loaded, and nothing in that path refreshes a
+  target outside the run. `_require_attribute()` then raises `digitalocean.
+  compute.<name> has no attribute 'provider_id'; available: backups, id,
+  image, ...`, wrapped as `PlanBlockedError` — which reads as "this feature
+  doesn't exist in my version" rather than "this droplet's state predates
+  it." **The remedy is usually a single `aiform plan refresh`**: `refresh_state()`
+  (`orchestrator.py:285-307`) calls `refresh_resource()` for every entry in
+  `st.resources` regardless of which `.aiform.md` files exist, so it
+  backfills `provider_id` onto the droplet's entry once, and the same
+  `plan create` that failed then succeeds.
+
+  **Neither remedy above covers a droplet that is also drifted-missing on
+  the provider side (#223).** `refresh_resource()` catches
+  `ResourceNotFoundError` and returns `state_entry.attributes` **unchanged**
+  (`orchestrator.py:249-259`) — both `plan refresh` and an ordinary
+  `plan create` that includes the droplet's own file go through this exact
+  function, so neither can backfill `provider_id` for a droplet DigitalOcean
+  no longer has. Trying to fix it the obvious way — running a `plan create`
+  that includes *both* the droplet's own `.aiform.md` (so it gets marked for
+  recreation) and the dependent firewall's (so the reference resolves) in
+  the same invocation — makes it worse, not better: the droplet lands in
+  both `volatile` and `replaced` for that plan, but
+  `references._resolve_text()` calls `_require_attribute()` unconditionally,
+  before it ever consults `replaced` (`aiform/references.py:255`), so
+  resolving the firewall's reference raises `PlanBlockedError` regardless —
+  the very plan that would recreate the droplet and supply a real
+  `provider_id` is the one being blocked. The
+  workarounds today: drop the reference, apply to let the droplet recreate,
+  then re-add the reference — or hand-edit `state.json`. **Issue #223**
+  tracks the deeper fix (letting `_resolve_text()` defer instead of raising
+  when the target is in `replaced`); no direction is decided there yet.
+  General convention, not compute-specific: `specs/driver.md`. `domain` and
+  `firewall` don't carry a `provider_id` — neither is referenced *by id*, a
+  zone's identity is its name.
+
   **Pending update**: `specs/resource_tagging.md` (not yet implemented)
   wraps this `"tags"` line in `self._tags_for_attributes(...)` — this
   code fence will understate what `_flatten()` actually returns once

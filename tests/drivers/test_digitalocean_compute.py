@@ -15,6 +15,7 @@ import pytest
 from aiform import ssh
 from aiform.driver import DriverUpdateNotSupported
 from aiform.exceptions import ResourceNotFoundError
+from aiform.references import resolve
 from drivers.digitalocean import compute as compute_module
 from drivers.digitalocean.compute import Driver
 
@@ -732,6 +733,39 @@ class TestRead:
         driver.read("123", CREDENTIALS)
 
         assert len(fake_urlopen.calls) == 1
+
+    def test_provider_id_is_native_int_beside_the_string_id(self, driver, fake_urlopen):
+        # #216: a reference needs the CSP's own int, not aiform's string id.
+        fake_urlopen.script(
+            "GET", droplet_url("123456789"), FakeHTTPResponse(200, make_droplet(id=123456789))
+        )
+
+        result = driver.read("123456789", CREDENTIALS)
+
+        assert result["provider_id"] == 123456789
+        assert isinstance(result["provider_id"], int)
+        assert result["id"] == "123456789"
+
+
+class TestProviderIdReference:
+    """#216: a whole-value reference to provider_id must resolve to the
+    CSP's native int, using the real driver's output rather than a
+    hand-rolled fixture."""
+
+    def test_provider_id_reference_resolves_to_native_int(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123456789"), FakeHTTPResponse(200, make_droplet(id=123456789))
+        )
+        attributes = driver.read("123456789", CREDENTIALS)
+        available = {"digitalocean.compute.web-01": {**attributes, "id": "123456789"}}
+
+        resolved, unresolved = resolve(
+            {"droplet_ids": ["${digitalocean.compute.web-01:provider_id}"]}, available
+        )
+
+        assert resolved == {"droplet_ids": [123456789]}
+        assert isinstance(resolved["droplet_ids"][0], int)
+        assert unresolved == []
 
 
 class TestDelete:

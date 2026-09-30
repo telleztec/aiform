@@ -30,7 +30,9 @@ execution, Phase 6), both of which presuppose that a reference can exist at all.
 It also delivers *half* of UC1 on its own: a reference implies its own edge, so
 a relationship written as a reference is never declared separately. Phase 3's
 remaining scope — inferring an edge from a *literal* value — is paused by
-decision behind #216, see `specs/dependency_detection.md`.
+decision, with reassessment gated on #216; #216 is now fixed, see
+`specs/dependency_detection.md` for the reassessment itself, which is the
+repo owner's call and not re-litigated here.
 
 ## The gap this closes
 
@@ -62,11 +64,13 @@ not"** until this phase retired that title — named this phase precisely:
 
 That entry is updated rather than left claiming the gap exists, including its
 title, which stops being true. What remains deferred there: automatic detection
-(Phase 3 — paused by decision behind #216,
-`specs/dependency_detection.md`), orphan refusal and partial-failure recovery (Phase 4),
-concurrency-safe state (Phase 5), parallel execution (Phase 6), graphical
-visualization (Phase 7). The PRD's open question 1 (this syntax) is answered;
-open question 2 (file-per-resource) is untouched.
+(Phase 3 — paused by decision, reassessment gated on #216, now fixed —
+`specs/dependency_detection.md`), the rest of orphan refusal and all of
+partial-failure recovery (Phase 4, **partially shipped** — see "Out of
+scope" below), concurrency-safe state (Phase 5), parallel execution
+(Phase 6), graphical visualization (Phase 7). The PRD's open question 1
+(this syntax) is answered; open question 2 (file-per-resource) is
+untouched.
 
 ## Interface
 
@@ -161,7 +165,7 @@ cannot currently happen. It becomes one the moment a driver mutates in place.
 - **`aiform/cli.py`** — `_print_plan()` prints one line per reference;
   `_plan_to_json()` carries them.
 - **`aiform/observability.py`** — `_status_for_entry()` resolves before
-  `_config_status()`'s diff.
+  `_config_for()`'s diff.
 
 **Two specs the approved plan listed are not touched.** `specs/models.md`,
 because no model change turned out to be needed (below); and
@@ -275,6 +279,15 @@ colon. That test is narrow by construction: `${HOME}` has no dots, and
 A target's **state `attributes`, plus `id`**. `id` is not in `attributes` —
 `orchestrator._pop_id()` moves it to `StateEntry.id` — but it is the most useful
 cross-resource value, so callers pass `{**entry.attributes, "id": entry.id}`.
+
+`id` is aiform's own identity token — `StateEntry.id: str` — necessarily a
+string, since it's the primary key across every provider and resource kind.
+A driver may additionally put the CSP's own value in `attributes` under its
+own name, natively typed, for exactly the case where a reference needs to
+hand that value to a field `id`'s string can't satisfy — `compute`'s
+`provider_id` is the first instance (#216, `specs/driver.md`,
+`specs/digitalocean_compute.md`). That key comes through this namespace like
+any other attribute; nothing here treats it specially.
 
 An attribute not in that mapping raises `ReferenceResolutionError` listing the names that
 are available, because a typo'd attribute is otherwise indistinguishable from a
@@ -506,8 +519,8 @@ references carries an empty list, not a missing key.
 
 ### `aiform resource status`
 
-`observability._config_status()` re-parses the `.aiform.md` and diffs
-`spec.params` against `attributes` (`observability.py:614`). Without resolution
+`observability._config_for()` re-parses the `.aiform.md` and diffs
+`spec.params` against `attributes` (`observability.py:636`). Without resolution
 it would report permanent drift on every referencing resource. It resolves
 first; `_status_for_entry()` already receives the whole `State`, so nothing new
 is plumbed. A reference that cannot be resolved makes the config status
@@ -610,22 +623,49 @@ cleanup discipline.
 
 ## Out of scope
 
-- **References into integer-typed fields.** The firewall's `droplet_ids` is
-  `{"type": "integer"}` while `compute`'s `id` is `str(droplet["id"])`, so
-  `droplet_ids: ["${…:id}"]` resolves to a string its own validation rejects.
-  This phase's acceptance case is the string-valued DNS one. Filed separately;
-  not solved here with a cast syntax, and not by changing the compute driver's
-  attribute types.
+- **References into integer-typed fields** were out of scope for this phase's
+  acceptance case, which was the string-valued DNS one — the firewall's
+  `droplet_ids` is `{"type": "integer"}` while `compute`'s `id` is
+  `str(droplet["id"])`, so `droplet_ids: ["${…:id}"]` resolved to a string its
+  own validation rejected. **Fixed by #216**, not here: `compute._flatten()`
+  now also returns `provider_id`, the same droplet id in its native `int`,
+  beside the unchanged string `id`. `droplet_ids:
+  ["${digitalocean.compute.web-01:provider_id}"]` resolves to the int and
+  passes validation. `id` stays a string — it's aiform's own identity token,
+  not a provider attribute, and remains that way regardless of what a given
+  CSP's own id type is. See `specs/digitalocean_compute.md` and
+  `specs/driver.md` for the `provider_id` convention this establishes, and
+  `specs/digitalocean_firewall.md`'s addendum for this driver's side of it.
+  **An upgrade caveat, not a limitation of the reference itself:**
+  `provider_id` only reaches a droplet's `state.json` entry once that
+  droplet is refreshed, and a `plan` scoped to only the *dependent*
+  file — the new firewall, not the droplet's own `.aiform.md` — never
+  refreshes an already-tracked target: `refresh_resource()` is only called
+  from `_decide_action()` (`orchestrator.py:733`), which `_plan_one()` calls
+  per resource (`orchestrator.py:573`), which only runs for a file
+  `build_create_plan()` discovered *this run* (`orchestrator.py:486-490`) —
+  a target merely referenced, not planned, never reaches it. On a project
+  tracked before this fix, that makes
+  `${…:provider_id}` fail with `has no attribute 'provider_id'` until the
+  droplet is refreshed — usually a single `aiform plan refresh`, which
+  refreshes every tracked resource at once, though not if that droplet is
+  also drifted-missing on the provider side (#223). Full account:
+  `specs/digitalocean_compute.md`.
 - **An escape for a literal `${`.** Not needed: the narrowed
   what-is-a-reference rule above means only text that parses as a real
   reference is substituted, so a literal never has to be escaped.
 - **Automatic edge detection** from driver-declared metadata — Phase 3, and the
   PRD's open question 3. That question is now answered — a fifth
   `REFERENCE_FIELDS` class attribute, `specs/dependency_detection.md` — and the
-  phase itself is paused by decision behind #216, which is this spec's own
-  known limitation. Resolution here stays deliberately driver-agnostic either
-  way.
-- **Orphan refusal and partial-failure recovery** (Phase 4),
+  phase itself is paused by decision, with #216 as the named prerequisite for
+  reassessing it. #216 is now fixed; whether Phase 3 is still worth doing from
+  what that teaches is `specs/dependency_detection.md`'s call, not this spec's.
+  Resolution here stays deliberately driver-agnostic either way.
+- **Orphan refusal and partial-failure recovery** (Phase 4, **partially
+  shipped since** — #225, `1ed84bf`, added a paths-driven destroy refusal
+  for a reference-derived edge same as a declared one; the delete-marker
+  route still orphans silently, **#226**; partial-failure recovery and
+  restartability are untouched — see `specs/resource_dependencies.md`),
   **concurrency-safe state** (Phase 5), **parallel execution** (Phase 6),
   **graphical visualization** (Phase 7). Execution here stays strictly
   sequential and the order is total.

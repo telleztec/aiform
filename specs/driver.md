@@ -266,6 +266,49 @@ mechanism per field would be a poor trade against simply rejecting the input.
 not done here, mirroring how `specs/resource_tagging.md` handled its own §4
 addendum.
 
+## Addendum: `provider_id`, a per-driver identity extension (#216)
+
+`PLAN.md` §4's return contract for `create()`/`read()`/`update()` is "at
+least `{"id": str, **attributes}`" — a floor, not a fixed key set. A driver
+may return further keys beyond it; `provider_id` is the first one adopted
+as a named convention rather than a one-off.
+
+**What it is.** `id` is `aiform`'s own identity token: `orchestrator._pop_id()`
+moves it out of a driver's returned attributes into `StateEntry.id`, which
+`aiform/models.py` types `str` — necessarily, since it must be uniform
+across every provider and resource kind, whatever type that provider's own
+identifier happens to be. `provider_id` is a *different* thing living
+beside it in `attributes`: the CSP's own identifier for the resource, in
+its own native type. `drivers/digitalocean/compute.py` is the first driver
+to carry one — DigitalOcean's droplet id is an `int`, and `_flatten()` now
+returns it twice: `"id": str(droplet["id"])` (unchanged) and
+`"provider_id": droplet["id"]` (native `int`). Full rationale and the
+accepted costs: `specs/digitalocean_compute.md`.
+
+**Why it exists.** A cross-resource reference
+(`specs/resource_references.md`) preserves an attribute's native type when
+substituting a whole value, so once a CSP's own identifier is available
+under its own key, a reference can hand it to a field that needs that
+type — the firewall's `droplet_ids: {"type": "integer"}` is the case that
+motivated this (#216; `specs/digitalocean_firewall.md`'s addendum). `:id`
+can't do this: it's a string by contract, on every driver, regardless of
+what the underlying CSP's id type is.
+
+**Adopted only where needed, not speculatively.** A driver carries
+`provider_id` only when something else plausibly references *this*
+resource *by id* in a field typed to match the CSP's native type.
+`compute` does; `domain` and `firewall` don't, since neither is referenced
+by id — a zone's identity is its own name. The next driver author's
+question is exactly this one, not "does every driver need this."
+
+**Adjacent to #133, not a fix for it.** `PLAN.md` §4 still omits
+`UNORDERED_FIELDS` from its declarative-attribute list, and this file's own
+Interface code block above deliberately doesn't restate §4's docstrings
+either way. `provider_id` is a returned-*attributes* convention, not a
+fifth declarative class attribute like `PARAM_SCHEMA`/`LIKELY_REPLACE_FIELDS`/
+`NON_DIFFABLE_FIELDS`/`UNORDERED_FIELDS`, so it doesn't touch that list —
+noted here only so the adjacency is visible, not to widen or close #133.
+
 ## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`)
 
 `ResourceDriver` has two optional methods and one exception, for the day-2
