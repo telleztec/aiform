@@ -208,14 +208,14 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   **The upgrade path this creates, and the remedy.** A droplet's entry only
   gets refreshed when `refresh_resource()` is actually called against it,
   and that function is only called from `_decide_action()`
-  (`orchestrator.py:732`), which `_plan_one()` calls for each resource
-  (`orchestrator.py:572`), which `build_create_plan()` only calls for a file
-  it discovered *this run* (`orchestrator.py:485-489` loops `ordered_files`,
+  (`orchestrator.py:733`), which `_plan_one()` calls for each resource
+  (`orchestrator.py:573`), which `build_create_plan()` only calls for a file
+  it discovered *this run* (`orchestrator.py:486-490` loops `ordered_files`,
   itself derived from the paths passed in) — a target that is merely
   *referenced*, and whose own `.aiform.md` is not part of the run, is never
   passed to `_plan_one()` at all, so its `state.json` entry stays untouched.
   (`_resolve_dependency_edges()`'s `continue` for a target `in st.resources`,
-  `orchestrator.py:425-426`, only governs whether the plan is *allowed to
+  `orchestrator.py:426-427`, only governs whether the plan is *allowed to
   proceed* referencing that target without an edge — it does not itself
   decide refresh, and an earlier draft of this paragraph wrongly credited it
   with the "never refreshed" behavior.) On a project that tracked a droplet

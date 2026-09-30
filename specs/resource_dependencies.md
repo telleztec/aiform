@@ -968,7 +968,7 @@ survivor's *state* no longer orders against the gone resource, but the next
 now-nonexistent target again, and — since it resolves nowhere — hits the
 same dangling-target refusal the file-driven destroy path already has,
 until the user actually edits the file — and this particular check,
-`_resolve_dependency_edges()`'s `else` branch (`orchestrator.py:427-431`),
+`_resolve_dependency_edges()`'s `else` branch (`orchestrator.py:428-432`),
 has **no** `--force` escape of its own; a stale `depends_on:` in
 frontmatter naming a resource no longer tracked anywhere must be edited out
 of the file, not forced past. Pruning removes the stale ordering edge from
@@ -1195,7 +1195,8 @@ one.
   comma-separated line; `--json` carries the full `depends_on` list;
   `--force` is accepted on `plan destroy`; a dropped-edge warning renders
   through the same `Warning:` line `build_create_plan()`'s warnings already
-  use; `--yes` alone does not bypass the dangling-dependency refusal.
+  use; `--yes` alone does not bypass the dangling-dependency refusal
+  (`test_destroy_blocked_by_dangling_dependency_without_force` runs with `--yes`).
 - **No pre-existing zero-Anthropic-call test weakened** to accommodate the new
   pass. `aiform/graph.py` imports neither `llm` nor `anthropic` nor `models`.
 - **Live**, before merge: three `.aiform.md` files in a scratch directory —

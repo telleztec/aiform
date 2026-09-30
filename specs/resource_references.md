@@ -520,7 +520,7 @@ references carries an empty list, not a missing key.
 ### `aiform resource status`
 
 `observability._config_status()` re-parses the `.aiform.md` and diffs
-`spec.params` against `attributes` (`observability.py:614`). Without resolution
+`spec.params` against `attributes` (`observability.py:636`). Without resolution
 it would report permanent drift on every referencing resource. It resolves
 first; `_status_for_entry()` already receives the whole `State`, so nothing new
 is plumbed. A reference that cannot be resolved makes the config status
@@ -641,9 +641,9 @@ cleanup discipline.
   droplet is refreshed, and a `plan` scoped to only the *dependent*
   file — the new firewall, not the droplet's own `.aiform.md` — never
   refreshes an already-tracked target: `refresh_resource()` is only called
-  from `_decide_action()` (`orchestrator.py:732`), which `_plan_one()` calls
-  per resource (`orchestrator.py:572`), which only runs for a file
-  `build_create_plan()` discovered *this run* (`orchestrator.py:485-489`) —
+  from `_decide_action()` (`orchestrator.py:733`), which `_plan_one()` calls
+  per resource (`orchestrator.py:573`), which only runs for a file
+  `build_create_plan()` discovered *this run* (`orchestrator.py:486-490`) —
   a target merely referenced, not planned, never reaches it. On a project
   tracked before this fix, that makes
   `${…:provider_id}` fail with `has no attribute 'provider_id'` until the

@@ -150,7 +150,7 @@ an unknown id with a 422 (`specs/digitalocean_firewall.md:316`). So a literal
 in `droplet_ids` was written after a prior successful apply of that droplet.
 In the common case the droplet is therefore already tracked and its action is
 `NO_OP`, and `apply_plan()` skips `NO_OP` before any driver call
-(`orchestrator.py:1046`) — ordering a `CREATE` against a `NO_OP` is inert.
+(`orchestrator.py:1095`) — ordering a `CREATE` against a `NO_OP` is inert.
 
 The premise does not hold universally, and the honest statement of the
 conclusion does not need it to. If state was lost, the config directory was
@@ -176,12 +176,12 @@ not need to stretch.
 ### Destroy ordering has no failure mode for this edge
 
 `_build_destroy_plan_from_state()` runs a real topological sort over
-`StateEntry.depends_on` (`orchestrator.py:922`, `:926`); it degenerates to
+`StateEntry.depends_on` (`orchestrator.py:971`, `:975`); it degenerates to
 reverse-lexical only when there are no edges at all.
 
 In that zero-edge case the order cannot currently break anything, by naming
 accident rather than design. `graph.topological_order()` drains a heap of raw
-key strings (`aiform/graph.py:56-61`), and those keys are
+key strings (`aiform/graph.py:56-66`), and those keys are
 `provider.resource_type.name` as `resource_key()` formats them
 (`orchestrator.py:45`) — so plain lexical string order happens to compare
 `resource_type` before `name`, and with `"compute" < "domain" < "firewall"`
@@ -211,7 +211,7 @@ shrink, and the firewall reports itself converged anyway.
 Inferring the id-match edge has two costs and no observable benefit.
 
 **It would start refusing plans immediately.** Not a Phase 4 hypothetical:
-`_resolve_dependency_edges()` (`orchestrator.py:408`) already raises
+`_resolve_dependency_edges()` (`orchestrator.py:409`) already raises
 `PlanBlockedError` when a live resource's target is delete-marked in the same
 run. An inferred `firewall → droplet` edge would therefore refuse a
 `plan create` that removes the droplet — today — for a removal that does not
@@ -329,8 +329,8 @@ check one, and checking is the cheaper half.
 `MULTI_RESOURCE_PRD.md`'s "the ordering engine doesn't change" is true. The
 pass in front of it is not.
 
-`_order_files()` (`orchestrator.py:446`) is called at `orchestrator.py:473`,
-before the driver cache is built at `:475` and before any credential
+`_order_files()` (`orchestrator.py:447`) is called at `orchestrator.py:474`,
+before the driver cache is built at `:476` and before any credential
 resolution. That ordering is what makes the pass free: pure YAML, string and
 tree work, no driver import, no CSP call, no model call. Phase 2 fits inside
 it because a reference is visible in the *text* of `params` —
@@ -345,8 +345,8 @@ an integer in `droplet_ids` means a droplet at all. Three options, none free:
   already does for drivers.
 
 The first two perturb a pass whose zero-cost property is pinned by
-`tests/test_orchestrator.py:1626`
-(`test_unchanged_dependency_graph_makes_zero_llm_calls`) and `:1931`
+`tests/test_orchestrator.py:1699`
+(`test_unchanged_dependency_graph_makes_zero_llm_calls`) and `:2004`
 (`test_cycle_raises_plan_blocked_error_before_driver_load_or_llm_call`) —
 whose *name* is the invariant, asserting the cycle check precedes any driver
 load. A future Phase 3 must say which option it takes and re-establish the
@@ -374,8 +374,8 @@ None is resolved here.
   should honour the declaration **and say so**, because a silently-resolved
   disagreement is how a user's mistake becomes permanent.
 - **Whether an inferred edge is persisted — already decided, follow the
-  precedent.** `_dependency_targets()` (`orchestrator.py:399`) unions
-  reference-derived targets with declared ones, and `orchestrator.py:602`
+  precedent.** `_dependency_targets()` (`orchestrator.py:400`) unions
+  reference-derived targets with declared ones, and `orchestrator.py:603`
   persists the union to `StateEntry.depends_on`, deliberately, so that
   `plan destroy` from state alone does not tear a target down before the
   resource pointing at it. So `aiform` already derives and persists edges the
@@ -494,16 +494,16 @@ It remains **not** a decision gate. The pause holds either way.
 | `id` reaches the reference namespace as `StateEntry.id`, a `str` | **verified** | `orchestrator.py:94`, `:104`; `models.py:222` |
 | A droplet id is provider-assigned; a firewall 422s on an unknown one at *create* | **verified** | `specs/digitalocean_firewall.md:316`, transcript `21-` |
 | A later `PUT` carrying a *deleted* droplet's id also 422s | **inferred** | Extrapolated from `21-`'s create-time 422; never observed on an update. It is the unrun probe's second question |
-| `apply_plan()` skips `NO_OP` before any driver call | **verified** | `orchestrator.py:1046` |
-| Destroy-from-state topologically sorts `StateEntry.depends_on` | **verified** | `orchestrator.py:922`, `:926` |
-| Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:399`, `:602` |
-| The zero-edge destroy order puts firewalls first today | **verified, single-provider** | `graph.py:56-61`, `orchestrator.py:45`; holds because one provider exists |
+| `apply_plan()` skips `NO_OP` before any driver call | **verified** | `orchestrator.py:1095` |
+| Destroy-from-state topologically sorts `StateEntry.depends_on` | **verified** | `orchestrator.py:971`, `:975` |
+| Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:400`, `:603` |
+| The zero-edge destroy order puts firewalls first today | **verified, single-provider** | `graph.py:56-66`, `orchestrator.py:45`; holds because one provider exists |
 | The edge inventory is *complete* | **inferred** | Fields read from source, but completeness is a judgement; the first draft missed `addresses` and misclassified `tags` |
 | **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220. Note what *was* since probed is a narrower claim — the firewall keeps the dead id and still reports `succeeded` (`knowledge/drivers/digitalocean_vpc/`, transcript `13`) — which is about the reference going stale, not about the firewall's rules ceasing to work |
 | A deleted droplet's id stays in `droplet_ids`, and the firewall reports itself converged | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13`. Supersedes this table's earlier framing of the question as unprobed |
 | A VPC refuses deletion while it has a converged member, `409 "Can not delete VPC with members"` | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`. The first edge in the repo whose parent the provider refuses to release — the counterexample the edge inventory lacked. Note the narrower claim: the refusal is verified, not that a droplet breaks without its VPC, which the provider prevents anyone from observing |
 | A tag-targeted firewall can exist ahead of its droplets, config inert | **owner-reported** | Same conversation, 2026-09-27. Not probed, and scoped to tag targeting |
-| Detection would force a driver load, or an AST read, before the ordering pass | **inferred** | Follows from `orchestrator.py:473` preceding `:475`; no implementation has tested it |
+| Detection would force a driver load, or an AST read, before the ordering pass | **inferred** | Follows from `orchestrator.py:474` preceding `:476`; no implementation has tested it |
 | #216 is fixed, and the reopen condition naming it is not met | **verified** | `drivers/digitalocean/compute.py`'s `provider_id` key; `${digitalocean.compute.<name>:provider_id}` resolves to a real `int` and passes `_reject_wrong_scalars()` — `plans/fix-216-reference-into-integer-field.md`, its tests |
 
 The two owner-reported rows are decisive for the destroy-ordering and

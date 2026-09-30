@@ -2152,31 +2152,6 @@ class TestPlanDestroy:
         reloaded = state.load(state_file)
         assert reloaded.resources == {}
 
-    def test_destroy_yes_alone_does_not_bypass_dangling_dependency_refusal(
-        self, project_dir, capsys
-    ):
-        state_file = project_dir / ".aiform" / "state.json"
-        entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="app-01",
-            id="123",
-            attributes={},
-            driver=make_driver_info("abc"),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(project_dir / "app.aiform.md"),
-            aiform_md_sha256="abc123",
-            depends_on=["digitalocean.compute.ghost-01"],
-        )
-        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
-
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
-
-        assert code == 2
-        reloaded = state.load(state_file)
-        assert "digitalocean.compute.app-01" in reloaded.resources
-
     def test_destroy_by_path_blocked_by_reverse_dependent_without_force(self, project_dir, capsys):
         droplet_path = project_dir / "droplet.aiform.md"
         write_aiform_md(droplet_path, name="droplet-01")
@@ -2293,55 +2268,6 @@ class TestPlanDestroy:
         assert "digitalocean.compute.droplet-01" not in reloaded.resources
         assert "digitalocean.firewall.fw-01" in reloaded.resources
         assert reloaded.resources["digitalocean.firewall.fw-01"].depends_on == []
-
-    def test_destroy_by_path_yes_alone_does_not_bypass_reverse_dependent_refusal(
-        self, project_dir, capsys
-    ):
-        droplet_path = project_dir / "droplet.aiform.md"
-        write_aiform_md(droplet_path, name="droplet-01")
-        state_file = project_dir / ".aiform" / "state.json"
-        droplet_entry = StateEntry(
-            provider="digitalocean",
-            resource_type="compute",
-            name="droplet-01",
-            id="123",
-            attributes={},
-            driver=make_driver_info("abc"),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(droplet_path),
-            aiform_md_sha256="abc123",
-        )
-        firewall_entry = StateEntry(
-            provider="digitalocean",
-            resource_type="firewall",
-            name="fw-01",
-            id="456",
-            attributes={},
-            driver=make_driver_info("def"),
-            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
-            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(project_dir / "fw.aiform.md"),
-            aiform_md_sha256="def456",
-            depends_on=["digitalocean.compute.droplet-01"],
-        )
-        state.save(
-            state.State(
-                resources={
-                    "digitalocean.compute.droplet-01": droplet_entry,
-                    "digitalocean.firewall.fw-01": firewall_entry,
-                }
-            ),
-            state_file,
-        )
-
-        code = cli.main(
-            ["plan", "destroy", str(droplet_path), "--yes", "--state-file", str(state_file)]
-        )
-
-        assert code == 2
-        reloaded = state.load(state_file)
-        assert "digitalocean.compute.droplet-01" in reloaded.resources
 
 
 class TestPlanRefresh:

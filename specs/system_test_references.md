@@ -91,7 +91,7 @@ cost discipline applies — never on a `pull_request`/`push` trigger.
   names it. A unit test can assert `_reverse_dependents()` found the pair and
   `_prune_dependents_on()` rewrote the list; it cannot show that the
   subsequent state-driven cleanup destroy (`plan destroy` with no arguments,
-  which has no `--force` of its own) actually succeeds afterward rather than
+  run without `--force`) actually succeeds afterward rather than
   hitting the identical refusal again for a droplet the user just
   deliberately destroyed. It also settles, as a side effect, that
   DigitalOcean detaches a droplet from `droplet_ids` on a shorter

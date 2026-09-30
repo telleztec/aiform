@@ -397,7 +397,7 @@ class TestReverseDependentDestroyRefusalLive:
         assert get_droplet_or_none(token, str(provider_id_a)) is None
         # #225 F15: the warning above says "dropping the edge" -- pin that
         # it actually happened, or the state-driven cleanup destroy below
-        # (which has no --force of its own) hits the exact same refusal
+        # (run without --force) hits the exact same refusal
         # again for a droplet the user just deliberately destroyed.
         assert tracked.resources[firewall_key].depends_on == []
 
