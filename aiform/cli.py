@@ -927,6 +927,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init", parents=[global_parent, deployment_parent])
     init_parser.add_argument("--provider", default="digitalocean")
+    init_parser.set_defaults(usage_parser=init_parser)
 
     plan_parser = subparsers.add_parser("plan", parents=[global_parent])
     plan_sub = plan_parser.add_subparsers(dest="plan_command", required=True)
@@ -934,18 +935,22 @@ def _build_parser() -> argparse.ArgumentParser:
     create_parser = plan_sub.add_parser("create", parents=[global_parent, state_parent])
     create_parser.add_argument("files", nargs="*")
     create_parser.add_argument("--json", action="store_true")
+    create_parser.set_defaults(usage_parser=create_parser)
 
     apply_parser = plan_sub.add_parser("apply", parents=[global_parent, state_parent])
     apply_parser.add_argument("files", nargs="*")
     apply_parser.add_argument("--yes", action="store_true")
+    apply_parser.set_defaults(usage_parser=apply_parser)
 
     destroy_parser = plan_sub.add_parser("destroy", parents=[global_parent, state_parent])
     destroy_parser.add_argument("files", nargs="*")
     destroy_parser.add_argument("--yes", action="store_true")
     destroy_parser.add_argument("--force", action="store_true")
+    destroy_parser.set_defaults(usage_parser=destroy_parser)
 
-    plan_sub.add_parser("refresh", parents=[global_parent, state_parent])
-    plan_sub.add_parser("show", parents=[global_parent, state_parent])
+    for verb in ("refresh", "show"):
+        verb_parser = plan_sub.add_parser(verb, parents=[global_parent, state_parent])
+        verb_parser.set_defaults(usage_parser=verb_parser)
 
     # A noun with its own verb lifecycle -- the shape PLAN.md §10
     # specifies for the unbuilt `aiform driver` group, rather than
@@ -961,6 +966,7 @@ def _build_parser() -> argparse.ArgumentParser:
             # --output stays on metrics alone: it is the one whose output
             # an operator accumulates across runs.
             verb_parser.add_argument("--output")
+        verb_parser.set_defaults(usage_parser=verb_parser)
 
     # Never absent, so a handler reached directly (a test, a future
     # caller) still has something to write into --output's delimiter.
@@ -1003,7 +1009,7 @@ def _dispatch(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    _resolve_deployment(parser, args)
+    _resolve_deployment(args.usage_parser, args)
     invoked = argv if argv is not None else sys.argv[1:]
     # split()/rejoin, not a plain " ".join: an arg containing a newline
     # (e.g. --output/--state-file with one in the path) would otherwise

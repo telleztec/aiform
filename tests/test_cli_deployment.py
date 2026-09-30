@@ -473,6 +473,29 @@ class TestAtNameShorthand:
         assert prod_state.read_bytes() == before
         assert reach.total() == 0, vars(reach)
 
+    @pytest.mark.parametrize(
+        "argv, usage",
+        [
+            (["plan", "create", "@prod", "--deployment", "scratch"], "usage: aiform plan create "),
+            (["plan", "apply", "@Prod"], "usage: aiform plan apply "),
+            (["plan", "destroy", "@prod", "@scratch"], "usage: aiform plan destroy "),
+            (
+                ["resource", "check", "@prod/web", "--deployment", "x"],
+                "usage: aiform resource check ",
+            ),
+            (["resource", "metrics", "@Prod/web"], "usage: aiform resource metrics "),
+            (["resource", "status", "@prod/"], "usage: aiform resource status "),
+        ],
+    )
+    def test_a_usage_error_prints_the_invoked_subcommands_usage(
+        self, project, builds, capsys, argv, usage
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(argv)
+
+        assert caught.value.code == 2
+        assert usage in capsys.readouterr().err
+
     @pytest.mark.parametrize("command", [["plan", "show"], ["plan", "refresh"], ["init"]])
     def test_commands_without_a_positional_do_not_accept_it(self, project, reach, command):
         with pytest.raises(SystemExit) as caught:

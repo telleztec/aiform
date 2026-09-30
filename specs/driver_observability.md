@@ -333,9 +333,12 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
 
 ```
 aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
 aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
+                        [--deployment <name>]
 aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,

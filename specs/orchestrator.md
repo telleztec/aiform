@@ -950,7 +950,7 @@ for its caller.
        success, the old entry is removed from state and saved
        immediately** — a resource key present in `planned` but no longer
        found in the *freshly-loaded* `state` (this function's own
-       `state.load(state_path)` at its start, not necessarily the same
+       `state.load(state_path, deployment=deployment)` at its start, not necessarily the same
        state `planned` was built against — see Behavior) raises
        `PlanBlockedError` naming the mismatch rather than a raw `KeyError`,
        then `del state.resources[pr.entry.resource_key]` then

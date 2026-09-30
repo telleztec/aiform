@@ -883,6 +883,12 @@ than papering over it with a generic `except Exception`.
   flag) is used as-is — it prints its usage message to stderr and calls
   `sys.exit(2)` itself, *inside* `parser.parse_args()`, before `main()`'s
   `try` block is even reached. Not reimplemented or caught here.
+- The usage errors `main()` raises itself after parsing (a bad or conflicting
+  deployment designator, a malformed `@deployment/resource` address) are
+  reported through the parser of the subcommand that was invoked, so the
+  `usage:` line names it (`usage: aiform plan create ...`), exactly as
+  argparse's own errors do; each leaf parser carries itself in the parsed
+  namespace as `usage_parser` for that purpose. Exit code 2, as before.
 - `plan show`/`plan refresh` on a `--state-file` that doesn't exist yet:
   `state.load()` returns an empty `State` named for the requested deployment
   (its own documented behavior, `specs/state.md`) rather than raising —
