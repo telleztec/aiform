@@ -327,3 +327,114 @@ class TestNameValidation:
     def test_a_good_name_is_accepted(self, project, reach, name):
         assert cli.main(["init", f"--deployment={name}"]) == 0
         assert cli.main(["plan", "show", f"--deployment={name}"]) == 0
+
+
+@pytest.fixture
+def builds(monkeypatch) -> list[tuple[str, list[Path] | None, str]]:
+    """Stand in for the planners so a test sees what cli.py handed them."""
+    seen: list[tuple[str, list[Path] | None, str]] = []
+
+    def create(paths, **kwargs):
+        seen.append(("create", paths, kwargs["deployment"]))
+        return [], []
+
+    def destroy(paths, **kwargs):
+        seen.append(("destroy", paths, kwargs["deployment"]))
+        return [], []
+
+    monkeypatch.setattr(orchestrator, "build_create_plan", create)
+    monkeypatch.setattr(orchestrator, "build_destroy_plan", destroy)
+    monkeypatch.setattr(
+        orchestrator,
+        "apply_plan",
+        lambda *args, **kwargs: orchestrator.ApplyResult(
+            executed=[], review_flags=[], aborted=False
+        ),
+    )
+    return seen
+
+
+class TestAtNameShorthand:
+    @pytest.mark.parametrize("verb", ["create", "apply", "destroy"])
+    def test_at_name_selects_the_deployment_and_is_not_a_file(self, project, builds, verb):
+        cli.main(["plan", verb, "@prod", "--yes"] if verb != "create" else ["plan", verb, "@prod"])
+
+        assert builds == [(verb if verb != "apply" else "create", None, "prod")]
+
+    def test_keeps_the_other_positionals_as_files(self, project, builds):
+        cli.main(["plan", "create", "web.aiform.md", "@prod", "db.aiform.md"])
+
+        assert builds == [("create", [Path("web.aiform.md"), Path("db.aiform.md")], "prod")]
+
+    def test_a_dot_slash_path_that_starts_with_at_is_still_a_file(self, project, builds):
+        cli.main(["plan", "create", "./@odd.aiform.md"])
+
+        assert builds == [("create", [Path("@odd.aiform.md")], "default")]
+
+    def test_no_at_name_and_no_flag_still_means_default(self, project, builds):
+        cli.main(["plan", "create"])
+
+        assert builds == [("create", None, "default")]
+
+    def test_agrees_with_an_explicit_flag_naming_the_same_deployment(self, project, builds):
+        cli.main(["plan", "create", "@prod", "--deployment", "prod"])
+
+        assert builds == [("create", None, "prod")]
+
+    def test_the_same_at_name_twice_is_harmless(self, project, builds):
+        cli.main(["plan", "create", "@prod", "@prod"])
+
+        assert builds == [("create", None, "prod")]
+
+    def test_conflicts_with_an_explicit_flag_naming_another(self, project, builds, capsys):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["plan", "create", "@prod", "--deployment", "scratch"])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "@prod" in err and "--deployment scratch" in err
+        assert builds == []
+
+    def test_two_different_at_names_conflict(self, project, builds, capsys):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["plan", "create", "@prod", "@scratch"])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "@prod" in err and "@scratch" in err
+        assert builds == []
+
+    @pytest.mark.parametrize("token", ["@", "@Prod", "@a/b", "@.x", "@-x"])
+    def test_a_bad_at_name_is_a_usage_error(self, project, builds, capsys, token):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["plan", "create", token])
+
+        assert caught.value.code == 2
+        assert "deployment" in capsys.readouterr().err
+        assert builds == []
+
+    @pytest.mark.parametrize("command", [["plan", "create"], ["plan", "destroy", "--yes"]])
+    def test_an_at_name_that_differs_from_the_state_file_is_refused(
+        self, prod_state, reach, capsys, command
+    ):
+        before = prod_state.read_bytes()
+
+        code = cli.main([*command, "@scratch"])
+
+        assert code == 2
+        assert "belongs to deployment 'prod', not 'scratch'" in capsys.readouterr().err
+        assert prod_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_resource_commands_read_it_as_a_resource_name(self, prod_state, reach, capsys):
+        code = cli.main(["resource", "status", "@prod", "--deployment", "prod"])
+
+        assert code == 2
+        assert "no tracked resource is named '@prod'" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("command", [["plan", "show"], ["plan", "refresh"], ["init"]])
+    def test_commands_without_a_positional_do_not_accept_it(self, project, reach, command):
+        with pytest.raises(SystemExit) as caught:
+            cli.main([*command, "@prod"])
+
+        assert caught.value.code == 2

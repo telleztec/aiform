@@ -1332,7 +1332,7 @@ aiform init [--provider digitalocean] [--deployment <name>]
     prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN. 
     Verifies that the credentials work. 
 
-aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]
+aiform plan create [@<name>] [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]
     Parse, refresh, verify the curated driver is present (fail with a
     clear error if not; record its hash as provenance either way), diff,
     print plan.
@@ -1341,14 +1341,14 @@ aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--deployment <n
     prefixed `AIFORM-DELETE-` as destroy requests (see "Resource
     deletion") — shown in the plan, not yet executed.
 
-aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
+aiform plan apply [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
     Re-plans, runs gate #2 (review-orchestration-model) for any destructive 
     step, executes.
     --yes skips the interactive confirmation only — never a `block` flag.
     On a successful destroy (either "Resource deletion" mechanism), moves
     the resource's source .aiform.md file into `.aiform/trash/`.
 
-aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
+aiform plan destroy [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
     Plans a destroy of every resource matching the given file(s) (or
     all tracked resources if none given), then applies it. 100% subject
     to gate #2 (review-orchestration-model) by definition. On success, moves each destroyed

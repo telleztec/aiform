@@ -141,6 +141,23 @@ def _deployment_name(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    designators = {f for f in getattr(args, "files", []) if f.startswith("@")}
+    if designators:
+        args.files = [f for f in args.files if f not in designators]
+    named = {designator[1:]: designator for designator in designators}
+    for name, designator in named.items():
+        try:
+            state.validate_deployment_name(name)
+        except ValueError as exc:
+            parser.error(f"argument {designator}: {exc}")
+    if args.deployment is not None:
+        named.setdefault(args.deployment, f"--deployment {args.deployment}")
+    if len(named) > 1:
+        parser.error(f"conflicting deployments: {' and '.join(sorted(named.values()))}")
+    args.deployment = next(iter(named), state.DEFAULT_DEPLOYMENT)
+
+
 def _resolve_paths(files: list[str]) -> list[Path] | None:
     return [Path(f) for f in files] if files else None
 
@@ -875,9 +892,7 @@ def _build_parser() -> argparse.ArgumentParser:
     global_parent.add_argument("--no-color", action="store_true")
 
     deployment_parent = argparse.ArgumentParser(add_help=False)
-    deployment_parent.add_argument(
-        "--deployment", type=_deployment_name, default=state.DEFAULT_DEPLOYMENT
-    )
+    deployment_parent.add_argument("--deployment", type=_deployment_name)
 
     state_parent = argparse.ArgumentParser(add_help=False, parents=[deployment_parent])
     state_parent.add_argument("--state-file", type=Path, default=state.DEFAULT_STATE_PATH)
@@ -963,6 +978,7 @@ def _dispatch(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _resolve_deployment(parser, args)
     invoked = argv if argv is not None else sys.argv[1:]
     # split()/rejoin, not a plain " ".join: an arg containing a newline
     # (e.g. --output/--state-file with one in the path) would otherwise

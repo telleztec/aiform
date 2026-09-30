@@ -88,6 +88,25 @@ states the rule, before anything runs.
 to read, the second says which deployment the caller believes that file
 holds.
 
+**`@name` shorthand (`plan create`/`apply`/`destroy` only).** A `files`
+positional that starts with `@` is a deployment designator, not a path:
+`aiform plan destroy @prod` means `aiform plan destroy --deployment prod`. It is
+removed from `files` before anything treats `files` as paths, so `[]` still
+means "discover in the cwd" and never a file called `@prod`. The rest after
+the `@` goes through the same `validate_deployment_name` as the flag, and a bad
+one is the same usage error (exit 2). `--deployment` therefore has no argparse
+default; `main()` resolves it after parsing, in this order: the `--deployment`
+value if given, else the `@name`, else `state.DEFAULT_DEPLOYMENT`. Giving both
+is fine when they name the same deployment and a usage error (exit 2, nothing
+run) when they differ; so is giving two different `@name`s. Repeating the same
+one is harmless. `@` alone is an empty name and therefore invalid. A file whose
+name really starts with `@` is spelled `./@name.aiform.md`. Commands with no
+`files` positional do not accept the shorthand and `--deployment` is the only
+spelling: `plan refresh`/`show` and `init` reject `@prod` as an unrecognized
+argument, and `resource check`/`metrics`/`status` read it as a resource name
+and fail with `no tracked resource is named '@prod'`. The shorthand is a CLI
+convenience only; nothing below `cli.py` sees the `@`.
+
 ### `aiform init [--provider digitalocean] [--deployment <name>]`
 
 - **Names the deployment and writes its state file (#201).** `--deployment`
@@ -412,9 +431,10 @@ holds.
   check's ✓/✗ outcome); exit 2 on an unsupported `--provider` or a
   `DeploymentMismatchError`.
 
-### `aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]`
+### `aiform plan create [@<name>] [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]`
 
-- `files` (positional, `nargs="*"`) → `None` when empty, so
+- `files` (positional, `nargs="*"`) → any `@name` entry is removed first (see
+  "`@name` shorthand" above) → `None` when empty, so
   `orchestrator.build_create_plan` falls through to its own
   cwd-glob discovery, exactly matching `PLAN.md` §5 step 1's
   "default: all `*.aiform.md` in cwd."
@@ -459,7 +479,7 @@ holds.
   `FileNotFoundError` (an explicitly-named file that doesn't exist) —
   `main()`'s shared error formatting, see below.
 
-### `aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]`
+### `aiform plan apply [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]`
 
 Re-plans in full immediately before executing — `specs/orchestrator.md`'s
 "Out of scope" names this as `cli.py`'s job (`apply_plan()` only ever
@@ -517,7 +537,7 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>] [--deployment <name>]`
+### `aiform plan destroy [@<name>] [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>] [--deployment <name>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
