@@ -3526,7 +3526,7 @@ class TestDestroysThatNamedNoDependentsPruneNothing:
             create_exc.value.reason
         )
 
-    def test_state_driven_destroy_leaves_the_survivors_edge(
+    def test_state_driven_plan_names_no_dependents_so_apply_keeps_the_survivors_edge(
         self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
     ):
         write_driver(drivers_dir, "digitalocean", "compute")

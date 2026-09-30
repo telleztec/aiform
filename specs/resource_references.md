@@ -165,7 +165,7 @@ cannot currently happen. It becomes one the moment a driver mutates in place.
 - **`aiform/cli.py`** — `_print_plan()` prints one line per reference;
   `_plan_to_json()` carries them.
 - **`aiform/observability.py`** — `_status_for_entry()` resolves before
-  `_config_status()`'s diff.
+  `_config_for()`'s diff.
 
 **Two specs the approved plan listed are not touched.** `specs/models.md`,
 because no model change turned out to be needed (below); and
@@ -519,7 +519,7 @@ references carries an empty list, not a missing key.
 
 ### `aiform resource status`
 
-`observability._config_status()` re-parses the `.aiform.md` and diffs
+`observability._config_for()` re-parses the `.aiform.md` and diffs
 `spec.params` against `attributes` (`observability.py:636`). Without resolution
 it would report permanent drift on every referencing resource. It resolves
 first; `_status_for_entry()` already receives the whole `State`, so nothing new

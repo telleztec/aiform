@@ -633,7 +633,7 @@ params:
 - **Fully-qualified keys only, no shorthand.** Shorthand resolution is inferred
   cleverness with ambiguity failure modes.
 - **Parsed with `split(".", 2)`.** `provider` and `resource_type` match
-  `RESOURCE_OR_PROVIDER_PATTERN` (`models.py:10`) and cannot contain dots, but
+  `RESOURCE_OR_PROVIDER_PATTERN` (`models.py:11`) and cannot contain dots, but
   `name` is only `min_length=1` and may. A naive `split(".")` corrupts a dotted
   name — `digitalocean.domain.example.com` is a legitimate key.
 - **Any number of targets.** Fan-in is a first-class case, not a later
