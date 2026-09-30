@@ -37,7 +37,7 @@ a second vocabulary is not invented.
 
 | Use case | What must be true | Priority | State |
 |---|---|---|---|
-| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run only |
+| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run; across runs only for the paths-driven route (#225), not the delete-marker route (#226) |
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |

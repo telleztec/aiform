@@ -252,7 +252,7 @@ Each is a property a test can assert, and each traces to a use case in
 |---|---|---|---|
 | **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
 | **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
-| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; **not** met across runs — a dependent outside the run is not consulted by the create-path delete-marker route |
+| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; met across runs for the paths-driven route (#225: refused unless `--force`); **not** met across runs for the delete-marker route — a dependent outside the run is not consulted (#226) |
 | **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall lists a deleted droplet's id while reporting itself converged, so nothing the provider says surfaces the break |
 | **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
 | **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
