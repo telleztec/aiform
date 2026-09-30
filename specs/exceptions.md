@@ -66,6 +66,22 @@ class DeploymentMismatchError(Exception):
             f"  state file: {path}\n"
             "  Nothing was read from the provider and nothing was changed."
         )
+
+
+class StateMissingDeploymentError(Exception):
+    """Raised by state.load() when the state file at `path` has no top-level
+    `deployment` key, i.e. it was written before #201."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(
+            "this state file has no 'deployment' field: it was written before "
+            "deployments were named.\n"
+            f"  state file: {path}\n"
+            "  Either delete it (aiform then forgets every resource it tracked) or add "
+            '"deployment": "default" as a top-level key by hand.\n'
+            "  Nothing was read from the provider and nothing was changed."
+        )
 ```
 
 `ResourceNotFoundError` has no constructor beyond `Exception`'s own — no
@@ -98,6 +114,21 @@ driver load, credential resolution, provider call or LLM call, so it is true
 of every command that can raise this. `cli.py` maps it to `Error: <message>`
 on stderr and exit 2 (`specs/cli.md`).
 
+`StateMissingDeploymentError` is the same shape, with `path` absolute for the
+same reason. `str(exc)` is four lines and never contains the file's contents:
+
+```
+this state file has no 'deployment' field: it was written before deployments were named.
+  state file: /abs/path/.aiform/state.json
+  Either delete it (aiform then forgets every resource it tracked) or add "deployment": "default" as a top-level key by hand.
+  Nothing was read from the provider and nothing was changed.
+```
+
+It exists so the one predictable failure of not migrating (`specs/state.md`)
+does not surface as Pydantic's `ValidationError`, whose text is the whole state
+file. `cli.py` maps it to `Error: <message>` on stderr and exit 2, like
+`DeploymentMismatchError`.
+
 ## Behavior
 
 - `ResourceNotFoundError` is a plain subclass of `Exception` — no custom
@@ -113,6 +144,8 @@ on stderr and exit 2 (`specs/cli.md`).
   `DriverUpdateNotSupported`'s `.reason`/`str()` relationship).
 - `DeploymentMismatchError(requested, found, path)` stores all three verbatim
   as same-named attributes and `str(exc)` is the three-line text above.
+- `StateMissingDeploymentError(path)` stores `path` verbatim and `str(exc)` is
+  the four-line text above.
 
 ## Edge cases / errors
 
@@ -121,7 +154,7 @@ on stderr and exit 2 (`specs/cli.md`).
   catching it can never accidentally also catch an unrelated `KeyError`/
   `IndexError` a driver's own response-parsing code might raise. Same
   reasoning applies to `DriverExecutionError`/`PlanBlockedError`/
-  `DeploymentMismatchError` — plain `Exception` subclasses, not tied to any
+  `DeploymentMismatchError`/`StateMissingDeploymentError` — plain `Exception` subclasses, not tied to any
   built-in hierarchy.
 
 ## Out of scope

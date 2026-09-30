@@ -1749,8 +1749,9 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   files. Deferred until the schema actually needs to change. The first
   such change has already happened: `deployment` (§3) is a required field
   with no default, so a `state.json` written before it existed no longer
-  loads, and there is no path to upgrade one. A user deletes the file or
-  adds the key by hand.
+  loads, and there is no path to upgrade one. `state.load()` refuses it with a
+  short error naming the file (`StateMissingDeploymentError`, `specs/state.md`),
+  and a user deletes the file or adds the key by hand.
 - **`.aiform/trash/` is a file-recovery convenience, not an undo.** It
   preserves a destroyed resource's `.aiform.md` source so the
   configuration isn't lost, but restoring a file from trash and

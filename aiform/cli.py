@@ -17,7 +17,12 @@ from typing import Any, NamedTuple
 import anthropic
 
 from aiform import config, llm, log, observability, orchestrator, references, ssh, state
-from aiform.exceptions import DeploymentMismatchError, DriverExecutionError, PlanBlockedError
+from aiform.exceptions import (
+    DeploymentMismatchError,
+    DriverExecutionError,
+    PlanBlockedError,
+    StateMissingDeploymentError,
+)
 from aiform.models import KeyCheck, KeyState, PlanAction
 
 logger = logging.getLogger(__name__)
@@ -74,6 +79,7 @@ _RESET = "\033[0m"
 
 _HANDLED_EXCEPTIONS = (
     DeploymentMismatchError,
+    StateMissingDeploymentError,
     PlanBlockedError,
     DriverExecutionError,
     ValueError,

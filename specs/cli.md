@@ -457,8 +457,10 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   verified, not whether verification happens. The four-state contract
   above survives that change; the probe implementations would not.
 - Exit 0 on a successful scaffold (regardless of the credential
-  check's ✓/✗ outcome); exit 2 on an unsupported `--provider` or a
-  `DeploymentMismatchError`.
+  check's ✓/✗ outcome); exit 2 on an unsupported `--provider`, a
+  `DeploymentMismatchError`, or a `StateMissingDeploymentError` (an existing
+  `state.json` with no `deployment` key: the same short error as every other
+  command, nothing else written).
 
 ### `aiform plan create [@<name>] [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]`
 
@@ -855,6 +857,8 @@ this addition tries to paper over.
 named set of "expected, operational" exception types —
 `PlanBlockedError`, `DriverExecutionError`, `DeploymentMismatchError`
 (#201; its `str()` is the whole three-line message, `specs/exceptions.md`),
+`StateMissingDeploymentError` (#201; a `state.json` from before deployments were
+named, refused with a short message instead of a Pydantic dump of the file),
 `ValueError` (covers
 pydantic's `ValidationError`, a `ValueError` subclass), `FileNotFoundError`,
 `RuntimeError` (only ever actually raised here by `_confirm`'s no-TTY
@@ -891,6 +895,11 @@ than papering over it with a generic `except Exception`.
   and `Nothing was read from the provider and nothing was changed.`; exit 2;
   no driver, credential, provider or Anthropic call was made and the state
   file is unchanged.
+- Any state-reading command, `init` included, run against a `state.json` with
+  no `deployment` key (written before #201): `Error: this state file has no
+  'deployment' field ...`, the absolute state-file path, and the two ways out
+  (delete it, or add `"deployment": "default"` by hand); exit 2. The file's
+  contents appear neither on stderr nor in the log.
 - `init` run a second time in the same directory (same deployment): `.gitignore` entries
   aren't duplicated, `examples/compute.aiform.md` isn't overwritten,
   `.aiform/` already existing is fine (`exist_ok=True`), the managed SSH

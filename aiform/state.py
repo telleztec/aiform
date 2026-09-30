@@ -5,9 +5,16 @@ import json
 import re
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from aiform.exceptions import DeploymentMismatchError
+from aiform.exceptions import DeploymentMismatchError, StateMissingDeploymentError
 from aiform.models import StateEntry
 
 DEFAULT_STATE_PATH = Path(".aiform/state.json")
@@ -51,7 +58,12 @@ def load(path: Path = DEFAULT_STATE_PATH, *, deployment: str) -> State:
     if not path.exists():
         return State(deployment=deployment)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    loaded = State.model_validate(raw)
+    try:
+        loaded = State.model_validate(raw)
+    except ValidationError as exc:
+        if any(e["loc"] == ("deployment",) and e["type"] == "missing" for e in exc.errors()):
+            raise StateMissingDeploymentError(path.absolute()) from None
+        raise
     if loaded.deployment != deployment:
         raise DeploymentMismatchError(deployment, loaded.deployment, path.absolute())
     return loaded

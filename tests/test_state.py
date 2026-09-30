@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aiform.exceptions import DeploymentMismatchError
+from aiform.exceptions import DeploymentMismatchError, StateMissingDeploymentError
 from aiform.models import DriverInfo, StateEntry
 from aiform.state import (
     DEFAULT_DEPLOYMENT,
@@ -184,7 +184,7 @@ class TestDeploymentField:
         path = tmp_path / "state.json"
         path.write_text(json.dumps({"aiform_state_version": 1, "resources": {}}))
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(StateMissingDeploymentError):
             load(path, deployment=DEPLOYMENT)
 
     def test_file_with_an_invalid_name_is_a_schema_error_not_a_mismatch(self, tmp_path: Path):
@@ -323,3 +323,81 @@ class TestSave:
 
         backup_path = tmp_path / "state.json.backup"
         assert load(backup_path, deployment=DEPLOYMENT) == first_state
+
+
+class TestLoadRefusesAFileWithoutADeployment:
+    MARKER = "marker-resource-name"
+
+    def write_old_state(self, path: Path) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "aiform_state_version": 1,
+                    "resources": {
+                        f"digitalocean.compute.{self.MARKER}": {"note": self.MARKER},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_raises_the_dedicated_error_with_the_absolute_path(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        self.write_old_state(path)
+
+        with pytest.raises(StateMissingDeploymentError) as caught:
+            load(path, deployment="default")
+
+        assert caught.value.path == path.absolute()
+
+    def test_relative_path_is_reported_absolute(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        self.write_old_state(Path("state.json"))
+
+        with pytest.raises(StateMissingDeploymentError) as caught:
+            load(Path("state.json"), deployment="default")
+
+        assert caught.value.path == tmp_path / "state.json"
+
+    def test_the_message_does_not_echo_the_file(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        self.write_old_state(path)
+
+        with pytest.raises(StateMissingDeploymentError) as caught:
+            load(path, deployment="default")
+
+        assert self.MARKER not in str(caught.value)
+        assert self.MARKER not in repr(caught.value)
+        assert caught.value.__cause__ is None
+        assert caught.value.__suppress_context__
+
+    def test_leaves_the_file_untouched(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        self.write_old_state(path)
+        before = path.read_bytes()
+
+        with pytest.raises(StateMissingDeploymentError):
+            load(path, deployment="default")
+
+        assert path.read_bytes() == before
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]
+
+    def test_the_key_added_by_hand_loads(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"aiform_state_version": 1, "deployment": "default"}))
+
+        assert load(path, deployment="default") == State(deployment="default")
+
+    def test_any_other_validation_error_keeps_its_behaviour(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"aiform_state_version": 1, "deployment": "Bad Name"}))
+
+        with pytest.raises(ValidationError):
+            load(path, deployment="default")
+
+    def test_malformed_json_keeps_its_behaviour(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        path.write_text("{not json")
+
+        with pytest.raises(json.JSONDecodeError):
+            load(path, deployment="default")

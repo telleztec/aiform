@@ -48,3 +48,19 @@ class DeploymentMismatchError(Exception):
             f"  state file: {path}\n"
             "  Nothing was read from the provider and nothing was changed."
         )
+
+
+class StateMissingDeploymentError(Exception):
+    """Raised by state.load() when the state file at `path` has no top-level
+    `deployment` key, i.e. it was written before #201."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(
+            "this state file has no 'deployment' field: it was written before "
+            "deployments were named.\n"
+            f"  state file: {path}\n"
+            "  Either delete it (aiform then forgets every resource it tracked) or add "
+            '"deployment": "default" as a top-level key by hand.\n'
+            "  Nothing was read from the provider and nothing was changed."
+        )

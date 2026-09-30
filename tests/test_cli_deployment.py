@@ -286,6 +286,60 @@ class TestInitNamesTheDeployment:
         assert cli.main(["plan", "show"]) == 2
 
 
+class TestStateFromBeforeDeployments:
+    MARKER = "marker-resource-name"
+
+    @pytest.fixture
+    def old_state(self, project) -> Path:
+        path = project / ".aiform" / "state.json"
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps(
+                {
+                    "aiform_state_version": 1,
+                    "resources": {f"digitalocean.compute.{self.MARKER}": {"note": self.MARKER}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["init"], *PLAN_AND_RESOURCE_COMMANDS],
+        ids=lambda argv: " ".join(argv),
+    )
+    def test_every_command_gives_the_short_error_and_exit_2(self, old_state, reach, capsys, argv):
+        before = old_state.read_bytes()
+
+        code = cli.main(argv)
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert "Error: this state file has no 'deployment' field" in err
+        assert str(old_state.absolute()) in err
+        assert "delete it" in err
+        assert '"deployment": "default"' in err
+        assert self.MARKER not in err
+        assert old_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_the_contents_reach_neither_stderr_nor_any_log(self, old_state, reach, capsys):
+        cli.main(["init"])
+
+        assert self.MARKER not in capsys.readouterr().err
+        logs = [p for p in old_state.parent.parent.rglob("*") if p.is_file() and p != old_state]
+        assert logs
+        assert not [p for p in logs if self.MARKER in p.read_text(errors="replace")]
+
+    def test_init_scaffolds_nothing(self, old_state, reach):
+        cli.main(["init"])
+
+        root = old_state.parent.parent
+        assert not (root / ".gitignore").exists()
+        assert not (root / "examples").exists()
+
+
 class TestNameValidation:
     BAD = [
         "Prod",
