@@ -25,6 +25,7 @@ import pytest
 from aiform.driver import CapabilityNotSupported
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
+from aiform.references import resolve
 from drivers.digitalocean import firewall as firewall_module
 from drivers.digitalocean.firewall import Driver
 from tests.drivers import transcripts
@@ -316,6 +317,18 @@ class TestZeroDiffInvariant:
 
         assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
 
+    def test_droplet_ids_shrink_is_still_reported_despite_being_unordered(self, driver):
+        # UNORDERED_FIELDS makes droplet_ids' order not matter, but
+        # unordered_equal is a multiset compare: [111, 222] vs [111] must
+        # still diff. #225's review found nothing pinning that on this
+        # field specifically -- tests/test_compare.py only pins it generically.
+        current = {"droplet_ids": [111, 222]}
+        desired = {"droplet_ids": [111]}
+
+        diff = diff_attributes(current, desired, unordered_fields=driver.UNORDERED_FIELDS)
+
+        assert diff == {"droplet_ids": {"current": [111, 222], "desired": [111]}}
+
 
 class TestUpdate:
     def test_is_a_single_put_then_a_read(self, driver, fake_urlopen):
@@ -350,6 +363,19 @@ class TestUpdate:
         with pytest.raises(ValueError):
             driver.update(firewall_id(), driver_current(), {"inbound_rules": []}, CREDENTIALS)
         assert fake_urlopen.calls == []
+
+    def test_put_body_carries_a_shrunk_droplet_ids(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "PUT", firewall_url(firewall_id()), FakeHTTPResponse(200, created_payload())
+        )
+        script_read(fake_urlopen)
+        current = {**driver_current(), "droplet_ids": [111, 222]}
+        desired = {**minimal_params(), "droplet_ids": [111]}
+
+        driver.update(firewall_id(), current, desired, CREDENTIALS)
+
+        body = fake_urlopen.calls[0]["body"]
+        assert body["droplet_ids"] == [111]
 
 
 def driver_current() -> dict:
@@ -448,15 +474,74 @@ class TestScalarListValidation:
         with pytest.raises(ValueError, match="droplet_ids"):
             driver.create(NAME, params, CREDENTIALS)
 
+    def test_a_digit_string_droplet_id_names_provider_id(self, driver):
+        # #216: the hint must serve two readers with one sentence -- someone
+        # who quoted a plain number in YAML, and someone who reached for a
+        # reference and should have written :provider_id, not :id.
+        params = {**minimal_params(), "droplet_ids": ["123"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        message = str(excinfo.value)
+        assert "must be an int" in message
+        assert "not quoted strings" in message
+        assert "use ':provider_id' instead of ':id'" in message
+
+    def test_a_non_digit_string_droplet_id_keeps_the_ordinary_message(self, driver):
+        params = {**minimal_params(), "droplet_ids": ["not-an-id"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
+    def test_a_non_ascii_digit_string_droplet_id_keeps_the_ordinary_message(self, driver):
+        # str.isdigit() is true for Arabic-Indic digits, which no reference
+        # produces and which "drop the quotes" would not fix either -- YAML
+        # still would not parse them as an int.
+        params = {**minimal_params(), "droplet_ids": ["١٢٣"]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
     def test_a_bool_is_not_an_int_even_though_python_says_so(self, driver):
         params = {**minimal_params(), "droplet_ids": [True]}
         with pytest.raises(ValueError, match="droplet_ids"):
             driver.create(NAME, params, CREDENTIALS)
 
+    def test_a_bool_droplet_id_keeps_the_ordinary_message(self, driver):
+        # sneaky_bool, not the digit-string branch: a bool is not a string.
+        params = {**minimal_params(), "droplet_ids": [True]}
+        with pytest.raises(ValueError) as excinfo:
+            driver.create(NAME, params, CREDENTIALS)
+        assert "provider_id" not in str(excinfo.value)
+
     def test_tags_must_be_strings(self, driver):
         params = {**minimal_params(), "tags": [7]}
         with pytest.raises(ValueError, match="tags"):
             driver.create(NAME, params, CREDENTIALS)
+
+    def test_a_digit_string_tag_does_not_trigger_the_droplet_id_hint(self, driver):
+        # A digit string is a perfectly valid tag -- expected is str here,
+        # not int, so the hint must not leak in and this must not raise
+        # at all.
+        params = {**minimal_params(), "tags": ["123"]}
+        driver._validate_params(params)
+
+
+class TestReferenceIntoDropletIds:
+    """#216 end to end: a firewall's droplet_ids referencing a compute
+    resource's provider_id must pass validation with no type error --
+    the check that, before the fix, only raises at apply time."""
+
+    def test_a_provider_id_reference_passes_validation(self, driver):
+        available = {"digitalocean.compute.web-01": {"id": "123456789", "provider_id": 123456789}}
+        params = {
+            **minimal_params(),
+            "droplet_ids": ["${digitalocean.compute.web-01:provider_id}"],
+        }
+
+        resolved, unresolved = resolve(params, available)
+
+        assert unresolved == []
+        driver._validate_params(resolved)
 
 
 class TestNestedTargetValidation:

@@ -981,6 +981,7 @@ def write_firewall_aiform_md(
     inbound_rules: list[dict],
     outbound_rules: list[dict] | None = None,
     droplet_ids: list[int] | None = None,
+    depends_on: list[str] | None = None,
     filename: str = "firewall.aiform.md",
 ) -> Path:
     """Write a firewall .aiform.md.
@@ -990,6 +991,13 @@ def write_firewall_aiform_md(
     deliberately, and pays for one throwaway droplet to do it (see
     throwaway_droplet). tags always carries SYSTEM_TEST_TAG so the sweeps
     below can find a leak.
+
+    depends_on defaults to omitted (mirrors write_aiform_md's own
+    optional frontmatter fields): a declared edge is independent of
+    whatever droplet_ids resolves to, since _dependency_targets() unions
+    the two -- a firewall that depends_on a droplet without referencing
+    it at all (a tag-targeted one, say) is a real shape, not just the
+    reference-implies-the-edge one droplet_ids alone exercises.
     """
     body = {
         "inbound_rules": inbound_rules,
@@ -1004,12 +1012,15 @@ def write_firewall_aiform_md(
     # hand-indenting goes wrong.
     dumped = yaml.safe_dump(body, sort_keys=False, default_flow_style=False)
     indented = "\n".join(f"  {line}" for line in dumped.rstrip("\n").splitlines())
+    depends_on_block = ""
+    if depends_on:
+        depends_on_lines = "\n".join(f"  - {target}" for target in depends_on)
+        depends_on_block = f"depends_on:\n{depends_on_lines}\n"
     content = (
         "---\n"
         "resource: firewall\n"
         f"name: {name}\n"
-        "provider: digitalocean\n"
-        "params:\n" + indented + "\n"
+        "provider: digitalocean\n" + depends_on_block + "params:\n" + indented + "\n"
         "---\n\n"
         "## Intent\n\n"
         "Unattached firewall created by aiform's live system test suite "

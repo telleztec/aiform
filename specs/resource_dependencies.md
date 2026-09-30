@@ -252,7 +252,7 @@ Each is a property a test can assert, and each traces to a use case in
 |---|---|---|---|
 | **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
 | **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
-| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; **not** met across runs — a dependent outside the run is not consulted by the create-path delete-marker route |
+| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; met across runs for the paths-driven route (#225: refused unless `--force`); **not** met across runs for the delete-marker route — a dependent outside the run is not consulted (#226) |
 | **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall lists a deleted droplet's id while reporting itself converged, so nothing the provider says surfaces the break |
 | **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
 | **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
@@ -493,7 +493,6 @@ Typed edges are what make a rendered graph worth looking at. An untyped graph
 draws the firewall below the droplet and is *correct about ordering* while being
 misleading about consequence.
 
-
 ## Scope: what a "deployment" is
 
 A dependency graph exists **within one deployment**, and a deployment is the
@@ -634,7 +633,7 @@ params:
 - **Fully-qualified keys only, no shorthand.** Shorthand resolution is inferred
   cleverness with ambiguity failure modes.
 - **Parsed with `split(".", 2)`.** `provider` and `resource_type` match
-  `RESOURCE_OR_PROVIDER_PATTERN` (`models.py:10`) and cannot contain dots, but
+  `RESOURCE_OR_PROVIDER_PATTERN` (`models.py:11`) and cannot contain dots, but
   `name` is only `min_length=1` and may. A naive `split(".")` corrupts a dotted
   name — `digitalocean.domain.example.com` is a legitimate key.
 - **Any number of targets.** Fan-in is a first-class case, not a later
@@ -917,6 +916,77 @@ edges it silently gave up on.
 targets are excluded from the edge sets handed to
 `graph.topological_order()` before it is called, not caught after.
 
+### Reverse dependents on a paths-driven destroy, and `--force` (#225)
+
+Everything above classifies edges pointing **out of** the nodes being
+destroyed. `_build_destroy_plan_from_paths()` had no check at all in the
+other direction: a resource **outside** this run that persists a
+`depends_on` **into** a node being destroyed was never consulted, so
+`aiform plan destroy droplet.aiform.md` would destroy the droplet and leave
+a firewall that depends on it tracked, live, and pointed at an id that no
+longer exists — silently. Nothing warned: the uncovered-resource warning is
+gated on `if not paths`, so a paths-driven run never reaches it, and gate
+#2's review model can't see the hazard either, since the plan summary
+carries no `depends_on` (see `build_plan_summary()`'s own note, above).
+
+`_reverse_dependents(node_keys, st)` walks every entry in `st.resources`
+that is **not** in `node_keys` (this destroy's own nodes) and records every
+`(dependent, target)` pair where `target` is one of `node_keys` and
+`dependent`'s persisted `StateEntry.depends_on` names it.
+`_resolve_reverse_dependents()` mirrors `_resolve_dangling_targets()`'s
+shape rather than folding into it — the two hazards are semantic mirror
+images (a target this run can't find, versus a dependent this run doesn't
+know about) and read better as separate messages: without `--force`,
+`PlanBlockedError` names every orphaned pair; with it, each pair drops to a
+warning instead, through the same `(planned, warnings)` channel.
+
+**Reads the dependent's persisted `StateEntry.depends_on`, not its
+`.aiform.md`.** Two reasons, both load-bearing: the dependent's file may not
+exist any more (hand-deleted, moved), and even when it does, it is very
+likely not part of *this* run — the whole scenario is "a resource outside
+the run depends on one inside it." Re-parsing every `.aiform.md` on disk to
+answer this question would add a filesystem scan to the destroy path that
+no other check here needs.
+
+**`--force` warns and proceeds, and `_apply_destroy()` makes the warning's
+"dropping the edge" true at apply time — for exactly the dependents it
+named.** `_build_destroy_plan_from_paths()` puts each warned dependent on the
+destroyed resource's `PlannedResource.dropped_dependents`, and
+`_apply_destroy()` removes the destroyed key from those entries' persisted
+`StateEntry.depends_on` (`_prune_dependents_on()`) after deleting the destroyed key
+from `st.resources`. It does this even when the destroyed target itself is
+untracked in state, because the warning is emitted for that case too. An
+entry that does not appear in `dropped_dependents` is never touched. This is
+deliberately a `state.json`-only edit:
+**the dependent's own `.aiform.md` may still declare the dead
+`depends_on:` in its frontmatter, and this leaves that alone on purpose** —
+rewriting a file nobody asked to edit is worse than the next `plan` on it
+blocking with an actionable error. Concretely: after a forced destroy, the
+survivor's *state* no longer orders against the gone resource, but the next
+`plan` that touches the survivor's own file recomputes
+`_dependency_targets()` from that file's frontmatter, sees the same
+now-nonexistent target again, and — since it resolves nowhere — hits the
+same dangling-target refusal the file-driven destroy path already has,
+until the user actually edits the file — and this particular check,
+`_resolve_dependency_edges()`'s `else` branch (`orchestrator.py:428-432`),
+has **no** `--force` escape of its own; a stale `depends_on:` in
+frontmatter naming a resource no longer tracked anywhere must be edited out
+of the file, not forced past. Pruning removes the stale ordering edge from
+state; it does not, and is not meant to, remove the user's obligation to
+update their own `.aiform.md`.
+
+**Every other destroy prunes nothing.** `_plan_delete_marked()`
+(`build_create_plan()`'s `AIFORM-DELETE-` route) and
+`_build_destroy_plan_from_state()` leave `dropped_dependents` empty, so a
+survivor's persisted `depends_on` keeps naming the destroyed key. The edge
+staying put is what makes the next state-driven `plan destroy` refuse with
+the dangling-target reason (`--force` to proceed) rather than silently
+forgetting the survivor was orphaned. The delete-marker route still classifies
+edges only out of the nodes it processes and has no reverse check, so it can
+still orphan a dependent silently at destroy time. Filed separately as
+**#226**, `priority: P1-correctness` — not fixed here, and not to be read as
+covered by this section.
+
 ### `StateEntry.depends_on`
 
 Written at **three** sites, and all three are needed:
@@ -1125,7 +1195,8 @@ one.
   comma-separated line; `--json` carries the full `depends_on` list;
   `--force` is accepted on `plan destroy`; a dropped-edge warning renders
   through the same `Warning:` line `build_create_plan()`'s warnings already
-  use; `--yes` alone does not bypass the dangling-dependency refusal.
+  use; `--yes` alone does not bypass the dangling-dependency refusal
+  (`test_destroy_blocked_by_dangling_dependency_without_force` runs with `--yes`).
 - **No pre-existing zero-Anthropic-call test weakened** to accommodate the new
   pass. `aiform/graph.py` imports neither `llm` nor `anthropic` nor `models`.
 - **Live**, before merge: three `.aiform.md` files in a scratch directory —
@@ -1155,14 +1226,25 @@ one.
   another's `params`. Shipped as Phase 2, `specs/resource_references.md`; still
   out of scope for *this* spec, which covers declaration only.
 - **Automatic dependency detection** from driver-declared metadata. Phase 3,
-  **paused by decision** behind #216 — `specs/dependency_detection.md` holds
+  **paused by decision**, with reassessment gated on #216 — now fixed —
+  `specs/dependency_detection.md` holds
   the evidence and the reopening conditions. It would produce the same edges
   this phase already consumes, so the ordering engine would not change either
   way. Note that Phase 2 already derives edges from *references*; what is
   paused is deriving them from literal values.
 - **Refusing a destroy that would orphan a still-tracked dependent**, and
   partial-failure recovery for a graph apply. Phase 4 — deliberately after
-  this one, since failure semantics are hard enough serially.
+  this one, since failure semantics are hard enough serially. **Partially
+  shipped since** (#225, `1ed84bf`): the paths-driven destroy producer this
+  spec's "Dangling dependency targets on a destroy path, and `--force`"
+  section describes (above) now also refuses (or, with `--force`, warns and
+  proceeds) when a tracked resource outside the run persists a `depends_on`
+  into a node being destroyed — the mirror image of a dangling target, not
+  covered by that section. See `specs/orchestrator.md`'s
+  `resource_dependencies` addendum for the mechanism. The delete-marker
+  producer has no equivalent check yet (**#226**, `priority:
+  P1-correctness`); partial-failure recovery and restartability remain
+  entirely undelivered.
 - **Concurrency-safe state** (Phase 5) and **parallel execution** (Phase 6).
   Phase 1's order is total and strictly sequential.
 - **Graphical visualization** (UX2). Phase 7.

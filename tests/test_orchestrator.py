@@ -141,6 +141,14 @@ FAKE_DRIVER_SOURCE_WITH_NON_DIFFABLE_FIELDS = FAKE_DRIVER_SOURCE.replace(
     'LIKELY_REPLACE_FIELDS = ["image"]\n    NON_DIFFABLE_FIELDS = ["ssh_keys"]',
 )
 
+# #216: read() returns a key -- provider_id -- that is not a PARAM_SCHEMA
+# field and so is never in `desired`, mirroring compute.py's real
+# _flatten(). Pins that such a key stays additive and invisible to the diff.
+FAKE_DRIVER_SOURCE_WITH_PROVIDER_ID = FAKE_DRIVER_SOURCE.replace(
+    'return {"id": id, "region": "sfo3", "size": "s-1vcpu-2gb"}',
+    'return {"id": id, "region": "sfo3", "size": "s-1vcpu-2gb", "provider_id": 123456789}',
+)
+
 # read() returns tags in the opposite order from what write_aiform_md()
 # below declares in params -- the exact "CSP returns the same elements
 # in a different order" scenario specs/unordered_fields.md fixes.
@@ -325,6 +333,32 @@ class TestResourceKey:
             orchestrator.resource_key("digitalocean", "compute", "telleztec-app-01")
             == "digitalocean.compute.telleztec-app-01"
         )
+
+
+class TestPopId:
+    def test_provider_id_survives_id_extraction(self):
+        new_id, attrs = orchestrator._pop_id(
+            {"id": "123", "provider_id": 123, "region": "sfo3"},
+            "digitalocean",
+            "compute",
+            "read",
+        )
+        assert new_id == "123"
+        assert attrs == {"provider_id": 123, "region": "sfo3"}
+
+
+class TestReferenceableNamespace:
+    def test_offers_both_id_and_provider_id(self):
+        entry = make_state_entry(id="123", attributes={"provider_id": 123, "region": "sfo3"})
+        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+
+        result = orchestrator.referenceable(st)
+
+        assert result["digitalocean.compute.telleztec-app-01"] == {
+            "provider_id": 123,
+            "region": "sfo3",
+            "id": "123",
+        }
 
 
 class TestDiscoverFiles:
@@ -756,6 +790,45 @@ class TestBuildCreatePlan:
 
         assert planned[0].entry.action == PlanAction.NO_OP
         assert len(client.messages.calls) == 0
+
+    def test_provider_id_only_in_current_stays_a_no_op_zero_llm_calls(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        # #216: a key like provider_id that read() returns but the user's
+        # params never mention must not defeat the zero-LLM no-op
+        # short-circuit -- diff_attributes() iterates desired only.
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        driver_file = write_driver(
+            drivers_dir, "digitalocean", "compute", source=FAKE_DRIVER_SOURCE_WITH_PROVIDER_ID
+        )
+        aiform_md = tmp_path / "app.aiform.md"
+        content = write_aiform_md(aiform_md)
+        file_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        entry = make_state_entry(
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb", "provider_id": 123456789},
+            driver=make_driver_info(driver_sha256(driver_file)),
+            aiform_md_sha256=file_hash,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": entry})
+
+        client = FakeClient([])
+        planned, _ = orchestrator.build_create_plan(
+            [aiform_md], state_path=state_path, client=client
+        )
+
+        assert planned[0].entry.action == PlanAction.NO_OP
+        assert "provider_id" not in planned[0].entry.rationale
+        assert len(client.messages.calls) == 0
+        # Pins that the key actually came from the driver's read(), not just
+        # from the state fixture above -- refresh_resource() replaces
+        # state_entry.attributes wholesale, so this fails if the driver
+        # stops returning provider_id.
+        refreshed = state.load(state_path)
+        assert (
+            refreshed.resources["digitalocean.compute.telleztec-app-01"].attributes["provider_id"]
+            == 123456789
+        )
 
     def test_no_op_records_the_new_aiform_md_hash_in_state(
         self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
@@ -3000,6 +3073,496 @@ class TestBuildDestroyPlan:
         assert "digitalocean.compute.ghost-01" in warnings[0]
 
 
+class TestReverseDependentDestroyRefusal:
+    """_build_destroy_plan_from_paths() must consult resources OUTSIDE the
+    run too: a tracked dependent's persisted depends_on naming a target in
+    this run means destroying that target would orphan the dependent. #225."""
+
+    def test_paths_driven_destroy_refuses_to_orphan_a_tracked_dependent(self, tmp_path: Path):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.firewall.fw-01" in reason
+        assert "digitalocean.compute.droplet-01" in reason
+
+    def test_reverse_dependent_error_names_every_orphaned_dependent(self, tmp_path: Path):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+                "digitalocean.firewall.fw-02": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-02",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.firewall.fw-01" in reason
+        assert "digitalocean.firewall.fw-02" in reason
+
+    def test_force_proceeds_past_reverse_dependent_edges_and_warns_per_pair(self, tmp_path: Path):
+        # Only build_destroy_plan()'s own contract, at the planning level:
+        # --force lets the destroy proceed and each pair gets one warning.
+        # Whether the edge is actually dropped from the dependent's
+        # persisted state is a separate, apply-time guarantee -- see
+        # TestForcedDestroyPrunesTheDroppedEdge below, which is what "drops"
+        # would have to mean for a test with that name to be true.
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+                "digitalocean.firewall.fw-02": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-02",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.droplet-01"]
+        assert len(warnings) == 2
+        assert any("digitalocean.firewall.fw-01" in w for w in warnings)
+        assert any("digitalocean.firewall.fw-02" in w for w in warnings)
+
+    def test_dependent_also_in_the_run_does_not_trigger_the_refusal(self, tmp_path: Path):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        firewall_path = tmp_path / "fw.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        write_aiform_md(
+            firewall_path,
+            resource="firewall",
+            name="fw-01",
+            depends_on=["digitalocean.compute.droplet-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [droplet_path, firewall_path], state_path=state_path
+        )
+
+        assert warnings == []
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.droplet-01",
+            "digitalocean.firewall.fw-01",
+        }
+
+    def test_dependent_not_naming_the_target_is_unaffected(self, tmp_path: Path):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.other-01": make_state_entry(
+                    name="other-01",
+                    depends_on=["digitalocean.compute.unrelated-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+
+        assert warnings == []
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.droplet-01"]
+
+    def test_state_driven_producer_is_unaffected_by_the_reverse_dependent_check(
+        self, tmp_path: Path
+    ):
+        # `_build_destroy_plan_from_state` is already correct -- it destroys
+        # everything tracked, so a dependent can never be left outside the
+        # run. This pins that the new check, which only the paths-driven
+        # producer calls, does not creep into the other one.
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(None, state_path=state_path)
+
+        assert warnings == []
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.droplet-01",
+            "digitalocean.firewall.fw-01",
+        }
+
+    def test_declared_only_dependent_reaches_state_and_is_honoured(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        # Every other test in this class hand-builds the dependent's
+        # StateEntry, which pins the orchestrator mechanism but not that a
+        # firewall's `depends_on:` frontmatter -- with NO reference
+        # anywhere in its own params, e.g. a tag-targeted firewall --
+        # actually reaches StateEntry.depends_on via a real plan/apply, and
+        # is honoured from there. #225 F13.
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_driver(drivers_dir, "digitalocean", "firewall")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        firewall_path = tmp_path / "fw.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        write_aiform_md(
+            firewall_path,
+            resource="firewall",
+            name="fw-01",
+            depends_on=["digitalocean.compute.droplet-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(), state_path)
+
+        planned, _ = orchestrator.build_create_plan(
+            [droplet_path, firewall_path], state_path=state_path, client=FakeClient([])
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-01"
+        ]
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+
+        reason = exc_info.value.reason
+        assert "digitalocean.firewall.fw-01" in reason
+        assert "digitalocean.compute.droplet-01" in reason
+
+
+class TestForcedDestroyPrunesTheDroppedEdge:
+    """#225 F15: the --force warning says "dropping the edge" -- apply_plan()
+    must make that literally true, or a later tear-it-all-down `plan destroy`
+    demands --force again for a resource the user already destroyed on
+    purpose. Pruning happens in _apply_destroy(), in the same state write
+    that removes the destroyed resource's own entry."""
+
+    def test_forced_destroy_prunes_the_dependents_persisted_depends_on(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+        assert len(warnings) == 1
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert "digitalocean.compute.droplet-01" not in saved.resources
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+
+    def test_pruning_leaves_unrelated_depends_on_entries_alone(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+                "digitalocean.firewall.fw-02": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-02",
+                    depends_on=["digitalocean.compute.droplet-02"],
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+        assert saved.resources["digitalocean.firewall.fw-02"].depends_on == [
+            "digitalocean.compute.droplet-02"
+        ]
+
+    def test_pruning_does_not_fire_when_nothing_was_orphaned(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-02"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan([droplet_path], state_path=state_path)
+        assert warnings == []
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-02"
+        ]
+
+    def test_forced_destroy_records_exactly_the_warned_dependents_on_the_plan(self, tmp_path: Path):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+                "digitalocean.firewall.fw-02": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-02",
+                    depends_on=["digitalocean.compute.droplet-02"],
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+
+        assert [pr.dropped_dependents for pr in planned] == [["digitalocean.firewall.fw-01"]]
+
+    def test_untracked_target_under_force_still_drops_the_edges_the_warning_names(
+        self, tmp_path: Path
+    ):
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True
+        )
+        assert len(warnings) == 1
+        assert planned[0].state_entry is None
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+
+
+class TestDestroysThatNamedNoDependentsPruneNothing:
+    """The delete-marker route and the state-driven producer never emit the
+    "dropping the edge" warning, so they must not drop any edge: leaving it in
+    place is what makes the next plan refuse instead of forgetting the
+    survivor was orphaned."""
+
+    def test_delete_marker_destroy_leaves_the_survivors_edge_and_the_next_plan_refuses(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        write_driver(drivers_dir, "digitalocean", "firewall")
+        marker_path = tmp_path / "AIFORM-DELETE-droplet.aiform.md"
+        write_aiform_md(marker_path, name="droplet-01")
+        firewall_path = tmp_path / "fw.aiform.md"
+        write_aiform_md(
+            firewall_path,
+            resource="firewall",
+            name="fw-01",
+            depends_on=["digitalocean.compute.droplet-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_create_plan(
+            [marker_path], state_path=state_path, client=FakeClient([])
+        )
+        assert [pr.dropped_dependents for pr in planned] == [[]]
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert "digitalocean.compute.droplet-01" not in saved.resources
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-01"
+        ]
+
+        with pytest.raises(PlanBlockedError) as destroy_exc:
+            orchestrator.build_destroy_plan(None, state_path=state_path)
+        assert "neither in this run nor tracked in state" in destroy_exc.value.reason
+        assert "digitalocean.compute.droplet-01" in destroy_exc.value.reason
+
+        with pytest.raises(PlanBlockedError) as create_exc:
+            orchestrator.build_create_plan(
+                [firewall_path], state_path=state_path, client=FakeClient([])
+            )
+        assert "neither a file in this run nor a resource tracked in state" in (
+            create_exc.value.reason
+        )
+
+    def test_state_driven_plan_names_no_dependents_so_apply_keeps_the_survivors_edge(
+        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(
+                    name="droplet-01", aiform_md_path=str(tmp_path / "droplet.aiform.md")
+                ),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01"],
+                ),
+            },
+        )
+        write_aiform_md(tmp_path / "droplet.aiform.md", name="droplet-01")
+
+        planned, _ = orchestrator.build_destroy_plan(None, state_path=state_path)
+        assert all(pr.dropped_dependents == [] for pr in planned)
+        droplet_only = [pr for pr in planned if pr.name == "droplet-01"]
+        orchestrator.apply_plan(
+            droplet_only,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+        )
+
+        saved = state.load(state_path)
+        assert "digitalocean.compute.droplet-01" not in saved.resources
+        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-01"
+        ]
+
+
 class TestBuildPlanSummary:
     def test_serializes_resource_key_action_rationale_likely_replace(self):
         entry = PlanEntry(
@@ -3169,6 +3732,36 @@ class TestApplyPlan:
         saved = state.load(state_path)
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
         assert entry.depends_on == ["digitalocean.compute.new-dep-01"]
+
+    def test_update_without_replace_persists_a_shrunk_depends_on(self, tmp_path: Path):
+        # Only the 1-to-1 swap above had coverage; nothing pinned a shrink
+        # from two targets down to one, which is exactly #225's
+        # droplet_ids case one layer up, in the persisted edge list.
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.dep-01", "digitalocean.compute.dep-02"],
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="dropped a reference",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=["digitalocean.compute.dep-01"],
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True)
+
+        saved = state.load(state_path)
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.dep-01"]
 
     def test_update_without_replace_stores_a_copy_of_depends_on_not_an_alias(
         self, tmp_path: Path, monkeypatch

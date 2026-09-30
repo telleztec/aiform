@@ -23,6 +23,7 @@ ZONE = "digitalocean.domain.example.com"
 AVAILABLE = {
     WEB: {
         "id": "12345",
+        "provider_id": 12345,
         "ipv4_address": "203.0.113.5",
         "region": "sfo3",
         "tags": ["aiform", "web"],
@@ -65,6 +66,14 @@ class TestWholeValueReferencePreservesType:
     def test_id_is_referenceable_even_though_it_is_not_in_attributes(self):
         resolved, _ = resolve(ref(f"${{{WEB}:id}}"), AVAILABLE)
         assert resolved == {"data": "12345"}
+
+    def test_provider_id_stays_the_native_int_unlike_id(self):
+        # #216: id is aiform's own string identity; provider_id is the
+        # CSP's own value, in its own type -- a droplet-id field like
+        # droplet_ids needs this one, not id.
+        resolved, _ = resolve(ref(f"${{{WEB}:provider_id}}"), AVAILABLE)
+        assert resolved == {"data": 12345}
+        assert isinstance(resolved["data"], int)
 
 
 class TestEmbeddedReference:
