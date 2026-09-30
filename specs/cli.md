@@ -146,9 +146,12 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   deployment, and re-running it without the flag in a directory that holds a
   named deployment is refused for the same reason every other command is. If
   there is no state file, `init` writes an empty one carrying the name, via
-  `state.save()`. If a file exists under the *same* name it is left untouched
-  (not rewritten, no `.backup`). Prints `Deployment: <name>` on the line after
-  `Initialized aiform in ...`.
+  `state.save()`, **after the managed-SSH-key step below, the last step that
+  can fail**: an `init` that dies earlier leaves no `state.json`, so it has not
+  fixed a name and a re-run with another `--deployment` is accepted rather than
+  refused with `DeploymentMismatchError`. If a file exists under the *same*
+  name it is left untouched (not rewritten, no `.backup`). Prints
+  `Deployment: <name>` on the line after `Initialized aiform in ...`.
 - `--provider` must name a provider `config.PROVIDER_TOKEN_ENV_VARS`
   knows about (today: only `digitalocean`) — an unrecognized value is a
   clean `Error: ...` (exit 2), not a stack trace. Deliberately reads the

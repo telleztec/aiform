@@ -326,8 +326,6 @@ def _cmd_init(args: argparse.Namespace) -> int:
     st = state.load(state.DEFAULT_STATE_PATH, deployment=args.deployment)
 
     Path(".aiform").mkdir(parents=True, exist_ok=True)
-    if not state.DEFAULT_STATE_PATH.exists():
-        state.save(st, state.DEFAULT_STATE_PATH)
 
     gitignore_path = Path(".gitignore")
     existing_lines = (
@@ -359,6 +357,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
         keychain_backup_script_path, onepassword_backup_script_path = ssh.generate_backup_script(
             ssh_dir, private_key_path
         )
+
+    if not state.DEFAULT_STATE_PATH.exists():
+        state.save(st, state.DEFAULT_STATE_PATH)
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")

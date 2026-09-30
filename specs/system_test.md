@@ -83,7 +83,9 @@ the curated one — not a separate concept.
   `aiform plan destroy --yes` (or, if nothing was ever created, a
   no-op) against whatever `state.json` exists in `tmp_path` at that
   point — so a droplet is torn down even when an assertion mid-test
-  raises. Its scope must match how Behavior's ordered sequence
+  raises. A bare `init` now leaves a `state.json` (#201), so the fixture's
+  `state_path.exists()` gate also passes for a test that created nothing
+  and runs one extra no-op `plan destroy` (exit 0, no LLM call). Its scope must match how Behavior's ordered sequence
   (cases 1–9) is implemented: since those cases deliberately share one
   `tmp_path` and one tracked droplet across the whole sequence (see
   Behavior), that entire sequence is **one pytest test function**, with

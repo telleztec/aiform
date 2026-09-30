@@ -598,3 +598,33 @@ class TestResourceAddressing:
 
         assert code == 2
         assert "no tracked resource is named 'nope'; tracked: web-01" in capsys.readouterr().err
+
+
+class TestInitWritesStateLast:
+    @staticmethod
+    def fail_the_key_step(monkeypatch):
+        def ensure_managed_key(ssh_dir):
+            raise RuntimeError("ssh-keygen failed")
+
+        monkeypatch.setattr(cli.ssh, "ensure_managed_key", ensure_managed_key)
+
+    def test_a_failure_in_the_ssh_key_step_leaves_no_state_file(
+        self, project, reach, monkeypatch, capsys
+    ):
+        self.fail_the_key_step(monkeypatch)
+
+        code = cli.main(["init", "--deployment", "prod"])
+
+        assert code == 2
+        assert "ssh-keygen failed" in capsys.readouterr().err
+        assert not (project / ".aiform" / "state.json").exists()
+
+    def test_a_rerun_under_another_name_is_then_accepted(self, project, reach, monkeypatch):
+        with monkeypatch.context() as failing:
+            self.fail_the_key_step(failing)
+            cli.main(["init", "--deployment", "prod"])
+
+        assert cli.main(["init", "--deployment", "scratch"]) == 0
+
+        raw = json.loads((project / ".aiform" / "state.json").read_text())
+        assert raw["deployment"] == "scratch"
