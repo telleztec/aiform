@@ -38,9 +38,11 @@ a second vocabulary is not invented.
 | Use case | What must be true | Priority | State |
 |---|---|---|---|
 | **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run; across runs only for the paths-driven route (#225), not the delete-marker route (#226) |
+| **UC-F — Forget a dependent when deleting** | A user marks a resource for deletion but forgets to update another resource that still references it. `aiform` refuses before deleting, names the dependent, and the user can recover by editing that resource; it does not delete the referenced resource out from under it. | **P0** | partial — refused up front when the dependent's file is in the same run as the marker; **not** refused when the marker is given by path alone (#226). Not verified against a live provider (#239) |
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
+| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. No test and no live run (#239) |
 | **UC2 — Declare a dependency by hand** | A user can state a relationship `aiform` cannot see, and have it honoured. Uniquely expresses ordering with **no** value flow. | **P1** | delivered |
 | **UC-D — Know what a failure touches** | When a resource fails or degrades, an operator can learn what else is affected without reading the configuration by hand. | **P2** | **not delivered** — no implementation |
 | **UC3 — Parallel execution** | Resources with no dependency between them are applied concurrently, so N independent resources do not take N times as long as one. | **P2** | not delivered — Phase 6 |
@@ -51,10 +53,14 @@ a second vocabulary is not invented.
 - **UC-B is P0** because getting a destroy order wrong destroys or orphans real
   resources, and the rubric's first test is whether something bad and
   hard-to-reverse happens unnoticed.
-- **UC-A, UC-C, UC-E and UC2 are P1**: each is about the tool being *correct* or
+- **UC-F is P0** for the same reason as UC-B: the mistake it guards against is an
+  ordinary one (renaming one file and forgetting its neighbour), and the outcome is
+  a real resource deleted with something still pointing at it.
+- **UC-A, UC-C, UC-E, UC-G and UC2 are P1**: each is about the tool being *correct* or
   *reviewable*. A wrong create order fails loudly; an under-reporting plan gets
   approval for a change the user did not see; a re-run that compounds damage turns
-  one failure into two.
+  one failure into two. UC-G is UC-E applied to a delete: the interruption point is
+  the one where the provider has changed and `state.json` has not.
 - **UC-D is P2** rather than P1 because nothing malfunctions without it — an
   operator is merely unaided. It is the only use case with no implementation at all.
 - **UC1 is P3** because Phase 2 already delivers its useful half, and the
@@ -466,9 +472,10 @@ What shipped, and what did not: `_build_destroy_plan_from_paths()` — the
 outside the run has a persisted `depends_on` naming a resource inside it
 (`_reverse_dependents()`/`_resolve_reverse_dependents()`,
 `specs/orchestrator.md`). A forced destroy also has `_apply_destroy()`
-prune the destroyed key out of every other tracked entry's persisted
-`depends_on` (`_prune_dependents_on()`) — `state.json` only; a survivor's
-own `.aiform.md` frontmatter is left as the user wrote it. The
+prune the destroyed key out of exactly the dependents the `--force` warning
+named (`_prune_dependents_on()`) — `state.json` only, and only for those
+entries; a survivor's own `.aiform.md` frontmatter is left as the user wrote
+it, and the delete-marker and state-driven destroys prune nothing. The
 **delete-marker** destroy route
 (`AIFORM-DELETE-`, `specs/resource_dependencies.md`'s Mechanism B) still
 orphans a dependent silently — filed as **#226**, `priority:

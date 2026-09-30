@@ -949,13 +949,15 @@ answer this question would add a filesystem scan to the destroy path that
 no other check here needs.
 
 **`--force` warns and proceeds, and `_apply_destroy()` makes the warning's
-"dropping the edge" true at apply time.** `_prune_dependents_on(st,
-destroyed_key)` runs immediately after the destroyed key is deleted from
-`st.resources`, and rewrites **every** other entry's persisted
-`StateEntry.depends_on` to drop the destroyed key — not only the pair(s)
-`_resolve_reverse_dependents()` warned about, though in practice that is
-the same set, since anything else naming the destroyed key would have
-produced its own warning. This is deliberately a `state.json`-only edit:
+"dropping the edge" true at apply time — for exactly the dependents it
+named.** `_build_destroy_plan_from_paths()` puts each warned dependent on the
+destroyed resource's `PlannedResource.dropped_dependents`, and
+`_apply_destroy()` removes the destroyed key from those entries' persisted
+`StateEntry.depends_on` (`_prune_dependents_on()`) after deleting the destroyed key
+from `st.resources`. It does this even when the destroyed target itself is
+untracked in state, because the warning is emitted for that case too. An
+entry that does not appear in `dropped_dependents` is never touched. This is
+deliberately a `state.json`-only edit:
 **the dependent's own `.aiform.md` may still declare the dead
 `depends_on:` in its frontmatter, and this leaves that alone on purpose** —
 rewriting a file nobody asked to edit is worse than the next `plan` on it
@@ -973,12 +975,17 @@ of the file, not forced past. Pruning removes the stale ordering edge from
 state; it does not, and is not meant to, remove the user's obligation to
 update their own `.aiform.md`.
 
-**Only this producer.** `_plan_delete_marked()` (`build_create_plan()`'s
-`AIFORM-DELETE-` route) still classifies edges only out of the nodes it
-processes, has no equivalent reverse check, and can still orphan a
-dependent silently. Filed separately as **#226**, `priority:
-P1-correctness` — not fixed here, and not to be read as covered by this
-section.
+**Every other destroy prunes nothing.** `_plan_delete_marked()`
+(`build_create_plan()`'s `AIFORM-DELETE-` route) and
+`_build_destroy_plan_from_state()` leave `dropped_dependents` empty, so a
+survivor's persisted `depends_on` keeps naming the destroyed key. The edge
+staying put is what makes the next state-driven `plan destroy` refuse with
+the dangling-target reason (`--force` to proceed) rather than silently
+forgetting the survivor was orphaned. The delete-marker route still classifies
+edges only out of the nodes it processes and has no reverse check, so it can
+still orphan a dependent silently at destroy time. Filed separately as
+**#226**, `priority: P1-correctness` — not fixed here, and not to be read as
+covered by this section.
 
 ### `StateEntry.depends_on`
 

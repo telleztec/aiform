@@ -283,6 +283,7 @@ class PlannedResource:
     driver_info: DriverInfo | None
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
+    dropped_dependents: list[str] = field(default_factory=list)
 
 
 # --- plan create (PLAN.md §5 "aiform plan create") ---
@@ -1380,22 +1381,37 @@ changed and which deliberately did not.
   `.aiform.md`: that file may not exist any more, or may simply not be part
   of this run, and re-parsing every `.aiform.md` on disk to answer this
   would add a filesystem scan to the destroy path that nothing else here
-  needs. **`_apply_destroy()` makes the "dropping the edge" warning true**:
-  `_prune_dependents_on(st, destroyed_key)` runs right after the destroyed
-  key is deleted from `st.resources`, rewriting every other entry's
-  persisted `depends_on` to drop it — `state.json` only. A dependent's own
-  `.aiform.md` frontmatter is deliberately left untouched, so the next
-  `plan` that reads it still sees the stale declaration and, since it now
-  resolves nowhere, blocks (no `--force` escape on that particular check;
-  see `specs/resource_dependencies.md`) until the user edits the file.
-  **Only the paths-driven producer got this fix.** `_plan_delete_marked()` (the
-  `AIFORM-DELETE-` route, reached from `build_create_plan()`) still checks
-  edges only *out of* the nodes it processes and has no equivalent check in
-  the other direction, so it can still orphan a dependent silently — filed
-  separately as **#226**, `priority: P1-correctness`, not fixed here.
+  needs. **`_apply_destroy()` makes the "dropping the edge" warning true,
+  and only that warning.** `_build_destroy_plan_from_paths()` records the
+  dependents the warning named on the destroyed resource's
+  `PlannedResource.dropped_dependents` (every `dependent` in the
+  `_reverse_dependents()` pairs whose target is that resource; empty when
+  nothing was orphaned, which is the only case that reaches the planned list
+  without `--force`). `_apply_destroy()` hands them to
+  `_prune_dependents_on(st, destroyed_key, dependents)`, which removes the destroyed
+  key from exactly those entries' persisted `depends_on` — `state.json` only —
+  after the destroyed key is deleted from `st.resources` and before the state
+  write. It runs whether or not the destroyed target is tracked in state: an
+  untracked target under `--force` still drops the edges the warning
+  promised. A dependent's own `.aiform.md` frontmatter is deliberately left
+  untouched, so the next `plan` that reads it still sees the stale
+  declaration and, since it now resolves nowhere, blocks (no `--force` escape
+  on that particular check; see `specs/resource_dependencies.md`) until the
+  user edits the file.
+  **Every other destroy prunes nothing.** The `AIFORM-DELETE-` route
+  (`_plan_delete_marked()`, reached from `build_create_plan()`) and the
+  state-driven `build_destroy_plan()` producer leave `dropped_dependents`
+  empty, so a survivor's persisted `depends_on` keeps naming the destroyed
+  key. That is deliberate: the edge staying put is what lets the next
+  state-driven `plan destroy` refuse with its dangling-target reason instead
+  of quietly losing the fact that the survivor was orphaned. The delete-marker
+  route still does not *refuse* to orphan a dependent outside the run, which
+  is **#226**, `priority: P1-correctness`, not fixed here.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
-  helper keeps working.
+  helper keeps working. **`PlannedResource.dropped_dependents`** is likewise
+  defaulted (empty list); it is in-memory only and is not part of
+  `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.
 - **`apply_plan()` is unchanged.** It applies the list in the order it is

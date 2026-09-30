@@ -327,6 +327,7 @@ class PlannedResource:
     # stands at the moment of each driver call.
     raw_params: dict[str, Any] = dataclasses.field(default_factory=dict)
     unresolved_references: list[str] = dataclasses.field(default_factory=list)
+    dropped_dependents: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -930,7 +931,8 @@ def _build_destroy_plan_from_paths(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
     warnings = _resolve_dangling_targets(dangling, force=force)
-    warnings += _resolve_reverse_dependents(_reverse_dependents(node_keys, st), force=force)
+    orphaned = _reverse_dependents(node_keys, st)
+    warnings += _resolve_reverse_dependents(orphaned, force=force)
 
     order = _reverse_topological(node_keys, edges)
     by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}
@@ -954,6 +956,9 @@ def _build_destroy_plan_from_paths(
                 credentials=None,
                 state_entry=state_entry,
                 depends_on=_dependency_targets(resource_spec, key),
+                dropped_dependents=sorted(
+                    dependent for dependent, target in orphaned if target == key
+                ),
             )
         )
     return planned, warnings
@@ -1321,12 +1326,15 @@ def _record_update(
 # edge" for a resource outside the run that depends on the target being
 # destroyed. Making that true is this function's job, not build_destroy_plan()'s:
 # the edge only actually disappears once the target is really gone, which is
-# here. A dependent's OWN .aiform.md may still declare the dead dependency --
-# left alone on purpose, since rewriting a file nobody asked to edit is worse
+# here. Only the named dependents are touched: any other destroy route leaves
+# a survivor's edge in place so the next plan refuses instead of forgetting the
+# orphaning. A dependent's OWN .aiform.md may still declare the dead dependency
+# -- left alone on purpose, since rewriting a file nobody asked to edit is worse
 # than the next `plan` on it blocking with an actionable error.
-def _prune_dependents_on(st: State, destroyed_key: str) -> None:
-    for entry in st.resources.values():
-        if destroyed_key in entry.depends_on:
+def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -> None:
+    for dependent in dependents:
+        entry = st.resources.get(dependent)
+        if entry is not None and destroyed_key in entry.depends_on:
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
 
 
@@ -1347,7 +1355,7 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         )
         _require_tracked(st, pr.entry.resource_key)
         del st.resources[pr.entry.resource_key]
-        _prune_dependents_on(st, pr.entry.resource_key)
+    _prune_dependents_on(st, pr.entry.resource_key, pr.dropped_dependents)
     state.save(st, state_path)
     move_to_trash(pr.aiform_md_path)
 
