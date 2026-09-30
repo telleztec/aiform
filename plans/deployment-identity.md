@@ -24,7 +24,8 @@ is recorded below as deferred.
   checked against the name inside the loaded state file. No environment
   variable and no `~/aiform` home lookup.
 - Every command that reads state accepts `--deployment NAME`; unspecified means
-  `default`. The flag is declared once, on the shared `state_parent`.
+  `default`. The flag is declared on the shared `state_parent`, and also on the root and group
+  parsers so it is accepted at any position (`specs/cli.md`).
 - The check lives in one choke point, `state.load(...)`, which takes the
   requested name and raises on mismatch, so no call site can forget it. It
   fires before any provider call and before any LLM call. A missing state file

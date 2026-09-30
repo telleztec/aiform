@@ -70,10 +70,29 @@ uses the default path.
 
 `--deployment <name>` (no argparse default: `main()` resolves `default`, i.e.
 `state.DEFAULT_DEPLOYMENT`, when neither the flag nor an `@name` gives one)
-is accepted on exactly the same eight subcommands, and on `init`. It is
-declared **once**, on a shared parent parser that `state_parent` inherits, so
-no command that reads state can lack it. It is the deployment the caller
-means to act on, and every one of those commands passes it as
+is accepted by **every command**, at every position a command can be typed:
+before the subcommand (`aiform --deployment prod plan create`), between a
+group and its verb (`aiform plan --deployment prod create`,
+`aiform resource --deployment prod status`) and after the verb
+(`aiform plan create --deployment prod`). `init` has two positions (before and
+after it); a `plan` or `resource` verb has three. The leaf parsers (`init`, the
+five `plan` verbs, the three `resource` verbs) declare it on a shared parent
+parser that `state_parent` inherits, so no command that reads state can lack
+it; the root parser and the `plan` and `resource` group parsers declare it
+too, each under its own `dest` (`deployment_root`, `deployment_group`, and the
+leaf's `deployment`). Separate dests are required, not cosmetic: a subparser
+writes its own default over a same-`dest` value parsed at the parent level,
+which is the defect #134 documents for `-v`. `_resolve_deployment` merges the
+positions afterwards. The same value at more than one position is harmless;
+different values are a usage error (exit 2, nothing run, the invoked
+subcommand's usage printed) whose message names both:
+`conflicting deployments: --deployment a and --deployment b`. It is the same
+check, and the same message shape, as `--deployment` against `@name`: every
+spelling of a deployment, flag at any position or `@name`, is one set, and a
+set of more than one is refused. A name invalid under
+`state.validate_deployment_name` is the same usage error at every position.
+The resolved value is the deployment the caller
+means to act on, and every command passes it as
 `deployment=` to whatever calls `state.load()` on its behalf
 (`orchestrator.build_create_plan`/`build_destroy_plan`/`apply_plan`/
 `refresh_state`, `observability.collect`/`status_reports`, and `plan show`'s
@@ -97,9 +116,9 @@ means "discover in the cwd" and never a file called `@prod`. The rest after
 the `@` goes through the same `validate_deployment_name` as the flag, and a bad
 one is the same usage error (exit 2). `--deployment` therefore has no argparse
 default; `main()` resolves it after parsing, in this order: the `--deployment`
-value if given, else the `@name`, else `state.DEFAULT_DEPLOYMENT`. Giving both
-is fine when they name the same deployment and a usage error (exit 2, nothing
-run) when they differ; so is giving two different `@name`s. Repeating the same
+value(s) if given, else the `@name`, else `state.DEFAULT_DEPLOYMENT`. Giving
+both is fine when they name the same deployment and a usage error (exit 2,
+nothing run) when they differ; so is giving two different `@name`s. Repeating the same
 one is harmless. `@` alone is an empty name and therefore invalid. A file whose
 name really starts with `@` is spelled `./@name.aiform.md`. Commands with no
 `files` positional do not accept the shorthand and `--deployment` is the only
