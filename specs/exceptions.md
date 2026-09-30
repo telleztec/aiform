@@ -51,6 +51,21 @@ class PlanBlockedError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class DeploymentMismatchError(Exception):
+    """Raised by state.load() when the state file at `path` belongs to a
+    different deployment than the one the caller asked to act on (#201)."""
+
+    def __init__(self, requested: str, found: str, path: Path):
+        self.requested = requested
+        self.found = found
+        self.path = path
+        super().__init__(
+            f"this state file belongs to deployment {found!r}, not {requested!r}.\n"
+            f"  state file: {path}\n"
+            "  Nothing was read from the provider and nothing was changed."
+        )
 ```
 
 `ResourceNotFoundError` has no constructor beyond `Exception`'s own — no
@@ -65,6 +80,24 @@ include the id in its message can do so via the plain
 message passed to `Exception.__init__`) — see `specs/orchestrator.md`
 for exactly which call sites raise each and why.
 
+`DeploymentMismatchError` is the same shape: structured fields and a
+formatted message. `path` is stored **absolute** — `state.load()` passes
+`path.absolute()` — so the message names the file the user would have
+touched, not a relative `.aiform/state.json` that means nothing out of
+context. `str(exc)` is three lines:
+
+```
+this state file belongs to deployment 'prod', not 'scratch'.
+  state file: /abs/path/.aiform/state.json
+  Nothing was read from the provider and nothing was changed.
+```
+
+The last line is a promise about the raise site, not about the process:
+`state.load()` is the first thing every state-reading command does, before any
+driver load, credential resolution, provider call or LLM call, so it is true
+of every command that can raise this. `cli.py` maps it to `Error: <message>`
+on stderr and exit 2 (`specs/cli.md`).
+
 ## Behavior
 
 - `ResourceNotFoundError` is a plain subclass of `Exception` — no custom
@@ -78,6 +111,8 @@ for exactly which call sites raise each and why.
 - `PlanBlockedError(reason)` stores `reason` verbatim; `str(exc) ==
   reason` (inherited from `Exception.__init__(reason)`, same as
   `DriverUpdateNotSupported`'s `.reason`/`str()` relationship).
+- `DeploymentMismatchError(requested, found, path)` stores all three verbatim
+  as same-named attributes and `str(exc)` is the three-line text above.
 
 ## Edge cases / errors
 
@@ -85,8 +120,9 @@ for exactly which call sites raise each and why.
   semantics (e.g. not `LookupError`) — deliberately its own type, so
   catching it can never accidentally also catch an unrelated `KeyError`/
   `IndexError` a driver's own response-parsing code might raise. Same
-  reasoning applies to `DriverExecutionError`/`PlanBlockedError` — plain
-  `Exception` subclasses, not tied to any built-in hierarchy.
+  reasoning applies to `DriverExecutionError`/`PlanBlockedError`/
+  `DeploymentMismatchError` — plain `Exception` subclasses, not tied to any
+  built-in hierarchy.
 
 ## Out of scope
 

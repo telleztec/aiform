@@ -65,11 +65,40 @@ one fix across every subcommand, not three more instances of it.
 `--state-file <path>` (default `state.DEFAULT_STATE_PATH`, i.e.
 `.aiform/state.json`) is accepted on every subcommand that touches
 state — `plan create`/`apply`/`destroy`/`refresh`/`show` and
-`resource check`/`metrics`/`status` — but not on `init`, which never
-reads or writes state.
+`resource check`/`metrics`/`status` — but not on `init`, which always
+uses the default path.
 
-### `aiform init [--provider digitalocean]`
+`--deployment <name>` (default `state.DEFAULT_DEPLOYMENT`, i.e. `default`)
+is accepted on exactly the same eight subcommands, and on `init`. It is
+declared **once**, on a shared parent parser that `state_parent` inherits, so
+no command that reads state can lack it. It is the deployment the caller
+means to act on, and every one of those commands passes it as
+`deployment=` to whatever calls `state.load()` on its behalf
+(`orchestrator.build_create_plan`/`build_destroy_plan`/`apply_plan`/
+`refresh_state`, `observability.collect`/`status_reports`, and `plan show`'s
+and `resource`'s direct loads). The check itself is `state.load()`'s, not
+this module's (`specs/state.md`): a state file that names a different
+deployment raises `DeploymentMismatchError` before any driver load,
+credential resolution, provider call or LLM call. The argument type is
+`state.validate_deployment_name`, so a name that could not be a directory
+segment is an argparse usage error (exit 2) before anything runs.
+`--state-file` and `--deployment` are independent: the first says which file
+to read, the second says which deployment the caller believes that file
+holds.
 
+### `aiform init [--provider digitalocean] [--deployment <name>]`
+
+- **Names the deployment and writes its state file (#201).** `--deployment`
+  defaults to `default`. Before anything else is scaffolded, `init` calls
+  `state.load(state.DEFAULT_STATE_PATH, deployment=<name>)`. A state file that
+  already exists under a *different* name raises `DeploymentMismatchError`
+  (exit 2) with nothing else written: `init` never renames an existing
+  deployment, and re-running it without the flag in a directory that holds a
+  named deployment is refused for the same reason every other command is. If
+  there is no state file, `init` writes an empty one carrying the name, via
+  `state.save()`. If a file exists under the *same* name it is left untouched
+  (not rewritten, no `.backup`). Prints `Deployment: <name>` on the line after
+  `Initialized aiform in ...`.
 - `--provider` must name a provider `config.PROVIDER_TOKEN_ENV_VARS`
   knows about (today: only `digitalocean`) — an unrecognized value is a
   clean `Error: ...` (exit 2), not a stack trace. Deliberately reads the
@@ -378,15 +407,16 @@ reads or writes state.
   verified, not whether verification happens. The four-state contract
   above survives that change; the probe implementations would not.
 - Exit 0 on a successful scaffold (regardless of the credential
-  check's ✓/✗ outcome); exit 2 on an unsupported `--provider`.
+  check's ✓/✗ outcome); exit 2 on an unsupported `--provider` or a
+  `DeploymentMismatchError`.
 
-### `aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]`
+### `aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]`
 
 - `files` (positional, `nargs="*"`) → `None` when empty, so
   `orchestrator.build_create_plan` falls through to its own
   cwd-glob discovery, exactly matching `PLAN.md` §5 step 1's
   "default: all `*.aiform.md` in cwd."
-- Calls `orchestrator.build_create_plan(paths, state_path=..., client=<counting client>)`
+- Calls `orchestrator.build_create_plan(paths, state_path=..., deployment=..., client=<counting client>)`
   (see "The verbose Anthropic-call counter" below).
 - Default (non-`--json`) output: one line per planned resource in a
   Terraform-style summary (`+`/`~`/`-`/`=` for
@@ -427,7 +457,7 @@ reads or writes state.
   `FileNotFoundError` (an explicitly-named file that doesn't exist) —
   `main()`'s shared error formatting, see below.
 
-### `aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>]`
+### `aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]`
 
 Re-plans in full immediately before executing — `specs/orchestrator.md`'s
 "Out of scope" names this as `cli.py`'s job (`apply_plan()` only ever
@@ -456,7 +486,7 @@ takes an already-built plan):
    judgment call 7's single-resource replace re-review
    (`specs/orchestrator.md`) can both still halt or pause execution
    after this line prints, exactly as they could without `--yes`.
-3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
+3. `orchestrator.apply_plan(planned, state_path=..., deployment=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<same counting client>)` —
    `_confirm` is this module's own confirmation function (see "Confirmation and
    non-interactive runs" below), always passed regardless of `--yes`,
    since `apply_plan`'s single-resource `DriverUpdateNotSupported`
@@ -485,14 +515,14 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>]`
+### `aiform plan destroy [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>] [--deployment <name>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
 `build_destroy_plan` produces is `action=DESTROY`, and `apply_plan`'s
 `needs_review` is true whenever any entry is a destroy).
 
-1. `orchestrator.build_destroy_plan(paths, state_path=..., force=args.force)`
+1. `orchestrator.build_destroy_plan(paths, state_path=..., deployment=..., force=args.force)`
    — no `client` parameter (`build_destroy_plan` never calls an LLM —
    Mechanism A skips categorization entirely, `specs/orchestrator.md`).
    Returns `(planned, warnings)`; `warnings` carries one entry per
@@ -518,7 +548,7 @@ pass, unconditionally subject to gate #2 by construction (every entry
    passed before this — one `Warning:` line per dropped dangling edge,
    printed after the tally line, same rendering `plan create`'s
    uncovered-resource warnings already use.
-3. `orchestrator.apply_plan(planned, state_path=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
+3. `orchestrator.apply_plan(planned, state_path=..., deployment=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review
    always fires for a destroy plan).
@@ -527,9 +557,9 @@ pass, unconditionally subject to gate #2 by construction (every entry
    printing them after the fact.
 - Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error).
 
-### `aiform plan refresh [--state-file <path>]`
+### `aiform plan refresh [--state-file <path>] [--deployment <name>]`
 
-- `orchestrator.refresh_state(state_path=...)` — no `client` argument
+- `orchestrator.refresh_state(state_path=..., deployment=...)` — no `client` argument
   passed or accepted here (`refresh_state` takes none; `PLAN.md` §7:
   "no LLM calls at all").
 - Prints the refreshed `State` the same way `plan show` does (see
@@ -539,9 +569,9 @@ pass, unconditionally subject to gate #2 by construction (every entry
 - Exit 0 on success, 2 on `PlanBlockedError`/`DriverExecutionError`
   (a missing driver or bad credential for a tracked resource).
 
-### `aiform plan show [--state-file <path>]`
+### `aiform plan show [--state-file <path>] [--deployment <name>]`
 
-- `state.load(args.state_file)` directly — no orchestrator
+- `state.load(args.state_file, deployment=args.deployment)` directly — no orchestrator
   involvement at all (`specs/orchestrator.md`'s "Out of scope": "`plan
   show`... needs no orchestrator involvement... a direct `state.load()`
   plus formatting, entirely in `cli.py`").
@@ -772,7 +802,9 @@ this addition tries to paper over.
 
 `main()` wraps subcommand dispatch in one `try`/`except` over a fixed,
 named set of "expected, operational" exception types —
-`PlanBlockedError`, `DriverExecutionError`, `ValueError` (covers
+`PlanBlockedError`, `DriverExecutionError`, `DeploymentMismatchError`
+(#201; its `str()` is the whole three-line message, `specs/exceptions.md`),
+`ValueError` (covers
 pydantic's `ValidationError`, a `ValueError` subclass), `FileNotFoundError`,
 `RuntimeError` (only ever actually raised here by `_confirm`'s no-TTY
 case, since `config.resolve_credentials`'s `RuntimeError` is already
@@ -794,15 +826,21 @@ than papering over it with a generic `except Exception`.
   `sys.exit(2)` itself, *inside* `parser.parse_args()`, before `main()`'s
   `try` block is even reached. Not reimplemented or caught here.
 - `plan show`/`plan refresh` on a `--state-file` that doesn't exist yet:
-  `state.load()` returns an empty `State()` (its own documented
-  behavior, `specs/state.md`) rather than raising — printed as `no
-  resources tracked`, exit 0. Consistent with `state.load`'s existing
+  `state.load()` returns an empty `State` named for the requested deployment
+  (its own documented behavior, `specs/state.md`) rather than raising —
+  printed as `no resources tracked`, exit 0. Consistent with `state.load`'s existing
   contract; `cli.py` adds no special-case here.
 - A `plan create --json` run that also hits a warning (a tracked
   resource left alone) still reports it, inside the JSON envelope's
   `"warnings"` array — `--json` changes the plan's own representation,
   not whether warnings are surfaced at all.
-- `init` run a second time in the same directory: `.gitignore` entries
+- Any state-reading command run with a `--deployment` (or the default) that
+  differs from the name inside the state file: `Error: this state file
+  belongs to deployment 'prod', not 'scratch'.`, the absolute state-file path,
+  and `Nothing was read from the provider and nothing was changed.`; exit 2;
+  no driver, credential, provider or Anthropic call was made and the state
+  file is unchanged.
+- `init` run a second time in the same directory (same deployment): `.gitignore` entries
   aren't duplicated, `examples/compute.aiform.md` isn't overwritten,
   `.aiform/` already existing is fine (`exist_ok=True`), the managed SSH
   key isn't regenerated and its backup-script pointer isn't reprinted —
@@ -855,9 +893,12 @@ state.
 
 ```
 aiform resource check   [<name>] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
 aiform resource metrics [<name>] [--format text|json]
                         [--output <path>] [--state-file <path>]
+                        [--deployment <name>]
 aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
 ```
 
 **Notation.** `<lower-case>` in angle brackets is a placeholder you replace;

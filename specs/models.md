@@ -509,7 +509,7 @@ instead of one naming the driver and the sample.
 ## Out of scope
 
 - Loading/saving `.aiform/state.json`, the `aiform_state_version` +
-  `resources: dict[str, StateEntry]` top-level container, and the
+  `deployment` + `resources: dict[str, StateEntry]` top-level container, and the
   backup-on-write behavior — all `state.py` (§1's own split: "state.json
   load/save, Pydantic models, backup-on-write" is one file, but the
   *shared* models referenced from elsewhere live here; the top-level

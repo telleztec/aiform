@@ -129,7 +129,7 @@ independent, in its own test function with its own `tmp_path`.
    email, or `authenticated (scoped token)` for a token that cannot read
    the account — so an assertion on this line must not expect it to end
    after the variable name.
-2. **First `plan create`** (fresh project, no `state.json` yet) — per
+2. **First `plan create`** (fresh project, `state.json` empty since `init`) — per
    `PLAN.md` §9 step 2: `driver_info_for()` records a fresh `DriverInfo`
    from the curated driver's on-disk hash, with **no Anthropic call at
    all** — issue #119 removed gate #1 from this path entirely, and #118
