@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import argparse
 import json
 import socket
 from datetime import UTC, datetime
@@ -651,3 +652,163 @@ class TestInitWritesStateLast:
 
         raw = json.loads((project / ".aiform" / "state.json").read_text())
         assert raw["deployment"] == "scratch"
+
+
+def leaf_commands() -> list[list[str]]:
+    paths: list[list[str]] = []
+
+    def walk(parser: argparse.ArgumentParser, prefix: list[str]) -> None:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, child in action.choices.items():
+                    walk(child, [*prefix, name])
+                return
+        paths.append(prefix)
+
+    walk(cli._build_parser(), [])
+    return paths
+
+
+def spellings(path: list[str], value: str) -> dict[str, list[str]]:
+    flag = ["--deployment", value]
+    spelled = {"root": [*flag, *path], "leaf": [*path, *flag]}
+    if len(path) > 1:
+        spelled["group"] = [path[0], *flag, *path[1:]]
+    return spelled
+
+
+def resolved(argv: list[str]) -> str:
+    args = cli._build_parser().parse_args(argv)
+    cli._resolve_deployment(args.usage_parser, args)
+    return args.deployment
+
+
+class TestDeploymentFlagAtAnyPosition:
+    def test_every_registered_command_is_found(self):
+        assert sorted(leaf_commands()) == sorted(
+            [
+                ["init"],
+                ["plan", "create"],
+                ["plan", "apply"],
+                ["plan", "destroy"],
+                ["plan", "refresh"],
+                ["plan", "show"],
+                ["resource", "check"],
+                ["resource", "metrics"],
+                ["resource", "status"],
+            ]
+        )
+
+    @pytest.mark.parametrize("path", leaf_commands(), ids=" ".join)
+    def test_every_command_accepts_it_at_every_position(self, path):
+        for position, argv in spellings(path, "prod").items():
+            assert resolved(argv) == "prod", position
+
+    @pytest.mark.parametrize("path", leaf_commands(), ids=" ".join)
+    def test_every_command_defaults_without_it(self, path):
+        assert resolved(path) == "default"
+
+    @pytest.mark.parametrize("path", leaf_commands(), ids=" ".join)
+    def test_the_same_value_at_every_position_is_fine(self, path):
+        argv = ["--deployment", "prod"]
+        argv += [path[0], *(["--deployment", "prod"] if len(path) > 1 else [])]
+        argv += [*path[1:], "--deployment", "prod"]
+
+        assert resolved(argv) == "prod"
+
+    @pytest.mark.parametrize("position", ["root", "group", "leaf"])
+    def test_plan_create_reaches_the_planner_with_it(self, project, builds, position):
+        cli.main(spellings(["plan", "create"], "prod")[position])
+
+        assert builds == [("create", None, "prod")]
+
+    def test_the_same_value_at_all_three_positions_reaches_the_planner(self, project, builds):
+        cli.main(
+            ["--deployment", "prod", "plan", "--deployment", "prod", "create"]
+            + ["--deployment", "prod"]
+        )
+
+        assert builds == [("create", None, "prod")]
+
+    @RESOURCE_VERBS
+    @pytest.mark.parametrize("position", ["root", "group", "leaf"])
+    def test_resource_verbs_reach_the_reader_with_it(
+        self, project, resource_calls, verb, reader, position
+    ):
+        save_state_named(project, "prod")
+
+        cli.main(spellings(["resource", verb], "prod")[position])
+
+        assert resource_calls == [(reader, None, "prod")]
+
+    @pytest.mark.parametrize("position", ["root", "leaf"])
+    def test_init_names_the_deployment_from_either_position(self, project, reach, position):
+        assert cli.main(spellings(["init"], "prod")[position]) == 0
+
+        raw = json.loads((project / ".aiform" / "state.json").read_text())
+        assert raw["deployment"] == "prod"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--deployment", "prod", "plan", "create", "--deployment", "scratch"],
+            ["--deployment", "prod", "plan", "--deployment", "scratch", "create"],
+            ["plan", "--deployment", "prod", "create", "--deployment", "scratch"],
+            ["--deployment", "prod", "plan", "--deployment", "prod", "create", "--deployment", "x"],
+        ],
+        ids=["root-vs-leaf", "root-vs-group", "group-vs-leaf", "two-agree-one-differs"],
+    )
+    def test_different_values_are_a_usage_error_naming_both(self, project, builds, capsys, argv):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(argv)
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "usage: aiform plan create" in err
+        assert "conflicting deployments" in err
+        values = [v for v in ("prod", "scratch", "x") if f"--deployment {v}" in err]
+        assert len(values) >= 2
+        assert builds == []
+
+    def test_a_conflict_at_a_resource_verb_prints_that_verbs_usage(
+        self, prod_state, resource_calls, capsys
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["--deployment", "prod", "resource", "status", "--deployment", "scratch"])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "usage: aiform resource status" in err
+        assert "--deployment prod" in err and "--deployment scratch" in err
+        assert resource_calls == []
+
+    def test_a_root_flag_conflicts_with_an_at_name(self, project, builds, capsys):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["--deployment", "prod", "plan", "create", "@scratch"])
+
+        assert caught.value.code == 2
+        err = capsys.readouterr().err
+        assert "@scratch" in err and "--deployment prod" in err
+        assert builds == []
+
+    def test_a_root_flag_agrees_with_an_at_name(self, project, builds):
+        cli.main(["--deployment", "prod", "plan", "create", "@prod"])
+
+        assert builds == [("create", None, "prod")]
+
+    @pytest.mark.parametrize("name", ["Prod", "a/b", "", "x" * 64])
+    @pytest.mark.parametrize("position", ["root", "group"])
+    def test_a_bad_name_is_the_same_usage_error_as_at_the_leaf(
+        self, project, reach, capsys, name, position
+    ):
+        def message(argv: list[str]) -> str:
+            with pytest.raises(SystemExit) as caught:
+                cli.main(argv)
+            assert caught.value.code == 2
+            return capsys.readouterr().err.strip().splitlines()[-1].split("error: ", 1)[1]
+
+        assert message(spellings(["plan", "show"], name)[position]) == message(
+            spellings(["plan", "show"], name)["leaf"]
+        )
+        assert not (project / ".aiform").exists()
+        assert reach.total() == 0

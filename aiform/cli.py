@@ -175,8 +175,13 @@ def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespac
     if address is not None and address.startswith("@"):
         deployment, args.name = _split_address(parser, address)
         named.setdefault(deployment, address)
-    if args.deployment is not None:
-        named.setdefault(args.deployment, f"--deployment {args.deployment}")
+    for position in (
+        getattr(args, "deployment_root", None),
+        getattr(args, "deployment_group", None),
+        args.deployment,
+    ):
+        if position is not None:
+            named.setdefault(position, f"--deployment {position}")
     if len(named) > 1:
         parser.error(f"conflicting deployments: {' and '.join(sorted(named.values()))}")
     args.deployment = next(iter(named), state.DEFAULT_DEPLOYMENT)
@@ -923,6 +928,9 @@ def _build_parser() -> argparse.ArgumentParser:
     state_parent.add_argument("--state-file", type=Path, default=state.DEFAULT_STATE_PATH)
 
     parser = argparse.ArgumentParser(prog="aiform", parents=[global_parent])
+    # Root and group placements get their own dests: a subparser's default for
+    # the same dest would overwrite a value parsed before it (#134).
+    parser.add_argument("--deployment", dest="deployment_root", type=_deployment_name)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", parents=[global_parent, deployment_parent])
@@ -930,6 +938,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(usage_parser=init_parser)
 
     plan_parser = subparsers.add_parser("plan", parents=[global_parent])
+    plan_parser.add_argument("--deployment", dest="deployment_group", type=_deployment_name)
     plan_sub = plan_parser.add_subparsers(dest="plan_command", required=True)
 
     create_parser = plan_sub.add_parser("create", parents=[global_parent, state_parent])
@@ -957,6 +966,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # `aiform plan`'s: none of these plans or applies anything, and none
     # writes state.
     resource_parser = subparsers.add_parser("resource", parents=[global_parent])
+    resource_parser.add_argument("--deployment", dest="deployment_group", type=_deployment_name)
     resource_sub = resource_parser.add_subparsers(dest="resource_command", required=True)
     for verb in ("check", "metrics", "status"):
         verb_parser = resource_sub.add_parser(verb, parents=[global_parent, state_parent])
