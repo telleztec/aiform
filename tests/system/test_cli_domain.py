@@ -254,7 +254,7 @@ class TestDomainLifecycleSequence:
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
         assert verbose_call_count(captured) == 0
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         assert key in st.resources
         entry = st.resources[key]
         assert entry.id == zone
@@ -312,7 +312,7 @@ class TestDomainLifecycleSequence:
         # property here is structural. Assert against a live read instead.
         code = cli.main(["plan", "refresh", "--state-file", str(state_path)])
         assert code == 0
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         live_managed = _managed(list_domain_records(token, zone))
         tracked = st.resources[key].attributes["records"]
         # Content, not just count: a refresh that wrote the right number
@@ -547,7 +547,9 @@ class TestDomainLifecycleSequence:
         assert "(likely replace)" not in captured.out
 
         assert _managed(list_domain_records(token, zone)) == []
-        assert state.load(state_path).resources[key].attributes["records"] == []
+        assert (
+            state.load(state_path, deployment="default").resources[key].attributes["records"] == []
+        )
         _assert_converges(state_path, key, capsys, "case 7e")
 
         # Case 8: `plan destroy --yes` -- gate #2 fires unconditionally.
@@ -562,7 +564,7 @@ class TestDomainLifecycleSequence:
         leftover = wait_until_domain_gone(token, zone)
         assert leftover is None, f"destroyed zone {zone} still live: {leftover}"
         assert list((project_dir / ".aiform" / "trash").glob("*domain*"))
-        assert key not in state.load(state_path).resources
+        assert key not in state.load(state_path, deployment="default").resources
 
         # Case 9: idempotent delete -- 404 treated as success, which
         # aiform/driver.py's contract requires of every driver.
@@ -593,7 +595,7 @@ def test_bad_token_fails_cleanly_without_leaking_or_tracking(
     assert "Error:" in captured.err
     assert bad_token not in captured.out
     assert bad_token not in captured.err
-    assert _resource_key(zone) not in state.load(state_path).resources
+    assert _resource_key(zone) not in state.load(state_path, deployment="default").resources
 
 
 def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
@@ -629,7 +631,7 @@ def test_existing_zone_is_neither_adopted_nor_rolled_back(project_dir, capsys):
             f"apply against an existing zone should fail, exited {code}\n{captured.out}"
         )
         assert "Error:" in captured.err
-        assert _resource_key(zone) not in state.load(state_path).resources
+        assert _resource_key(zone) not in state.load(state_path, deployment="default").resources
 
         # The claim under test is create()'s own behavior, so assert it
         # against create() directly. The CLI path above cannot carry that

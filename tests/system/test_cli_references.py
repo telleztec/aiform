@@ -119,7 +119,7 @@ class TestCrossResourceReferenceLive:
         # gave the droplet. Both sides are read back from the provider, not
         # from aiform's state -- state agreeing with itself proves nothing.
         droplet_key = f"digitalocean.compute.{droplet_name}"
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         droplet_ip = tracked.resources[droplet_key].attributes["ipv4_address"]
         assert droplet_ip, "droplet has no public v4 address to reference"
 
