@@ -59,6 +59,7 @@ from tests.system.conftest import (
     unique_zone_name,
     verbose_call_count,
     wait_until_domain_gone,
+    wait_until_droplet_gone,
     write_aiform_md,
     write_domain_aiform_md,
     write_firewall_aiform_md,
@@ -394,7 +395,10 @@ class TestReverseDependentDestroyRefusalLive:
         tracked = state.load(state.DEFAULT_STATE_PATH)
         assert droplet_a_key not in tracked.resources
         assert firewall_key in tracked.resources
-        assert get_droplet_or_none(token, str(provider_id_a)) is None
+        # Polled, not checked once: DO's delete is async (see
+        # conftest.wait_until_droplet_gone).
+        leftover = wait_until_droplet_gone(token, str(provider_id_a))
+        assert leftover is None, f"droplet {provider_id_a} still live: {leftover}"
         # #225 F15: the warning above says "dropping the edge" -- pin that
         # it actually happened, or the state-driven cleanup destroy below
         # (run without --force) hits the exact same refusal
