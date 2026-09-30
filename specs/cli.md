@@ -68,7 +68,8 @@ state — `plan create`/`apply`/`destroy`/`refresh`/`show` and
 `resource check`/`metrics`/`status` — but not on `init`, which always
 uses the default path.
 
-`--deployment <name>` (default `state.DEFAULT_DEPLOYMENT`, i.e. `default`)
+`--deployment <name>` (no argparse default: `main()` resolves `default`, i.e.
+`state.DEFAULT_DEPLOYMENT`, when neither the flag nor an `@name` gives one)
 is accepted on exactly the same eight subcommands, and on `init`. It is
 declared **once**, on a shared parent parser that `state_parent` inherits, so
 no command that reads state can lack it. It is the deployment the caller
@@ -110,7 +111,8 @@ convenience only; nothing below `cli.py` sees the `@`.
 ### `aiform init [--provider digitalocean] [--deployment <name>]`
 
 - **Names the deployment and writes its state file (#201).** `--deployment`
-  defaults to `default`. Before anything else is scaffolded, `init` calls
+  has no argparse default; `main()` resolves `default` when it is omitted.
+  Before anything else is scaffolded, `init` calls
   `state.load(state.DEFAULT_STATE_PATH, deployment=<name>)`. A state file that
   already exists under a *different* name raises `DeploymentMismatchError`
   (exit 2) with nothing else written: `init` never renames an existing

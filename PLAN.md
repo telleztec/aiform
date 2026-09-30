@@ -529,8 +529,8 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 **Key**: `"<provider>.<resource_type>.<name>"` — mirrors Terraform's `<type>.<name>` addressing.
 
 **Top-level `deployment`** (required, #201): the name of the deployment this
-state file belongs to, set by `aiform init --deployment NAME` (default
-`default`) and checked by `state.load()` on every command that reads state — a
+state file belongs to, set by `aiform init --deployment NAME` (`default`
+when the flag is omitted) and checked by `state.load()` on every command that reads state — a
 command run with a different `--deployment` is refused before any provider or
 LLM call. 1 to 63 characters of lowercase letters, digits, hyphen and
 underscore, starting with a letter or digit, so it is safe as a directory
@@ -1328,7 +1328,7 @@ cannot tell a placeholder from a keyword.
 aiform init [--provider digitalocean] [--deployment <name>]
     Scaffolds .aiform/, .gitignore entries, an examples/*.aiform.md
     starter file, and an empty .aiform/state.json naming the deployment
-    (default "default"; never renames an existing one). Never creates or prompts for credential VALUES —
+    ("default" when the flag is omitted; never renames an existing one). Never creates or prompts for credential VALUES —
     prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN. 
     Verifies that the credentials work. 
 
