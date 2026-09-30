@@ -812,3 +812,18 @@ class TestDeploymentFlagAtAnyPosition:
         )
         assert not (project / ".aiform").exists()
         assert reach.total() == 0
+
+
+class TestDeploymentHelpMetavar:
+    @pytest.mark.parametrize("path", [[], ["plan"], ["resource"], ["plan", "show"]], ids=" ".join)
+    def test_every_help_screen_names_the_value_deployment(self, path):
+        parser = cli._build_parser()
+        for name in path:
+            sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+            parser = sub.choices[name]
+
+        text = parser.format_help()
+
+        assert "--deployment DEPLOYMENT" in text
+        assert "DEPLOYMENT_ROOT" not in text
+        assert "DEPLOYMENT_GROUP" not in text
