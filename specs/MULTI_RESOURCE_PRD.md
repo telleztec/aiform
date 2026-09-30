@@ -240,7 +240,9 @@ The exemption covers, non-exhaustively:
   but nothing reads it, and that stays true until there is a reason it
   should not be. Phase 5's durable-store question (R4) is the most likely
   place this matters — it does **not** owe a migration from today's JSON
-  file.
+  file. The exemption has already been used once: #201 added `deployment` as
+  a required top-level field with no default, so a `state.json` from before it
+  existed no longer loads (`specs/state.md`).
 - **CLI flags, output shape and exit codes.** `--json` output in particular
   is the closest thing `aiform` has to an API, and it is still free to
   change.

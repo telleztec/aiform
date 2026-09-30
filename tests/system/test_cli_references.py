@@ -154,7 +154,7 @@ class TestCrossResourceReferenceLive:
         # gave the droplet. Both sides are read back from the provider, not
         # from aiform's state -- state agreeing with itself proves nothing.
         droplet_key = f"digitalocean.compute.{droplet_name}"
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         droplet_ip = tracked.resources[droplet_key].attributes["ipv4_address"]
         assert droplet_ip, "droplet has no public v4 address to reference"
 
@@ -261,7 +261,7 @@ class TestCrossResourceReferenceLive:
         # Step 2: the firewall's droplet_ids, read back from DigitalOcean
         # rather than aiform's state, must be the droplet's real int id.
         droplet_key = f"digitalocean.compute.{droplet_name}"
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         provider_id = tracked.resources[droplet_key].attributes["provider_id"]
         assert isinstance(provider_id, int)
 
@@ -336,7 +336,7 @@ class TestReverseDependentDestroyRefusalLive:
         code = cli.main(["plan", "apply", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan apply")
 
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         provider_id_a = tracked.resources[droplet_a_key].attributes["provider_id"]
         provider_id_b = tracked.resources[droplet_b_key].attributes["provider_id"]
         firewall_id = tracked.resources[firewall_key].id
@@ -364,7 +364,7 @@ class TestReverseDependentDestroyRefusalLive:
         assert live is not None
         assert live["droplet_ids"] == [provider_id_a]
 
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         assert tracked.resources[firewall_key].depends_on == [droplet_a_key]
 
         # Scenario 2: destroying the surviving referenced droplet must be
@@ -377,7 +377,7 @@ class TestReverseDependentDestroyRefusalLive:
         assert firewall_key in blocked.err
         assert droplet_a_key in blocked.err
 
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         assert droplet_a_key in tracked.resources
         assert firewall_key in tracked.resources
         assert get_droplet_or_none(token, str(provider_id_a)) is not None
@@ -392,7 +392,7 @@ class TestReverseDependentDestroyRefusalLive:
         assert "Warning:" in forced.out
         assert firewall_key in forced.out
 
-        tracked = state.load(state.DEFAULT_STATE_PATH)
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
         assert droplet_a_key not in tracked.resources
         assert firewall_key in tracked.resources
         # Polled, not checked once: DO's delete is async (see

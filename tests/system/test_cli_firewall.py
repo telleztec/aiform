@@ -119,7 +119,7 @@ class TestFirewallLifecycle:
         assert_cli_ok(code, captured, "plan apply")
         assert "[verbose] 0 Anthropic API call(s) made" in captured.err
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         assert key in st.resources
         firewall_id = st.resources[key].id
 
@@ -274,7 +274,7 @@ class TestEverySupportedRuleShape:
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply (all shapes)")
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         live = get_firewall_or_none(token, st.resources[key].id)
         assert live is not None
         assert live["droplet_ids"] == [], "this suite must never attach to a real droplet"
@@ -338,7 +338,7 @@ class TestAttachedToARealDroplet:
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply (attached)")
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         live = get_firewall_or_none(token, st.resources[key].id)
         assert live is not None
         # The claim under test: a real droplet id round-trips as the int

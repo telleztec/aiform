@@ -13,16 +13,21 @@ parsing. Those are `orchestrator.py`/`planner.py`/`cli.py`'s jobs.
 
 ```python
 DEFAULT_STATE_PATH = Path(".aiform/state.json")
+DEFAULT_DEPLOYMENT = "default"
+
+
+def validate_deployment_name(name: str) -> str: ...
 
 
 class State(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     aiform_state_version: int = 1
+    deployment: str
     resources: dict[str, StateEntry] = Field(default_factory=dict)
 
 
-def load(path: Path = DEFAULT_STATE_PATH) -> State: ...
+def load(path: Path = DEFAULT_STATE_PATH, *, deployment: str) -> State: ...
 def save(state: State, path: Path = DEFAULT_STATE_PATH) -> None: ...
 ```
 
@@ -33,6 +38,38 @@ The literal shape of `.aiform/state.json` (`PLAN.md` §3), keyed by
 to `1` and is round-tripped as-is — nothing reads or acts on it yet
 (`PLAN.md` §10: no migration story exists, deliberately deferred until
 the schema actually changes).
+
+### Deployment identity (#201)
+
+`deployment` is a **required** field: the name of the deployment this state
+file belongs to. A deployment is one independent set of resources, and its
+boundary is the directory `aiform` is run from; the name is what makes that
+boundary visible in the file, so `cd` into the wrong directory is refused
+instead of acted on (`plans/deployment-identity.md`). It is set by
+`aiform init --deployment NAME` (`specs/cli.md`) and is never changed by any
+later command.
+
+`validate_deployment_name(name)` returns `name` unchanged or raises
+`ValueError`. A valid name is 1 to 63 characters, matches
+`[a-z0-9][a-z0-9_-]*`, and so: lowercase ASCII letters, digits, hyphen and
+underscore only, starting with a letter or digit. That is deliberately the
+intersection of what is safe as a single directory-name path segment on any
+platform: no slash or backslash, no leading dot or hyphen (a leading hyphen
+reads as a flag), no whitespace, no case folding surprises, bounded length. A
+later ticket will use the name as a directory under a home directory, and a
+name that is valid here must never need escaping there. `State` runs the
+same function as a field validator, and `cli.py` runs it as the `--deployment`
+argument type, so the rule lives in one place.
+
+Old state files are not read: a `state.json` with no `deployment` key is
+refused by `load()` with `StateMissingDeploymentError` (`specs/exceptions.md`),
+a short message naming the file and the two ways out, rather than the raw
+Pydantic dump of the whole file. There is no migration and no default filled in
+on load (`specs/MULTI_RESOURCE_PRD.md`'s "Non-requirements" already exempts
+state-schema changes from owing one). A user with such a file deletes it or
+adds the key by hand.
+
+`aiform_state_version` is **not** bumped by this change: nothing reads it.
 
 `extra="forbid"`, matching `ResourceSpec` (`specs/models.md`): a
 typo'd or garbled top-level key in a hand-edited state.json (e.g.
@@ -49,17 +86,38 @@ that key. This is a hand-edit/corruption check in the same spirit as
 file is user-editable text on disk, and a key/entry mismatch here would
 otherwise silently misaddress a resource.
 
-### `load(path=DEFAULT_STATE_PATH) -> State`
+### `load(path=DEFAULT_STATE_PATH, *, deployment) -> State`
 
-- File doesn't exist → returns `State(aiform_state_version=1,
-  resources={})`. This is the *expected* condition before the first
-  successful `apply` has ever run (`PLAN.md` §9 walkthrough starts from
-  no state file at all) — not an error.
-- File exists → parsed and validated as `State`. Malformed JSON or a
-  schema/key-mismatch violation propagates as the underlying
-  `json.JSONDecodeError` / Pydantic `ValidationError` — `state.py`
-  doesn't wrap these in a custom exception (that's `exceptions.py`'s
-  domain, intentionally not touched by this module yet).
+`deployment` is the name the caller is acting on, and it has **no default**:
+this is the single choke point where the deployment check happens, so a call
+site cannot forget it. Every caller in `cli.py`, `orchestrator.py` and
+`observability.py` passes it.
+
+- File doesn't exist → returns `State(deployment=deployment,
+  aiform_state_version=1, resources={})`: a fresh state named for the
+  requested deployment. Not an error: `aiform init` writes the file, but a
+  directory that never ran it (or had its state deleted) is still a valid place
+  to `plan create` from. A directory with no state file adopts
+  whatever name it is asked for; the name is fixed only once a file is saved.
+- File exists → parsed and validated as `State`, then its `deployment` is
+  compared with the requested one. A difference raises
+  `DeploymentMismatchError(requested, found, path)`
+  (`specs/exceptions.md`) **before returning anything**, so no caller has a
+  `State` it could act on. Nothing is written.
+- A file with no top-level `deployment` key (one written before #201) raises
+  `StateMissingDeploymentError(path)` (`specs/exceptions.md`), `path` absolute.
+  It is detected as a Pydantic error located at `deployment` of type `missing`;
+  the message never echoes the file's contents. Nothing is written and nothing
+  is migrated.
+- Malformed JSON or any other schema/key-mismatch violation propagates as the
+  underlying `json.JSONDecodeError` / Pydantic `ValidationError` —
+  `state.py` doesn't wrap these in a custom exception. Validation runs
+  before the comparison, so a file whose `deployment` is not a valid name is a
+  schema error, not a mismatch.
+- A requested `deployment` that is not a valid name raises the same
+  `ValueError` from `validate_deployment_name`. `cli.py` rejects a bad
+  `--deployment` earlier, at argument parsing, so this is reachable only from
+  a caller that skips the CLI.
 
 ### `save(state, path=DEFAULT_STATE_PATH) -> None`
 
@@ -92,7 +150,21 @@ otherwise silently misaddress a resource.
 
 ## Behavior
 
-- `load()` on a missing path returns an empty `State`, not an error.
+- `load()` on a missing path returns an empty `State` named for the requested
+  deployment, not an error.
+- `load()` on an existing file whose `deployment` equals the requested one
+  returns it.
+- `load()` on an existing file whose `deployment` differs raises
+  `DeploymentMismatchError` carrying both names and the absolute path, and the
+  file is left byte-for-byte unchanged.
+- `load()` with no `deployment` argument is a `TypeError`.
+- `State(...)` without `deployment` raises `ValidationError`; so does a name
+  with an uppercase letter, a slash, a leading dot or hyphen, whitespace, an
+  empty string, or more than 63 characters.
+- `load()` on a file with no `deployment` key raises
+  `StateMissingDeploymentError` naming the absolute path, `"deployment":
+  "default"` and deletion as the two ways out; `str(exc)` contains none of the
+  file's contents. No default is supplied.
 - `load()` on a valid existing file reproduces a `State` equal to what
   produced it (round-trip fidelity).
 - `load()` on a file whose `resources` key doesn't match its entry's
@@ -128,7 +200,10 @@ otherwise silently misaddress a resource.
   break old files would have been acceptable too. The default is there
   because a resource with no declared dependencies needs `[]` anyway; that
   it also reads pre-feature files costs nothing. Don't infer from this
-  bullet that a future state-shape change owes a migration. It does not.
+  bullet that a future state-shape change owes a migration. It does not:
+  `deployment` (#201) is a required field with no default, so a file written
+  before it existed no longer loads at all, and that is accepted. It fails with
+  one short, actionable message instead of a Pydantic dump.
 
 ## Out of scope
 
@@ -138,7 +213,12 @@ otherwise silently misaddress a resource.
   `planner.py`.
 - `--state-file` flag parsing / resolving the default path from CLI
   context — `cli.py`. `state.py` only ever receives a `Path` it's given.
-- State schema version migration — deliberately deferred (`PLAN.md` §10).
+- State schema version migration — deliberately deferred (`PLAN.md` §10). This
+  includes files written before `deployment` existed.
+- Resolving a deployment by name from anywhere but the current directory (an
+  environment variable, a home directory), one deployment spanning several
+  state files (#210), and binding a state file to the cloud account it was
+  applied against — all recorded as deferred in `plans/deployment-identity.md`.
 - Any custom exception types for load/save failures — deferred until
   `exceptions.py` is built; underlying stdlib/Pydantic errors propagate
   as-is for now.

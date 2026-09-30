@@ -282,8 +282,8 @@ def refresh_resource(
     return attrs, False
 
 
-def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State:
-    st = state.load(state_path)
+def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str) -> State:
+    st = state.load(state_path, deployment=deployment)
     driver_cache: dict[tuple[str, str], ResourceDriver] = {}
     credentials_cache: dict[str, dict[str, str]] = {}
 
@@ -466,10 +466,11 @@ def build_create_plan(
     *,
     cwd: Path = Path("."),
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> tuple[list[PlannedResource], list[str]]:
-    st = state.load(state_path)
+    st = state.load(state_path, deployment=deployment)
     files = discover_files(paths, cwd=cwd)
     ordered_files = _order_files(files, st)
 
@@ -906,9 +907,10 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     force: bool = False,
 ) -> tuple[list[PlannedResource], list[str]]:
-    st = state.load(state_path)
+    st = state.load(state_path, deployment=deployment)
     if paths:
         return _build_destroy_plan_from_paths(paths, st, force=force)
     return _build_destroy_plan_from_state(st, force=force)
@@ -1073,13 +1075,14 @@ def apply_plan(
     planned: list[PlannedResource],
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
     on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> ApplyResult:
-    st = state.load(state_path)
+    st = state.load(state_path, deployment=deployment)
     confirm_fn = confirm or default_confirm
     on_review_fn = on_review or (lambda flags: None)
     review_flags: list[PlanReviewFlag] = []

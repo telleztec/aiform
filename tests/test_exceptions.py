@@ -1,9 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
+
 import pytest
 
-from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
+from aiform.exceptions import (
+    DeploymentMismatchError,
+    DriverExecutionError,
+    PlanBlockedError,
+    ResourceNotFoundError,
+    StateMissingDeploymentError,
+)
 
 
 class TestResourceNotFoundError:
@@ -57,3 +65,49 @@ class TestPlanBlockedError:
 
     def test_is_a_plain_exception(self):
         assert issubclass(PlanBlockedError, Exception)
+
+
+class TestDeploymentMismatchError:
+    def test_stores_fields_verbatim(self):
+        path = Path("/work/prod/.aiform/state.json")
+        exc = DeploymentMismatchError("scratch", "prod", path)
+
+        assert exc.requested == "scratch"
+        assert exc.found == "prod"
+        assert exc.path is path
+
+    def test_message_is_exactly_three_lines(self):
+        exc = DeploymentMismatchError("scratch", "prod", Path("/work/prod/.aiform/state.json"))
+
+        assert str(exc) == (
+            "this state file belongs to deployment 'prod', not 'scratch'.\n"
+            "  state file: /work/prod/.aiform/state.json\n"
+            "  Nothing was read from the provider and nothing was changed."
+        )
+
+    def test_is_a_plain_exception(self):
+        assert issubclass(DeploymentMismatchError, Exception)
+        assert not issubclass(DeploymentMismatchError, (LookupError, ValueError))
+
+
+class TestStateMissingDeploymentError:
+    def test_stores_path_verbatim(self):
+        path = Path("/work/prod/.aiform/state.json")
+
+        assert StateMissingDeploymentError(path).path is path
+
+    def test_message_is_exactly_four_lines(self):
+        exc = StateMissingDeploymentError(Path("/work/prod/.aiform/state.json"))
+
+        assert str(exc) == (
+            "this state file has no 'deployment' field: it was written before "
+            "deployments were named.\n"
+            "  state file: /work/prod/.aiform/state.json\n"
+            "  Either delete it (aiform then forgets every resource it tracked) or add "
+            '"deployment": "default" as a top-level key by hand.\n'
+            "  Nothing was read from the provider and nothing was changed."
+        )
+
+    def test_is_a_plain_exception(self):
+        assert issubclass(StateMissingDeploymentError, Exception)
+        assert not issubclass(StateMissingDeploymentError, (LookupError, ValueError))

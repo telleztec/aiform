@@ -275,7 +275,12 @@ def resolve_name(name: str, st: State) -> str:
 
 
 def collect(
-    *, keys=None, want_health=True, want_metrics=True, state_path=state.DEFAULT_STATE_PATH
+    *,
+    keys=None,
+    want_health=True,
+    want_metrics=True,
+    state_path=state.DEFAULT_STATE_PATH,
+    deployment,
 ) -> Collection:
     """Read tracked resources: exactly those in `keys`, or every one when
     `keys` is None. The two flags say which driver methods to call --
@@ -285,7 +290,9 @@ def collect(
     Makes zero Anthropic API calls."""
 
 
-def status_reports(keys=None, *, state_path=state.DEFAULT_STATE_PATH) -> list[StatusReport]:
+def status_reports(
+    keys=None, *, state_path=state.DEFAULT_STATE_PATH, deployment
+) -> list[StatusReport]:
     """`status` for exactly `keys`, or every tracked resource when None.
     The fleet form, and the one cli.py calls. Owns one State and one pair
     of driver/credential caches -- status_for() in a loop loaded state
@@ -293,7 +300,7 @@ def status_reports(keys=None, *, state_path=state.DEFAULT_STATE_PATH) -> list[St
     cost N exec_module()s and N credential resolutions."""
 
 
-def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH) -> StatusReport:
+def status_for(key: str, *, state_path=state.DEFAULT_STATE_PATH, deployment) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
     health(). Adds no driver method of its own. Writes no state."""
@@ -325,10 +332,13 @@ def render_status(reports: list[StatusReport], fmt: str, *, fleet: bool | None =
 ### `aiform/cli.py`
 
 ```
-aiform resource check   [<name>] [--format text|json] [--state-file <path>]
-aiform resource metrics [<name>] [--format text|json]
+aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
+aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
-aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
+aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
 ```
 
 Notation is `PLAN.md` §7's: `<lower-case>` in angle brackets is a placeholder,
@@ -909,9 +919,14 @@ written." What remains:
   0. A reading of an empty formation is not an error.
 - **`.aiform/state.json` missing** — empty result, exit 0. Not an error, and
   `metrics` adds no `exists()` check of its own: `state.load()` already returns an
-  empty `State()` for a missing path, no other command treats that as a
+  empty `State` for a missing path, no other command treats that as a
   failure, and a fresh project should report nothing rather than fail until
   the first `apply`.
+- **`.aiform/state.json` belongs to another deployment (#201)** — exits 2 with
+  `DeploymentMismatchError`'s message, before any driver load or provider
+  call. All three verbs accept `--deployment` and pass it to every
+  `state.load()` they cause, including `cli.py`'s own read to resolve `<name>`
+  and the one inside `collect()`/`status_reports()`/`status_for()`.
 - **`.aiform/state.json` malformed** — exits 2. This one genuinely raises
   (`json.loads`, or Pydantic validation), and a command reporting zero resources
   because state failed to parse is worse than one that fails loudly.

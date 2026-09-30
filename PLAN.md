@@ -494,6 +494,7 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 ```json
 {
   "aiform_state_version": 1,
+  "deployment": "default",
   "resources": {
     "digitalocean.compute.telleztec-app-01": {
       "provider": "digitalocean",
@@ -526,6 +527,14 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 ```
 
 **Key**: `"<provider>.<resource_type>.<name>"` — mirrors Terraform's `<type>.<name>` addressing.
+
+**Top-level `deployment`** (required, #201): the name of the deployment this
+state file belongs to, set by `aiform init --deployment NAME` (`default`
+when the flag is omitted) and checked by `state.load()` on every command that reads state — a
+command run with a different `--deployment` is refused before any provider or
+LLM call. 1 to 63 characters of lowercase letters, digits, hyphen and
+underscore, starting with a letter or digit, so it is safe as a directory
+name. See `specs/state.md`.
 
 **Fields**:
 - `resource_type` — the abstract resource kind (e.g. `compute`), never
@@ -1351,13 +1360,14 @@ because `NAME` collides with `aiform.md`'s literal `name:` field and a reader
 cannot tell a placeholder from a keyword.
 
 ```
-aiform init [--provider digitalocean]
+aiform init [--provider digitalocean] [--deployment <name>]
     Scaffolds .aiform/, .gitignore entries, an examples/*.aiform.md
-    starter file. Never creates or prompts for credential VALUES —
+    starter file, and an empty .aiform/state.json naming the deployment
+    ("default" when the flag is omitted; never renames an existing one). Never creates or prompts for credential VALUES —
     prints instructions for ANTHROPIC_API_KEY / DIGITALOCEAN_TOKEN. 
     Verifies that the credentials work. 
 
-aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]
+aiform plan create [@<name>] [<file>.aiform.md ...] [--state-file <path>] [--deployment <name>] [--json]
     Parse, refresh, verify the curated driver is present (fail with a
     clear error if not; record its hash as provenance either way), diff,
     print plan.
@@ -1366,30 +1376,31 @@ aiform plan create [<file>.aiform.md ...] [--state-file <path>] [--json]
     prefixed `AIFORM-DELETE-` as destroy requests (see "Resource
     deletion") — shown in the plan, not yet executed.
 
-aiform plan apply [<file>.aiform.md ...] [--yes] [--state-file <path>]
+aiform plan apply [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
     Re-plans, runs gate #2 (review-orchestration-model) for any destructive 
     step, executes.
     --yes skips the interactive confirmation only — never a `block` flag.
     On a successful destroy (either "Resource deletion" mechanism), moves
     the resource's source .aiform.md file into `.aiform/trash/`.
 
-aiform plan destroy [<file>.aiform.md ...] [--yes] [--state-file <path>]
+aiform plan destroy [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
     Plans a destroy of every resource matching the given file(s) (or
     all tracked resources if none given), then applies it. 100% subject
     to gate #2 (review-orchestration-model) by definition. On success, moves each destroyed
     resource's .aiform.md file into `.aiform/trash/` — see "Resource
     deletion".
 
-aiform plan refresh [--state-file <path>]
+aiform plan refresh [--state-file <path>] [--deployment <name>]
     driver.read() for every tracked resource, updates state to match
     live reality. No aiform.md parsing, no plan, no LLM calls at all —
     purely mechanical drift detection.
 
-aiform plan show [--state-file <path>]
+aiform plan show [--state-file <path>] [--deployment <name>]
     Prints current state contents (id, attributes, driver version,
     last-applied) in readable form.
 
-aiform resource check   [<name>] [--format text|json] [--state-file <path>]
+aiform resource check   [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
     driver.health() for one named resource, or for
     every tracked resource when <name> is omitted. An ASSERTION: this is
     the only command in the surface whose exit code carries the answer
@@ -1417,8 +1428,9 @@ aiform resource check   [<name>] [--format text|json] [--state-file <path>]
     With nothing tracked at all, it prints "no resources tracked"
     instead (exit 2, unchanged).
 
-aiform resource metrics [<name>] [--format text|json]
+aiform resource metrics [<name> | @<deployment>[/<name>]] [--format text|json]
                         [--output <path>] [--state-file <path>]
+                        [--deployment <name>]
     driver.metrics() for one named resource, or
     for EVERY tracked resource when <name> is omitted. Only metrics():
     check is the verb that asks health(). No-argument-means-everything is this CLI's existing
@@ -1451,7 +1463,8 @@ aiform resource metrics [<name>] [--format text|json]
     recorded against that resource. Neither aborts the sweep: a single
     broken driver must not blank the whole report.
 
-aiform resource status  [<name>] [--format text|json] [--state-file <path>]
+aiform resource status  [<name> | @<deployment>[/<name>]] [--format text|json] [--state-file <path>]
+                        [--deployment <name>]
     Four independent answers for one named
     resource, or every tracked resource when <name> is omitted, each
     under a header line naming it:
@@ -1542,7 +1555,7 @@ Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `
    — curated, built ahead of time (see "Driver curation" above) — so
    nothing about this walkthrough triggers driver generation.
 2. **`aiform plan create`** — this is the very first `plan` run against a brand-new
-   project: `.aiform/state.json` doesn't exist yet, so no state entry
+   project: `.aiform/state.json` holds no resources yet (`init` wrote it empty), so no state entry
    anywhere has a matching driver hash yet. Per §5 step 3, `driver_info_for()`
    simply records a fresh `DriverInfo` from the on-disk sha256 — **no
    review, no Anthropic call**: issue #119 removed that call from this
@@ -1773,7 +1786,12 @@ config files, or secret managers Tokens rotate automatically and expire in minut
 - **No state schema migration story.** `aiform_state_version` exists in the
   schema (§3) but nothing reads or acts on it yet — a future schema
   change has no defined upgrade path for existing `.aiform/state.json`
-  files. Deferred until the schema actually needs to change.
+  files. Deferred until the schema actually needs to change. The first
+  such change has already happened: `deployment` (§3) is a required field
+  with no default, so a `state.json` written before it existed no longer
+  loads, and there is no path to upgrade one. `state.load()` refuses it with a
+  short error naming the file (`StateMissingDeploymentError`, `specs/state.md`),
+  and a user deletes the file or adds the key by hand.
 - **`.aiform/trash/` is a file-recovery convenience, not an undo.** It
   preserves a destroyed resource's `.aiform.md` source so the
   configuration isn't lost, but restoring a file from trash and

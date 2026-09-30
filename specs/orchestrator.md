@@ -264,7 +264,7 @@ def refresh_resource(
 ) -> tuple[dict[str, Any], bool]: ...
 
 
-def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH) -> State: ...
+def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH, deployment: str) -> State: ...
 
 
 # --- planning context (judgment call 8) ---
@@ -294,6 +294,7 @@ def build_create_plan(
     *,
     cwd: Path = Path("."),
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
 ) -> tuple[list[PlannedResource], list[str]]: ...
@@ -306,6 +307,7 @@ def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     force: bool = False,
 ) -> tuple[list[PlannedResource], list[str]]: ...
 
@@ -330,6 +332,7 @@ def apply_plan(
     planned: list[PlannedResource],
     *,
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str,
     yes: bool = False,
     confirm: ConfirmFn | None = None,
     on_review: OnReviewFn | None = None,
@@ -499,10 +502,10 @@ other exception from `driver.read()` is wrapped: `raise
 DriverExecutionError(state_entry.provider, state_entry.resource_type,
 "read", exc) from exc`.
 
-### `refresh_state(*, state_path=state.DEFAULT_STATE_PATH) -> State`
+### `refresh_state(*, state_path=state.DEFAULT_STATE_PATH, deployment) -> State`
 
 `aiform plan refresh` (`PLAN.md` §7): **zero LLM calls, no `.aiform.md`
-parsing, no plan** — for every entry in `state.load(state_path).resources`,
+parsing, no plan** — for every entry in `state.load(state_path, deployment=deployment).resources`,
 `load_driver()` + `config.resolve_credentials()` (translated to
 `PlanBlockedError` on failure, same as judgment call 3) +
 `refresh_resource()`, updating `attributes`/`last_refreshed_at` in
@@ -524,7 +527,7 @@ removed from state or otherwise treated specially by this command —
 `refresh_resource()`'s own contract); the drift becomes actionable the
 next time `plan create` runs against that resource, not here.
 
-### `build_create_plan(paths=None, *, cwd=Path("."), state_path=..., client=None, llm_config=None) -> (list[PlannedResource], list[str])`
+### `build_create_plan(paths=None, *, cwd=Path("."), state_path=..., deployment=..., client=None, llm_config=None) -> (list[PlannedResource], list[str])`
 
 `PLAN.md` §5 "aiform plan create" steps 1-7, per file discovered by
 `discover_files(paths, cwd=cwd)`.
@@ -774,9 +777,9 @@ no-argument invocation. When explicit `paths` were given, `warnings` is
 always `[]` — a tracked resource simply not named is expected scoping,
 not an anomaly (same section).
 
-### `build_destroy_plan(paths=None, *, state_path=..., force=False) -> tuple[list[PlannedResource], list[str]]`
+### `build_destroy_plan(paths=None, *, state_path=..., deployment=..., force=False) -> tuple[list[PlannedResource], list[str]]`
 
-Mechanism A. `state = state.load(state_path)`.
+Mechanism A. `state = state.load(state_path, deployment=deployment)`.
 
 - `paths` given: for each, `spec = parser.parse_frontmatter(path.read_text(encoding="utf-8-sig"))`,
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
@@ -822,12 +825,12 @@ pr.entry.likely_replace} for pr in planned])` — the `plan_summary` string
 `llm.review_plan()` (`PLAN.md` §5 apply step 2) takes as its sole
 argument.
 
-### `apply_plan(planned, *, state_path=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None) -> ApplyResult`
+### `apply_plan(planned, *, state_path=..., deployment=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None) -> ApplyResult`
 
 `PLAN.md` §5 "aiform plan apply" steps 2-4 (step 1, re-running `plan` in
 full, is the caller's job — see Behavior below), shared verbatim by
 `aiform plan destroy`'s "plans and applies in one pass."
-`state = state.load(state_path)` fresh at the start.
+`state = state.load(state_path, deployment=deployment)` fresh at the start.
 
 As with `build_create_plan()` above, since &#35;198 the steps below are located
 across `apply_plan()` and private helpers — `_batch_plan_review()`,
@@ -948,7 +951,7 @@ for its caller.
        success, the old entry is removed from state and saved
        immediately** — a resource key present in `planned` but no longer
        found in the *freshly-loaded* `state` (this function's own
-       `state.load(state_path)` at its start, not necessarily the same
+       `state.load(state_path, deployment=deployment)` at its start, not necessarily the same
        state `planned` was built against — see Behavior) raises
        `PlanBlockedError` naming the mismatch rather than a raw `KeyError`,
        then `del state.resources[pr.entry.resource_key]` then
@@ -1060,9 +1063,20 @@ Returns the destination path.
   `entry.action == PlanAction.DESTROY` is handled identically regardless
   of which `build_*_plan()` function produced it, matching `PLAN.md`'s
   "Both converge on the same underlying behavior in `orchestrator.py`."
+- **Deployment identity (#201).** All four top-level functions take
+  a required keyword-only `deployment` beside `state_path` and
+  hand it to `state.load()`, which is where the check lives
+  (`specs/state.md`). Each one's `state.load()` is its **first** statement, so a
+  state file belonging to another deployment raises `DeploymentMismatchError`
+  before file discovery, parsing, any `intent-orchestration-model` call, any
+  `load_driver()`, any credential resolution and any provider call — and, for
+  `apply_plan`, before gate #2. `deployment` has no default, matching
+  `state.load`, so a caller that forgets it gets a `TypeError` instead of
+  silently acting on `default`: `cli.py` always passes the requested name, and
+  a test per command family pins that.
 - Every top-level function (`build_create_plan`, `build_destroy_plan`,
-  `apply_plan`, `refresh_state`) independently calls `state.load(state_path)`
-  at its own start and `state.save(...)` at its own end (once or
+  `apply_plan`, `refresh_state`) independently calls
+  `state.load(state_path, deployment=deployment)` at its own start and `state.save(...)` at its own end (once or
   per-resource, per function) — none of them thread a shared, mutated
   `State` object across a function-call boundary. Safe in the MVP's
   single-process, synchronous execution model (no concurrent writers

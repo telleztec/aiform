@@ -98,7 +98,7 @@ class TestFullLifecycleSequence:
         assert_cli_ok(code, captured, "case 3: plan apply --yes")
         assert verbose_call_count(captured) == 0
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         assert key in st.resources
         entry = st.resources[key]
         assert entry.id
@@ -128,7 +128,7 @@ class TestFullLifecycleSequence:
         # _CountingClient). Assert against a direct live read instead.
         code = cli.main(["plan", "refresh", "--state-file", str(state_path)])
         assert code == 0
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert st.resources[key].attributes["region"] == live["region"]["slug"]
@@ -178,7 +178,7 @@ class TestFullLifecycleSequence:
         assert live is not None
         assert str(live["id"]) == droplet_id  # in-place: the droplet survives
         assert sorted(live["tags"]) == sorted([SYSTEM_TEST_TAG, IN_PLACE_TAG])
-        assert state.load(state_path).resources[key].id == droplet_id
+        assert state.load(state_path, deployment="default").resources[key].id == droplet_id
 
         # And it must converge. `tags` is compared as a list, so if DO ever
         # returns the same tags in a different order than they were
@@ -206,7 +206,7 @@ class TestFullLifecycleSequence:
         leftover = wait_until_droplet_gone(token, droplet_id)
         assert leftover is None, f"replaced droplet {droplet_id} still live: {leftover}"
 
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         replaced_id = st.resources[key].id
         assert replaced_id != droplet_id
 
@@ -221,7 +221,7 @@ class TestFullLifecycleSequence:
         assert list((project_dir / ".aiform" / "trash").glob("*compute*")) or list(
             (project_dir / ".aiform" / "trash").glob(f"*{name}*")
         )
-        st = state.load(state_path)
+        st = state.load(state_path, deployment="default")
         assert key not in st.resources
 
         # Case 9: idempotent delete -- drive the driver directly against
@@ -252,7 +252,7 @@ def test_bad_token_fails_cleanly_without_leaking_or_tracking(
     assert bad_token not in captured.out
     assert bad_token not in captured.err
 
-    st = state.load(state_path)
+    st = state.load(state_path, deployment="default")
     assert _resource_key(name) not in st.resources
 
 
@@ -365,7 +365,7 @@ class TestSshFirstPowerOffLive:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         assert_cli_ok(code, capsys.readouterr(), "ssh power-off: initial create")
 
-        droplet_id = state.load(state_path).resources[key].id
+        droplet_id = state.load(state_path, deployment="default").resources[key].id
         _wait_for_public_ipv4(token, droplet_id)
 
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
@@ -405,7 +405,7 @@ class TestSshFirstPowerOffLive:
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         assert_cli_ok(code, capsys.readouterr(), "ssh fallback: initial create")
 
-        droplet_id = state.load(state_path).resources[droplet_key].id
+        droplet_id = state.load(state_path, deployment="default").resources[droplet_key].id
         # Same race as the sibling test above, and for the same reason: this
         # one also resizes moments after create. Without this, state carries no
         # ipv4_address, _power_off_droplet takes its no-ip-fallback branch

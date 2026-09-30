@@ -111,10 +111,11 @@ def project(tmp_path, monkeypatch):
         drivers[("digitalocean", "compute")] = StubDriver(**driver_kwargs)
         state.save(
             state.State(
+                deployment="default",
                 resources={
                     f"{e.provider}.{e.resource_type}.{e.name}": e
                     for e in (entries or (make_state_entry(),))
-                }
+                },
             ),
             state_path,
         )
@@ -292,7 +293,7 @@ class TestCheck:
         # A gate that passes because it checked nothing is the failure
         # mode worth designing against.
         path = project.state_path
-        state.save(state.State(), path)
+        state.save(state.State(deployment="default"), path)
         code = cli.main(["resource", "check", "--state-file", str(path)])
         assert code == 2
 
@@ -339,7 +340,7 @@ class TestMetrics:
         # A reading of an empty formation is not an error, and a blank
         # line would not survive `| jq`.
         path = project.state_path
-        state.save(state.State(), path)
+        state.save(state.State(deployment="default"), path)
         code = cli.main(["resource", "metrics", "--state-file", str(path)])
         assert code == 0
         assert capsys.readouterr().out == ""
