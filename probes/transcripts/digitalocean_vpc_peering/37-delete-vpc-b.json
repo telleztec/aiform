@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 460,
+ "note": "delete VPC B",
+ "prediction": {
+  "notes": "nothing references it",
+  "status": 204
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T20:01:05.741312+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/9cf0a263-4fa8-45ac-a462-013ea2e2a4a6"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 37
+}

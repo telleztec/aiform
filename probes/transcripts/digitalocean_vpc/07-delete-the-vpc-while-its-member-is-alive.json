@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 662,
+ "note": "delete the VPC while its member is alive",
+ "prediction": {
+  "notes": "owner-reported as refused ('a VPC can only be deleted if it has no member resources attached'). The status and message are what decide whether aiform can pre-empt this usefully at plan time",
+  "status": 403
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-29T04:45:53.661565+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/d9e0cac2-2c40-495b-b4c5-40ab6892bd96"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 7
+}

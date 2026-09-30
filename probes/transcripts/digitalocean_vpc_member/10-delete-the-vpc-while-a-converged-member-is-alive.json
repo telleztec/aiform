@@ -1,0 +1,28 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 312,
+ "note": "delete the VPC while a CONVERGED member is alive",
+ "prediction": {
+  "notes": "the question this session exists for. Owner-reported as refused. If this is a 2xx, a VPC is NOT an existentially-coupled parent on DigitalOcean and the dependency model must not claim otherwise",
+  "status": 403
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-29T04:51:19.201742+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/5c4abd22-c6d5-45cd-b09e-7320101f108d"
+ },
+ "response": {
+  "body": {
+   "id": "conflict",
+   "message": "Can not delete VPC with members",
+   "request_id": "586ee21d-a0dd-4bac-acf9-30e825eb33b6"
+  },
+  "status": 409
+ },
+ "seq": 10
+}

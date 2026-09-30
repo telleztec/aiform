@@ -1,13 +1,13 @@
-# specs/dependency_detection.md — automatic dependency detection, and why it is paused
+# Detailed Design Specification for Resource Dependency Detection
 
-**Naming note**: like `specs/resource_dependencies.md`,
-`specs/resource_references.md`, `specs/unordered_fields.md` and
-`specs/resource_tagging.md`, this filename deliberately doesn't follow
-`specs/README.md`'s per-module mirroring rule. It describes one feature that
-would span `aiform/driver.py`, `aiform/orchestrator.py` and every driver, and
-it is named for the feature so it is discoverable from any of them.
+Would span `aiform/driver.py`, `aiform/orchestrator.py` and every driver.
 
-Closes #220. Phase 3 of `MULTI_RESOURCE_PRD.md`.
+Closes #220. Phase 3 of `specs/MULTI_RESOURCE_PRD.md`.
+
+## Introduction
+
+This document contains the detailed requirements, interfaces, algorithms, and
+design decisions for the implementation of automatic dependency detection.
 
 **Build status.** **Not built, and paused by decision** — not pending, not in
 progress, not next. This file is the decision record and the contract a
@@ -50,14 +50,6 @@ never declares it separately, and `aiform` derives the edge without being
 told. What remains is inferring an edge from a value that is *not* written as
 a reference: a literal the user pasted. That residue is what this spec is
 about, and the whole question is how much of it is real.
-
-## Relationship to PLAN.md §10
-
-§10's "Dependency graph: ordering exists, value flow does not" entry lists
-automatic detection as Phase 3, phrased as deferred-but-coming. This spec
-**narrows** that entry: the mechanism is unchanged, but the phase is paused by
-decision behind a named prerequisite rather than merely sequenced, and §10 is
-updated to say so. §10's *delivered* claims for Phases 1 and 2 are untouched.
 
 ## The decision
 
@@ -127,11 +119,11 @@ earlier draft of this table missed one row and misclassified another.
 | Field | Points at | Match kind | Verdict |
 |---|---|---|---|
 | `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Was the edge #216 blocked from being a reference; reachable now via `provider_id` (`compute.py:210`) for top-level `droplet_ids` unconditionally, and for the nested field only with a single reference — more than one hits a sorted-list check a reference can't generally satisfy (#224, `specs/digitalocean_firewall.md`) |
-| `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:215`) | **attribute** | A *user-chosen* value, writable before its referent exists. Phase 2 references already work here (`specs/digitalocean_firewall.md:352-356`) |
+| `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:215`) | **attribute** | A *user-chosen* value, writable before the droplet carrying it exists — though the **tag itself** must already exist, or the create 422s `"tag <name> does not exist"` (`specs/digitalocean_firewall.md:198-202`). `compute.py:215` declares `tags` referenceable, so Phase 2 references work here |
 | `addresses` (`firewall.py:51`) | a droplet, via `ipv4_address` (`compute.py:216`) | **attribute** | Same class as `records[].data`. Missed by this table's first draft |
 | `records[].data` (`domain.py:103`) | a droplet, via `ipv4_address` | **attribute** | Phase 2's canonical case; references work |
 | `ssh_keys` (`compute.py:170`) | a DigitalOcean SSH key | id | No `ssh_key` driver exists; no node to point at |
-| `load_balancer_uids`, `kubernetes_ids` (`firewall.py:54-55`) | a load balancer, a k8s cluster | id | No drivers. The k8s edge was never probed (`specs/digitalocean_firewall.md:301`) |
+| `load_balancer_uids`, `kubernetes_ids` (`firewall.py:54-55`) | a load balancer, a k8s cluster | id | No drivers. The k8s edge was never probed (`specs/digitalocean_firewall.md:318`) |
 
 `specs/resource_tagging.md`'s marker tag contributes no edge: it is a fixed
 constant, never a lookup key, and explicitly invisible to the diff engine.
@@ -147,14 +139,14 @@ is the one the create-ordering argument below cannot cover.
 Where the metadata already lives, since it shortens a future Phase 3:
 `firewall.py:40-42` carries a comment stating that every rule target key *is*
 a reference to another resource kind, and
-`specs/digitalocean_firewall.md:282-298` tabulates the edges with id types and
+`specs/digitalocean_firewall.md:308-324` tabulates the edges with id types and
 pre-existence evidence, probe by probe. Phase 3's real work is moving that
 from prose into something the planner can read.
 
 ### The id-match edge cannot change create ordering
 
 A droplet's id is assigned by DigitalOcean at creation, and the API refuses
-an unknown id with a 422 (`specs/digitalocean_firewall.md:299`). So a literal
+an unknown id with a 422 (`specs/digitalocean_firewall.md:316`). So a literal
 in `droplet_ids` was written after a prior successful apply of that droplet.
 In the common case the droplet is therefore already tracked and its action is
 `NO_OP`, and `apply_plan()` skips `NO_OP` before any driver call
@@ -198,7 +190,7 @@ every firewall is destroyed before every droplet, for any pair of names.
 because there is exactly one provider today.
 
 It flips the moment a resource type sorting after `firewall` arrives — a
-`load_balancer` driver, whose edge `specs/digitalocean_firewall.md:300`
+`load_balancer` driver, whose edge `specs/digitalocean_firewall.md:317`
 already documents. But it flips into a *hazard* only for a resource that
 actually breaks when its referent disappears, and a firewall does not:
 
@@ -210,7 +202,9 @@ Owner-reported, not probed — see "Knowledge-confidence". The second half is
 scoped to tag targeting deliberately: it cannot be true of `droplet_ids`,
 which 422s on an id that does not exist yet.
 
-This closes the question `specs/digitalocean_firewall.md:305-307` left open.
+The question `specs/digitalocean_firewall.md`'s "Resource graph" section left
+open is now **answered** there, by this PR's probes: the reference does not
+shrink, and the firewall reports itself converged anyway.
 
 ### An inferred edge would cost more than it pays
 
@@ -285,6 +279,51 @@ Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
 list (#133). A fifth attribute inherits that debt — fix #133 first or the gap
 doubles.
 
+### The declaration has three uses, and generation is the most expensive
+
+Once a driver declares that a field holds references to a resource kind, matched
+on a named attribute, a literal in that field stops being an opaque string. Three
+things become possible, and this spec had only reasoned about the first:
+
+| Use | What it does | Confidence it must clear |
+|---|---|---|
+| **Generate** | create an edge from a matched literal | high — a wrong edge changes ordering and can refuse a destroy |
+| **Lint** | "you hardcoded an id matching a tracked resource; did you mean a reference?" | low — a false warning costs attention |
+| **Verify** | check a declared `depends_on` against what the field's value actually resolves to, and prompt | low — a false prompt costs a question |
+
+**Verification is the cheapest and it catches what nothing else can.** Generation
+must be trusted enough to *create* an edge; verification only has to be trusted
+enough to *ask*. It clears the lint's low bar while addressing a class of error the
+lint cannot see — not a literal that should have been a reference, but a
+**declaration that disagrees with the configuration it describes**.
+
+### A wrong `depends_on` is worse than none
+
+Recorded because nothing in this repo said it, and it is the case verification
+exists for. Suppose a user writes:
+
+```yaml
+depends_on: [digitalocean.compute.web-01]
+params:
+  droplet_ids: [<web-02's id>]
+```
+
+`_dependency_targets()` returns the declared target only — the literal contributes
+nothing — so:
+
+- the ordering graph gains an edge to `web-01` that buys nothing;
+- the **real** dependency on `web-02` is absent, so a destroy can tear `web-02`
+  down before the firewall that points at it;
+- and any future blast-radius answer is wrong in both directions.
+
+All silently, and undetectably by anything that exists today. A user who declares
+nothing at least gets alphabetical order and no false confidence; a user who
+declares the wrong thing gets a graph that is confidently wrong.
+
+That is the strongest available argument for the declaration, and it is independent
+of whether generation is ever built: the same metadata that would infer an edge can
+check one, and checking is the cheaper half.
+
 ## Where detection would run, and what it would cost
 
 `MULTI_RESOURCE_PRD.md`'s "the ordering engine doesn't change" is true. The
@@ -325,9 +364,15 @@ None is resolved here.
   the same rule or the two mechanisms disagree.
 - **A stale literal after a replace.** The id matches nothing, so detection
   silently finds no edge where the user believes one exists. Silence here is
-  worse than an unhelpful edge.
-- **Precedence against a declared edge.** Declared must win; UC2 exists as the
-  correction mechanism.
+  worse than an unhelpful edge — and this is no longer hypothetical: the
+  provider is now **verified** to keep the dead id while reporting the resource
+  converged, so nothing anywhere surfaces the break. Filed as **#232**, P0.
+- **Precedence against a declared edge.** Declared must win the *ordering* — UC2
+  exists as the correction mechanism. But "declared wins" must not mean the
+  disagreement is discarded: see "A wrong `depends_on` is worse than none" above.
+  If the declaration and the field's value name different resources, the graph
+  should honour the declaration **and say so**, because a silently-resolved
+  disagreement is how a user's mistake becomes permanent.
 - **Whether an inferred edge is persisted — already decided, follow the
   precedent.** `_dependency_targets()` (`orchestrator.py:399`) unions
   reference-derived targets with declared ones, and `orchestrator.py:602`
@@ -342,18 +387,31 @@ None is resolved here.
 Nothing to test — nothing is built. What this decision rests on, and what a
 future Phase 3 would need:
 
-**The named probe, not run.** It would promote the owner-reported firewall
-behavior to `verified` and close
-`specs/digitalocean_firewall.md:305-307`'s open note. Shape: create a
-disposable droplet and a firewall carrying its id in `droplet_ids`, `DELETE`
-the droplet, then `GET` the firewall and observe whether `droplet_ids` still
-carries the dead id, and whether a later `PUT` carrying it returns 422.
-Follow `specs/driver_creation.md`'s loop, transcript under
-`probes/transcripts/`, findings in `knowledge/drivers/<session>/FINDINGS.md`.
+**The named probe has since run, and answered half of its two questions.** It
+asked whether a firewall's `droplet_ids` still carries a deleted droplet's id,
+and whether a later `PUT` carrying that id returns `422`.
 
-It is **not** a decision gate. The pause holds whichever way it comes out; a
-dangling reference that *did* break would restore the destroy-ordering case,
-which is why it appears under "Conditions that reopen this".
+- **Question one: partly answered.** `verified` — the dead id is listed *while
+  the firewall reports itself converged*, `status: "succeeded"` with
+  `pending_changes: []` (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`,
+  transcript `13`). So the firewall's own status cannot be used to detect a
+  missing member. **Not** verified: that the entry is permanent. The read is 12
+  seconds after the `DELETE`, on a droplet that never reached `active`, against a
+  firewall whose attach for that droplet was still `waiting` — see the FINDINGS
+  entry, which names the three-read probe that would settle it.
+- **Question two: still unrun and ungraded as an observation.** Whether a `PUT`
+  carrying a dead id returns `422` is graded `inferred` in **this document's**
+  Knowledge-confidence table, extrapolated from transcript `21-`'s create-time
+  `422` and never observed on an update. `specs/digitalocean_firewall.md` does
+  not grade it at all.
+
+What is answered **sharpens** the stale-literal argument without settling the
+phase: a literal that goes stale is invisible to the firewall's own status, so
+nothing the provider reports surfaces the break. That is what **#232** rests on.
+A future Phase 3 inherits a partly-verified hazard here — enough to act on, not
+enough to call permanent.
+
+It remains **not** a decision gate. The pause holds either way.
 
 ## Conditions that reopen this
 
@@ -375,9 +433,17 @@ which is why it appears under "Conditions that reopen this".
   whether Phase 3 is worth building for some other reason, which is the
   repo owner's call and outside this edit's scope.
 - **A resource type that genuinely breaks when its referent is deleted.**
-  Restores the destroy-ordering and orphan-refusal cases.
+  Restores the destroy-ordering and orphan-refusal cases. **Such a type is now
+  known to exist at the provider** — a VPC refuses deletion while it holds a
+  member, `409 "Can not delete VPC with members"` — but this condition is about
+  the **driver set**, and no `network` driver exists, so it is not met. #233
+  notes that a user-created VPC holding droplets would be the first such edge
+  with a driver at both ends.
 - **A reference that fails silently rather than loudly.** The stale-literal
-  argument assumes a 422; a silent wrong answer inverts it.
+  argument assumes a `422` on write. Note this condition is now **partly
+  triggered**: a stale reference is verified to fail silently on *read* — the
+  firewall reports itself converged — while the write-path `422` remains
+  `inferred`. It is the read-side silence that #232 is filed for.
 - **A driver set where the id-match inventory is more than one row** — an
   `ssh_key`, `load_balancer` or k8s driver. A `load_balancer` additionally
   sorts after `firewall`, flipping the destroy-order accident above.
@@ -411,6 +477,12 @@ which is why it appears under "Conditions that reopen this".
   it would need its own use case rather than inheriting UC1's. It is more
   attractive now that #216 is fixed, not less — the warning has somewhere to
   point the user, `:provider_id`, where before it would not have.
+- **Verifying a declared edge against the configuration**, and prompting on a
+  disagreement. Also out of scope *here*, and for the same reason as the lint — it
+  needs its own use case. But note it is the cheapest of the declaration's three
+  uses and the only one that catches a wrong declaration; see "The declaration has
+  three uses" above, which is where the reasoning lives so a future design pass
+  does not have to re-derive it.
 - **Renumbering the PRD's phases.** Phase 3 keeps its number while paused, so
   Phases 4-7 and every reference to them stay valid.
 
@@ -420,14 +492,16 @@ which is why it appears under "Conditions that reopen this".
 |---|---|---|
 | References preserve an attribute's native type for a whole-value reference | **verified** | `aiform/references.py:267-272`, comment and code |
 | `id` reaches the reference namespace as `StateEntry.id`, a `str` | **verified** | `orchestrator.py:94`, `:104`; `models.py:222` |
-| A droplet id is provider-assigned; a firewall 422s on an unknown one at *create* | **verified** | `specs/digitalocean_firewall.md:299`, transcript `21-` |
+| A droplet id is provider-assigned; a firewall 422s on an unknown one at *create* | **verified** | `specs/digitalocean_firewall.md:316`, transcript `21-` |
 | A later `PUT` carrying a *deleted* droplet's id also 422s | **inferred** | Extrapolated from `21-`'s create-time 422; never observed on an update. It is the unrun probe's second question |
 | `apply_plan()` skips `NO_OP` before any driver call | **verified** | `orchestrator.py:1046` |
 | Destroy-from-state topologically sorts `StateEntry.depends_on` | **verified** | `orchestrator.py:922`, `:926` |
 | Reference-derived edges are unioned into `depends_on` and persisted | **verified** | `orchestrator.py:399`, `:602` |
 | The zero-edge destroy order puts firewalls first today | **verified, single-provider** | `graph.py:56-61`, `orchestrator.py:45`; holds because one provider exists |
 | The edge inventory is *complete* | **inferred** | Fields read from source, but completeness is a judgement; the first draft missed `addresses` and misclassified `tags` |
-| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220 |
+| **A firewall does not break when a droplet in it is removed** | **owner-reported** | Stated by the repo owner, 2026-09-26. Not probed. Also recorded in #220. Note what *was* since probed is a narrower claim — the firewall keeps the dead id and still reports `succeeded` (`knowledge/drivers/digitalocean_vpc/`, transcript `13`) — which is about the reference going stale, not about the firewall's rules ceasing to work |
+| A deleted droplet's id stays in `droplet_ids`, and the firewall reports itself converged | **verified** | `knowledge/drivers/digitalocean_vpc/`, transcript `13`. Supersedes this table's earlier framing of the question as unprobed |
+| A VPC refuses deletion while it has a converged member, `409 "Can not delete VPC with members"` | **verified** | `knowledge/drivers/digitalocean_vpc_member/`, transcript `10`. The first edge in the repo whose parent the provider refuses to release — the counterexample the edge inventory lacked. Note the narrower claim: the refusal is verified, not that a droplet breaks without its VPC, which the provider prevents anyone from observing |
 | A tag-targeted firewall can exist ahead of its droplets, config inert | **owner-reported** | Same conversation, 2026-09-27. Not probed, and scoped to tag targeting |
 | Detection would force a driver load, or an AST read, before the ordering pass | **inferred** | Follows from `orchestrator.py:473` preceding `:475`; no implementation has tested it |
 | #216 is fixed, and the reopen condition naming it is not met | **verified** | `drivers/digitalocean/compute.py`'s `provider_id` key; `${digitalocean.compute.<name>:provider_id}` resolves to a real `int` and passes `_reject_wrong_scalars()` — `plans/fix-216-reference-into-integer-field.md`, its tests |

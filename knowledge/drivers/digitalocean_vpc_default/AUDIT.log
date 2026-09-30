@@ -1,0 +1,2 @@
+2026-09-29T17:35:23Z step=recall provider=digitalocean skipped=0 traps=0 conf=10 msg="knowledge base not built; nothing to recall"
+2026-09-29T17:35:58Z step=probe count=8 contradicted=0 msg="session digitalocean_vpc_default"

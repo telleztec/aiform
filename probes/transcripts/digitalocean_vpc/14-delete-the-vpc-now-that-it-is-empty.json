@@ -1,0 +1,28 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 404,
+ "note": "delete the VPC now that it is empty",
+ "prediction": {
+  "notes": "the same call that was refused at step 07, to show the refusal was about membership and not about the VPC itself",
+  "status": 204
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-09-29T04:46:07.412851+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/vpcs/d9e0cac2-2c40-495b-b4c5-40ab6892bd96"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "VPC not found",
+   "request_id": "53b2e177-35e2-4ffd-b108-1b5fc8ca9b70"
+  },
+  "status": 404
+ },
+ "seq": 14
+}

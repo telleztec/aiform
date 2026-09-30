@@ -1,0 +1,36 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 508,
+ "note": "the VPC's member list once the droplet is active",
+ "prediction": {
+  "notes": "one member, the droplet -- this is the reverse-edge query a blast-radius report would use, answered natively by the provider",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T04:51:18.692442+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/vpcs/5c4abd22-c6d5-45cd-b09e-7320101f108d/members"
+ },
+ "response": {
+  "body": {
+   "links": {},
+   "members": [
+    {
+     "created_at": "2026-09-29T04:50:49Z",
+     "name": "aiform-system-test-vpcmem-probe-20260929T045044Z-fd0910",
+     "urn": "do:droplet:89a3a30d-8b38-432b-bb42-1ef403ea227c"
+    }
+   ],
+   "meta": {
+    "total": 1
+   }
+  },
+  "status": 200
+ },
+ "seq": 9
+}

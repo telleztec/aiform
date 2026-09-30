@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Live end-to-end system test for cross-resource attribute references
-(specs/resource_references.md, Phase 2 of MULTI_RESOURCE_PRD.md) against the
+(specs/resource_references.md, Phase 2 of specs/MULTI_RESOURCE_PRD.md) against the
 real DigitalOcean and Anthropic APIs. Excluded from the default `pytest` run
 (see pyproject.toml's `addopts`); run explicitly with:
 

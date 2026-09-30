@@ -1,0 +1,30 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 358,
+ "note": "peerings on the account before this session",
+ "prediction": {
+  "notes": "expect an empty list on the dev team",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-09-29T19:56:42.595100+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/vpc_peerings"
+ },
+ "response": {
+  "body": {
+   "links": {},
+   "meta": {
+    "total": 0
+   },
+   "vpc_peerings": []
+  },
+  "status": 200
+ },
+ "seq": 1
+}

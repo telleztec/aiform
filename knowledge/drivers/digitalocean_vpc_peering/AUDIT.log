@@ -1,0 +1,8 @@
+2026-09-29T19:56:42Z step=recall provider=digitalocean skipped=0 traps=0 conf=10 msg="knowledge base not built; nothing to recall"
+2026-09-29T19:56:57Z step=probe ref=10 verdict=contradicted conf=10 msg="delete a VPC that is currently peered: predicted 409, got 412"
+2026-09-29T20:01:06Z step=probe count=37 contradicted=1 msg="session digitalocean_vpc_peering"
+2026-09-29T20:05:00Z step=spec ref=model/peering-depends-on-both cites=04,10 msg="both VPCs must pre-exist; neither deletable while peered"
+2026-09-29T20:05:00Z step=spec ref=model/refusal-status-varies cites=10 msg="412 Can not delete VPC with peerings, vs 409 for members -- status cannot identify a referential refusal"
+2026-09-29T20:05:00Z step=spec ref=model/symmetric-edge cites=05,08 msg="vpc_ids returned reordered; the pair is symmetric and needs UNORDERED_FIELDS"
+2026-09-29T20:05:00Z step=spec ref=model/reverse-edge-readable cites=09 msg="GET /vpcs/{id}/peerings answers, so both directions readable for this kind unlike firewall"
+2026-09-29T20:05:00Z step=note ref=11 msg="delete ends in 404 rather than a terminal status; this session polled 24 times for DELETED and never saw it"

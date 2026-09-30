@@ -1,7 +1,7 @@
 # Phase 2 — Cross-resource attribute references
 
 **Status:** approved 2026-09-26. Implements #215. Phase 2 of
-`MULTI_RESOURCE_PRD.md`. This is the plan `PROCESS.md`'s "Before the loop"
+`specs/MULTI_RESOURCE_PRD.md`. This is the plan `PROCESS.md`'s "Before the loop"
 gate requires, as approved — a point-in-time decision record, not a living
 spec. `specs/resource_references.md` is the living spec; where the two
 disagree, the spec describes what the code does and this file describes what
@@ -23,7 +23,7 @@ Opus 5 → Fable 5.1 pairing.
 
 ## Context
 
-`MULTI_RESOURCE_PRD.md`'s Phase 1 shipped as PR #204: resources can declare
+`specs/MULTI_RESOURCE_PRD.md`'s Phase 1 shipped as PR #204: resources can declare
 `depends_on:` and the plan is ordered topologically. That delivered the
 *declaration* half of a dependency — naming another resource.
 

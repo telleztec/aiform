@@ -70,7 +70,7 @@ for."
 
 ## MVP scope (locked)
 
-Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). Resources may declare *ordering* dependencies on one another (`depends_on:`, `specs/resource_dependencies.md`), but not yet reference each other's attribute *values* — see §10, "Not Yet Implemented", and `MULTI_RESOURCE_PRD.md` for the phasing.
+Single CSP (DigitalOcean), single resource kind (`compute`, realized against DO's droplet API). Resources may declare *ordering* dependencies on one another (`depends_on:`, `specs/resource_dependencies.md`), but not yet reference each other's attribute *values* — see §10, "Not Yet Implemented", and `specs/MULTI_RESOURCE_PRD.md` for the phasing.
 
 ## Driver curation: two permanent mechanisms
 
@@ -1634,7 +1634,7 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   whole area was undesigned, and then that value flow was missing; both
   are now out of date. It has since had a
   requirements pass and a phased delivery plan —
-  `MULTI_RESOURCE_PRD.md` at the repo root is the durable record, and
+  `specs/MULTI_RESOURCE_PRD.md` at the repo root is the durable record, and
   what remains deferred is now deferred *per phase* rather than
   wholesale.
 
@@ -1920,7 +1920,7 @@ entry's own note below.
   the margins (a single resource's poll loop stays well under DO's
   per-token rate limit on its own), but becomes materially sharper once
   multiple resources can be created/updated **concurrently** — Phase 6 of
-  `MULTI_RESOURCE_PRD.md`, and still deferred. Phase 1's dependency
+  `specs/MULTI_RESOURCE_PRD.md`, and still deferred. Phase 1's dependency
   ordering does not sharpen it: that order is total and applied strictly
   sequentially, so exactly one poll loop runs at a time, as today. When
   concurrency does land, N concurrent poll loops multiply
