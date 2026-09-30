@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+from pathlib import Path
+
 
 class ResourceNotFoundError(Exception):
     """Raised by a ResourceDriver's read() when the resource no longer
@@ -31,3 +33,18 @@ class PlanBlockedError(Exception):
     def __init__(self, reason: str):
         self.reason = reason
         super().__init__(reason)
+
+
+class DeploymentMismatchError(Exception):
+    """Raised by state.load() when the state file at `path` belongs to a
+    different deployment than the one the caller asked to act on (#201)."""
+
+    def __init__(self, requested: str, found: str, path: Path):
+        self.requested = requested
+        self.found = found
+        self.path = path
+        super().__init__(
+            f"this state file belongs to deployment {found!r}, not {requested!r}.\n"
+            f"  state file: {path}\n"
+            "  Nothing was read from the provider and nothing was changed."
+        )

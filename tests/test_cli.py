@@ -155,7 +155,12 @@ def write_tracked_resource_forcing_categorization(project_dir: Path, drivers_dir
         aiform_md_path=str(aiform_md),
         aiform_md_sha256="stale-hash-forces-categorization",
     )
-    state.save(state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file)
+    state.save(
+        state.State(
+            deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+        ),
+        state_file,
+    )
     return state_file
 
 
@@ -1328,7 +1333,10 @@ class TestPlanCreate:
             aiform_md_path=str(project_dir / "target.aiform.md"),
             aiform_md_sha256="hash",
         )
-        state.save(state.State(resources={"digitalocean.compute.zzz-01": target}), state_file)
+        state.save(
+            state.State(deployment="default", resources={"digitalocean.compute.zzz-01": target}),
+            state_file,
+        )
         patch_client(monkeypatch, [categorization_response()])
 
         code = cli.main(["plan", "create", "--state-file", str(state_file)])
@@ -1596,7 +1604,7 @@ class TestPlanApply:
         out = capsys.readouterr().out
         assert code == 0
         assert "digitalocean.compute.telleztec-app-01" in out
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in reloaded.resources
 
     def test_apply_with_yes_prints_auto_approved_marker(
@@ -1674,7 +1682,7 @@ class TestPlanApply:
         out = capsys.readouterr().out
         assert code == 1
         assert "abort" in out.lower()
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert reloaded.resources == {}
 
     def test_apply_without_yes_omits_auto_approved_marker(
@@ -1982,7 +1990,10 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
         )
         state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
         )
         patch_client(monkeypatch, [plan_review_response()])
 
@@ -1991,7 +2002,7 @@ class TestPlanDestroy:
         out = capsys.readouterr().out
         assert code == 0
         assert "destroy" in out
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert reloaded.resources == {}
         assert not aiform_md.exists()
         trash_dir = project_dir / ".aiform" / "trash"
@@ -2023,7 +2034,10 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
         )
         state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
         )
         patch_client(monkeypatch, [plan_review_response()])
 
@@ -2062,7 +2076,10 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
         )
         state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
         )
         patch_client(
             monkeypatch,
@@ -2086,7 +2103,7 @@ class TestPlanDestroy:
         assert code == 2
         assert "Error:" in err
         assert "do not destroy production" in err
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in reloaded.resources
         assert aiform_md.exists()
 
@@ -2105,7 +2122,10 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
             depends_on=["digitalocean.compute.ghost-01"],
         )
-        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+        state.save(
+            state.State(deployment="default", resources={"digitalocean.compute.app-01": entry}),
+            state_file,
+        )
 
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
 
@@ -2113,7 +2133,7 @@ class TestPlanDestroy:
         assert code == 2
         assert "Error:" in err
         assert "digitalocean.compute.ghost-01" in err
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.app-01" in reloaded.resources
 
     def test_destroy_with_force_drops_dangling_dependency_and_warns(
@@ -2140,7 +2160,10 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
             depends_on=["digitalocean.compute.ghost-01"],
         )
-        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+        state.save(
+            state.State(deployment="default", resources={"digitalocean.compute.app-01": entry}),
+            state_file,
+        )
         patch_client(monkeypatch, [plan_review_response()])
 
         code = cli.main(["plan", "destroy", "--yes", "--force", "--state-file", str(state_file)])
@@ -2149,7 +2172,7 @@ class TestPlanDestroy:
         assert code == 0
         assert "Warning:" in out
         assert "digitalocean.compute.ghost-01" in out
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert reloaded.resources == {}
 
     def test_destroy_yes_alone_does_not_bypass_dangling_dependency_refusal(
@@ -2169,12 +2192,15 @@ class TestPlanDestroy:
             aiform_md_sha256="abc123",
             depends_on=["digitalocean.compute.ghost-01"],
         )
-        state.save(state.State(resources={"digitalocean.compute.app-01": entry}), state_file)
+        state.save(
+            state.State(deployment="default", resources={"digitalocean.compute.app-01": entry}),
+            state_file,
+        )
 
         code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
 
         assert code == 2
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.app-01" in reloaded.resources
 
 
@@ -2199,7 +2225,10 @@ class TestPlanRefresh:
             aiform_md_sha256="abc123",
         )
         state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
         )
 
         code = cli.main(["plan", "refresh", "--state-file", str(state_file)])
@@ -2207,7 +2236,7 @@ class TestPlanRefresh:
         out = capsys.readouterr().out
         assert code == 0
         assert "digitalocean.compute.telleztec-app-01" in out
-        reloaded = state.load(state_file)
+        reloaded = state.load(state_file, deployment="default")
         assert reloaded.resources["digitalocean.compute.telleztec-app-01"].attributes == {
             "region": "sfo3",
             "size": "s-1vcpu-2gb",
@@ -2239,7 +2268,10 @@ class TestPlanShow:
             aiform_md_sha256="abc123",
         )
         state.save(
-            state.State(resources={"digitalocean.compute.telleztec-app-01": entry}), state_file
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
         )
 
         code = cli.main(["plan", "show", "--state-file", str(state_file)])

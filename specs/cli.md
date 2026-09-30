@@ -79,9 +79,11 @@ means to act on, and every one of those commands passes it as
 and `resource`'s direct loads). The check itself is `state.load()`'s, not
 this module's (`specs/state.md`): a state file that names a different
 deployment raises `DeploymentMismatchError` before any driver load,
-credential resolution, provider call or LLM call. The argument type is
-`state.validate_deployment_name`, so a name that could not be a directory
-segment is an argparse usage error (exit 2) before anything runs.
+credential resolution, provider call or LLM call. The argument type is a thin wrapper
+around `state.validate_deployment_name` that re-raises its `ValueError` as
+`argparse.ArgumentTypeError` (argparse would otherwise discard the message), so
+a name that could not be a directory segment is a usage error (exit 2) that
+states the rule, before anything runs.
 `--state-file` and `--deployment` are independent: the first says which file
 to read, the second says which deployment the caller believes that file
 holds.

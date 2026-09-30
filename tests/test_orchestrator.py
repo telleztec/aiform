@@ -316,7 +316,7 @@ def make_planned_resource(**overrides) -> "orchestrator.PlannedResource":
 
 
 def save_state(state_path: Path, **entries) -> None:
-    state.save(state.State(resources=entries), state_path)
+    state.save(state.State(deployment="default", resources=entries), state_path)
 
 
 class TestResourceKey:
@@ -418,7 +418,9 @@ class TestDriverInfoFor:
         path = write_driver(drivers_dir, "digitalocean", "compute")
         trusted_info = make_driver_info(driver_sha256(path))
         entry = make_state_entry(driver=trusted_info)
-        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+        st = state.State(
+            deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+        )
 
         result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
@@ -428,7 +430,9 @@ class TestDriverInfoFor:
         path = write_driver(drivers_dir, "digitalocean", "compute")
         sha256 = driver_sha256(path)
         entry = make_state_entry(resource_type="network", driver=make_driver_info(sha256))
-        st = state.State(resources={"digitalocean.network.telleztec-app-01": entry})
+        st = state.State(
+            deployment="default", resources={"digitalocean.network.telleztec-app-01": entry}
+        )
 
         result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
@@ -438,7 +442,9 @@ class TestDriverInfoFor:
     def test_no_matching_entry_builds_new_driver_info(self, drivers_dir: Path):
         path = write_driver(drivers_dir, "digitalocean", "compute")
 
-        result = orchestrator.driver_info_for("digitalocean", "compute", state.State())
+        result = orchestrator.driver_info_for(
+            "digitalocean", "compute", state.State(deployment="default")
+        )
 
         assert result.sha256 == driver_sha256(path)
         assert result.path == "drivers/digitalocean/compute.py"
@@ -446,7 +452,9 @@ class TestDriverInfoFor:
     def test_hash_mismatch_builds_fresh_driver_info(self, drivers_dir: Path):
         write_driver(drivers_dir, "digitalocean", "compute")
         entry = make_state_entry(driver=make_driver_info("stale-hash-does-not-match"))
-        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+        st = state.State(
+            deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+        )
 
         result = orchestrator.driver_info_for("digitalocean", "compute", st)
 
@@ -456,7 +464,9 @@ class TestDriverInfoFor:
         caplog.set_level("INFO", logger="aiform.orchestrator")
         path = write_driver(drivers_dir, "digitalocean", "compute")
         entry = make_state_entry(driver=make_driver_info(driver_sha256(path)))
-        st = state.State(resources={"digitalocean.compute.telleztec-app-01": entry})
+        st = state.State(
+            deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+        )
 
         orchestrator.driver_info_for("digitalocean", "compute", st)
 
@@ -467,7 +477,7 @@ class TestDriverInfoFor:
         caplog.set_level("INFO", logger="aiform.orchestrator")
         write_driver(drivers_dir, "digitalocean", "compute")
 
-        orchestrator.driver_info_for("digitalocean", "compute", state.State())
+        orchestrator.driver_info_for("digitalocean", "compute", state.State(deployment="default"))
 
         record = caplog.records[0]
         assert record.reused is False
@@ -615,7 +625,7 @@ class TestRefreshState:
 
         orchestrator.refresh_state(state_path=state_path)
 
-        reloaded = state.load(state_path)
+        reloaded = state.load(state_path, deployment="default")
         assert (
             reloaded.resources["digitalocean.compute.telleztec-app-01"].attributes["region"]
             == "sfo3"
@@ -662,7 +672,7 @@ class TestRefreshState:
 
     def test_empty_state_is_a_no_op(self, tmp_path: Path):
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         assert orchestrator.refresh_state(state_path=state_path).resources == {}
 
@@ -714,7 +724,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         # Nothing is scripted. This test is named as the brand-new-resource
         # guard, so it should fail if any Anthropic call is ever
@@ -795,7 +805,7 @@ class TestBuildCreatePlan:
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].aiform_md_sha256 == new_hash
 
     def test_second_plan_after_a_prose_only_edit_makes_zero_calls(
@@ -883,7 +893,7 @@ class TestBuildCreatePlan:
         )
 
         assert planned[0].entry.action == PlanAction.NO_OP
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert (
             saved.resources["digitalocean.compute.telleztec-app-01"].aiform_md_sha256 == stale_hash
         )
@@ -1085,7 +1095,7 @@ class TestBuildCreatePlan:
         delete_path = tmp_path / "AIFORM-DELETE-telleztec-app-01.aiform.md"
         write_aiform_md(delete_path)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1139,7 +1149,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([categorization_response(action="update")])
         planned, _ = orchestrator.build_create_plan(
@@ -1172,7 +1182,7 @@ class TestBuildCreatePlan:
         content = write_aiform_md(aiform_md, intent="Prefer a resize over a replace.")
         assert "## Intent" in content
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1193,7 +1203,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1266,7 +1276,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError):
@@ -1279,7 +1289,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(PlanBlockedError):
             orchestrator.build_create_plan(
@@ -1315,7 +1325,7 @@ class TestBuildCreatePlan:
         write_aiform_md(aiform_md_1, name="telleztec-app-01")
         write_aiform_md(aiform_md_2, name="telleztec-app-02")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1351,7 +1361,7 @@ class TestBuildCreatePlan:
 
         orchestrator.build_create_plan([aiform_md], state_path=state_path, client=FakeClient([]))
 
-        reloaded = state.load(state_path)
+        reloaded = state.load(state_path, deployment="default")
         assert reloaded.resources["digitalocean.compute.telleztec-app-01"].attributes == {
             "region": "sfo3",
             "size": "s-1vcpu-2gb",
@@ -1395,7 +1405,7 @@ class TestBuildCreatePlan:
         aiform_md = tmp_path / "bad.aiform.md"
         aiform_md.write_text("not valid frontmatter at all")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(ValueError):
             orchestrator.build_create_plan(
@@ -1420,7 +1430,7 @@ class TestBuildCreatePlanDependencyOrdering:
             depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         # Deliberately handed out of dependency order, to prove the pass
         # reorders rather than merely preserving an already-correct order.
@@ -1542,7 +1552,7 @@ class TestBuildCreatePlanDependencyOrdering:
         )
         assert app_pr.entry.action == PlanAction.NO_OP
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.app-01"].depends_on == [
             "digitalocean.compute.db-01"
         ]
@@ -1688,7 +1698,7 @@ class TestBuildCreatePlanDependencyOrdering:
             depends_on=["digitalocean.compute.db-01", "digitalocean.compute.db-01"],
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1711,7 +1721,7 @@ class TestBuildCreatePlanDependencyOrdering:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md, name="app-01")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
         differently_spelled = tmp_path / "." / "app.aiform.md"
 
         client = FakeClient([])
@@ -1734,7 +1744,7 @@ class TestBuildCreatePlanDependencyOrdering:
         write_aiform_md(first_path, name="app-01")
         write_aiform_md(second_path, name="app-01")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -1766,7 +1776,7 @@ class TestBuildCreatePlanDependencyOrdering:
         write_aiform_md(live_path, name="app-01")
         write_aiform_md(delete_path, name="app-01")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
@@ -1798,7 +1808,7 @@ class TestBuildCreatePlanDependencyOrdering:
         except (OSError, NotImplementedError):
             pytest.skip("platform cannot create symlinks")
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(PlanBlockedError) as exc_info:
             orchestrator.build_create_plan(
@@ -1825,7 +1835,7 @@ class TestBuildCreatePlanDependencyOrdering:
             ],
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -1847,7 +1857,7 @@ class TestBuildCreatePlanDependencyOrdering:
             delete_path, name="app-01", depends_on=["digitalocean.compute.long-gone-01"]
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
             [delete_path], state_path=state_path, client=FakeClient([])
@@ -1865,7 +1875,7 @@ class TestBuildCreatePlanDependencyOrdering:
         delete_path = tmp_path / "AIFORM-DELETE-old.aiform.md"
         write_aiform_md(delete_path, name="old-01", depends_on=["digitalocean.compute.app-01"])
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         planned, _ = orchestrator.build_create_plan(
@@ -1913,7 +1923,7 @@ class TestBuildCreatePlanDependencyOrdering:
         app_path = tmp_path / "app.aiform.md"
         write_aiform_md(app_path, name="app-01", depends_on=["digitalocean.compute.db-01"])
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -1937,7 +1947,7 @@ class TestBuildCreatePlanDependencyOrdering:
         write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
         write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -1957,7 +1967,7 @@ class TestBuildCreatePlanDependencyOrdering:
         a_path = tmp_path / "a.aiform.md"
         write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.a-01"])
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -2060,7 +2070,7 @@ class TestReferenceDerivedEdges:
         write_aiform_md(target, name="zzz-01")
         write_aiform_md(dependent, name="aaa-01", params=ref_params, **kwargs)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
         return target, dependent, state_path
 
     def test_reference_orders_the_target_first_with_no_depends_on(self, tmp_path, drivers_dir):
@@ -2118,7 +2128,7 @@ class TestReferenceDerivedEdges:
             },
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
             [dependent, one, two], state_path=state_path, client=FakeClient([])
@@ -2140,7 +2150,7 @@ class TestReferenceDerivedEdges:
             params={"data": "${digitalocean.compute.nope:ipv4_address}"},
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -2167,7 +2177,7 @@ class TestReferenceDerivedEdges:
             params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -2191,7 +2201,7 @@ class TestReferenceDerivedEdges:
             params={"data": "${digitalocean.compute.web-01.ipv4_address}"},
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         with pytest.raises(PlanBlockedError) as exc_info:
@@ -2244,7 +2254,7 @@ class TestReferenceResolutionAtPlanTime:
             params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
             [zone, web], state_path=state_path, client=FakeClient([])
@@ -2600,7 +2610,7 @@ class TestReferenceToATargetThisRunWillReplace:
 
         orchestrator.apply_plan(planned, state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         new_ip = saved.resources["digitalocean.compute.web-01"].attributes["ipv4_address"]
         assert new_ip != "203.0.113.5"
         assert saved.resources["digitalocean.domain.example.com"].attributes["data"] == new_ip
@@ -2623,7 +2633,7 @@ class TestReferenceResolutionAtApplyTime:
             params={"data": "${digitalocean.compute.web-01:ipv4_address}"},
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
             [zone, web], state_path=state_path, client=FakeClient([])
@@ -2631,7 +2641,7 @@ class TestReferenceResolutionAtApplyTime:
         result = orchestrator.apply_plan(planned, state_path=state_path, yes=True)
 
         assert result.aborted is False
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         # The driver derives ipv4_address from the name's length, so this
         # pins that the zone received the droplet's real created value
         # rather than the literal placeholder.
@@ -2740,7 +2750,7 @@ class TestBuildDestroyPlan:
         aiform_md = tmp_path / "app.aiform.md"
         write_aiform_md(aiform_md)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_destroy_plan([aiform_md], state_path=state_path)
 
@@ -3032,7 +3042,7 @@ class TestApplyPlan:
             )
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
@@ -3043,12 +3053,12 @@ class TestApplyPlan:
         driver = FakeDriver(create_result={"id": "new-1", "region": "sfo3", "size": "s-1vcpu-2gb"})
         pr = make_planned_resource(driver=driver, state_entry=None)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
         assert result.executed == [pr.entry]
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
         assert entry.id == "new-1"
         assert entry.attributes == {"region": "sfo3", "size": "s-1vcpu-2gb"}
@@ -3062,11 +3072,11 @@ class TestApplyPlan:
             depends_on=["digitalocean.compute.db-01", "digitalocean.compute.cache-01"],
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
         assert entry.depends_on == ["digitalocean.compute.db-01", "digitalocean.compute.cache-01"]
 
@@ -3079,7 +3089,7 @@ class TestApplyPlan:
         driver.create = boom
         pr = make_planned_resource(driver=driver, state_entry=None)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError) as exc_info:
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
@@ -3090,7 +3100,7 @@ class TestApplyPlan:
         driver = FakeDriver(create_result={"id": "new-1", "region": "sfo3"})
         pr = make_planned_resource(driver=driver, state_entry=None)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
@@ -3110,7 +3120,7 @@ class TestApplyPlan:
         driver.create = boom
         pr = make_planned_resource(driver=driver, state_entry=None)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError):
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
@@ -3137,7 +3147,7 @@ class TestApplyPlan:
 
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].attributes["size"] == (
             "s-2vcpu-4gb"
         )
@@ -3166,7 +3176,7 @@ class TestApplyPlan:
 
         orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         entry = saved.resources["digitalocean.compute.telleztec-app-01"]
         assert entry.depends_on == ["digitalocean.compute.new-dep-01"]
 
@@ -3339,7 +3349,7 @@ class TestApplyPlan:
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         orchestrator.apply_plan([pr], state_path=state_path, confirm=confirm, client=client)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "new-2"
         # only the top-level confirmation fires -- likely_replace=True means
         # this resource was already covered by the batch gate #2 review, so
@@ -3384,7 +3394,7 @@ class TestApplyPlan:
         # mid-loop single-resource replace confirmation is never skippable.
         assert len(confirm_calls) == 1
         assert len(client.messages.calls) == 1
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "new-2"
 
     def test_on_review_single_resource_flags_are_not_mixed_with_batch_flags(self, tmp_path: Path):
@@ -3531,7 +3541,7 @@ class TestApplyPlan:
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
         assert not aiform_md.exists()
         assert result.executed == [pr.entry]
@@ -3578,7 +3588,7 @@ class TestApplyPlan:
         # PLAN.md §5 apply step 4: "the trash-move happens... after the
         # state write" -- so even though the trash-move itself failed, the
         # state removal must already be durably persisted.
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
 
     def test_destroy_untracked_skips_delete_and_driver_resolution(
@@ -3606,7 +3616,7 @@ class TestApplyPlan:
             state_entry=None,
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         # No drivers_dir/DIGITALOCEAN_TOKEN set up at all -- if load_driver()
         # or config.resolve_credentials() were ever called for an untracked
@@ -3622,7 +3632,7 @@ class TestApplyPlan:
     def test_gate2_skipped_when_no_destroy_or_likely_replace(self, tmp_path: Path):
         pr = make_planned_resource()
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([])
         result = orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
@@ -3666,7 +3676,7 @@ class TestApplyPlan:
         with pytest.raises(PlanBlockedError):
             orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in saved.resources
 
     def test_gate2_non_blocking_flags_carried_into_result(
@@ -3800,18 +3810,18 @@ class TestApplyPlan:
     def test_declined_confirmation_returns_aborted_with_empty_executed(self, tmp_path: Path):
         pr = make_planned_resource()
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         result = orchestrator.apply_plan([pr], state_path=state_path, confirm=lambda p: False)
 
         assert result.aborted is True
         assert result.executed == []
-        assert state.load(state_path).resources == {}
+        assert state.load(state_path, deployment="default").resources == {}
 
     def test_yes_skips_top_level_confirmation(self, tmp_path: Path):
         pr = make_planned_resource()
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         def confirm(prompt):
             raise AssertionError("should not be called when yes=True")
@@ -3829,7 +3839,7 @@ class TestApplyPlan:
             )
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         warning_flag = {
             "resource_key": pr.entry.resource_key,
@@ -3864,7 +3874,7 @@ class TestApplyPlan:
             aiform_md_path=aiform_md,
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         warning_flag = {
             "resource_key": pr.entry.resource_key,
@@ -3900,7 +3910,7 @@ class TestApplyPlan:
             )
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         warning_flag = {
             "resource_key": pr.entry.resource_key,
@@ -3921,7 +3931,7 @@ class TestApplyPlan:
     def test_on_review_not_called_when_no_review_needed(self, tmp_path: Path):
         pr = make_planned_resource()
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         calls = []
         orchestrator.apply_plan(
@@ -3958,12 +3968,12 @@ class TestApplyPlan:
             name="app-02",
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError):
             orchestrator.apply_plan([pr1, pr2], state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.app-01" in saved.resources
         assert "digitalocean.compute.app-02" not in saved.resources
 
@@ -3983,7 +3993,7 @@ class TestApplyPlan:
             driver=FakeDriver(create_result={"id": "id-2", "region": "sfo3"}),
         )
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         result = orchestrator.apply_plan([pr_no_op, pr_create], state_path=state_path, yes=True)
 
@@ -4011,7 +4021,7 @@ class TestApplyPlan:
 
         orchestrator.apply_plan([pr], state_path=state_path, yes=True)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         refreshed = saved.resources["digitalocean.compute.telleztec-app-01"].last_refreshed_at
         assert refreshed.year != 2020
 
@@ -4071,7 +4081,7 @@ class TestApplyPlan:
 
         # the old resource is verifiably gone (delete() succeeded) -- state
         # must not still claim the old, now-nonexistent id/attributes.
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" not in saved.resources
 
     # The next two pin which `operation` a failure on the replace path
@@ -4137,7 +4147,7 @@ class TestApplyPlan:
         assert exc_info.value.operation == "delete"
         # delete() failed, so the entry must still be tracked: the
         # checkpoint save only runs once the CSP resource is verifiably gone.
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert saved.resources["digitalocean.compute.telleztec-app-01"].id == "123"
 
     def test_batch_review_safe_to_proceed_false_with_no_block_flag_still_raises(
@@ -4182,14 +4192,14 @@ class TestApplyPlan:
         with pytest.raises(PlanBlockedError):
             orchestrator.apply_plan([pr], state_path=state_path, yes=True, client=client)
 
-        saved = state.load(state_path)
+        saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.telleztec-app-01" in saved.resources
 
     def test_create_driver_response_missing_id_raises_driver_execution_error(self, tmp_path: Path):
         driver = FakeDriver(create_result={"region": "sfo3"})
         pr = make_planned_resource(driver=driver, state_entry=None)
         state_path = tmp_path / ".aiform" / "state.json"
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(DriverExecutionError) as exc_info:
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
@@ -4211,7 +4221,7 @@ class TestApplyPlan:
         state_path = tmp_path / ".aiform" / "state.json"
         # state.json does NOT contain the entry -- stale relative to `pr`,
         # simulating state having changed since this plan was built.
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         with pytest.raises(PlanBlockedError):
             orchestrator.apply_plan([pr], state_path=state_path, yes=True)
@@ -4245,7 +4255,7 @@ class TestApplyPlan:
         )
         state_path = tmp_path / ".aiform" / "state.json"
         # state.json does NOT contain the entry, unlike `pr.state_entry`.
-        state.save(state.State(), state_path)
+        state.save(state.State(deployment="default"), state_path)
 
         client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
         with pytest.raises(PlanBlockedError):

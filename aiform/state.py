@@ -2,20 +2,40 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import re
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from aiform.exceptions import DeploymentMismatchError
 from aiform.models import StateEntry
 
 DEFAULT_STATE_PATH = Path(".aiform/state.json")
+DEFAULT_DEPLOYMENT = "default"
+
+_DEPLOYMENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+
+
+def validate_deployment_name(name: str) -> str:
+    if not _DEPLOYMENT_NAME.fullmatch(name):
+        raise ValueError(
+            f"invalid deployment name {name!r}: use 1 to 63 lowercase letters, digits, "
+            "'-' or '_', starting with a letter or digit"
+        )
+    return name
 
 
 class State(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     aiform_state_version: int = 1
+    deployment: str
     resources: dict[str, StateEntry] = Field(default_factory=dict)
+
+    @field_validator("deployment")
+    @classmethod
+    def _deployment_is_a_safe_name(cls, name: str) -> str:
+        return validate_deployment_name(name)
 
     @model_validator(mode="after")
     def _keys_match_entries(self) -> "State":
@@ -26,11 +46,15 @@ class State(BaseModel):
         return self
 
 
-def load(path: Path = DEFAULT_STATE_PATH) -> State:
+def load(path: Path = DEFAULT_STATE_PATH, *, deployment: str) -> State:
+    validate_deployment_name(deployment)
     if not path.exists():
-        return State()
+        return State(deployment=deployment)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return State.model_validate(raw)
+    loaded = State.model_validate(raw)
+    if loaded.deployment != deployment:
+        raise DeploymentMismatchError(deployment, loaded.deployment, path.absolute())
+    return loaded
 
 
 def save(state: State, path: Path = DEFAULT_STATE_PATH) -> None:

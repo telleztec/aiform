@@ -7,8 +7,18 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from aiform.exceptions import DeploymentMismatchError
 from aiform.models import DriverInfo, StateEntry
-from aiform.state import DEFAULT_STATE_PATH, State, load, save
+from aiform.state import (
+    DEFAULT_DEPLOYMENT,
+    DEFAULT_STATE_PATH,
+    State,
+    load,
+    save,
+    validate_deployment_name,
+)
+
+DEPLOYMENT = "default"
 
 
 def make_state_entry(**overrides) -> StateEntry:
@@ -37,15 +47,18 @@ def make_state_entry(**overrides) -> StateEntry:
 
 
 def make_state(**entries: StateEntry) -> State:
-    return State(aiform_state_version=1, resources=entries)
+    return State(aiform_state_version=1, deployment=DEPLOYMENT, resources=entries)
 
 
 class TestDefaults:
     def test_default_state_path_constant(self):
         assert DEFAULT_STATE_PATH == Path(".aiform/state.json")
 
+    def test_default_deployment_constant(self):
+        assert DEFAULT_DEPLOYMENT == "default"
+
     def test_state_defaults_when_constructed_directly(self):
-        state = State()
+        state = State(deployment=DEPLOYMENT)
         assert state.aiform_state_version == 1
         assert state.resources == {}
 
@@ -63,12 +76,12 @@ class TestStateKeyValidation:
 
     def test_rejects_unrecognized_top_level_key(self):
         with pytest.raises(ValidationError):
-            State(aiform_state_version=1, resources={}, resourcess={})
+            State(aiform_state_version=1, deployment=DEPLOYMENT, resources={}, resourcess={})
 
 
 class TestLoad:
     def test_missing_file_returns_empty_state(self, tmp_path: Path):
-        state = load(tmp_path / "nonexistent.json")
+        state = load(tmp_path / "nonexistent.json", deployment=DEPLOYMENT)
         assert state.aiform_state_version == 1
         assert state.resources == {}
 
@@ -78,13 +91,14 @@ class TestLoad:
         path = tmp_path / "state.json"
         path.write_text(json.dumps(original.model_dump(mode="json")))
 
-        loaded = load(path)
+        loaded = load(path, deployment=DEPLOYMENT)
         assert loaded == original
 
     def test_rejects_mismatched_resource_key_in_file(self, tmp_path: Path):
         entry = make_state_entry()
         raw = {
             "aiform_state_version": 1,
+            "deployment": DEPLOYMENT,
             "resources": {
                 "digitalocean.compute.wrong-name": entry.model_dump(mode="json"),
             },
@@ -93,21 +107,23 @@ class TestLoad:
         path.write_text(json.dumps(raw))
 
         with pytest.raises(ValidationError):
-            load(path)
+            load(path, deployment=DEPLOYMENT)
 
     def test_malformed_json_propagates(self, tmp_path: Path):
         path = tmp_path / "state.json"
         path.write_text("{not valid json")
 
         with pytest.raises(json.JSONDecodeError):
-            load(path)
+            load(path, deployment=DEPLOYMENT)
 
     def test_rejects_typo_d_top_level_key(self, tmp_path: Path):
         path = tmp_path / "state.json"
-        path.write_text(json.dumps({"aiform_state_version": 1, "resourcess": {}}))
+        path.write_text(
+            json.dumps({"aiform_state_version": 1, "deployment": DEPLOYMENT, "resourcess": {}})
+        )
 
         with pytest.raises(ValidationError):
-            load(path)
+            load(path, deployment=DEPLOYMENT)
 
     def test_state_json_written_without_depends_on_still_loads(self, tmp_path: Path):
         entry = make_state_entry()
@@ -115,14 +131,132 @@ class TestLoad:
         del raw_entry["depends_on"]
         raw = {
             "aiform_state_version": 1,
+            "deployment": DEPLOYMENT,
             "resources": {"digitalocean.compute.telleztec-app-01": raw_entry},
         }
         path = tmp_path / "state.json"
         path.write_text(json.dumps(raw))
 
-        loaded = load(path)
+        loaded = load(path, deployment=DEPLOYMENT)
 
         assert loaded.resources["digitalocean.compute.telleztec-app-01"].depends_on == []
+
+
+class TestValidateDeploymentName:
+    @pytest.mark.parametrize("name", ["a", "prod", "prod-1", "my_dep", "0abc", "x" * 63])
+    def test_returns_a_valid_name_unchanged(self, name: str):
+        assert validate_deployment_name(name) == name
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "Prod",
+            "a/b",
+            "a\\b",
+            ".hidden",
+            "-lead",
+            "_lead",
+            "a b",
+            "a\nb",
+            "a.b",
+            "x" * 64,
+            "../etc",
+            "café",
+        ],
+    )
+    def test_rejects_a_name_that_is_not_a_safe_directory_segment(self, name: str):
+        with pytest.raises(ValueError):
+            validate_deployment_name(name)
+
+
+class TestDeploymentField:
+    def test_is_required(self):
+        with pytest.raises(ValidationError):
+            State()
+
+    @pytest.mark.parametrize("name", ["", "Prod", "a/b", ".x", "-x", "a b", "x" * 64])
+    def test_rejects_an_invalid_name(self, name: str):
+        with pytest.raises(ValidationError):
+            State(deployment=name)
+
+    def test_file_without_the_key_does_not_load(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"aiform_state_version": 1, "resources": {}}))
+
+        with pytest.raises(ValidationError):
+            load(path, deployment=DEPLOYMENT)
+
+    def test_file_with_an_invalid_name_is_a_schema_error_not_a_mismatch(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps({"deployment": "Bad Name", "resources": {}}))
+
+        with pytest.raises(ValidationError):
+            load(path, deployment=DEPLOYMENT)
+
+    def test_round_trips_through_save_and_load(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        save(State(deployment="prod"), path)
+
+        assert json.loads(path.read_text())["deployment"] == "prod"
+        assert load(path, deployment="prod").deployment == "prod"
+
+
+class TestLoadChecksTheDeployment:
+    def test_deployment_is_required(self, tmp_path: Path):
+        with pytest.raises(TypeError):
+            load(tmp_path / "state.json")
+
+    def test_missing_file_is_named_for_the_request(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+
+        loaded = load(path, deployment="scratch")
+
+        assert loaded == State(deployment="scratch")
+        assert not path.exists()
+
+    def test_same_name_returns_the_file(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        original = State(deployment="prod")
+        save(original, path)
+
+        assert load(path, deployment="prod") == original
+
+    def test_different_name_raises_with_both_names_and_the_absolute_path(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        save(State(deployment="prod"), path)
+
+        with pytest.raises(DeploymentMismatchError) as caught:
+            load(path, deployment="scratch")
+
+        assert caught.value.requested == "scratch"
+        assert caught.value.found == "prod"
+        assert caught.value.path == path.absolute()
+        assert caught.value.path.is_absolute()
+
+    def test_relative_path_is_reported_absolute(self, tmp_path: Path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        save(State(deployment="prod"), Path("state.json"))
+
+        with pytest.raises(DeploymentMismatchError) as caught:
+            load(Path("state.json"), deployment="scratch")
+
+        assert caught.value.path == tmp_path / "state.json"
+
+    def test_mismatch_leaves_the_file_and_its_directory_untouched(self, tmp_path: Path):
+        path = tmp_path / "state.json"
+        save(State(deployment="prod"), path)
+        before = path.read_bytes()
+
+        with pytest.raises(DeploymentMismatchError):
+            load(path, deployment="scratch")
+
+        assert path.read_bytes() == before
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["state.json"]
+
+    def test_an_invalid_requested_name_is_a_value_error(self, tmp_path: Path):
+        with pytest.raises(ValueError):
+            load(tmp_path / "state.json", deployment="Bad Name")
 
 
 class TestSave:
@@ -132,7 +266,7 @@ class TestSave:
         path = tmp_path / "state.json"
 
         save(state, path)
-        loaded = load(path)
+        loaded = load(path, deployment=DEPLOYMENT)
 
         assert loaded == state
 
@@ -159,8 +293,8 @@ class TestSave:
 
         assert backup_path.exists()
         assert backup_path.read_text() == first_content
-        assert load(path) == second_state
-        assert load(backup_path) == first_state
+        assert load(path, deployment=DEPLOYMENT) == second_state
+        assert load(backup_path, deployment=DEPLOYMENT) == first_state
 
     def test_creates_parent_directory(self, tmp_path: Path):
         path = tmp_path / "nested" / "dir" / "state.json"
@@ -188,4 +322,4 @@ class TestSave:
         save(second_state, path)
 
         backup_path = tmp_path / "state.json.backup"
-        assert load(backup_path) == first_state
+        assert load(backup_path, deployment=DEPLOYMENT) == first_state

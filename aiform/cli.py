@@ -17,7 +17,7 @@ from typing import Any, NamedTuple
 import anthropic
 
 from aiform import config, llm, log, observability, orchestrator, references, ssh, state
-from aiform.exceptions import DriverExecutionError, PlanBlockedError
+from aiform.exceptions import DeploymentMismatchError, DriverExecutionError, PlanBlockedError
 from aiform.models import KeyCheck, KeyState, PlanAction
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ _COLOR_CODES = {
 _RESET = "\033[0m"
 
 _HANDLED_EXCEPTIONS = (
+    DeploymentMismatchError,
     PlanBlockedError,
     DriverExecutionError,
     ValueError,
@@ -131,6 +132,13 @@ def _format_error(exc: Exception) -> str:
     if isinstance(exc, PlanBlockedError):
         return exc.reason
     return str(exc)
+
+
+def _deployment_name(value: str) -> str:
+    try:
+        return state.validate_deployment_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _resolve_paths(files: list[str]) -> list[Path] | None:
@@ -274,7 +282,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
         )
         return 2
 
+    st = state.load(state.DEFAULT_STATE_PATH, deployment=args.deployment)
+
     Path(".aiform").mkdir(parents=True, exist_ok=True)
+    if not state.DEFAULT_STATE_PATH.exists():
+        state.save(st, state.DEFAULT_STATE_PATH)
 
     gitignore_path = Path(".gitignore")
     existing_lines = (
@@ -309,6 +321,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
     token_env_var = config.PROVIDER_TOKEN_ENV_VARS[provider]
     print(f"Initialized aiform in {Path.cwd()}")
+    print(f"Deployment: {st.deployment}")
     if example_written:
         print(f"Wrote {example_path}")
     else:
@@ -650,7 +663,10 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
 
 def _cmd_plan_create(args: argparse.Namespace, client: _CountingClient) -> int:
     planned, warnings = orchestrator.build_create_plan(
-        _resolve_paths(args.files), state_path=args.state_file, client=client
+        _resolve_paths(args.files),
+        state_path=args.state_file,
+        deployment=args.deployment,
+        client=client,
     )
     if args.json:
         print(json.dumps(_plan_to_json(planned, warnings), indent=2))
@@ -669,6 +685,7 @@ def _plan_apply_and_report(
     result = orchestrator.apply_plan(
         planned,
         state_path=args.state_file,
+        deployment=args.deployment,
         yes=args.yes,
         confirm=_confirm,
         on_review=_print_review_flags,
@@ -680,26 +697,32 @@ def _plan_apply_and_report(
 
 def _cmd_plan_apply(args: argparse.Namespace, client: _CountingClient) -> int:
     planned, warnings = orchestrator.build_create_plan(
-        _resolve_paths(args.files), state_path=args.state_file, client=client
+        _resolve_paths(args.files),
+        state_path=args.state_file,
+        deployment=args.deployment,
+        client=client,
     )
     return _plan_apply_and_report(args, client, planned, warnings)
 
 
 def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
     planned, warnings = orchestrator.build_destroy_plan(
-        _resolve_paths(args.files), state_path=args.state_file, force=args.force
+        _resolve_paths(args.files),
+        state_path=args.state_file,
+        deployment=args.deployment,
+        force=args.force,
     )
     return _plan_apply_and_report(args, client, planned, warnings)
 
 
 def _cmd_plan_refresh(args: argparse.Namespace) -> int:
-    st = orchestrator.refresh_state(state_path=args.state_file)
+    st = orchestrator.refresh_state(state_path=args.state_file, deployment=args.deployment)
     _print_state(st)
     return 0
 
 
 def _cmd_plan_show(args: argparse.Namespace) -> int:
-    st = state.load(args.state_file)
+    st = state.load(args.state_file, deployment=args.deployment)
     _print_state(st)
     return 0
 
@@ -786,9 +809,13 @@ def _cmd_resource_check(args: argparse.Namespace) -> int:
     # A second read of a small local file, against N provider calls --
     # cheaper than a second parameter on collect() meaning the same thing
     # as the path it already takes.
-    keys = _resource_keys(args, state.load(args.state_file))
+    keys = _resource_keys(args, state.load(args.state_file, deployment=args.deployment))
     result = observability.collect(
-        keys=keys, want_health=True, want_metrics=False, state_path=args.state_file
+        keys=keys,
+        want_health=True,
+        want_metrics=False,
+        state_path=args.state_file,
+        deployment=args.deployment,
     )
     text, code = observability.render_check(result.readings, args.format, fleet=args.name is None)
     _emit(text, args)
@@ -796,9 +823,13 @@ def _cmd_resource_check(args: argparse.Namespace) -> int:
 
 
 def _cmd_resource_metrics(args: argparse.Namespace) -> int:
-    keys = _resource_keys(args, state.load(args.state_file))
+    keys = _resource_keys(args, state.load(args.state_file, deployment=args.deployment))
     result = observability.collect(
-        keys=keys, want_health=False, want_metrics=True, state_path=args.state_file
+        keys=keys,
+        want_health=False,
+        want_metrics=True,
+        state_path=args.state_file,
+        deployment=args.deployment,
     )
     _emit(
         observability.render_metrics(
@@ -817,8 +848,10 @@ def _cmd_resource_status(args: argparse.Namespace) -> int:
     # status_reports(), not status_for() in a loop: the loop reloaded
     # state and re-exec'd the driver once per resource, and reported an
     # unresolvable token once per resource too.
-    keys = _resource_keys(args, state.load(args.state_file))
-    reports = observability.status_reports(keys, state_path=args.state_file)
+    keys = _resource_keys(args, state.load(args.state_file, deployment=args.deployment))
+    reports = observability.status_reports(
+        keys, state_path=args.state_file, deployment=args.deployment
+    )
     _emit(
         observability.render_status(reports, args.format, fleet=args.name is None),
         args,
@@ -841,13 +874,18 @@ def _build_parser() -> argparse.ArgumentParser:
     global_parent.add_argument("-v", "--verbose", action="store_true")
     global_parent.add_argument("--no-color", action="store_true")
 
-    state_parent = argparse.ArgumentParser(add_help=False)
+    deployment_parent = argparse.ArgumentParser(add_help=False)
+    deployment_parent.add_argument(
+        "--deployment", type=_deployment_name, default=state.DEFAULT_DEPLOYMENT
+    )
+
+    state_parent = argparse.ArgumentParser(add_help=False, parents=[deployment_parent])
     state_parent.add_argument("--state-file", type=Path, default=state.DEFAULT_STATE_PATH)
 
     parser = argparse.ArgumentParser(prog="aiform", parents=[global_parent])
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", parents=[global_parent])
+    init_parser = subparsers.add_parser("init", parents=[global_parent, deployment_parent])
     init_parser.add_argument("--provider", default="digitalocean")
 
     plan_parser = subparsers.add_parser("plan", parents=[global_parent])

@@ -331,6 +331,7 @@ def collect(
     want_health: bool = True,
     want_metrics: bool = True,
     state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str = state.DEFAULT_DEPLOYMENT,
 ) -> Collection:
     """Read tracked resources: exactly those in `keys`, or every one when
     `keys` is None. Reads state; never writes it. Makes zero Anthropic
@@ -341,7 +342,7 @@ def collect(
     today (resolve_name() raises first), but a caller synthesizing keys
     of its own should not assume the two agree."""
     started = time.monotonic()
-    st = state.load(state_path)
+    st = state.load(state_path, deployment=deployment)
     entries = (
         list(st.resources.values())
         if keys is None
@@ -433,7 +434,10 @@ def _resources_for(
 
 
 def status_reports(
-    keys: list[str] | None = None, *, state_path: Path = state.DEFAULT_STATE_PATH
+    keys: list[str] | None = None,
+    *,
+    state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str = state.DEFAULT_DEPLOYMENT,
 ) -> list[StatusReport]:
     """`status` for exactly `keys`, or every tracked resource when None.
 
@@ -443,7 +447,7 @@ def status_reports(
     exec_module()s, twenty credential resolutions and twenty-one state
     reads -- and a missing token reported twenty times. One State and one
     pair of caches here, the shape collect() already uses."""
-    st = state.load(state_path)
+    st = state.load(state_path, deployment=deployment)
     if keys is None:
         keys = list(st.resources)
     driver_cache: dict[tuple[str, str], ResourceDriver] = {}
@@ -451,14 +455,19 @@ def status_reports(
     return [_status_for_entry(st, key, driver_cache, credentials_cache) for key in keys]
 
 
-def status_for(key: str, *, state_path: Path = state.DEFAULT_STATE_PATH) -> StatusReport:
+def status_for(
+    key: str,
+    *,
+    state_path: Path = state.DEFAULT_STATE_PATH,
+    deployment: str = state.DEFAULT_DEPLOYMENT,
+) -> StatusReport:
     """The four answers for one resource. Composes a state lookup, a live
     read(), diff_attributes() against the discovered .aiform.md, and
     health(). Adds no driver method of its own. Writes no state.
 
     For more than one resource use status_reports(), which shares the
     driver and credential caches across them."""
-    return _status_for_entry(state.load(state_path), key, {}, {})
+    return _status_for_entry(state.load(state_path, deployment=deployment), key, {}, {})
 
 
 def _status_for_entry(

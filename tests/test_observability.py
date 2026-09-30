@@ -37,7 +37,8 @@ def make_state_entry(**overrides) -> StateEntry:
 
 def make_state(*entries: StateEntry) -> state.State:
     return state.State(
-        resources={f"{e.provider}.{e.resource_type}.{e.name}": e for e in (entries or ())}
+        deployment="default",
+        resources={f"{e.provider}.{e.resource_type}.{e.name}": e for e in (entries or ())},
     )
 
 
