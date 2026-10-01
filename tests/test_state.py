@@ -169,6 +169,15 @@ class TestValidateDeploymentName:
         with pytest.raises(ValueError):
             validate_deployment_name(name)
 
+    def test_the_message_states_the_alphabet_and_that_it_is_ascii_only(self):
+        with pytest.raises(ValueError) as caught:
+            validate_deployment_name("Prod")
+
+        assert str(caught.value) == (
+            "invalid deployment name 'Prod': use 1 to 63 characters from a-z, 0-9, '-' or '_' "
+            "(ASCII only), starting with a-z or 0-9"
+        )
+
 
 class TestDeploymentField:
     def test_is_required(self):

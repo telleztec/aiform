@@ -26,8 +26,8 @@ _DEPLOYMENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 def validate_deployment_name(name: str) -> str:
     if not _DEPLOYMENT_NAME.fullmatch(name):
         raise ValueError(
-            f"invalid deployment name {name!r}: use 1 to 63 lowercase letters, digits, "
-            "'-' or '_', starting with a letter or digit"
+            f"invalid deployment name {name!r}: use 1 to 63 characters from a-z, 0-9, "
+            "'-' or '_' (ASCII only), starting with a-z or 0-9"
         )
     return name
 

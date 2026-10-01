@@ -5167,6 +5167,37 @@ class TestDefaultConfirm:
         assert result is False
 
 
+class TestReadAnswer:
+    def test_flushes_the_terminal_queue_then_returns_the_raw_answer(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: calls.append("flush"))
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": calls.append(("input", prompt)) or "  Prod \n"
+        )
+
+        assert orchestrator.read_answer("Type it: ") == "  Prod \n"
+        assert calls == ["flush", ("input", "Type it: ")]
+
+    def test_a_failed_flush_never_blocks_the_read(self, monkeypatch):
+        def broken(*args):
+            raise OSError("not a tty")
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", broken)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "answer")
+
+        assert orchestrator.read_answer("? ") == "answer"
+
+    def test_default_confirm_reads_through_it_once_per_attempt(self, monkeypatch):
+        prompts = []
+        answers = iter(["maybe", "y"])
+        monkeypatch.setattr(
+            orchestrator, "read_answer", lambda prompt: prompts.append(prompt) or next(answers)
+        )
+
+        assert orchestrator.default_confirm("Apply this plan?") is True
+        assert prompts == ["Apply this plan? (y/n): "] * 2
+
+
 class TestDeploymentIsRequired:
     @pytest.mark.parametrize(
         "call",

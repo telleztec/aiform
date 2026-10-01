@@ -1997,7 +1997,18 @@ class TestPlanDestroy:
         )
         patch_client(monkeypatch, [plan_review_response()])
 
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
 
         out = capsys.readouterr().out
         assert code == 0
@@ -2041,7 +2052,18 @@ class TestPlanDestroy:
         )
         patch_client(monkeypatch, [plan_review_response()])
 
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
 
         out = capsys.readouterr().out
         assert code == 0
@@ -2097,7 +2119,18 @@ class TestPlanDestroy:
             ],
         )
 
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
 
         err = capsys.readouterr().err
         assert code == 2
@@ -2127,7 +2160,18 @@ class TestPlanDestroy:
             state_file,
         )
 
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_file)])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
 
         err = capsys.readouterr().err
         assert code == 2
@@ -2166,7 +2210,19 @@ class TestPlanDestroy:
         )
         patch_client(monkeypatch, [plan_review_response()])
 
-        code = cli.main(["plan", "destroy", "--yes", "--force", "--state-file", str(state_file)])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--force",
+                "--state-file",
+                str(state_file),
+            ]
+        )
 
         out = capsys.readouterr().out
         assert code == 0
