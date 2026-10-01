@@ -33,17 +33,21 @@ extending them rather than silently ignoring one. Three entries apply:
   `orchestrator.py` before `create()`/`update()` are called, so the driver
   still receives a plain string. That entry is also why zone and records are one
   resource rather than two kinds — see "Why one resource kind" below.
-- **"Resource tagging convention"** / `specs/resource_tagging.md`. DigitalOcean
-  domains have **no tagging API at all**, so this driver adopts neither
-  `_tags_for_create()` nor `_tags_for_attributes()`, and `PARAM_SCHEMA` has no
-  `tags` key. That spec anticipated exactly this: *"A CSP/resource kind with no
-  tagging primitive at all … not an error, not a degraded mode, the guarantee
-  just doesn't extend to that `(provider, resource)` pair."* Stated here
-  explicitly rather than left silent, because it is the first real data point
-  on whether that design generalizes — and it carries a real consequence: any
-  sweep or audit built on the `aiform-managed` marker has **no signal** for
-  domains created by aiform. `specs/system_test.md`'s orphan-cleanup sweep
-  would need a different identification strategy for zones.
+- **"Resource tagging convention"** / `specs/resource_tagging.md` (#249).
+  DigitalOcean domains cannot carry a tag (attaching one is `404`, and a domain
+  has no `tags` key; probe session `digitalocean_resource_tags`, `16`, `17`),
+  so `PARAM_SCHEMA` has no `tags` key and the driver does not call
+  `_tags_for_create()` or `_tags_for_attributes()`. Instead `create()` adds one
+  TXT record at the zone apex, `name: "@"`, `data: "aiform:<deployment>"` (the
+  driver's `_deployment_tag`), after the user's records. Its ttl is the ttl of
+  the user's apex TXT records if any, else 1800, because a second apex TXT
+  record makes DigitalOcean rewrite the first one's ttl (`18`-`20`).
+  `_filter_managed()` drops any apex TXT whose data begins `aiform:`, so
+  `read()` and `update()`'s reconciliation never see the marker: it is neither
+  diffed nor deleted. A user's own apex TXT whose data begins `aiform:` is
+  rejected by `_validate_params` with a `ValueError` naming it. No backfill:
+  `update()` does not add the marker to a zone that lacks one. A driver
+  constructed without reserved tags adds no marker.
 
 ### Why one resource kind, not `domain` + `dns_record`
 

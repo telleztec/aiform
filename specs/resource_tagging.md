@@ -1,337 +1,190 @@
-# specs/resource_tagging.md — marker-tag contract for `aiform/driver.py` (+ `drivers/digitalocean/compute.py` as the first adopter)
+# specs/resource_tagging.md — reserved tags and markers for `aiform/driver.py`, `aiform/orchestrator.py` and the three DigitalOcean drivers
 
-**Naming note**: this filename deliberately doesn't follow
-`specs/README.md`'s strict per-module mirroring rule
-(`drivers/digitalocean/compute.py` → `specs/digitalocean_compute.md`) —
-that rule assumes one spec maps to one implementation module, and this
-spec instead adds a small, shared capability to `aiform/driver.py`
-(already specced in `specs/driver.md`) with one concrete integration
-against `drivers/digitalocean/compute.py` (already specced in
-`specs/digitalocean_compute.md`). Named for the feature it adds rather
-than either module, with both of those specs cross-referencing it (see
-below) so it's discoverable from either direction.
+**Naming note**: this filename does not follow `specs/README.md`'s one-spec-per-module rule. It adds one small shared
+capability to `aiform/driver.py` (specced in `specs/driver.md`), with one
+change in `aiform/orchestrator.py` and one integration in each of
+`drivers/digitalocean/{compute,firewall,domain}.py` (specced in their own
+`specs/digitalocean_*.md`). Each of those specs cross-references this one.
+
+Plan: `plans/resource-tags.md` (#249). Probe session:
+`knowledge/drivers/digitalocean_resource_tags/FINDINGS.md`; citations below
+are transcript numbers in `probes/transcripts/digitalocean_resource_tags/`.
 
 ## Purpose
 
-`specs/system_test.md`'s "Orphan cleanup (leaked resources)" section
-names a real, separate gap while designing that suite's sweep backstop:
-nothing in `aiform/driver.py`'s `ResourceDriver` contract or
-`orchestrator.py` guarantees that *any* resource aiform creates carries
-an identifying tag — `tags` today is just one more optional key a
-user's own `.aiform.md` may or may not set. The system test's own sweep
-works around this by having its fixture set an explicit
-`tags: ["aiform-system-test"]`, but that only covers resources the
-suite itself creates.
+Every provider resource aiform creates carries the name of the deployment that
+created it (#201's `State.deployment`) and an aiform marker. Before this,
+a droplet from deployment `a` looked the same on DigitalOcean as one from
+deployment `b`, and nothing marked any resource as aiform's. This answers
+"what has aiform created in this account, and for which deployment" from the
+provider side, independent of a `state.json` that may be lost or never written
+(a crash between `create()` and the state write).
 
-This spec is the general fix: every resource created through a driver
-that chooses to use it gets a fixed, aiform-owned marker tag
-(`aiform-managed`) attached, transparently, regardless of what the
-user's file specifies. This has value beyond testing — most directly,
-answering "what has aiform ever created in this account" from the CSP
-side, independent of a `state.json` that could itself be lost,
-corrupted, or simply never written (e.g. a crash between `create()`
-succeeding and the state write in `orchestrator.py`'s `apply_plan()`).
+## The reserved tags
 
-**Relationship to `PLAN.md` §10's "Resource tagging convention" entry —
-corrected after this spec initially missed it entirely.** That entry
-already commits to a long-term target format,
-`aiform:<short-uuid>:<state-incarnation-no>:intended-state:<owner-id>`
-— a structured tag encoding which aiform state/formation owns a
-resource, a generation counter, a fixed marker segment, and an owner
-identifier. This spec does **not** implement that format. It ships only
-the fixed marker-segment piece (`aiform-managed`, standing in for that
-entry's `intended-state` literal), because the other three components
-each depend on state/design work that doesn't exist yet: `state.json`
-has no formation-UUID or incarnation-counter concept to source
-`<short-uuid>`/`<state-incarnation-no>` from, and `<owner-id>`'s own
-identifier scheme is explicitly still undetermined in `PLAN.md` §10
-itself. `PLAN.md` §10 has been updated to say so explicitly, so the two
-documents no longer silently disagree. The multi-project/provenance
-scoping this spec's own Out of scope section defers is, concretely,
-the `<short-uuid>`/`<owner-id>` portion of that fuller format — tracked
-there, not solved here.
+- `aiform-managed` — the marker.
+- `aiform:<name>` — `<name>` is the deployment name, verbatim (no word
+  "deployment"; example `aiform:prod`). `PLAN.md` §10's future
+  `aiform:<short-uuid>:...` shares the prefix; its first segment is this
+  deployment name.
 
-**Why no opt-in flag.** An earlier draft of this spec added a
-`SUPPORTS_TAGGING: bool` class attribute to `ResourceDriver`, mirroring
-`LIKELY_REPLACE_FIELDS`'s pattern, so the two helper methods below could
-no-op instead of act. Dropped: unlike `LIKELY_REPLACE_FIELDS` (which the
-orchestrator reads externally, for UX warnings), nothing outside a
-driver's own `create()`/`read()` would ever have read `SUPPORTS_TAGGING`
-— a driver "opts in" simply by choosing to call the two helpers from its
-own methods, or not. A boolean flag whose only job is gating a codepath
-that a *single existing driver* (`digitalocean`/`compute`, the only one
-that exists per `PLAN.md` §10) always exercises is exactly the kind of
-config knob `CLAUDE.md`'s "don't add abstractions ... for scenarios that
-can't happen yet" rule warns against — the `False` branch existed only
-for a hypothetical future CSP without a tagging primitive. If and when a
-second driver actually needs to signal "I don't support this," that's
-the point to add a flag, informed by a real second case instead of a
-guessed one.
+"Reserved" means: exactly `aiform-managed`, or any string beginning
+`aiform:`. The check is case-sensitive: DigitalOcean keeps a tag's case and
+treats names case-sensitively (`03`, `04`).
 
 ## Interface
 
-All additions live in `aiform/driver.py`, on `ResourceDriver` itself —
-no change to `orchestrator.py` and no change to any of the four
-abstract methods' signatures. This is deliberate: see Behavior for why
-keeping the marker entirely inside each driver's own implementation,
-invisible to the orchestrator's diff engine, is what makes this safe to
-add without risking a destructive replace on every pre-existing
-resource the moment this ships.
-
 ```python
 # aiform/driver.py
-
 AIFORM_MANAGED_TAG = "aiform-managed"
+DEPLOYMENT_TAG_PREFIX = "aiform:"
+
+
+def reserved_tags(deployment: str) -> tuple[str, str]:
+    """(AIFORM_MANAGED_TAG, f"aiform:{deployment}")"""
+
+
+def is_reserved_tag(tag: str) -> bool: ...
 
 
 class ResourceDriver(ABC):
-    ...
+    def __init__(self, reserved_tags: Sequence[str] = ()) -> None: ...
 
-    def _tags_for_create(self, requested_tags: list[str]) -> list[str]:
-        """Call from create() (and, on the replace path, the create()
-        that follows a delete()) when building the CSP request body:
-        appends AIFORM_MANAGED_TAG to whatever tags were requested.
-        Raises ValueError if AIFORM_MANAGED_TAG is already present in
-        requested_tags -- that string is reserved for aiform's own
-        use; a user's own aiform.md must not set it (see Edge cases)."""
+    # self.reserved_tags: tuple[str, ...]
+    # self._deployment_tag: str | None  -- the reserved tag beginning "aiform:"
 
-    def _tags_for_attributes(self, live_tags: list[str]) -> list[str]:
-        """Call from every point a driver builds the `tags` value it
-        returns to the orchestrator (create()'s return, read()'s
-        return, update()'s return): strips AIFORM_MANAGED_TAG back
-        out."""
+    def _reject_reserved_tags(self, requested_tags: Sequence[str]) -> None: ...
+    def _tags_for_create(self, requested_tags: Sequence[str]) -> list[str]: ...
+    def _tags_for_attributes(self, live_tags: Sequence[str]) -> list[str]: ...
 ```
 
-Both are concrete (not abstract) methods on the base class. A driver
-opts in purely by calling them from its own `create()`/`read()`/
-`update()`; a driver that never calls them is entirely unaffected — no
-flag, no conditional, nothing to configure.
+```python
+# aiform/orchestrator.py
+def load_driver(provider, resource_type, reserved_tags=()) -> ResourceDriver
+```
 
-`drivers/digitalocean/compute.py` is the first (and, per `PLAN.md` §10,
-currently only) adopter, via the two integration points named in
-Behavior below.
+`load_driver` returns `module.Driver(reserved_tags=reserved_tags)`.
 
-`specs/driver.md` (the spec for this already-implemented module) and
-`PLAN.md` §4 (its "exact contract") both need a small addendum adding
-`AIFORM_MANAGED_TAG` and these two methods, since `CLAUDE.md` treats
-§4's contract as authoritative and requires it be followed exactly —
-not done as part of this spec (see Out of scope), but a hard
-prerequisite before implementation, not an afterthought.
+The orchestrator computes `reserved_tags(st.deployment)` and passes it at every
+call site that holds a `State`: `_driver_for` (create, update, replace),
+`refresh_state`, and `_apply_destroy`. `aiform/observability.py` calls
+`load_driver` without it: `health()` and `metrics()` never create, update or
+return `tags`. A driver constructed without reserved tags (a test, a script)
+attaches nothing, and still strips and rejects: stripping and rejecting depend
+only on `is_reserved_tag`, not on the instance's tags.
+
+The base class applies the tags; the orchestrator does no tag logic beyond
+computing and passing them. So a new driver inherits the constructor and
+cannot forget to receive them. What it still has to do with them is a
+per-resource-kind decision (below), and `prompts/review_driver.md` checks it.
+
+`_tags_for_create(requested)`: raises `ValueError` naming the first reserved
+tag in `requested` (`_reject_reserved_tags`), else returns
+`[*requested, *self.reserved_tags]`.
+
+`_tags_for_attributes(live)`: returns `live` without any reserved tag,
+unconditionally. Both reserved tags (not just this deployment's) are stripped,
+so a foreign `aiform:other` on a resource never reaches the diff engine either.
+
+## Per resource kind
+
+DigitalOcean can tag only droplets, images, volumes, volume snapshots and
+databases. A firewall and a domain cannot carry a tag (`11`, `13`, `14`, `16`,
+`17`, `29`; `knowledge/drivers/digitalocean_resource_tags/FINDINGS.md`).
+
+- **Droplet** — carries both tags.
+  - `create()` sets `body["tags"] = self._tags_for_create(params.get("tags", []))`
+    unconditionally, so the tags are attached even when the user's file never
+    mentions `tags`. DigitalOcean auto-creates a tag named in a droplet create
+    (documented; not probed here, since a droplet bills).
+  - `_flatten()` returns `"tags": self._tags_for_attributes(...)`. `create()`,
+    `read()` and `update()` all build attributes through it, so one change
+    covers all three. `update()` must not echo `tags` from `desired`/`current`
+    (it would discard live state).
+  - `update()` computes tag removals from `current["tags"]`, which is
+    stripped, so a reserved tag can never be removed. A `tags` value in
+    `desired` containing a reserved tag raises `ValueError`, before any
+    mutation.
+- **Firewall** — cannot carry a tag. aiform puts the deployment name in the
+  firewall's *name*, and only for a firewall `create()`s from now on:
+  `aiform-<deployment>-<name>`, with `_` in the deployment name written as `-`
+  because a firewall name rejects `_` (`23`; `:` is also rejected, `21`; `.`,
+  uppercase and a leading digit are accepted, `24`–`26`; 255 characters is the
+  limit, `27`, `28`). That mapping is lossy (`a_b` and `a-b` give the same
+  name); the name is for a human and for a sweep to read, not to parse back.
+  `update()` keeps the live name (`current["name"]`), so a firewall created
+  before this change keeps its old name. A firewall's own `tags` parameter is a
+  selector for droplets (`09`, `10`), not a label on the firewall, so it is not
+  checked for reserved tags: `aiform:prod` is a useful selector for "every
+  droplet in deployment prod".
+- **Domain** — cannot carry a tag. aiform adds one TXT record at the zone apex,
+  `name: "@"`, `data: "aiform:<deployment>"`, when `create()` builds the zone.
+  - The marker's TTL equals the TTL of the user's apex TXT records if there are
+    any, else 1800 (the zone's default, `17`). A second TXT record at the apex
+    makes DigitalOcean rewrite the first one's TTL to match the newer one
+    (`18`–`20`); a differing marker TTL would otherwise show the user's own TXT
+    as drifted.
+  - `read()`, and the records `update()` reconciles against, drop an apex TXT
+    record whose data begins `aiform:`, like the SOA and DigitalOcean's own
+    nameservers. It never reaches the diff engine, and `update()` never deletes
+    or edits it.
+  - A user's own apex TXT record whose data begins `aiform:` raises
+    `ValueError` naming it: `read()` would drop it, leaving it permanently
+    missing from the diff.
+  - A zone's name is its hostname, so the deployment name cannot be prefixed
+    onto it.
 
 ## Behavior
 
-- **The marker never enters the diff engine — the core invariant this
-  whole design exists to protect.** `orchestrator.py`'s
-  `build_create_plan()` diffs `resource_spec.params` (verbatim from the
-  user's `.aiform.md`, via `planner.diff_attributes()`) against
-  `current_attributes` (verbatim from `driver.read()`'s return). Neither
-  side of that comparison is touched by this feature: the marker is
-  added only inside a driver's own CSP request body, and stripped back
-  out of anything the driver hands back to the orchestrator. From
-  `orchestrator.py`'s point of view, a resource created by a driver
-  using these helpers looks exactly as if the feature didn't exist.
-  This is why nothing in `orchestrator.py`/`planner.py` needs to change
-  at all.
-- **`_tags_for_create(requested_tags)`**: raises `ValueError` if
-  `AIFORM_MANAGED_TAG` is already present in `requested_tags` — that
-  string is reserved for aiform's own use, and a user's own
-  `.aiform.md` setting it explicitly is precisely the collision case
-  Edge cases names below, surfaced loudly at `create()`/`apply` time
-  rather than allowed to silently corrupt future diffs. Otherwise
-  returns `[*requested_tags, AIFORM_MANAGED_TAG]` — marker always
-  appended last, not inserted anywhere else, so behavior stays
-  predictable to read (order doesn't matter to the CSP itself).
-- **`_tags_for_attributes(live_tags)`**: returns
-  `[t for t in live_tags if t != AIFORM_MANAGED_TAG]`, unconditionally.
-- **`drivers/digitalocean/compute.py` integration** (concrete worked
-  example, mirroring how `specs/digitalocean_compute.md` treats
-  `PLAN.md`'s worked example as authoritative rather than illustrative):
-  - `create()`'s existing body-building loop
-    (`for key in ("ssh_keys", "backups", "monitoring", "tags"): if key
-    in params: body[key] = params[key]`) changes its `tags` case to
-    `body["tags"] = self._tags_for_create(params.get("tags", []))`,
-    called unconditionally (not only `if "tags" in params:`) so the
-    marker is attached even when the user's `.aiform.md` never mentions
-    `tags` at all.
-  - `_flatten()` — the one helper `create()`, `read()`, **and**
-    `update()`'s in-place resize path all funnel through to build the
-    attributes dict — changes its `"tags": droplet.get("tags", [])`
-    line to `"tags": self._tags_for_attributes(droplet.get("tags", []))`.
-    Because all three already share this one method, this is a
-    one-line change that covers all three call sites at once — no
-    separate edit needed in `read()` or `update()` themselves. See the
-    next bullet for why `update()` specifically needs no *additional*
-    change beyond this shared fix.
-  - `update()`'s in-place resize path needs **no separate change
-    beyond the `_flatten()` fix above** — correcting an earlier draft
-    of this spec, which wrongly assumed `tags` was one of the fields
-    `update()` echoes from `desired` the way it does for
-    `ssh_keys`/`backups`/`monitoring`. It isn't: per
-    `specs/digitalocean_compute.md`'s Behavior section and the real
-    `update()` (`drivers/digitalocean/compute.py`), only
-    `ssh_keys`/`backups`/`monitoring` are echoed from `desired`/
-    `current` after the resize; `tags` comes entirely from
-    `attrs = self._flatten(final_droplet)` — the live post-resize
-    droplet response, already covered by the previous bullet. **Do
-    not** add a fourth echo line for `tags` alongside the
-    `ssh_keys`/`backups`/`monitoring` ones: doing so would overwrite
-    the freshly-observed live tags with a value derived from
-    `desired`/`current` instead, discarding real CSP state in favor of
-    stale input — exactly the "state is a cache of live reality, not a
-    source of truth" bug `CLAUDE.md`'s State handling section warns
-    against, for `tags` specifically.
-- **Zero extra API calls.** The marker rides in the same `POST
-  /v2/droplets` request `create()` already makes — there is no separate
-  "tag this resource" round trip, no orchestrator-level call site added,
-  and nothing here touches an LLM in any way. `CLAUDE.md`'s zero-Anthropic-
-  call-on-repeat-run guarantee is unaffected because this feature adds
-  no new call anywhere in the plan/apply path; the one real DO call this
-  touches (`create()`) was already being made regardless.
-- **Migration safety for resources that already exist.** Because the
-  marker is never part of `desired_params` (aiform.md's own params) and
-  never visible in the `attributes` a driver returns to the
-  orchestrator, a resource created *before* this feature exists (or
-  before a given driver starts calling these helpers) produces an empty
-  diff and is never touched, retried, or replaced by this feature
-  landing. This is the specific hazard that ruled out the alternative of
-  merging the marker into `resource_spec.params["tags"]` at the
-  orchestrator level: that approach would make an already-live
-  resource's real (unmarked) tags disagree with the newly-marker-
-  including desired params on the very next `plan`. **The consequence
-  named here has since changed, and the conclusion has not.** When this
-  was written, `drivers/digitalocean/compute.py`'s `update()` accepted
-  only a `size`-alone diff in place, so a `tags`-only diff raised
-  `DriverUpdateNotSupported` and would have destroyed and recreated
-  every existing tagged resource the first time this shipped. That bug
-  is fixed (issue #77): a `tags` diff is now applied in place, so the
-  same mistake would today cause perpetual tag churn — every `plan`
-  proposing to re-add a marker the driver strips straight back out —
-  rather than mass destruction. Less catastrophic, still wrong, and
-  still a permanently non-converging plan. Keeping the marker entirely
-  inside the driver, invisible to the diff, avoids that failure mode
-  structurally rather than by convention.
+- **Reserved tags never enter the diff engine.** `diff_attributes` compares
+  `read()`'s output with the user's raw params. The reserved tags are added
+  only on the wire, and stripped from everything a driver returns. A resource
+  with the tags looks to the orchestrator as if this feature did not exist.
+  Merging them into `resource_spec.params["tags"]` instead was rejected: a
+  `tags` diff is applied in place (issue #77), so `plan` would propose
+  re-adding a tag the driver strips straight back out, forever.
+- **A user-supplied reserved tag raises `ValueError` naming it**, before any
+  provider call (droplet `create()` and `update()`, domain `create()` and
+  `update()`). Left alone, the tag would be stripped from every read while
+  still in the user's params: a permanent `tags` mismatch.
+- **Updates never remove a reserved tag or the apex marker.**
+- **Replace.** A replace is `delete()` then `create()` on the same instance, so
+  the new resource gets the tags.
+- **Zero extra calls on the plan/apply hot path.** The tags ride in the same
+  droplet create request; the firewall name is part of the same create request;
+  the TXT marker is one extra `POST /v2/domains/{name}/records` at zone
+  creation. Nothing touches an LLM.
 
-  A second consequence of the same fix, in this design's favour — stated
-  for when these helpers land, since none of them exist yet:
-  `update()` computes its tag removals from `current`, and once
-  `_tags_for_attributes` strips the marker out of that value, the marker
-  can never appear in the `remove` set. So an ordinary tags edit will
-  not be able to un-assign it, and the in-place path will need no
-  special case of its own. **This also means the feature is
-  intentionally not a backfill mechanism** — see Out of scope.
-- **Review checklist follow-up required, not optional.** A driver whose
-  `create()` calls `_tags_for_create` but whose `read()`/`update()`
-  don't correspondingly call `_tags_for_attributes` everywhere they
-  return `tags` (or vice versa) is exactly the kind of inconsistency a
-  review needs to catch, not something any existing static check covers
-  — `prompts/review_driver.md` needs a new numbered checklist item
-  alongside its existing "urllib.request only" item (item 9) and
-  idempotent-delete item (item 3): a driver that attaches the marker on
-  create but leaks it back out anywhere (or strips a tag it never
-  attached) is a `blocking_issues` entry, not a `concerns` one. Since
-  issue #119 removed gate #1 (`code-review-model`) from the `plan`/`apply`
-  path, that new item catches this only for a driver freshly drafted
-  through `driver_gen.py`; for a hand-authored curated driver,
-  `PROCESS.md`'s PR-time `/code-review` is the enforcement point instead.
-  Not written in this spec — a small, separate edit to that prompt file,
-  done alongside whichever PR first wires these helpers into a real
-  driver.
+## No backfill
+
+Resources created before this change are not labeled, and nothing labels them
+later. `read()` and `update()` do not add a tag, a name or a marker to a
+resource that lacks one. A firewall or zone without the marker stays that way;
+a droplet created before this change has no reserved tag and `update()` does
+not add them. The only way to label an existing resource is to destroy and
+recreate it. A sweep or audit built on these tags has no signal for such a
+resource.
 
 ## Edge cases / errors
 
-- **A user's own `.aiform.md` explicitly requesting the literal tag
-  `aiform-managed`.** `PARAM_SCHEMA["tags"]` is an unconstrained string
-  array (`specs/digitalocean_compute.md`) — nothing stops a user from
-  writing `tags: ["aiform-managed"]` themselves. Left unhandled, this is
-  a real, silent footgun: `_tags_for_create` would treat the marker as
-  already present and no-op, `_tags_for_attributes` would then
-  unconditionally strip it out of every subsequent `create()`/`read()`
-  return, permanently zeroing that entry out of `attributes["tags"]`
-  while `desired_params["tags"]` (never touched, per this spec's core
-  "never enters the diff engine" invariant) still has it — a permanent
-  `tags` mismatch on every future `plan`, and a permanent re-tagging
-  loop on every `apply` — before issue #77 this was a permanent
-  destroy+recreate loop instead, since `update()` then accepted only a
-  `size`-alone diff in place. This is why `_tags_for_create` raises
-  `ValueError` on this input instead (see Behavior above): the failure
-  surfaces immediately, before any CSP call is made, naming the reserved
-  tag, instead of manifesting later as an unexplained replace loop.
-  Choosing a more obscure marker string wouldn't fix the general
-  problem — any fixed string a user could plausibly type is a possible
-  collision, so raising on collision is the actual fix, not the
-  specific string chosen.
-- **A CSP/resource kind with no tagging primitive at all, or a driver
-  that simply chooses not to use this.** The driver's `create()`/
-  `read()`/`update()` just never call `_tags_for_create`/
-  `_tags_for_attributes` — not an error, not a degraded mode, the
-  guarantee just doesn't extend to that `(provider, resource)` pair.
-  Any sweep/audit tooling built against this mechanism has no signal
-  for such a driver's resources and would need a different
-  identification strategy (e.g. a name prefix convention) — a real
-  limitation, named here, not solved by this spec.
-- **`update()`'s replace path calls `create()` a second time**
-  (`orchestrator.py`'s `apply_plan()`, the `DriverUpdateNotSupported`
-  branch) with the same `desired_params` used for the original diff.
-  Per the migration-safety point above, `desired_params["tags"]` never
-  legitimately contains the marker, so `_tags_for_create`'s
-  reserved-tag check has nothing to trigger on here — the same
-  non-issue as the general migration-safety argument, not a new risk.
-- **Two independent tag concepts coexist for the system test
-  specifically**, and that's fine: this spec's `aiform-managed` marker
-  (global, applied by any driver that uses these helpers, invisible to
-  the diff engine) and `specs/system_test.md`'s own
-  `aiform-system-test` tag (test-scoped, explicitly set by that suite's
-  `.aiform.md` fixture through the ordinary, user-facing `tags` param,
-  fully visible to the diff engine like any other user-requested tag).
-  They don't conflict — `specs/system_test.md`'s sweep mechanism already
-  works without this spec landing; once it does, that sweep could
-  optionally also filter on `aiform-managed` as a second, broader
-  signal, but nothing about it depends on that.
-- **A CSP-side tag-count or tag-length cap** (not a concern for
-  DigitalOcean specifically, but plausible for a future driver) is a
-  per-driver detail to handle if and when it's relevant — not an
-  aiform-level concern, not designed further here.
+- **`update()`'s replace path** calls `create()` with the same
+  `desired_params`, which can never legitimately contain a reserved tag (it was
+  rejected on the first create), so the check has nothing to trigger on.
+- **System test.** `specs/system_test.md`'s own `aiform-system-test` tag is
+  neither equal to `aiform-managed` nor prefixed `aiform:`, so it is a
+  user-visible tag like any other.
+- **A tag DigitalOcean cannot store.** A deployment name matches
+  `^[a-z0-9][a-z0-9_-]{0,62}$`, so `aiform:<name>` always fits DigitalOcean's tag
+  charset (letters, digits, `_`, `-`, `:`).
+- **A driver with no tagging primitive.** It receives the tags and does nothing
+  with them; this is a per-driver decision, recorded in that driver's spec.
+- **A tag with no resources persists** until deleted (`02`, `29`). What
+  DigitalOcean does to a tag when its last droplet is deleted was not observed.
+  aiform does not delete reserved tags.
 
 ## Out of scope
 
-- **Updating `specs/driver.md`/`PLAN.md` §4 with `AIFORM_MANAGED_TAG`
-  and the two new methods.** Named as a hard prerequisite above, not
-  done in this spec — a small, mechanical addendum to both, since
-  `aiform/driver.py` is already implemented and `CLAUDE.md` requires
-  its contract be followed exactly.
-- **Retroactively tagging resources that already exist.** The marker is
-  only ever attached at a resource's `create()` time (see Behavior's
-  migration-safety point) — there is no mechanism here that walks
-  existing `state.json` entries and tags what's already live. A future
-  one-time migration tool (iterate tracked resources, call each
-  adopting driver's tagging capability directly against them, outside
-  the normal diff/plan path entirely) is real, separate future work,
-  not designed here.
-- **Multi-project or provenance-scoped tagging** (e.g. encoding which
-  local `state.json`/project a resource belongs to, not just "aiform
-  made this somewhere") — concretely, the `<short-uuid>`/`<owner-id>`
-  components of `PLAN.md` §10's full target format (see Purpose's
-  "Relationship to `PLAN.md` §10" note). Deliberately deferred in favor
-  of shipping the smallest useful version first: one fixed, global
-  `aiform-managed` string, with no formation-identity or ownership
-  encoding.
-- **A CLI surface over this mechanism** (e.g. `aiform resources list`
-  querying every configured provider's tagging API for everything
-  tagged `aiform-managed`) — a real, valuable future consumer, not built
-  here. This spec only guarantees the tag exists; nothing reads it back
-  yet outside `specs/system_test.md`'s own sweep script.
-- **Any change to the user-facing `tags:` field's own semantics or
-  `PARAM_SCHEMA`.** Untouched — a user's own requested tags continue to
-  flow through exactly as `specs/digitalocean_compute.md` already
-  documents. This mechanism is deliberately invisible to, and
-  independent of, that path.
-- **Validating that this pattern generalizes to a second driver/CSP.**
-  `digitalocean`/`compute` is the only driver that exists (`PLAN.md` §10,
-  "Only one resource kind is implemented") and the only one this spec
-  designs the integration for; whether these two helper methods are a
-  good fit for a CSP with a meaningfully different tagging model — or
-  none at all — is untested until a second driver exists, the same
-  caveat `PLAN.md` §10 already states for the driver interface
-  generally. If that turns out to need a discoverable per-driver
-  capability flag after all, that's the point to add one, informed by a
-  real case (see "Why no opt-in flag" above).
+- The command that deletes orphans by tag.
+- Any backfill of existing resources (see above).
+- `PLAN.md` §10's `<state-incarnation-no>` and `<owner-id>` segments.
+- A CLI surface that lists resources by tag.
