@@ -9,10 +9,11 @@ Applies to new and changed messages. Do not rewrite untouched messages in a feat
 
 ## Format
 
-- `main()` adds `Error: ` when it prints a caught exception. Never put it in exception text.
+- `main()` and `_dispatch()` add `Error: ` when they print a caught exception. Never put it in exception text.
 - A direct `print(..., file=sys.stderr)` in `aiform/cli.py` writes `Error: ` itself. Keep it there.
 - Write one short sentence: the problem, then the offending value.
 - Follow with at most one action line.
+- A reassurance line (nothing was read or changed) may follow when a spec requires it.
 - Start lowercase after `Error: `. No trailing period on a one-line message.
 - Use plain words. Do not blame the user.
 - Do not use the word "illegal".
@@ -30,7 +31,7 @@ Author and reviewer both walk this list for every new or changed message.
 
 - Names the offending value, quoted.
 - Says what to do next.
-- One sentence plus at most one action line.
+- One sentence plus at most one action line, plus a reassurance line only where a spec requires it.
 - No stack trace, internals or secrets on stderr.
 - Exit code matches the CLI section below.
 - Detail the user cannot act on is logged.
