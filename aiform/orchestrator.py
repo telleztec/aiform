@@ -11,7 +11,7 @@ import shutil
 import sys
 import termios
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +21,7 @@ import anthropic
 
 from aiform import config, graph, llm, log, parser, planner, references, state
 from aiform.driver import DriverUpdateNotSupported, ResourceDriver
+from aiform.driver import reserved_tags as deployment_tags
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
     DriverInfo,
@@ -192,7 +193,9 @@ def driver_path(provider: str, resource_type: str) -> Path:
     return DRIVERS_DIR / provider / f"{resource_type}.py"
 
 
-def load_driver(provider: str, resource_type: str) -> ResourceDriver:
+def load_driver(
+    provider: str, resource_type: str, reserved_tags: Sequence[str] = ()
+) -> ResourceDriver:
     path = driver_path(provider, resource_type)
     try:
         spec = importlib.util.spec_from_file_location(
@@ -205,7 +208,7 @@ def load_driver(provider: str, resource_type: str) -> ResourceDriver:
             f"no driver found for (provider={provider!r}, resource_type={resource_type!r}) "
             f"-- expected {path}"
         ) from None
-    return module.Driver()
+    return module.Driver(reserved_tags=reserved_tags)
 
 
 def driver_info_for(
@@ -290,7 +293,9 @@ def refresh_state(*, state_path: Path = state.DEFAULT_STATE_PATH, deployment: st
     for entry in st.resources.values():
         driver_key = (entry.provider, entry.resource_type)
         if driver_key not in driver_cache:
-            driver_cache[driver_key] = load_driver(entry.provider, entry.resource_type)
+            driver_cache[driver_key] = load_driver(
+                entry.provider, entry.resource_type, reserved_tags=deployment_tags(st.deployment)
+            )
         driver = driver_cache[driver_key]
 
         if entry.provider not in credentials_cache:
@@ -678,7 +683,7 @@ def _driver_for(
 ) -> tuple[ResourceDriver, DriverInfo]:
     driver_key = (provider, resource_type)
     if driver_key not in cache:
-        driver = load_driver(provider, resource_type)
+        driver = load_driver(provider, resource_type, reserved_tags=deployment_tags(st.deployment))
         driver_info = driver_info_for(provider, resource_type, st)
         cache[driver_key] = (driver, driver_info)
     return cache[driver_key]
@@ -1343,7 +1348,9 @@ def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -
 
 def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     if pr.state_entry is not None:
-        driver = load_driver(pr.provider, pr.resource_type)
+        driver = load_driver(
+            pr.provider, pr.resource_type, reserved_tags=deployment_tags(st.deployment)
+        )
         try:
             credentials = config.resolve_credentials(pr.provider)
         except RuntimeError as exc:
