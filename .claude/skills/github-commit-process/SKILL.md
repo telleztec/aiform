@@ -479,8 +479,15 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then do **both** of these — they are independent and
-neither waits on the other:
+Report the PR URL. Then update the branch, before either step below:
+
+- Run `git fetch origin && git log --oneline HEAD..origin/main`.
+- If it prints commits, `git merge origin/main` and push.
+- No rebase, no force push.
+- If the merge conflicts, resolve it like any other change and tell the human.
+
+Then do **both** of these — they are independent and neither waits on the
+other:
 
 1. **Start the watch loop immediately** (`/review-watch <PR>`). The human may
    approve at any time, including before the LLM review has run.

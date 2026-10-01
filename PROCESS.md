@@ -581,6 +581,10 @@ Making the log self-describing — a `git rev-parse HEAD` and
 `git status --porcelain` header — would fix that, and belongs with
 `scripts/run_system_tests.py` rather than in this document.
 
+**Update the branch before review starts.** After opening the PR, run `git fetch
+origin`; if `git log HEAD..origin/main` prints commits, merge `origin/main` in
+and push before the watch loop and `/code-review` start.
+
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs or after; either order ends in a merge. Nothing waits on
 anything else.
