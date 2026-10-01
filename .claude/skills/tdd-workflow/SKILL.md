@@ -38,7 +38,8 @@ stop and flag it rather than assuming someone else already checked.
 5. **Review.** Launch `/code-review` yourself — it does not wait on the
    human — on a model satisfying `github-commit-process`'s reviewer rule
    (Opus 5 or newer, never the model that authored the diff). Fix what it
-   flags, or note explicitly in the PR why something is deferred.
+   flags, or note explicitly in the PR why something is deferred. New or
+   changed error strings must satisfy `.claude/skills/error-messages/SKILL.md`.
 6. **Live suite.** `pytest` proves the code does what its mocks were told
    to expect; it cannot prove the provider agrees. Before merge, run
    `.venv/bin/python scripts/run_system_tests.py` from the head being

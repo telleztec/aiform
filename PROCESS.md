@@ -289,6 +289,8 @@ completely on its own.
    no pass has read, so run `/code-review-since <PR>` over each round until
    the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
+   New or changed error strings must satisfy
+   `.claude/skills/error-messages/SKILL.md`.
 7. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
    `.claude/skills/github-commit-process/SKILL.md`. A PR closes at most
