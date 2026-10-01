@@ -57,7 +57,7 @@ button:disabled{opacity:.5;cursor:default}
 </div>
 
 <div class="card"><h3>Approval</h3>
-<label class="opt"><input type="radio" name="approve" value="approved"><b>Approved, as modified by my choices above</b></label>
+<label class="opt"><input type="radio" name="approve" value="approved"><b>Approved: the choices above are the plan</b></label>
 <label class="opt"><input type="radio" name="approve" value="revise"><b>Revise first (see my note)</b></label>
 </div>
 
@@ -66,10 +66,11 @@ button:disabled{opacity:.5;cursor:default}
 <script>
 (()=>{
 const PLAN_ID='PLAN_ID';
+const VERSION='PUBLISH_ISO_TIME';
 const DOC='decisions/'+PLAN_ID;
 const names=['d1','approve'];
 const send=document.getElementById('send'),st=document.getElementById('status');
-const val=n=>{const e=document.querySelector('input[name='+n+']:checked');return e?e.value:null};
+const val=n=>{const e=document.querySelector('input[name="'+n+'"]:checked');return e?e.value:null};
 let noDb=false;
 const check=()=>{send.disabled=noDb||!names.every(val)};
 const dbP=(async()=>{try{return await claude.use('db')}catch(e){return null}})();
@@ -77,7 +78,7 @@ document.addEventListener('change',check);
 send.addEventListener('click',async()=>{
   const db=await dbP;
   if(!db)return;
-  const d={plan:PLAN_ID,at:new Date().toISOString(),note:document.getElementById('note').value};
+  const d={plan:PLAN_ID,version:VERSION,at:new Date().toISOString(),note:document.getElementById('note').value};
   names.forEach(n=>d[n]=val(n));
   send.disabled=true;
   try{await db.doc(DOC).set(d);st.textContent='Sent. Tell Claude in the terminal that you answered.'}
@@ -90,8 +91,8 @@ send.addEventListener('click',async()=>{
   try{
     const s=await db.doc(DOC).get();
     if(s.exists){const d=s.data();
-      if(d.plan===PLAN_ID){
-        names.forEach(n=>{const e=document.querySelector('input[name='+n+'][value="'+d[n]+'"]');if(e)e.checked=true});
+      if(d.plan===PLAN_ID&&d.version===VERSION){
+        names.forEach(n=>{const e=document.querySelector('input[name="'+n+'"][value="'+d[n]+'"]');if(e)e.checked=true});
         document.getElementById('note').value=d.note||'';
         st.textContent='Previously sent '+(d.at||'');check();
       }
