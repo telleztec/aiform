@@ -262,10 +262,17 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   `firewall` don't carry a `provider_id` — neither is referenced *by id*, a
   zone's identity is its name.
 
-  **Pending update**: `specs/resource_tagging.md` (not yet implemented)
-  wraps this `"tags"` line in `self._tags_for_attributes(...)` — this
-  code fence will understate what `_flatten()` actually returns once
-  that lands. See that spec for the corrected picture.
+  **Reserved tags** (`specs/resource_tagging.md`, #249): `_flatten()`
+  returns `"tags": self._tags_for_attributes(droplet.get("tags", []))`,
+  which strips `aiform-managed` and `aiform:<deployment>`; the code fence
+  above shows the raw field. `create()` always sends
+  `self._tags_for_create(params.get("tags", []))` as the droplet's `tags`,
+  so every droplet carries both reserved tags even when `params` has none.
+  A reserved tag in `params["tags"]` raises `ValueError` naming it, from
+  `create()` and from `update()` (before any mutation). An in-place tags
+  update never removes a reserved tag, because `current["tags"]` is already
+  stripped. No backfill: a droplet created before this change has no
+  reserved tag, and `update()` does not add them.
   `ssh_keys`/`backups`/`monitoring`: `create()` additionally echoes back
   whatever was in `params` for these three keys, **preserving each
   field's own type** — `"ssh_keys": params.get("ssh_keys", [])`,

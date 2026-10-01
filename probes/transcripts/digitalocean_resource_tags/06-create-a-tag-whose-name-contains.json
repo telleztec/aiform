@@ -1,0 +1,31 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 333,
+ "note": "create a tag whose name contains '/'",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-10-01T19:12:29.222631+00:00",
+ "request": {
+  "body": {
+   "name": "aiform:a/b"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags"
+ },
+ "response": {
+  "body": {
+   "error": "Error validating resource tag: \"tag-name \\\"aiform:a/b\\\" contains invalid characters\"",
+   "messages": null,
+   "root_causes": [
+    "rpc error: code = InvalidArgument desc = Error validating resource tag: \"tag-name \\\"aiform:a/b\\\" contains invalid characters\""
+   ]
+  },
+  "status": 400
+ },
+ "seq": 6
+}

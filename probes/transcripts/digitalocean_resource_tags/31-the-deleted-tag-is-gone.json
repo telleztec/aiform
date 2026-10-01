@@ -1,0 +1,26 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 356,
+ "note": "the deleted tag is gone",
+ "prediction": {
+  "status": 404
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:37.208964+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/tags/aiform:tagprobe-4742f0"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "The resource you were accessing could not be found."
+  },
+  "status": 404
+ },
+ "seq": 31
+}

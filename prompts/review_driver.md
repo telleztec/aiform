@@ -156,6 +156,23 @@ Check specifically for:
     it did not carry into `observations` is worth flagging. Keep it
     flat, `str -> str`, and small enough to read on one screen.
 
+13. **Reserved tags are applied, stripped and never removed.** `aiform`
+    passes every driver two reserved tags, `aiform-managed` and
+    `aiform:<deployment>`, as `reserved_tags` (`self.reserved_tags`,
+    `self._deployment_tag`). A driver whose resource kind can carry a
+    tag must send `self._tags_for_create(...)` in `create()`, return
+    `self._tags_for_attributes(...)` everywhere it returns `tags`
+    (`create`, `read`, `update`), and reject a reserved tag in the
+    user's params with the `ValueError` that names it. A driver whose
+    resource kind cannot carry a tag must record the deployment name
+    some other way and keep that out of `read()`'s diffed output. Each
+    of the following is a blocking issue: attaching the tags on create
+    but returning them from `read()` or `update()`; stripping a tag it
+    never attached; an `update()` that can remove a reserved tag or the
+    driver's marker record; a marker the diff engine can see. Not a
+    finding: a driver that does not label resources created before the
+    feature existed (there is no backfill).
+
 Respond with your structured verdict only. Use `blocking_issues` for
 anything from the list above that's actually violated — these block
 approval outright. Use `concerns` for anything narrower or lower-stakes

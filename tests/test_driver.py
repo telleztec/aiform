@@ -3,7 +3,14 @@
 
 import pytest
 
-from aiform.driver import CapabilityNotSupported, DriverUpdateNotSupported, ResourceDriver
+from aiform.driver import (
+    AIFORM_MANAGED_TAG,
+    CapabilityNotSupported,
+    DriverUpdateNotSupported,
+    ResourceDriver,
+    is_reserved_tag,
+    reserved_tags,
+)
 from aiform.models import HealthReport, HealthStatus, MetricKind, Sample
 
 
@@ -249,3 +256,79 @@ class TestOptionalMethodSignatures:
         for method in (ResourceDriver.health, ResourceDriver.metrics):
             params = list(inspect.signature(method).parameters)
             assert params == ["self", "id", "credentials"]
+
+
+class TestReservedTagNames:
+    def test_reserved_tags_are_the_marker_and_the_deployment_tag(self):
+        assert reserved_tags("prod") == ("aiform-managed", "aiform:prod")
+
+    def test_the_marker_constant(self):
+        assert AIFORM_MANAGED_TAG == "aiform-managed"
+
+    def test_the_default_deployment_is_tagged_like_any_other(self):
+        assert reserved_tags("default") == ("aiform-managed", "aiform:default")
+
+    @pytest.mark.parametrize("tag", ["aiform-managed", "aiform:prod", "aiform:", "aiform:a:b"])
+    def test_reserved(self, tag):
+        assert is_reserved_tag(tag)
+
+    @pytest.mark.parametrize(
+        "tag",
+        ["aiform-system-test", "aiform", "Aiform-Managed", "AIFORM:prod", "web", "x-aiform:a"],
+    )
+    def test_not_reserved(self, tag):
+        assert not is_reserved_tag(tag)
+
+
+class TestReservedTagsOnTheBaseClass:
+    def test_constructed_without_arguments_has_no_reserved_tags(self):
+        driver = FullDriver()
+        assert driver.reserved_tags == ()
+        assert driver._deployment_tag is None
+
+    def test_constructor_stores_the_tags_and_finds_the_deployment_tag(self):
+        driver = FullDriver(reserved_tags=reserved_tags("prod"))
+        assert driver.reserved_tags == ("aiform-managed", "aiform:prod")
+        assert driver._deployment_tag == "aiform:prod"
+
+    def test_tags_for_create_appends_both_after_the_requested_tags(self):
+        driver = FullDriver(reserved_tags=reserved_tags("prod"))
+        assert driver._tags_for_create(["web", "db"]) == [
+            "web",
+            "db",
+            "aiform-managed",
+            "aiform:prod",
+        ]
+
+    def test_tags_for_create_with_no_requested_tags_still_attaches_both(self):
+        driver = FullDriver(reserved_tags=reserved_tags("prod"))
+        assert driver._tags_for_create([]) == ["aiform-managed", "aiform:prod"]
+
+    def test_tags_for_create_without_reserved_tags_returns_the_requested_ones(self):
+        assert FullDriver()._tags_for_create(["web"]) == ["web"]
+
+    @pytest.mark.parametrize("tag", ["aiform-managed", "aiform:prod", "aiform:other"])
+    def test_tags_for_create_rejects_a_reserved_tag_naming_it(self, tag):
+        driver = FullDriver(reserved_tags=reserved_tags("prod"))
+        with pytest.raises(ValueError, match=tag):
+            driver._tags_for_create(["web", tag])
+
+    def test_a_driver_with_no_reserved_tags_still_rejects_one(self):
+        with pytest.raises(ValueError, match="aiform-managed"):
+            FullDriver()._tags_for_create(["aiform-managed"])
+
+    def test_reject_reserved_tags_accepts_ordinary_tags(self):
+        FullDriver()._reject_reserved_tags(["web", "aiform-system-test"])
+
+    def test_tags_for_attributes_strips_every_reserved_tag(self):
+        driver = FullDriver(reserved_tags=reserved_tags("prod"))
+        live = ["web", "aiform-managed", "aiform:prod", "aiform:other", "db"]
+        assert driver._tags_for_attributes(live) == ["web", "db"]
+
+    def test_tags_for_attributes_strips_even_without_reserved_tags_on_the_instance(self):
+        assert FullDriver()._tags_for_attributes(["aiform-managed", "web"]) == ["web"]
+
+    def test_tags_for_attributes_does_not_mutate_its_argument(self):
+        live = ["aiform-managed", "web"]
+        FullDriver()._tags_for_attributes(live)
+        assert live == ["aiform-managed", "web"]

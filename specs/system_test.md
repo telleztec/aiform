@@ -396,10 +396,11 @@ reliably being present.
   pre-existing "Resource tagging convention" entry — that entry's
   long-term target is a fuller, structured tag format, which
   `specs/resource_tagging.md` explicitly reconciles with rather than
-  silently duplicating (see that spec's Purpose section). Until it's
-  implemented, this suite's own explicit fixture tag (above) is what
-  the sweep relies on — sufficient to ship this spec's mechanism now,
-  not a reason to block on the general feature.
+  silently duplicating (see that spec's Purpose section). It is
+  implemented now (#249: `aiform-managed` and `aiform:<deployment>`,
+  with a name or TXT marker where a resource cannot be tagged); this
+  suite's own explicit fixture tag (above) is still what the sweep
+  relies on, and the live suite asserts the reserved tags separately.
 
 ## Edge cases / errors
 
@@ -439,13 +440,11 @@ reliably being present.
 
 ## Out of scope
 
-- **Implementing `specs/resource_tagging.md`'s mechanism** — the
-  project-wide "every aiform-created resource carries an aiform-owned
-  marker tag" guarantee named in "Orphan cleanup (leaked resources)"
-  above and specified in full (including its relationship to `PLAN.md`
-  §10's pre-existing tagging-convention entry) in that spec. Not
-  implemented as part of this spec: this suite's own sweep only needs
-  the tag its own fixture already sets, which works without it.
+- **Sweeping by `aiform-managed`.** `specs/resource_tagging.md` is
+  implemented (#249), but this suite's own sweep still keys on its fixture's
+  `aiform-system-test` tag; the live tests assert the reserved tags and the
+  firewall name / TXT marker on what they create (see Behavior's "Reserved
+  tags" bullet), they do not sweep by them.
 - **The sweep script's own test suite**
   (`tests/test_sweep_system_test_droplets.py`) and the scheduled GH
   Actions workflow that runs it — both named in "Orphan cleanup" above,

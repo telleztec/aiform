@@ -1,0 +1,59 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 401,
+ "note": "a firewall name of 255 characters",
+ "prediction": {
+  "status": 202
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:35.841145+00:00",
+ "request": {
+  "body": {
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "firewall": {
+    "created_at": "2026-10-01T19:12:36Z",
+    "droplet_ids": [],
+    "id": "8ee5b305-0800-4933-b2f6-afa112a1b525",
+    "inbound_rules": [
+     {
+      "action": "allow",
+      "ports": "22",
+      "protocol": "tcp",
+      "sources": {
+       "addresses": [
+        "0.0.0.0/0"
+       ]
+      }
+     }
+    ],
+    "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outbound_rules": [],
+    "pending_changes": [],
+    "status": "succeeded",
+    "tags": []
+   }
+  },
+  "status": 202
+ },
+ "seq": 27
+}

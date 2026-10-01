@@ -259,10 +259,20 @@ the same treatment `domain.py` gives `ttl`, and for the same reason.
   collections, and `read()` is one GET, so
   `drivers/digitalocean/_common.py`'s `fetch_all_pages` is deliberately
   not reached for here.
-- **`AIFORM_MANAGED_TAG`** (`specs/resource_tagging.md`) stays
-  unimplemented. Firewalls do carry tags, unlike domains, so this is the
-  first resource where that mechanism would apply — but it is its own
-  module and its own PR.
+- **Reserved tags** (`specs/resource_tagging.md`, #249). A firewall's
+  `tags` field is a selector for droplets, not a label the firewall
+  carries: attaching a tag to a firewall through
+  `POST /v2/tags/{tag}/resources` answers `204` and does nothing, and the
+  firewall still reads `tags: []` (probe session
+  `digitalocean_resource_tags`, `11`, `13`, `14`, `29`). So the deployment
+  name goes in the name instead: `create()` sends
+  `aiform-<deployment>-<name>` as the firewall's name, with `_` in the
+  deployment written as `-` (a firewall name rejects `_` and `:`, `21`,
+  `23`). Only a firewall created after this change is named that way; no
+  backfill, and `update()` keeps the live name. `read()` still returns the
+  live `name`. A user's own `tags` selector is not checked for reserved
+  tags: `aiform:<deployment>` is a valid selector for that deployment's
+  droplets.
 
 ## Knowledge-confidence
 

@@ -607,14 +607,16 @@ subclassing the hand-written `ResourceDriver` ABC
 driver's internals, only calls the four contract methods below. Exact
 contract:
 
-**Addendum (`specs/resource_tagging.md`, not yet reflected in the
-actual `aiform/driver.py` file on disk as of this writing — implemented
-means the two-attribute, four-abstract-method version below):**
-`AIFORM_MANAGED_TAG` and two concrete (non-abstract) helper methods,
-`_tags_for_create`/`_tags_for_attributes`, included below as part of
-this contract per `CLAUDE.md`'s "follow the `ResourceDriver` interface
-in `PLAN.md` §4 exactly" — see `specs/driver.md` and
-`specs/resource_tagging.md` for their full behavior.
+**Addendum (`specs/resource_tagging.md`, #249):** the orchestrator
+computes two reserved tags, `aiform-managed` and `aiform:<deployment>`,
+and passes them to every driver it loads
+(`Driver(reserved_tags=...)`). The base class stores them and provides
+three concrete (non-abstract) helpers, `_reject_reserved_tags`,
+`_tags_for_create` and `_tags_for_attributes`, included below as part
+of this contract per `CLAUDE.md`'s "follow the `ResourceDriver`
+interface in `PLAN.md` §4 exactly" — see `specs/driver.md` and
+`specs/resource_tagging.md` for their full behavior, including what a
+driver does when its resource kind cannot carry a tag.
 
 **Addendum (`specs/driver_observability.md`, now reflected in the actual
 `aiform/driver.py` file on disk, unlike the tagging addendum above):**
@@ -655,11 +657,13 @@ outside the observability portion until §4 is reconciled.
 # aiform/driver.py — hand-written, not generated
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 from aiform.models import HealthReport, Sample
 
 AIFORM_MANAGED_TAG = "aiform-managed"
+DEPLOYMENT_TAG_PREFIX = "aiform:"
 
 
 class DriverUpdateNotSupported(Exception):
@@ -745,12 +749,16 @@ class ResourceDriver(ABC):
     # rule as LIKELY_REPLACE_FIELDS (reassign, never mutate in place).
     NON_DIFFABLE_FIELDS: list[str] = []
 
-    # Concrete, not abstract -- a driver opts in by calling these from
-    # its own create()/read()/update(), not by overriding a flag.
+    # Concrete, not abstract. The orchestrator passes the reserved tags in;
+    # a driver calls the helpers from its own create()/read()/update().
     # specs/resource_tagging.md.
-    def _tags_for_create(self, requested_tags: list[str]) -> list[str]: ...
+    def __init__(self, reserved_tags: Sequence[str] = ()) -> None: ...
 
-    def _tags_for_attributes(self, live_tags: list[str]) -> list[str]: ...
+    def _reject_reserved_tags(self, requested_tags: Sequence[str]) -> None: ...
+
+    def _tags_for_create(self, requested_tags: Sequence[str]) -> list[str]: ...
+
+    def _tags_for_attributes(self, live_tags: Sequence[str]) -> list[str]: ...
 
     @abstractmethod
     def create(
@@ -2029,13 +2037,15 @@ entry's own note below.
   CSP console, independent of `.aiform/state.json` being available at
   all — useful for orphan detection, auditing, and (eventually) the
   centralized-server and multi-source scenarios above.
-  **`specs/resource_tagging.md` ships only the `intended-state` marker
-  segment as a deliberate first slice** — see that spec's Purpose
-  section ("Relationship to `PLAN.md` §10") for the full rationale and
-  exactly which components (`<short-uuid>`/`<state-incarnation-no>`/
-  `<owner-id>`) remain undesigned; not restated here to avoid the two
-  documents drifting out of sync again the way they did before this
-  entry was cross-referenced.
+  **`specs/resource_tagging.md` (#249) ships two reserved tags as a
+  deliberate first slice**: `aiform-managed`, and `aiform:<name>` where
+  `<name>` is the deployment name (`State.deployment`, #201) — so the
+  first segment after `aiform:` is the deployment name, not a
+  `<short-uuid>`. Every resource carries the name: a droplet as a tag; a
+  firewall in its name, and a domain as an apex TXT record
+  `aiform:<name>`, because DigitalOcean cannot tag either. No existing
+  resource is backfilled. The `<state-incarnation-no>`, `intended-state`
+  and `<owner-id>` segments remain undesigned.
 - **`aiform driver create`/`refresh`/`show`/`delete`/`publish` — the
   target interactive shape of mechanism 2** ("Driver curation" above,
   §6), committed to but not started. §7 settles the CLI surface:

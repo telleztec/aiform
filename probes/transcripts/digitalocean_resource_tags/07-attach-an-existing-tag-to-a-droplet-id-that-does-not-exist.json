@@ -1,0 +1,31 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 330,
+ "note": "attach an existing tag to a droplet id that does not exist",
+ "prediction": {
+  "notes": "the endpoint exists; the droplet is what is missing",
+  "status": 404
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-10-01T19:12:29.557068+00:00",
+ "request": {
+  "body": {
+   "resources": [
+    {
+     "resource_id": "1",
+     "resource_type": "droplet"
+    }
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags/aiform:tagprobe-4742f0/resources"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 7
+}

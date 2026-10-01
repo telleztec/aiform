@@ -1,0 +1,30 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 281,
+ "note": "does a domain record have any tags key",
+ "prediction": {
+  "notes": "the transcript's body keys answer it",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:32.896786+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/domains/systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com"
+ },
+ "response": {
+  "body": {
+   "domain": {
+    "name": "systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com",
+    "ttl": 1800,
+    "zone_file": "$ORIGIN systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com.\n$TTL 1800\nsystest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com. IN SOA ns1.digitalocean.com. hostmaster.systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com. 1790881952 10800 3600 604800 1800\nsystest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com. 1800 IN NS ns1.digitalocean.com.\nsystest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com. 1800 IN NS ns2.digitalocean.com.\nsystest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com. 1800 IN NS ns3.digitalocean.com.\n"
+   }
+  },
+  "status": 200
+ },
+ "seq": 17
+}

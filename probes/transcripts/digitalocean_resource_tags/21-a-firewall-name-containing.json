@@ -1,0 +1,40 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 245,
+ "note": "a firewall name containing ':'",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:33.950217+00:00",
+ "request": {
+  "body": {
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform:tagprobe-471835"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "invalid name",
+   "request_id": "3a64d848-78ac-4aa3-a087-ad768761d799"
+  },
+  "status": 422
+ },
+ "seq": 21
+}

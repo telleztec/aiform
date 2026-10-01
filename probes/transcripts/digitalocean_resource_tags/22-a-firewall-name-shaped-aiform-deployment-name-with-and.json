@@ -1,0 +1,40 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 260,
+ "note": "a firewall name shaped aiform-<deployment>-<name>, with '_' and '.'",
+ "prediction": {
+  "status": 202
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-10-01T19:12:34.196783+00:00",
+ "request": {
+  "body": {
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aiform-prod_1-tagprobe.471835"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "invalid name",
+   "request_id": "b4dbe8a5-e405-4ab9-b932-88fddcdc6af9"
+  },
+  "status": 422
+ },
+ "seq": 22
+}
