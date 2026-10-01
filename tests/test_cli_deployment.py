@@ -93,7 +93,7 @@ def offline_preflight(monkeypatch):
 def reach(monkeypatch) -> Reach:
     spy = Reach()
 
-    def load_driver(provider, resource_type):
+    def load_driver(provider, resource_type, reserved_tags=()):
         spy.driver_loads.append((provider, resource_type))
         return SpyDriver()
 

@@ -385,8 +385,8 @@ def count_driver_reads(monkeypatch) -> list[str]:
     calls: list[str] = []
     real_load_driver = orchestrator.load_driver
 
-    def counting_load_driver(provider, resource_type):
-        driver = real_load_driver(provider, resource_type)
+    def counting_load_driver(provider, resource_type, reserved_tags=()):
+        driver = real_load_driver(provider, resource_type, reserved_tags=reserved_tags)
         real_read = driver.read
 
         def counting_read(id, credentials):

@@ -446,6 +446,22 @@ class TestLoadDriver:
         with pytest.raises(SyntaxError):
             orchestrator.load_driver("digitalocean", "compute")
 
+    def test_passes_reserved_tags_to_the_driver(self, drivers_dir: Path):
+        write_driver(drivers_dir, "digitalocean", "compute")
+
+        driver = orchestrator.load_driver(
+            "digitalocean", "compute", reserved_tags=("aiform-managed", "aiform:prod")
+        )
+
+        assert driver.reserved_tags == ("aiform-managed", "aiform:prod")
+
+    def test_reserved_tags_default_to_none(self, drivers_dir: Path):
+        write_driver(drivers_dir, "digitalocean", "compute")
+
+        driver = orchestrator.load_driver("digitalocean", "compute")
+
+        assert driver.reserved_tags == ()
+
 
 class TestDriverInfoFor:
     """No LLM calls on this path -- see issue #119 / specs/orchestrator.md."""
@@ -740,9 +756,9 @@ class TestRefreshState:
         driver_calls = []
         real_load_driver = orchestrator.load_driver
 
-        def counting_load_driver(provider, resource_type):
+        def counting_load_driver(provider, resource_type, reserved_tags=()):
             driver_calls.append((provider, resource_type))
-            return real_load_driver(provider, resource_type)
+            return real_load_driver(provider, resource_type, reserved_tags=reserved_tags)
 
         monkeypatch.setattr(orchestrator.config, "resolve_credentials", counting_resolve)
         monkeypatch.setattr(orchestrator, "load_driver", counting_load_driver)
@@ -751,6 +767,86 @@ class TestRefreshState:
 
         assert credential_calls == ["digitalocean"]
         assert driver_calls == [("digitalocean", "compute")]
+
+
+class TestReservedTagsReachDrivers:
+    """#249: every call site that holds a State passes reserved_tags(st.deployment)."""
+
+    EXPECTED = ("aiform-managed", "aiform:prod")
+
+    def _capture_load_driver(self, monkeypatch) -> list[tuple]:
+        seen: list[tuple] = []
+        real_load_driver = orchestrator.load_driver
+
+        def capturing(provider, resource_type, reserved_tags=()):
+            seen.append((provider, resource_type, tuple(reserved_tags)))
+            return real_load_driver(provider, resource_type, reserved_tags=reserved_tags)
+
+        monkeypatch.setattr(orchestrator, "load_driver", capturing)
+        return seen
+
+    def test_refresh_state_passes_the_deployments_reserved_tags(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        state_path = tmp_path / ".aiform" / "state.json"
+        entry = make_state_entry(id="123", attributes={"region": "stale"})
+        state.save(
+            state.State(
+                deployment="prod", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_path,
+        )
+        seen = self._capture_load_driver(monkeypatch)
+
+        orchestrator.refresh_state(state_path=state_path, deployment="prod")
+
+        assert seen == [("digitalocean", "compute", self.EXPECTED)]
+
+    def test_driver_for_passes_the_deployments_reserved_tags(self, drivers_dir: Path, monkeypatch):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        seen = self._capture_load_driver(monkeypatch)
+        st = state.State(deployment="prod")
+
+        driver, _info = orchestrator._driver_for("digitalocean", "compute", st, {})
+
+        assert seen == [("digitalocean", "compute", self.EXPECTED)]
+        assert driver.reserved_tags == self.EXPECTED
+
+    def test_apply_destroy_passes_the_deployments_reserved_tags(
+        self, tmp_path: Path, drivers_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        aiform_md.write_text("x")
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        key = "digitalocean.compute.telleztec-app-01"
+        pr = orchestrator.PlannedResource(
+            entry=PlanEntry(
+                resource_key=key, action=PlanAction.DESTROY, rationale="explicit destroy"
+            ),
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+        st = state.State(deployment="prod", resources={key: existing})
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(st, state_path)
+        seen = self._capture_load_driver(monkeypatch)
+
+        orchestrator._apply_destroy(pr, st, state_path=state_path)
+
+        assert seen == [("digitalocean", "compute", self.EXPECTED)]
 
 
 class TestBuildCreatePlan:

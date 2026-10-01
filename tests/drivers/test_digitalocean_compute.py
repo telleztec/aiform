@@ -2612,3 +2612,118 @@ class TestSshFirstPowerOff:
         assert types == ["power_off", "resize", "power_on"]
         record = next(r for r in caplog.records if getattr(r, "power_off_path", None) is not None)
         assert record.power_off_path == "no-key-fallback"
+
+
+RESERVED = ("aiform-managed", "aiform:prod")
+
+
+@pytest.fixture
+def tagged_driver() -> Driver:
+    return Driver(reserved_tags=RESERVED)
+
+
+class TestReservedTags:
+    """#249: specs/resource_tagging.md, droplet section."""
+
+    def _script_create(self, fake, *, live_tags):
+        fake.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake.script(
+            "GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555, tags=live_tags))
+        )
+
+    def test_create_sends_both_reserved_tags_when_the_file_has_no_tags(
+        self, tagged_driver, fake_urlopen
+    ):
+        self._script_create(fake_urlopen, live_tags=list(RESERVED))
+
+        tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["tags"] == list(RESERVED)
+
+    def test_create_appends_reserved_tags_after_the_users_tags(self, tagged_driver, fake_urlopen):
+        self._script_create(fake_urlopen, live_tags=["web", *RESERVED])
+
+        tagged_driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["tags"] == ["web", *RESERVED]
+
+    def test_create_without_reserved_tags_sends_only_the_users_tags(self, driver, fake_urlopen):
+        self._script_create(fake_urlopen, live_tags=["web"])
+
+        driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["tags"] == ["web"]
+
+    @pytest.mark.parametrize("bad", ["aiform-managed", "aiform:other", "aiform:"])
+    def test_create_rejects_a_reserved_tag_in_params_before_any_call(
+        self, tagged_driver, fake_urlopen, bad
+    ):
+        with pytest.raises(ValueError, match=bad):
+            tagged_driver.create(NAME, {**BASE_PARAMS, "tags": ["web", bad]}, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_create_result_omits_the_reserved_tags(self, tagged_driver, fake_urlopen):
+        self._script_create(fake_urlopen, live_tags=["web", *RESERVED])
+
+        result = tagged_driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
+
+        assert result["tags"] == ["web"]
+
+    def test_read_omits_the_reserved_tags(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(tags=["web", *RESERVED, "aiform:other"])),
+        )
+
+        assert tagged_driver.read("123", CREDENTIALS)["tags"] == ["web"]
+
+    def test_read_strips_even_when_the_driver_holds_no_reserved_tags(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(tags=["web", *RESERVED]))
+        )
+
+        assert driver.read("123", CREDENTIALS)["tags"] == ["web"]
+
+    def test_update_never_removes_a_reserved_tag(self, tagged_driver, fake_urlopen):
+        current = make_attrs(tags=["web", *RESERVED])
+        desired = make_attrs(tags=["web"])
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(tags=["web", *RESERVED]))
+        )
+
+        result = tagged_driver.update("123", current, desired, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] != "GET"]
+        assert result["tags"] == ["web"]
+
+    def test_update_removal_of_a_user_tag_leaves_reserved_ones_alone(
+        self, tagged_driver, fake_urlopen
+    ):
+        current = make_attrs(tags=["web", "retired"])
+        desired = make_attrs(tags=["web"])
+        fake_urlopen.script("DELETE", tag_resources_url("retired"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(tags=["web", *RESERVED]))
+        )
+
+        result = tagged_driver.update("123", current, desired, CREDENTIALS)
+
+        deletes = [c["url"] for c in fake_urlopen.calls if c["method"] == "DELETE"]
+        assert deletes == [tag_resources_url("retired")]
+        assert result["tags"] == ["web"]
+
+    @pytest.mark.parametrize("bad", ["aiform-managed", "aiform:other"])
+    def test_update_rejects_a_reserved_tag_in_desired_before_any_call(
+        self, tagged_driver, fake_urlopen, bad
+    ):
+        current = make_attrs(tags=["web"])
+        desired = make_attrs(tags=["web", bad], size="s-2vcpu-4gb")
+
+        with pytest.raises(ValueError, match=bad):
+            tagged_driver.update("123", current, desired, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
