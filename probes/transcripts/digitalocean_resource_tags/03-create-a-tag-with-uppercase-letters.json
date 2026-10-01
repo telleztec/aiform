@@ -1,0 +1,48 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 230,
+ "note": "create a tag with uppercase letters",
+ "prediction": {
+  "notes": "unknown whether the stored name keeps its case; the response body's tag.name answers it",
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:28.289108+00:00",
+ "request": {
+  "body": {
+   "name": "Aiform:TagProbe-2de3aa-UPPER"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags"
+ },
+ "response": {
+  "body": {
+   "tag": {
+    "name": "Aiform:TagProbe-2de3aa-UPPER",
+    "resources": {
+     "count": 0,
+     "databases": {
+      "count": 0
+     },
+     "droplets": {
+      "count": 0
+     },
+     "images": {
+      "count": 0
+     },
+     "volume_snapshots": {
+      "count": 0
+     },
+     "volumes": {
+      "count": 0
+     }
+    }
+   }
+  },
+  "status": 201
+ },
+ "seq": 3
+}

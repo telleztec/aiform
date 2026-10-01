@@ -1,0 +1,34 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 348,
+ "note": "attach the tag to the domain as a resource",
+ "prediction": {
+  "notes": "domain is not a taggable resource_type",
+  "status": 422
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-10-01T19:12:32.546761+00:00",
+ "request": {
+  "body": {
+   "resources": [
+    {
+     "resource_id": "systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com",
+     "resource_type": "domain"
+    }
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags/aiform:tagprobe-4742f0/resources"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "The resource you were accessing could not be found."
+  },
+  "status": 404
+ },
+ "seq": 16
+}

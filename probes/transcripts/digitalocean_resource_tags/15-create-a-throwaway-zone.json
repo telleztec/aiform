@@ -1,0 +1,32 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 446,
+ "note": "create a throwaway zone",
+ "prediction": {
+  "notes": "free",
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:32.099441+00:00",
+ "request": {
+  "body": {
+   "name": "systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/domains"
+ },
+ "response": {
+  "body": {
+   "domain": {
+    "name": "systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com",
+    "ttl": 1800,
+    "zone_file": ""
+   }
+  },
+  "status": 201
+ },
+ "seq": 15
+}

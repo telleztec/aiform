@@ -1,0 +1,42 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 250,
+ "note": "the marker TXT record at the apex, a different ttl",
+ "prediction": {
+  "notes": "a second TXT value at the same name is legal",
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:33.438164+00:00",
+ "request": {
+  "body": {
+   "data": "aiform:prod",
+   "name": "@",
+   "ttl": 300,
+   "type": "TXT"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/domains/systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com/records"
+ },
+ "response": {
+  "body": {
+   "domain_record": {
+    "data": "aiform:prod",
+    "flags": null,
+    "id": 1834110348,
+    "name": "@",
+    "port": null,
+    "priority": null,
+    "tag": null,
+    "ttl": 300,
+    "type": "TXT",
+    "weight": null
+   }
+  },
+  "status": 201
+ },
+ "seq": 19
+}
