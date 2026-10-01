@@ -463,7 +463,10 @@ class TestAtNameShorthand:
     ):
         err = destroy_scope_error(capsys, ["plan", "destroy", "@prod", "@scratch"])
 
-        assert "conflicting deployments: @prod and @scratch" in err
+        assert (
+            "conflicting deployments: @prod and @scratch; name only one deployment per command"
+            in err
+        )
         assert "usage: aiform plan destroy " in err
         assert builds == []
 
@@ -601,7 +604,9 @@ class TestResourceAddressing:
 
         assert caught.value.code == 2
         err = capsys.readouterr().err
-        assert "use 1 to 63 characters from a-z, 0-9, '-' or '_' (ASCII only)" in err
+        assert (
+            "Allowed: 1 to 63 characters from a-z, 0-9, '-' or '_', starting with a-z or 0-9" in err
+        )
         assert resource_calls == []
 
     @RESOURCE_VERBS
@@ -779,7 +784,8 @@ class TestDeploymentFlagAtAnyPosition:
         assert caught.value.code == 2
         err = capsys.readouterr().err
         assert "usage: aiform plan create" in err
-        assert "conflicting deployments" in err
+        assert "; name only one deployment per command" in err
+        assert "conflicting deployments: --deployment " in err
         values = [v for v in ("prod", "scratch", "x") if f"--deployment {v}" in err]
         assert len(values) >= 2
         assert builds == []
@@ -1045,14 +1051,24 @@ class TestDestroyAllWithAnExplicitDeployment:
         assert reach.total() == 0, vars(reach)
 
 
-IMPLICIT = "destroy-all needs an explicit deployment: pass --deployment <name>"
+ALLOWED_TAIL = "Allowed: 1 to 63 characters from a-z, 0-9, '-' or '_', starting with a-z or 0-9"
+UPPERCASE_REASON = f"uppercase letters are not allowed; try 'prod'. {ALLOWED_TAIL}"
+SLASH_REASON = (
+    "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'a-b'. " + ALLOWED_TAIL
+)
+IMPLICIT_LEAD = (
+    "destroy-all needs an explicit deployment so it cannot run against the wrong directory: "
+    "pass --deployment <name>"
+)
+IMPLICIT_WITH_YES = f"{IMPLICIT_LEAD} (--yes does not supply it)"
+IMPLICIT_NON_TTY = f"{IMPLICIT_LEAD} (stdin is not a TTY, so the name cannot be typed)"
 
 
 class TestDestroyAllWithoutAnExplicitDeployment:
     def test_yes_never_supplies_the_name(self, default_state, reach, builds, applied, capsys):
         err = destroy_scope_error(capsys, ["plan", "destroy", "--all", "--yes"])
 
-        assert IMPLICIT in err
+        assert IMPLICIT_WITH_YES in err
         assert "usage: aiform plan destroy" in err
         assert builds == [] and applied.calls == []
         assert reach.total() == 0, vars(reach)
@@ -1064,7 +1080,7 @@ class TestDestroyAllWithoutAnExplicitDeployment:
 
         err = destroy_scope_error(capsys, ["plan", "destroy", "--all"])
 
-        assert IMPLICIT in err
+        assert IMPLICIT_NON_TTY in err
         assert builds == [] and applied.calls == []
         assert board.events == []
         assert reach.total() == 0, vars(reach)
@@ -1212,7 +1228,10 @@ class TestRootAndGroupNamesAreCheckedAgainstTheInvokedCommand:
 
         assert usage in err
         assert "usage: aiform [" not in err
-        assert "invalid deployment name 'Prod'" in err or "invalid deployment name 'a/b'" in err
+        assert (
+            f"argument --deployment: invalid deployment name 'Prod': {UPPERCASE_REASON}" in err
+            or f"argument --deployment: invalid deployment name 'a/b': {SLASH_REASON}" in err
+        )
         assert "argument --deployment:" in err
         assert not (project / ".aiform").exists()
         assert reach.total() == 0
@@ -1223,7 +1242,7 @@ class TestRootAndGroupNamesAreCheckedAgainstTheInvokedCommand:
         )
 
         assert "usage: aiform plan show " in err
-        assert "invalid deployment name 'Prod'" in err
+        assert f"invalid deployment name 'Prod': {UPPERCASE_REASON}" in err
 
     def test_a_bad_root_and_a_bad_group_are_both_refused(self, project, reach, capsys):
         err = destroy_scope_error(
@@ -1247,8 +1266,9 @@ class TestThreeWayConflict:
         )
 
         assert (
-            "conflicting deployments: --deployment a and --deployment b and --deployment c" in err
-        )
+            "conflicting deployments: --deployment a and --deployment b and --deployment c"
+            "; name only one deployment per command"
+        ) in err
         assert "usage: aiform plan create " in err
         assert builds == []
 
@@ -1257,7 +1277,10 @@ class TestThreeWayConflict:
             capsys, ["--deployment", "b", "plan", "create", "@a", "--deployment", "c"]
         )
 
-        assert "conflicting deployments: --deployment b and --deployment c and @a" in err
+        assert (
+            "conflicting deployments: --deployment b and --deployment c and @a"
+            "; name only one deployment per command"
+        ) in err
 
 
 class TestDestroyHelp:

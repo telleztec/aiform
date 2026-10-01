@@ -23,11 +23,30 @@ DEFAULT_DEPLOYMENT = "default"
 _DEPLOYMENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 
 
+def _deployment_name_problems(name: str) -> list[str]:
+    problems = []
+    if not name:
+        problems.append("must not be empty")
+    if len(name) > 63:
+        problems.append("longer than 63 characters")
+    if re.search(r"[A-Z]", name):
+        problems.append("uppercase letters are not allowed")
+    if re.search(r"[^A-Za-z0-9_-]", name):
+        problems.append("characters other than a-z, 0-9, '-' and '_' are not allowed")
+    if name[:1] in ("-", "_"):
+        problems.append("must start with a-z or 0-9")
+    return problems
+
+
 def validate_deployment_name(name: str) -> str:
     if not _DEPLOYMENT_NAME.fullmatch(name):
+        reasons = ", ".join(_deployment_name_problems(name))
+        suggestion = re.sub(r"[^a-z0-9_-]", "-", name.lower())
+        if _DEPLOYMENT_NAME.fullmatch(suggestion):
+            reasons += f"; try {suggestion!r}"
         raise ValueError(
-            f"invalid deployment name {name!r}: use 1 to 63 characters from a-z, 0-9, "
-            "'-' or '_' (ASCII only), starting with a-z or 0-9"
+            f"invalid deployment name {name!r}: {reasons}. Allowed: 1 to 63 characters "
+            "from a-z, 0-9, '-' or '_', starting with a-z or 0-9"
         )
     return name
 

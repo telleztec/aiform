@@ -187,7 +187,10 @@ def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespac
                 parser.error(f"argument --deployment: {exc}")
             named.setdefault(position, f"--deployment {position}")
     if len(named) > 1:
-        parser.error(f"conflicting deployments: {' and '.join(sorted(named.values()))}")
+        parser.error(
+            f"conflicting deployments: {' and '.join(sorted(named.values()))}"
+            "; name only one deployment per command"
+        )
     args.deployment_explicit = bool(named)
     args.deployment = next(iter(named), state.DEFAULT_DEPLOYMENT)
 
@@ -198,16 +201,14 @@ def _require_destroy_scope(parser: argparse.ArgumentParser, args: argparse.Names
     if not args.files and not args.all:
         parser.error("name the files to destroy, or pass --all to destroy every tracked resource")
     if args.all and not args.deployment_explicit:
+        needs_name = (
+            "destroy-all needs an explicit deployment so it cannot run against the wrong "
+            "directory: pass --deployment <name>"
+        )
         if args.yes:
-            parser.error(
-                "destroy-all needs an explicit deployment: pass --deployment <name> "
-                "(--yes does not supply it)"
-            )
+            parser.error(f"{needs_name} (--yes does not supply it)")
         if not sys.stdin.isatty():
-            parser.error(
-                "destroy-all needs an explicit deployment: pass --deployment <name> "
-                "(stdin is not a TTY, so the name cannot be typed)"
-            )
+            parser.error(f"{needs_name} (stdin is not a TTY, so the name cannot be typed)")
 
 
 def _resolve_paths(files: list[str]) -> list[Path] | None:

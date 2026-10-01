@@ -63,10 +63,29 @@ value (as the argument type on the leaf; from `_resolve_deployment` for the root
 and group positions, `specs/cli.md`), so the rule lives in one place.
 
 The `ValueError` message is
-`invalid deployment name {name!r}: use 1 to 63 characters from a-z, 0-9, '-' or '_' (ASCII only), starting with a-z or 0-9`.
-It says "characters from a-z, 0-9, ..." rather than "lowercase letters, digits,
-...", because the earlier phrasing read as "1 to 63 letters" and hid that the
-alphabet is ASCII only.
+`invalid deployment name {name!r}: {reasons}. Allowed: 1 to 63 characters from a-z, 0-9, '-' or '_', starting with a-z or 0-9`.
+`{reasons}` names what is wrong, one phrase per cause that applies, joined with
+`, `:
+
+| Cause | Phrase |
+|---|---|
+| empty | `must not be empty` |
+| over 63 characters | `longer than 63 characters` |
+| contains `A-Z` | `uppercase letters are not allowed` |
+| contains anything outside `A-Za-z0-9_-` (space, `.`, `/`, non-ASCII) | `characters other than a-z, 0-9, '-' and '_' are not allowed` |
+| starts with `-` or `_` | `must start with a-z or 0-9` |
+
+A correction is appended as `; try {suggestion!r}` (before the full stop) only
+when one exists: the name lowercased with every character outside `a-z0-9_-`
+replaced by `-`, offered only if that string itself passes the rule. It is never
+offered for empty or over-long input, or when the first character is still `-`
+or `_` (`-Prod`), so the message never suggests a name that would be refused.
+Examples: `'Prod'` gives `uppercase letters are not allowed; try 'prod'`;
+`'my app'` gives `characters other than a-z, 0-9, '-' and '_' are not allowed; try 'my-app'`;
+`'-prod'` gives `must start with a-z or 0-9` with no suggestion. The allowed
+list says "characters from a-z, 0-9, ..." rather than "lowercase letters,
+digits, ...", because the earlier phrasing read as "1 to 63 letters"; ASCII-only
+is stated by the non-ASCII row above, not repeated in the tail.
 
 Old state files are not read: a `state.json` with no `deployment` key is
 refused by `load()` with `StateMissingDeploymentError` (`specs/exceptions.md`),

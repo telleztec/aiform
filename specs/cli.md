@@ -87,8 +87,9 @@ positions afterwards. The same value at more than one position is harmless;
 different values are a usage error (exit 2, nothing run, the invoked
 subcommand's usage printed) whose message names every conflicting designator,
 sorted and joined with ` and `:
-`conflicting deployments: --deployment a and --deployment b`, and with three,
-`conflicting deployments: --deployment a and --deployment b and --deployment c`.
+`conflicting deployments: --deployment a and --deployment b; name only one deployment per command`,
+and with three,
+`conflicting deployments: --deployment a and --deployment b and --deployment c; name only one deployment per command`.
 It is the same
 check, and the same message shape, as `--deployment` against `@name`: every
 spelling of a deployment, flag at any position or `@name`, is one set, and a
@@ -637,8 +638,8 @@ errors, so all of them behave and are tested the same way:
 | `--all` with files (after `@name` is stripped) | usage error: the two are exclusive |
 | `--all`, explicit deployment, `--yes` | proceeds; no prompt of any kind |
 | `--all`, explicit deployment | proceeds to the `(y/n)` below |
-| `--all`, no explicit deployment, `--yes` | usage error: `destroy-all needs an explicit deployment: pass --deployment <name>`. `--yes` never supplies the name |
-| `--all`, no explicit deployment, stdin not a TTY | usage error, same message: nothing can be typed |
+| `--all`, no explicit deployment, `--yes` | usage error: `destroy-all needs an explicit deployment so it cannot run against the wrong directory: pass --deployment <name> (--yes does not supply it)`. `--yes` never supplies the name |
+| `--all`, no explicit deployment, stdin not a TTY | usage error, same lead: `destroy-all needs an explicit deployment so it cannot run against the wrong directory: pass --deployment <name> (stdin is not a TTY, so the name cannot be typed)` |
 | `--all`, no explicit deployment, TTY | typed-name prompt (step 2a) |
 | `--all`, resolved state is empty | no typed-name prompt: nothing to destroy |
 
