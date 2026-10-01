@@ -783,7 +783,8 @@ Mechanism A. `state = state.load(state_path, deployment=deployment)`.
 
 - `paths` given: for each, `spec = parser.parse_frontmatter(path.read_text(encoding="utf-8-sig"))`,
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
-- `paths` falsy: one target per `state.resources` entry, `aiform_md_path =
+- `paths` falsy (`plan destroy --all`; `cli.py` refuses no files without `--all`, so
+  this branch is reached only by an explicit `--all`, `specs/cli.md`): one target per `state.resources` entry, `aiform_md_path =
   Path(state_entry.aiform_md_path)`.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
@@ -884,12 +885,26 @@ for its caller.
    mistaken for the answer to a prompt the user hasn't seen yet (#163,
    #182). A non-tty stdin has nothing to flush, and a failed flush never
    blocks the confirmation itself.
+   The flush-then-`input()` part is its own function,
+   `_read_input(prompt: str) -> str`: it flushes (best-effort, as above), then
+   returns `input(prompt)` untouched, so `EOFError` propagates from it.
+   `default_confirm` calls it once per attempt, with `{prompt} (y/n): `, does
+   the `y`/`n` interpretation itself, and returns `False` on `EOFError`
+   (Ctrl-D, or stdin closed under the prompt): EOF is "no", the fail-safe,
+   never an approval, never a traceback and never an endless re-ask.
+   The public `read_answer(prompt: str) -> str` is `_read_input` with EOF
+   returned as an empty answer instead of raised. It is public because
+   `aiform/cli.py`'s typed-deployment-name prompt for `plan destroy --all`
+   (`specs/cli.md`) is the second caller: a second copy of the flush is
+   exactly how the #163/#182 protection would drift, and a destroy-all prompt
+   answered by a stray queued keystroke is the failure it exists to prevent.
+   The typed-name prompt treats the empty answer like any other wrong answer
+   (abort, exit 1). `default_confirm`'s behaviour is unchanged apart from EOF.
    This only ever loops against a real TTY: `aiform/cli.py`'s `_confirm`
    raises `RuntimeError` before calling `default_confirm` at all when
    `sys.stdin` isn't one (see "Confirmation and non-interactive runs" in
-   `specs/cli.md`). Called directly against exhausted stdin, it raises
-   `EOFError` from `input()` instead of looping forever or picking a
-   default — left to propagate, deliberately.
+   `specs/cli.md`). Called directly against exhausted stdin, it returns `False` (see above)
+   instead of looping forever or picking a default of yes.
    `termios` is POSIX-only, so importing this module — and therefore
    `aiform.cli` — now requires a POSIX platform. That is a deliberate
    narrowing, not an oversight: macOS and Linux are the only platforms
