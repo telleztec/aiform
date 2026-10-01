@@ -1,0 +1,95 @@
+<title>DECISION TITLE</title>
+<style>
+:root{--bg:#fafaf7;--fg:#1d1d1b;--mute:#6b6a66;--card:#fff;--line:#e2e0d9;--acc:#2f5fd0;--accbg:#e8eefb;--warn:#a85a00;--warnbg:#fff3e0;--ok:#1f7a45}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161615;--fg:#ecebe6;--mute:#9a988f;--card:#1f1f1d;--line:#34332f;--acc:#7da2ff;--accbg:#1e2742;--warn:#f0a84a;--warnbg:#2c2212;--ok:#5fcf8c}}
+:root[data-theme="dark"]{--bg:#161615;--fg:#ecebe6;--mute:#9a988f;--card:#1f1f1d;--line:#34332f;--acc:#7da2ff;--accbg:#1e2742;--warn:#f0a84a;--warnbg:#2c2212;--ok:#5fcf8c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,sans-serif}
+main{max-width:860px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.5rem;margin:0 0 4px}
+h2{font-size:1.15rem;margin:32px 0 8px}
+p{margin:8px 0}
+.mute{color:var(--mute);font-size:.92rem}
+table{border-collapse:collapse;width:100%;font-size:.92rem;background:var(--card)}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{font-weight:600}
+.tw{overflow-x:auto}
+code{font:.88em ui-monospace,Menlo,monospace;background:var(--accbg);padding:1px 4px;border-radius:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:12px 0}
+.card h3{margin:0 0 6px;font-size:1rem}
+label.opt{display:block;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0;cursor:pointer}
+label.opt:has(input:checked){border-color:var(--acc);background:var(--accbg)}
+label.opt input{margin-right:8px}
+.rec{color:var(--ok);font-weight:600;font-size:.85rem}
+.note{background:var(--warnbg);border-left:4px solid var(--warn);padding:10px 12px;border-radius:6px;margin:12px 0;font-size:.92rem}
+textarea{width:100%;min-height:70px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px;font:inherit}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+#status{margin-left:12px}
+</style>
+<main>
+<h1>PLAN NAME: one-line goal</h1>
+<p class="mute">One or two sentences: what changes, what does not, and what it waits on. Nothing starts until you answer.</p>
+
+<h2>What changes and why</h2>
+<p>Plain-language summary. Say what the user relies on and how it breaks today, not the mechanism.</p>
+
+<h2>Options compared</h2>
+<div class="tw"><table>
+<tr><th>Stage / option</th><th>What happens</th><th>Expected result</th></tr>
+<tr><td>S1</td><td>Describe it</td><td>Describe the outcome</td></tr>
+</table></div>
+
+<h2>Decisions for you</h2>
+
+<div class="card"><h3>1. Example decision</h3>
+<label class="opt"><input type="radio" name="d1" value="recommended"><b>Recommended option</b> <span class="rec">(recommended)</span><br><span class="mute">Trade-off in one sentence.</span></label>
+<label class="opt"><input type="radio" name="d1" value="alt"><b>Alternative</b><br><span class="mute">Trade-off in one sentence.</span></label>
+</div>
+
+<div class="card"><h3>Approval</h3>
+<label class="opt"><input type="radio" name="approve" value="approved"><b>Approved, as modified by my choices above</b></label>
+<label class="opt"><input type="radio" name="approve" value="revise"><b>Revise first (see my note)</b></label>
+</div>
+
+<div class="card"><h3>Notes</h3>
+<textarea id="note" placeholder="Anything to change, add or drop..."></textarea>
+</div>
+
+<p><button id="send" disabled>Send my decisions</button><span id="status" class="mute"></span></p>
+
+<h2>Cost and safety</h2>
+<ul>
+<li>Billable runs, what can leak, what is never touched. Delete this section when it does not apply.</li>
+</ul>
+</main>
+<script>
+(async()=>{
+const DOC='decisions/PLAN_ID';
+const names=['d1','approve'];
+const send=document.getElementById('send'),st=document.getElementById('status');
+const val=n=>{const e=document.querySelector('input[name='+n+']:checked');return e?e.value:null};
+const check=()=>{send.disabled=!names.every(val)};
+document.addEventListener('change',check);
+let db=null;
+try{db=await claude.use('db')}catch(e){}
+if(db){
+  try{
+    const s=await db.doc(DOC).get();
+    if(s.exists){const d=s.data();
+      names.forEach(n=>{const e=document.querySelector('input[name='+n+'][value="'+d[n]+'"]');if(e)e.checked=true});
+      document.getElementById('note').value=d.note||'';
+      st.textContent='Previously sent '+(d.at||'');check();}
+  }catch(e){}
+}else{st.textContent='Sending is unavailable in this view; reply in the terminal instead.'}
+send.addEventListener('click',async()=>{
+  if(!db)return;
+  const d={at:new Date().toISOString(),note:document.getElementById('note').value};
+  names.forEach(n=>d[n]=val(n));
+  send.disabled=true;
+  try{await db.doc(DOC).set(d);st.textContent='Sent. Tell Claude in the terminal that you answered.'}
+  catch(e){st.textContent='Could not save ('+(e&&e.code||'error')+'). Reply in the terminal instead.'}
+  send.disabled=false;
+});
+})();
+</script>
