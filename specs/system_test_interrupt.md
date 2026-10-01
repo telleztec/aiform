@@ -31,6 +31,13 @@ without them. One stage: `pytest -m system tests/system/test_cli_interrupt.py -k
 so `tests/test_system_fault_injection.py` tests it offline in the default
 run against a fake `urlopen`.
 
+`tests/system/provider_ledger.py` is the teardown bookkeeping (`Ledger`): the
+droplet and firewall ids and generated names the test has learned of, and the
+exact-name matching that decides what teardown may delete. It does no I/O, so
+`tests/test_system_interrupt_ledger.py` tests it offline. `conftest.py` gains
+`list_droplets_tagged(token, tag)`, a `tag_name`-filtered listing, tested in
+`tests/test_system_conftest.py`.
+
 ```python
 class InjectedInterrupt(KeyboardInterrupt)
 
