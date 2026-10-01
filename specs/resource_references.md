@@ -164,8 +164,8 @@ cannot currently happen. It becomes one the moment a driver mutates in place.
   error when the source contains `${`.
 - **`aiform/cli.py`** — `_print_plan()` prints one line per reference;
   `_plan_to_json()` carries them.
-- **`aiform/observability.py`** — `_status_for_entry()` resolves before
-  `_config_for()`'s diff.
+- **`aiform/observability.py`** — `_config_for()` resolves before its own
+  diff.
 
 **Two specs the approved plan listed are not touched.** `specs/models.md`,
 because no model change turned out to be needed (below); and
@@ -520,7 +520,7 @@ references carries an empty list, not a missing key.
 ### `aiform resource status`
 
 `observability._config_for()` re-parses the `.aiform.md` and diffs
-`spec.params` against `attributes` (`observability.py:636`). Without resolution
+`spec.params` against `attributes` (`observability.py:645`). Without resolution
 it would report permanent drift on every referencing resource. It resolves
 first; `_status_for_entry()` already receives the whole `State`, so nothing new
 is plumbed. A reference that cannot be resolved makes the config status
@@ -640,12 +640,15 @@ cleanup discipline.
   `provider_id` only reaches a droplet's `state.json` entry once that
   droplet is refreshed, and a `plan` scoped to only the *dependent*
   file — the new firewall, not the droplet's own `.aiform.md` — never
-  refreshes an already-tracked target: `refresh_resource()` is only called
-  from `_decide_action()` (`orchestrator.py:733`), which `_plan_one()` calls
-  per resource (`orchestrator.py:573`), which only runs for a file
-  `build_create_plan()` discovered *this run* (`orchestrator.py:486-490`) —
-  a target merely referenced, not planned, never reaches it. On a project
-  tracked before this fix, that makes
+  refreshes an already-tracked target: on the planning path
+  `refresh_resource()` is called only from `_decide_action()`
+  (`orchestrator.py:734`), which `_plan_one()` calls per resource
+  (`orchestrator.py:574`), which only runs for a file
+  `build_create_plan()` discovered *this run* (`orchestrator.py:487-491`) —
+  a target merely referenced, not planned, never reaches it. `refresh_state()`
+  (`aiform plan refresh`) and `observability._live_for()`
+  (`aiform resource status`) also call it, independent of the files passed.
+  On a project tracked before this fix, that makes
   `${…:provider_id}` fail with `has no attribute 'provider_id'` until the
   droplet is refreshed — usually a single `aiform plan refresh`, which
   refreshes every tracked resource at once, though not if that droplet is
