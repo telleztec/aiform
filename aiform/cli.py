@@ -181,10 +181,34 @@ def _resolve_deployment(parser: argparse.ArgumentParser, args: argparse.Namespac
         args.deployment,
     ):
         if position is not None:
+            try:
+                state.validate_deployment_name(position)
+            except ValueError as exc:
+                parser.error(f"argument --deployment: {exc}")
             named.setdefault(position, f"--deployment {position}")
     if len(named) > 1:
-        parser.error(f"conflicting deployments: {' and '.join(sorted(named.values()))}")
+        parser.error(
+            f"conflicting deployments: {' and '.join(sorted(named.values()))}"
+            "; name only one deployment per command"
+        )
+    args.deployment_explicit = bool(named)
     args.deployment = next(iter(named), state.DEFAULT_DEPLOYMENT)
+
+
+def _require_destroy_scope(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.all and args.files:
+        parser.error("--all destroys every tracked resource and cannot be combined with files")
+    if not args.files and not args.all:
+        parser.error("name the files to destroy, or pass --all to destroy every tracked resource")
+    if args.all and not args.deployment_explicit:
+        needs_name = (
+            "destroy-all needs an explicit deployment so it cannot run against the wrong "
+            "directory: pass --deployment <name>"
+        )
+        if args.yes:
+            parser.error(f"{needs_name} (--yes does not supply it)")
+        if not sys.stdin.isatty():
+            parser.error(f"{needs_name} (stdin is not a TTY, so the name cannot be typed)")
 
 
 def _resolve_paths(files: list[str]) -> list[Path] | None:
@@ -727,14 +751,21 @@ def _plan_apply_and_report(
     client: _CountingClient,
     planned: list[orchestrator.PlannedResource],
     warnings: list[str],
+    *,
+    before_apply: Callable[[], int | None] | None = None,
+    confirm: Callable[[str], bool] = _confirm,
 ) -> int:
     _print_plan(planned, warnings, color=not args.no_color, yes=args.yes)
+    if before_apply is not None:
+        early = before_apply()
+        if early is not None:
+            return early
     result = orchestrator.apply_plan(
         planned,
         state_path=args.state_file,
         deployment=args.deployment,
         yes=args.yes,
-        confirm=_confirm,
+        confirm=confirm,
         on_review=_print_review_flags,
         client=client,
     )
@@ -759,7 +790,37 @@ def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
         deployment=args.deployment,
         force=args.force,
     )
-    return _plan_apply_and_report(args, client, planned, warnings)
+    if not args.all:
+        return _plan_apply_and_report(args, client, planned, warnings)
+    scope = (
+        f"ALL {len(planned)} resources in deployment '{args.deployment}' "
+        f"(state file: {args.state_file.absolute()})"
+    )
+    return _plan_apply_and_report(
+        args,
+        client,
+        planned,
+        warnings,
+        before_apply=(
+            None
+            if args.deployment_explicit or not planned
+            else lambda: _confirm_deployment_name(args, scope)
+        ),
+        confirm=lambda _prompt: _confirm(f"destroy {scope}?"),
+    )
+
+
+def _confirm_deployment_name(args: argparse.Namespace, scope: str) -> int | None:
+    answer = orchestrator.read_answer(
+        f"This will destroy {scope}. Type the deployment name to confirm: "
+    )
+    if answer.strip() == args.deployment:
+        return None
+    print(
+        f"Aborted: what was typed is not the deployment name '{args.deployment}'. "
+        "Nothing was destroyed."
+    )
+    return 1
 
 
 def _cmd_plan_refresh(args: argparse.Namespace) -> int:
@@ -930,9 +991,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="aiform", parents=[global_parent])
     # Root and group placements get their own dests: a subparser's default for
     # the same dest would overwrite a value parsed before it (#134).
-    parser.add_argument(
-        "--deployment", dest="deployment_root", metavar="DEPLOYMENT", type=_deployment_name
-    )
+    parser.add_argument("--deployment", dest="deployment_root", metavar="DEPLOYMENT")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", parents=[global_parent, deployment_parent])
@@ -940,9 +999,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.set_defaults(usage_parser=init_parser)
 
     plan_parser = subparsers.add_parser("plan", parents=[global_parent])
-    plan_parser.add_argument(
-        "--deployment", dest="deployment_group", metavar="DEPLOYMENT", type=_deployment_name
-    )
+    plan_parser.add_argument("--deployment", dest="deployment_group", metavar="DEPLOYMENT")
     plan_sub = plan_parser.add_subparsers(dest="plan_command", required=True)
 
     create_parser = plan_sub.add_parser("create", parents=[global_parent, state_parent])
@@ -957,6 +1014,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     destroy_parser = plan_sub.add_parser("destroy", parents=[global_parent, state_parent])
     destroy_parser.add_argument("files", nargs="*")
+    destroy_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="destroys every resource tracked in the deployment (needs --deployment or @name)",
+    )
     destroy_parser.add_argument("--yes", action="store_true")
     destroy_parser.add_argument("--force", action="store_true")
     destroy_parser.set_defaults(usage_parser=destroy_parser)
@@ -970,9 +1032,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # `aiform plan`'s: none of these plans or applies anything, and none
     # writes state.
     resource_parser = subparsers.add_parser("resource", parents=[global_parent])
-    resource_parser.add_argument(
-        "--deployment", dest="deployment_group", metavar="DEPLOYMENT", type=_deployment_name
-    )
+    resource_parser.add_argument("--deployment", dest="deployment_group", metavar="DEPLOYMENT")
     resource_sub = resource_parser.add_subparsers(dest="resource_command", required=True)
     for verb in ("check", "metrics", "status"):
         verb_parser = resource_sub.add_parser(verb, parents=[global_parent, state_parent])
@@ -1026,6 +1086,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     _resolve_deployment(args.usage_parser, args)
+    if args.command == "plan" and args.plan_command == "destroy":
+        _require_destroy_scope(args.usage_parser, args)
     invoked = argv if argv is not None else sys.argv[1:]
     # split()/rejoin, not a plain " ".join: an arg containing a newline
     # (e.g. --output/--state-file with one in the path) would otherwise

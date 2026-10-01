@@ -90,7 +90,7 @@ cost discipline applies — never on a `pull_request`/`push` trigger.
   on DigitalOcean, and the firewall's **persisted** `depends_on` no longer
   names it. A unit test can assert `_reverse_dependents()` found the pair and
   `_prune_dependents_on()` rewrote the list; it cannot show that the
-  subsequent state-driven cleanup destroy (`plan destroy` with no arguments,
+  subsequent state-driven cleanup destroy (`plan destroy --all`,
   run without `--force`) actually succeeds afterward rather than
   hitting the identical refusal again for a droplet the user just
   deliberately destroyed. It also settles, as a side effect, that
@@ -145,7 +145,7 @@ account doesn't own the system-test zone parent — five steps:
 5. `resource status <zone>` reads `in sync`, asserted positively *in addition
    to* the word "drifted" being absent — the positive form pins the verdict
    rather than the wording of its opposite, and the negative one catches a
-   renamed verdict that still reports drift. Then `plan destroy --yes` and wait
+   renamed verdict that still reports drift. Then `plan destroy --all --deployment default --yes` and wait
    for the zone to be gone.
 
 `test_droplet_ids_reference_publishes_the_droplets_provider_id` (#216, the
@@ -162,7 +162,7 @@ provider_id/firewall case), four steps — skipped outright if the token lacks
    equals `[provider_id]` — settling that the provider itself accepted and
    returned the integer, not merely that aiform sent one.
 4. `plan create --verbose` again: a no-op at zero Anthropic calls for both
-   resources. Then `plan destroy --yes`.
+   resources. Then `plan destroy --all --deployment default --yes`.
 
 `TestReverseDependentDestroyRefusalLive`'s single test (#225) — skipped
 outright if the token lacks `firewall` scope; two droplets and a firewall
@@ -190,8 +190,8 @@ referencing both:
    DigitalOcean, and — the point of the whole test —
    `tracked.resources[firewall_key].depends_on == []`: the forced destroy's
    warning about "dropping the edge" is checked against the persisted
-   state, not just its wording. Then a final, unforced `plan destroy
-   --yes` cleans up what remains and must succeed — it would instead hit
+   state, not just its wording. Then a final, unforced `plan destroy --all --deployment default --yes`
+   cleans up what remains and must succeed — it would instead hit
    the identical refusal a second time, against a droplet the user just
    deliberately destroyed, if the pruning above were only cosmetic.
 

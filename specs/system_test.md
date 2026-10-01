@@ -80,12 +80,12 @@ the curated one — not a separate concept.
   (`aiform/cli.py:264`) is directly assertable.
 - **Cost/cleanup fixture**: a fixture that yields control to the test
   body inside a `try`/`finally`, and in the `finally` clause runs
-  `aiform plan destroy --yes` (or, if nothing was ever created, a
+  `aiform plan destroy --all --deployment default --yes` (or, if nothing was ever created, a
   no-op) against whatever `state.json` exists in `tmp_path` at that
   point — so a droplet is torn down even when an assertion mid-test
   raises. A bare `init` now leaves a `state.json` (#201), so the fixture's
   `state_path.exists()` gate also passes for a test that created nothing
-  and runs one extra no-op `plan destroy` (exit 0, no LLM call). Its scope must match how Behavior's ordered sequence
+  and runs one extra no-op `plan destroy --all --deployment default` (exit 0, no LLM call). Every system-test teardown and destroy-all names `--all --deployment default` (#201): `init` is run without `--deployment`, so the state is named `default`, and `--yes` alone is refused for destroy-all without an explicit deployment. Its scope must match how Behavior's ordered sequence
   (cases 1–9) is implemented: since those cases deliberately share one
   `tmp_path` and one tracked droplet across the whole sequence (see
   Behavior), that entire sequence is **one pytest test function**, with
@@ -228,7 +228,7 @@ independent, in its own test function with its own `tmp_path`.
    makes an LLM call regardless of whether the driver's hash matches.
    Capture this case's new `id` — needed by case 9, after case 8 removes
    it from state.
-8. **`plan destroy --yes`** — plans and applies destroy of the tracked
+8. **`plan destroy --all --deployment default --yes`** — plans and applies destroy of the tracked
    resource; gate #2 fires unconditionally (`PLAN.md` §7: destroy is
    "100% subject to gate #2 by definition") — assert `--verbose`'s
    Anthropic call count is `>= 1` for this run specifically (this is the
@@ -294,7 +294,7 @@ up. This section is the backstop for exactly that case.
 
 ### Design principle: the backstop must not depend on the code under test
 
-The fixture's `finally` clause calls `aiform plan destroy`, which goes
+The fixture's `finally` clause calls `aiform plan destroy --all`, which goes
 through `orchestrator.py` and `drivers/digitalocean/compute.py`'s
 `delete()` — the same code this suite exists to exercise. If *that*
 code is what's broken (the actual failure mode a leak is often evidence

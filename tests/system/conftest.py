@@ -294,7 +294,18 @@ def teardown_tracked_resources(project_dir: Path):
     finally:
         state_path = project_dir / ".aiform" / "state.json"
         if state_path.exists():
-            code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path)])
+            code = cli.main(
+                [
+                    "plan",
+                    "destroy",
+                    "--all",
+                    "--deployment",
+                    "default",
+                    "--yes",
+                    "--state-file",
+                    str(state_path),
+                ]
+            )
             if code != 0:
                 warnings.warn(
                     f"teardown 'plan destroy' exited {code} -- a resource may still be live; "

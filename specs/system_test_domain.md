@@ -401,7 +401,7 @@ each its own teardown instance and destroy the zone after the first.
      confirmation is not skippable by it, so a driver that forced a
      replace fails the apply outright on a non-TTY rather than quietly
      recreating the zone.
-8. **`plan destroy --yes`** — gate #2 fires unconditionally (`PLAN.md` §7:
+8. **`plan destroy --all --deployment default --yes`** — gate #2 fires unconditionally (`PLAN.md` §7:
    destroy is "100% subject to gate #2 by definition"). Assert a
    `--verbose` Anthropic call count `>= 1` **for this invocation
    specifically** — that is the only direct evidence gate #2 ran, since a
@@ -460,7 +460,7 @@ mechanism and not just cosmetics.
 Two layers, same division of labour as the droplet suite:
 
 - **Primary**: `teardown_tracked_resources`, reused unchanged. It runs
-  `plan destroy --yes` against whatever `state.json` exists and is
+  `plan destroy --all --deployment default --yes` against whatever `state.json` exists and is
   resource-kind agnostic, so it already covers the tracked zone. Cases 11
   and 12 deliberately create zones *outside* aiform's state, so each also
   carries its own direct-API `finally`.

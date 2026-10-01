@@ -201,7 +201,8 @@ that gap alongside UX2's original graphical scope.
 
   What *is* deferred, filed as **#201**: the isolation is entirely
   positional. Nothing records which deployment a state file belongs to, so
-  `aiform plan destroy` with no file arguments, run from the wrong
+  `aiform plan destroy` with no file arguments (since #201 that is `--all`,
+  and it needs a declared deployment), run from the wrong
   directory, looks exactly like the run the user intended. Out of scope for
   the phase sequence below, and tracked separately.
 - **Explicit non-goals for v1** — moved to "Non-requirements" below.
