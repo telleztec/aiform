@@ -556,7 +556,19 @@ class TestDomainLifecycleSequence:
         # The call count is the only direct evidence it ran: a regression
         # that silently skipped review_plan() for a destroy-only plan
         # would still leave the zone gone.
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_path),
+                "--verbose",
+            ]
+        )
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 8: plan destroy --yes")
         assert verbose_call_count(captured) >= 1

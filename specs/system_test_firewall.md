@@ -86,7 +86,7 @@ in that change.
 
 ### Cleanup
 
-Two layers. `teardown_tracked_resources` drives a real `plan destroy` in
+Two layers. `teardown_tracked_resources` drives a real `plan destroy --all --deployment default` in
 a `finally`, which is the ordinary path but depends on the code under
 test *and* on a state entry existing. `_sweep_leaked_system_test_firewalls`
 is the independent backstop: it re-implements listing and deletion

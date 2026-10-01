@@ -135,8 +135,8 @@ def prod_state(project) -> Path:
 PLAN_AND_RESOURCE_COMMANDS = [
     ["plan", "create"],
     ["plan", "apply", "--yes"],
-    ["plan", "destroy", "--yes"],
-    ["plan", "destroy"],
+    ["plan", "destroy", "web.aiform.md", "--yes"],
+    ["plan", "destroy", "web.aiform.md"],
     ["plan", "refresh"],
     ["plan", "show"],
     ["resource", "check"],
@@ -405,7 +405,13 @@ def builds(monkeypatch) -> list[tuple[str, list[Path] | None, str]]:
 class TestAtNameShorthand:
     @pytest.mark.parametrize("verb", ["create", "apply", "destroy"])
     def test_at_name_selects_the_deployment_and_is_not_a_file(self, project, builds, verb):
-        cli.main(["plan", verb, "@prod", "--yes"] if verb != "create" else ["plan", verb, "@prod"])
+        argv = {
+            "create": ["plan", "create", "@prod"],
+            "apply": ["plan", "apply", "@prod", "--yes"],
+            "destroy": ["plan", "destroy", "--all", "@prod", "--yes"],
+        }[verb]
+
+        cli.main(argv)
 
         assert builds == [(verb if verb != "apply" else "create", None, "prod")]
 
@@ -452,6 +458,18 @@ class TestAtNameShorthand:
         assert "@prod" in err and "@scratch" in err
         assert builds == []
 
+    def test_two_different_at_names_conflict_on_destroy_with_the_usage_of_that_command(
+        self, project, builds, capsys
+    ):
+        err = destroy_scope_error(capsys, ["plan", "destroy", "@prod", "@scratch"])
+
+        assert (
+            "conflicting deployments: @prod and @scratch; name only one deployment per command"
+            in err
+        )
+        assert "usage: aiform plan destroy " in err
+        assert builds == []
+
     @pytest.mark.parametrize("token", ["@", "@Prod", "@a/b", "@.x", "@-x"])
     def test_a_bad_at_name_is_a_usage_error(self, project, builds, capsys, token):
         with pytest.raises(SystemExit) as caught:
@@ -461,7 +479,7 @@ class TestAtNameShorthand:
         assert "deployment" in capsys.readouterr().err
         assert builds == []
 
-    @pytest.mark.parametrize("command", [["plan", "create"], ["plan", "destroy", "--yes"]])
+    @pytest.mark.parametrize("command", [["plan", "create"], ["plan", "destroy", "--all", "--yes"]])
     def test_an_at_name_that_differs_from_the_state_file_is_refused(
         self, prod_state, reach, capsys, command
     ):
@@ -479,7 +497,6 @@ class TestAtNameShorthand:
         [
             (["plan", "create", "@prod", "--deployment", "scratch"], "usage: aiform plan create "),
             (["plan", "apply", "@Prod"], "usage: aiform plan apply "),
-            (["plan", "destroy", "@prod", "@scratch"], "usage: aiform plan destroy "),
             (
                 ["resource", "check", "@prod/web", "--deployment", "x"],
                 "usage: aiform resource check ",
@@ -587,7 +604,9 @@ class TestResourceAddressing:
 
         assert caught.value.code == 2
         err = capsys.readouterr().err
-        assert "use 1 to 63 lowercase letters, digits, '-' or '_'" in err
+        assert (
+            "Allowed: 1 to 63 characters from a-z, 0-9, '-' or '_', starting with a-z or 0-9" in err
+        )
         assert resource_calls == []
 
     @RESOURCE_VERBS
@@ -765,7 +784,8 @@ class TestDeploymentFlagAtAnyPosition:
         assert caught.value.code == 2
         err = capsys.readouterr().err
         assert "usage: aiform plan create" in err
-        assert "conflicting deployments" in err
+        assert "; name only one deployment per command" in err
+        assert "conflicting deployments: --deployment " in err
         values = [v for v in ("prod", "scratch", "x") if f"--deployment {v}" in err]
         assert len(values) >= 2
         assert builds == []
@@ -827,3 +847,452 @@ class TestDeploymentHelpMetavar:
         assert "--deployment DEPLOYMENT" in text
         assert "DEPLOYMENT_ROOT" not in text
         assert "DEPLOYMENT_GROUP" not in text
+
+
+class FakeStdin:
+    def __init__(self, tty: bool):
+        self.tty = tty
+
+    def isatty(self) -> bool:
+        return self.tty
+
+
+class Applied:
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.confirmations: list[bool] = []
+
+
+@pytest.fixture
+def applied(monkeypatch) -> Applied:
+    """A stand-in for apply_plan that asks for the top-level confirmation like the real one."""
+    seen = Applied()
+
+    def apply_plan(planned, **kwargs):
+        seen.calls.append({"planned": planned, **kwargs})
+        if planned and not kwargs["yes"]:
+            seen.confirmations.append(kwargs["confirm"]("Apply this plan?"))
+        return orchestrator.ApplyResult(executed=[], review_flags=[], aborted=False)
+
+    monkeypatch.setattr(orchestrator, "apply_plan", apply_plan)
+    return seen
+
+
+class Keyboard:
+    def __init__(self, answers: list[str]):
+        self.answers = list(answers)
+        self.prompts: list[str] = []
+        self.events: list[str] = []
+        self.output_at_prompt: list[str] = []
+
+
+@pytest.fixture
+def keyboard(monkeypatch, capsys):
+    def install(answers: list[str], *, tty: bool = True) -> Keyboard:
+        board = Keyboard(answers)
+
+        def fake_input(prompt=""):
+            board.prompts.append(prompt)
+            board.events.append("input")
+            board.output_at_prompt.append(capsys.readouterr().out)
+            if not board.answers:
+                raise AssertionError(f"unexpected prompt {prompt!r}")
+            answer = board.answers.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdin(tty))
+        monkeypatch.setattr(
+            orchestrator.termios, "tcflush", lambda *a: board.events.append("flush")
+        )
+        monkeypatch.setattr("builtins.input", fake_input)
+        return board
+
+    return install
+
+
+@pytest.fixture
+def default_state(project) -> Path:
+    return save_state_named(project, "default")
+
+
+def destroy_scope_error(capsys, argv) -> str:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(argv)
+    assert caught.value.code == 2
+    return capsys.readouterr().err
+
+
+class TestDestroyNeedsFilesOrAll:
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["plan", "destroy"],
+            ["plan", "destroy", "--yes"],
+            ["plan", "destroy", "@prod"],
+            ["plan", "destroy", "--deployment", "prod", "--yes"],
+            ["--deployment", "prod", "plan", "destroy", "--yes"],
+        ],
+        ids=" ".join,
+    )
+    def test_neither_is_a_usage_error_and_nothing_runs(
+        self, prod_state, reach, builds, applied, capsys, argv
+    ):
+        before = prod_state.read_bytes()
+
+        err = destroy_scope_error(capsys, argv)
+
+        assert "usage: aiform plan destroy" in err
+        assert "--all" in err
+        assert builds == [] and applied.calls == []
+        assert prod_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["plan", "destroy", "--all", "web.aiform.md", "--deployment", "prod", "--yes"],
+            ["plan", "destroy", "--all", "@prod", "web.aiform.md"],
+            ["plan", "destroy", "web.aiform.md", "--all"],
+        ],
+        ids=" ".join,
+    )
+    def test_all_together_with_files_is_a_usage_error(
+        self, prod_state, reach, builds, applied, capsys, argv
+    ):
+        err = destroy_scope_error(capsys, argv)
+
+        assert "usage: aiform plan destroy" in err
+        assert "--all" in err
+        assert builds == [] and applied.calls == []
+        assert reach.total() == 0, vars(reach)
+
+    def test_all_with_only_an_at_name_has_no_files_and_is_allowed(
+        self, prod_state, builds, applied
+    ):
+        assert cli.main(["plan", "destroy", "--all", "@prod", "--yes"]) == 0
+
+        assert builds == [("destroy", None, "prod")]
+
+    def test_files_alone_are_unchanged(self, default_state, applied, keyboard):
+        board = keyboard(["y"])
+
+        assert cli.main(["plan", "destroy", "web.aiform.md", "--yes"]) == 0
+        assert cli.main(["plan", "destroy", "web.aiform.md"]) == 0
+
+        assert [len(call["planned"]) for call in applied.calls] == [1, 1]
+        assert board.prompts == ["Apply this plan? (y/n): "]
+
+
+class TestDestroyAllWithAnExplicitDeployment:
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["plan", "destroy", "--all", "--deployment", "prod", "--yes"],
+            ["plan", "destroy", "--deployment", "prod", "--all", "--yes"],
+            ["plan", "--deployment", "prod", "destroy", "--all", "--yes"],
+            ["--deployment", "prod", "plan", "destroy", "--all", "--yes"],
+            ["plan", "destroy", "--all", "@prod", "--yes"],
+            ["plan", "destroy", "@prod", "--yes", "--all"],
+        ],
+        ids=" ".join,
+    )
+    def test_with_yes_it_proceeds_with_no_prompt_of_any_kind(
+        self, prod_state, builds, applied, keyboard, argv
+    ):
+        board = keyboard([])
+
+        assert cli.main(argv) == 0
+
+        assert builds == [("destroy", None, "prod")]
+        assert len(applied.calls) == 1 and applied.calls[0]["yes"] is True
+        assert board.prompts == []
+
+    def test_without_yes_it_goes_straight_to_the_confirmation_naming_what_is_destroyed(
+        self, prod_state, applied, keyboard
+    ):
+        board = keyboard(["y"])
+
+        assert cli.main(["plan", "destroy", "--all", "--deployment", "prod"]) == 0
+
+        assert board.prompts == [
+            f"destroy ALL 1 resources in deployment 'prod' (state file: {prod_state.absolute()})? "
+            "(y/n): "
+        ]
+        assert applied.confirmations == [True]
+
+    def test_declining_the_confirmation_aborts(self, prod_state, applied, keyboard):
+        keyboard(["n"])
+
+        cli.main(["plan", "destroy", "--all", "--deployment", "prod"])
+
+        assert applied.confirmations == [False]
+
+    def test_default_must_be_named_to_count(self, default_state, builds, applied, keyboard):
+        board = keyboard([])
+
+        assert cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"]) == 0
+
+        assert builds == [("destroy", None, "default")]
+        assert board.prompts == []
+
+    def test_a_mismatched_explicit_name_is_still_refused_by_the_state_check(
+        self, prod_state, reach, applied, capsys
+    ):
+        before = prod_state.read_bytes()
+
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "scratch", "--yes"])
+
+        assert code == 2
+        assert "belongs to deployment 'prod', not 'scratch'" in capsys.readouterr().err
+        assert applied.calls == []
+        assert prod_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+
+ALLOWED_TAIL = "Allowed: 1 to 63 characters from a-z, 0-9, '-' or '_', starting with a-z or 0-9"
+UPPERCASE_REASON = f"uppercase letters are not allowed; try 'prod'. {ALLOWED_TAIL}"
+SLASH_REASON = (
+    "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'a-b'. " + ALLOWED_TAIL
+)
+IMPLICIT_LEAD = (
+    "destroy-all needs an explicit deployment so it cannot run against the wrong directory: "
+    "pass --deployment <name>"
+)
+IMPLICIT_WITH_YES = f"{IMPLICIT_LEAD} (--yes does not supply it)"
+IMPLICIT_NON_TTY = f"{IMPLICIT_LEAD} (stdin is not a TTY, so the name cannot be typed)"
+
+
+class TestDestroyAllWithoutAnExplicitDeployment:
+    def test_yes_never_supplies_the_name(self, default_state, reach, builds, applied, capsys):
+        err = destroy_scope_error(capsys, ["plan", "destroy", "--all", "--yes"])
+
+        assert IMPLICIT_WITH_YES in err
+        assert "usage: aiform plan destroy" in err
+        assert builds == [] and applied.calls == []
+        assert reach.total() == 0, vars(reach)
+
+    def test_a_non_tty_cannot_type_the_name(
+        self, default_state, reach, builds, applied, keyboard, capsys
+    ):
+        board = keyboard([], tty=False)
+
+        err = destroy_scope_error(capsys, ["plan", "destroy", "--all"])
+
+        assert IMPLICIT_NON_TTY in err
+        assert builds == [] and applied.calls == []
+        assert board.events == []
+        assert reach.total() == 0, vars(reach)
+
+    def test_a_tty_is_asked_for_the_name_after_the_plan_and_before_apply(
+        self, default_state, applied, keyboard
+    ):
+        board = keyboard(["default", "y"])
+
+        assert cli.main(["plan", "destroy", "--all"]) == 0
+
+        assert board.prompts[0] == (
+            f"This will destroy ALL 1 resources in deployment 'default' "
+            f"(state file: {default_state.absolute()}). Type the deployment name to confirm: "
+        )
+        assert "Plan:" in board.output_at_prompt[0]
+        assert board.prompts[1] == (
+            f"destroy ALL 1 resources in deployment 'default' "
+            f"(state file: {default_state.absolute()})? (y/n): "
+        )
+        assert applied.confirmations == [True]
+
+    def test_the_typed_name_prompt_flushes_the_input_queue_first(
+        self, default_state, applied, keyboard
+    ):
+        board = keyboard(["default", "y"])
+
+        cli.main(["plan", "destroy", "--all"])
+
+        assert board.events == ["flush", "input", "flush", "input"]
+
+    @pytest.mark.parametrize("typed", ["  default  ", "default "])
+    def test_surrounding_whitespace_is_ignored(self, default_state, applied, keyboard, typed):
+        keyboard([typed, "y"])
+
+        assert cli.main(["plan", "destroy", "--all"]) == 0
+
+        assert len(applied.calls) == 1
+
+    @pytest.mark.parametrize(
+        "typed", ["", "   ", "Default", "DEFAULT", "prod", "y", "yes", "defaul"]
+    )
+    def test_a_wrong_or_empty_name_aborts_with_exit_1_and_no_second_chance(
+        self, default_state, reach, applied, keyboard, capsys, typed
+    ):
+        before = default_state.read_bytes()
+        board = keyboard([typed, "default", "y"])
+
+        code = cli.main(["plan", "destroy", "--all"])
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "Aborted" in captured.err + captured.out
+        assert "Nothing was destroyed" in captured.err + captured.out
+        assert len(board.prompts) == 1
+        assert applied.calls == []
+        assert default_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_eof_at_the_name_prompt_aborts_like_an_empty_answer(
+        self, default_state, reach, applied, keyboard, capsys
+    ):
+        before = default_state.read_bytes()
+        board = keyboard([EOFError()])
+
+        code = cli.main(["plan", "destroy", "--all"])
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "Aborted" in captured.err + captured.out
+        assert "Nothing was destroyed" in captured.err + captured.out
+        assert len(board.prompts) == 1
+        assert applied.calls == []
+        assert default_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_a_correct_name_still_faces_the_confirmation(self, default_state, applied, keyboard):
+        keyboard(["default", "n"])
+
+        cli.main(["plan", "destroy", "--all"])
+
+        assert applied.confirmations == [False]
+
+    def test_an_empty_state_has_nothing_to_confirm_by_name(
+        self, project, builds, applied, keyboard
+    ):
+        state.save(state.State(deployment="default"), project / ".aiform" / "state.json")
+        board = keyboard([])
+
+        assert cli.main(["plan", "destroy", "--all"]) == 0
+
+        assert board.prompts == []
+
+    def test_the_count_is_the_number_of_resources_being_destroyed(self, project, applied, keyboard):
+        second = make_entry().model_copy(update={"name": "web-02"})
+        two = {KEY: make_entry(), KEY.replace("web-01", "web-02"): second}
+        path = project / ".aiform" / "state.json"
+        state.save(state.State(deployment="default", resources=two), path)
+        board = keyboard(["default", "n"])
+
+        cli.main(["plan", "destroy", "--all"])
+
+        assert board.prompts[0].startswith("This will destroy ALL 2 resources in deployment ")
+
+
+def explicit(argv: list[str]) -> bool:
+    args = cli._build_parser().parse_args(argv)
+    cli._resolve_deployment(args.usage_parser, args)
+    return args.deployment_explicit
+
+
+class TestDeploymentExplicit:
+    @pytest.mark.parametrize("path", leaf_commands(), ids=" ".join)
+    def test_any_position_is_explicit_even_when_it_names_default(self, path):
+        for position, argv in spellings(path, "default").items():
+            assert explicit(argv) is True, position
+
+    @pytest.mark.parametrize("path", leaf_commands(), ids=" ".join)
+    def test_no_designator_is_not_explicit(self, path):
+        assert explicit(path) is False
+
+    def test_an_at_name_is_explicit(self):
+        assert explicit(["plan", "destroy", "@default"]) is True
+        assert explicit(["resource", "status", "@default/web-01"]) is True
+
+
+class TestRootAndGroupNamesAreCheckedAgainstTheInvokedCommand:
+    @pytest.mark.parametrize(
+        "argv, usage",
+        [
+            (["--deployment", "Prod", "plan", "show"], "usage: aiform plan show "),
+            (["plan", "--deployment", "Prod", "show"], "usage: aiform plan show "),
+            (["plan", "show", "--deployment", "Prod"], "usage: aiform plan show "),
+            (["--deployment", "Prod", "plan", "destroy", "--all"], "usage: aiform plan destroy "),
+            (["--deployment", "Prod", "resource", "status"], "usage: aiform resource status "),
+            (["resource", "--deployment", "a/b", "check"], "usage: aiform resource check "),
+            (["--deployment", "Prod", "init"], "usage: aiform init "),
+        ],
+        ids=" ".join,
+    )
+    def test_a_bad_name_prints_that_commands_usage_not_the_roots(
+        self, project, reach, capsys, argv, usage
+    ):
+        err = destroy_scope_error(capsys, argv)
+
+        assert usage in err
+        assert "usage: aiform [" not in err
+        assert (
+            f"argument --deployment: invalid deployment name 'Prod': {UPPERCASE_REASON}" in err
+            or f"argument --deployment: invalid deployment name 'a/b': {SLASH_REASON}" in err
+        )
+        assert "argument --deployment:" in err
+        assert not (project / ".aiform").exists()
+        assert reach.total() == 0
+
+    def test_a_valid_leaf_does_not_hide_a_bad_root(self, project, reach, capsys):
+        err = destroy_scope_error(
+            capsys, ["--deployment", "Prod", "plan", "show", "--deployment", "prod"]
+        )
+
+        assert "usage: aiform plan show " in err
+        assert f"invalid deployment name 'Prod': {UPPERCASE_REASON}" in err
+
+    def test_a_bad_root_and_a_bad_group_are_both_refused(self, project, reach, capsys):
+        err = destroy_scope_error(
+            capsys, ["--deployment", "Prod", "plan", "--deployment", "Q", "show"]
+        )
+
+        assert "usage: aiform plan show " in err
+        assert "invalid deployment name" in err
+
+    def test_a_good_root_and_group_still_parse(self, project, builds):
+        cli.main(["--deployment", "prod", "plan", "--deployment", "prod", "create"])
+
+        assert builds == [("create", None, "prod")]
+
+
+class TestThreeWayConflict:
+    def test_it_names_all_three_sorted_and_joined_with_and(self, project, builds, capsys):
+        err = destroy_scope_error(
+            capsys,
+            ["--deployment", "c", "plan", "--deployment", "a", "create", "--deployment", "b"],
+        )
+
+        assert (
+            "conflicting deployments: --deployment a and --deployment b and --deployment c"
+            "; name only one deployment per command"
+        ) in err
+        assert "usage: aiform plan create " in err
+        assert builds == []
+
+    def test_an_at_name_joins_the_flags_in_the_sorted_list(self, project, builds, capsys):
+        err = destroy_scope_error(
+            capsys, ["--deployment", "b", "plan", "create", "@a", "--deployment", "c"]
+        )
+
+        assert (
+            "conflicting deployments: --deployment b and --deployment c and @a"
+            "; name only one deployment per command"
+        ) in err
+
+
+class TestDestroyHelp:
+    def test_destroy_usage_lists_all_and_the_deployment_flag(self):
+        parser = cli._build_parser()
+        plan = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        plan_sub = next(
+            a for a in plan.choices["plan"]._actions if isinstance(a, argparse._SubParsersAction)
+        )
+
+        text = plan_sub.choices["destroy"].format_help()
+
+        assert "--all" in text
+        assert "destroys every resource tracked in the deployment" in text
+        assert "--deployment DEPLOYMENT" in text

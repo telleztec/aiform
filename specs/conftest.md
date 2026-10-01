@@ -73,7 +73,7 @@ checks a passing test's output too, not just a failure report.
   `/code-review` on this module's own PR.
 - Multiple `aiform.log.configure()` calls within one test (e.g.
   `test_full_lifecycle`'s sequence of `init`/`plan create`/`plan
-  apply`/`plan destroy`, each a separate `cli.main()` invocation) each
+  apply`/`plan destroy --all`, each a separate `cli.main()` invocation) each
   write a new, distinctly-timestamped file into the same log dir
   (`_rotate_logs` notwithstanding, within `max_files`) — `glob("*.log")`
   on that directory picks up all of them, not just the last.

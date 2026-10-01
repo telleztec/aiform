@@ -229,10 +229,15 @@ note on this.
 
 ### Mechanism A — `aiform plan destroy`
 
-The existing command (§7): `aiform plan destroy [<file>.aiform.md ...] [--yes]`.
+The existing command (§7): `aiform plan destroy (<file>.aiform.md ... | --all) [--yes]`.
 Plans and applies a destroy for every resource named by the given
-file(s) (or every resource currently tracked in state, if none are
-given), 100% subject to gate #2 (review-orchestration-model) by
+file(s), or, with `--all`, every resource currently tracked in state
+(#201: destroy-all is explicit and never the result of omitting the
+files, and `--all` combined with files is refused). Destroy-all also needs
+the deployment declared: an explicit `--deployment <name>` or `@<name>`,
+or, on an interactive terminal, the deployment name typed at a prompt
+that shows the resource count and state-file path; `--yes` never
+satisfies it. Always 100% subject to gate #2 (review-orchestration-model) by
 definition. Once a resource's destroy is verified (see "Verification"
 below), the `.aiform.md` file that named it is moved into
 `.aiform/trash/` (below) — this is what keeps the on-disk configuration
@@ -532,8 +537,8 @@ A file's *absence* from the discovered set is never itself meaningful to the par
 state file belongs to, set by `aiform init --deployment NAME` (`default`
 when the flag is omitted) and checked by `state.load()` on every command that reads state — a
 command run with a different `--deployment` is refused before any provider or
-LLM call. 1 to 63 characters of lowercase letters, digits, hyphen and
-underscore, starting with a letter or digit, so it is safe as a directory
+LLM call. 1 to 63 characters from a-z, 0-9, hyphen and
+underscore (ASCII only), starting with a-z or 0-9, so it is safe as a directory
 name. See `specs/state.md`.
 
 **Fields**:
@@ -1159,8 +1164,8 @@ it doesn't apply. In short: file discovery and frontmatter parsing
 follow the same steps 1-2 as `aiform plan create` (the Intent section
 is never sent to the intent-orchestration-model here — a destroy needs
 no interpretive guidance), but every resource this command targets —
-named explicitly as an argument, every tracked resource if none are
-given (Mechanism A), or discovered via an `AIFORM-DELETE-`-prefixed
+named explicitly as an argument, every tracked resource under
+`--all` (Mechanism A), or discovered via an `AIFORM-DELETE-`-prefixed
 file (Mechanism B) — gets a `destroy` `PlanEntry` directly, skipping
 steps 3-6 (driver-usability checks, refresh, diff, categorization)
 entirely. Per Mechanism A, this command doesn't stop at printing a
@@ -1383,9 +1388,12 @@ aiform plan apply [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>]
     On a successful destroy (either "Resource deletion" mechanism), moves
     the resource's source .aiform.md file into `.aiform/trash/`.
 
-aiform plan destroy [@<name>] [<file>.aiform.md ...] [--yes] [--state-file <path>] [--deployment <name>]
+aiform plan destroy [@<name>] (<file>.aiform.md ... | --all) [--yes] [--state-file <path>] [--deployment <name>]
     Plans a destroy of every resource matching the given file(s) (or
-    all tracked resources if none given), then applies it. 100% subject
+    all tracked resources with --all; neither is a usage error, and so
+    is both), then applies it. --all also needs an explicit
+    --deployment/@name, or the deployment name typed at an interactive
+    prompt; --yes never supplies it. 100% subject
     to gate #2 (review-orchestration-model) by definition. On success, moves each destroyed
     resource's .aiform.md file into `.aiform/trash/` — see "Resource
     deletion".
@@ -1518,7 +1526,7 @@ aiform driver publish [--CSP <csp> --resource-type <type>]
     driver from their local repository without performing this step. 
 ```
 
-Global flags: `--state-file` (default `.aiform/state.json`), `-v`/`--verbose`, `--no-color`.
+Global flags: `--state-file` (default `.aiform/state.json`), `--deployment <name>` (default `default`; also accepted before the group and before the subcommand), `-v`/`--verbose`, `--no-color`.
 
 ## 8. Credentials handling
 
@@ -1656,7 +1664,7 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   their fully-qualified `provider.resource_type.name` key; a
   deterministic topological order over the plan, so dependencies are
   created before dependents; reverse order on destroy, through all three
-  destroy producers including the no-argument destroy-all-from-state
+  destroy producers including the `--all` destroy-all-from-state
   path; cycle detection over the edges a run declares, as a plan-time
   `PlanBlockedError` rather than a silent wrong-order apply; and `plan`
   output showing each resource's edges, so a reordering is reviewable.

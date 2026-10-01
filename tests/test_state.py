@@ -169,6 +169,49 @@ class TestValidateDeploymentName:
         with pytest.raises(ValueError):
             validate_deployment_name(name)
 
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            ("", "must not be empty"),
+            ("a" * 64, "longer than 63 characters"),
+            ("Prod", "uppercase letters are not allowed; try 'prod'"),
+            ("my app", "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'my-app'"),
+            ("a.b", "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'a-b'"),
+            (
+                "caf\u00e9",
+                "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'caf-'",
+            ),
+            ("prod ", "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'prod'"),
+            ("prod\n", "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'prod'"),
+            (" prod", "characters other than a-z, 0-9, '-' and '_' are not allowed; try 'prod'"),
+            ("   ", "characters other than a-z, 0-9, '-' and '_' are not allowed"),
+            ("-prod", "must start with a-z or 0-9"),
+            ("_prod", "must start with a-z or 0-9"),
+            (
+                "My App",
+                "uppercase letters are not allowed, characters other than a-z, 0-9, '-' and '_' "
+                "are not allowed; try 'my-app'",
+            ),
+            ("-Prod", "uppercase letters are not allowed, must start with a-z or 0-9"),
+            ("A" * 64, "longer than 63 characters, uppercase letters are not allowed"),
+        ],
+    )
+    def test_the_message_says_what_is_wrong_and_suggests_only_a_valid_name(self, name, reason):
+        with pytest.raises(ValueError) as caught:
+            validate_deployment_name(name)
+
+        assert str(caught.value) == (
+            f"invalid deployment name {name!r}: {reason}. Allowed: 1 to 63 characters "
+            "from a-z, 0-9, '-' or '_', starting with a-z or 0-9"
+        )
+
+    @pytest.mark.parametrize("name", ["", "a" * 64, "A" * 64, "-Prod", "_x", "-", "   ", "\n"])
+    def test_no_name_is_suggested_when_the_corrected_one_would_still_be_invalid(self, name):
+        with pytest.raises(ValueError) as caught:
+            validate_deployment_name(name)
+
+        assert "try " not in str(caught.value)
+
 
 class TestDeploymentField:
     def test_is_required(self):

@@ -205,7 +205,7 @@ class TestCrossResourceReferenceLive:
         # teardown_tracked_resources destroys both; if the process is killed
         # before that, the droplet's name and the zone's both match what the
         # session sweeps parse.
-        code = cli.main(["plan", "destroy", "--yes"])
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy")
         wait_until_domain_gone(token, zone)
         assert get_domain_or_none(token, zone) is None
@@ -279,7 +279,7 @@ class TestCrossResourceReferenceLive:
         assert verbose_call_count(second_plan) == 0
 
         # Step 4: destroy both.
-        code = cli.main(["plan", "destroy", "--yes"])
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy")
 
 
@@ -408,6 +408,6 @@ class TestReverseDependentDestroyRefusalLive:
         # Destroy everything else that remains. No --force here: F14 found
         # this step blocked (and the firewall plus droplet B left live)
         # when the pruning above didn't happen.
-        code = cli.main(["plan", "destroy", "--yes"])
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy (cleanup)")
         assert get_firewall_or_none(token, tracked.resources[firewall_key].id) is None
