@@ -59,3 +59,13 @@ def test_recorded_ids_are_deleted_when_the_aiform_destroy_raises(
     with pytest.warns(UserWarning, match="raised"):
         live.teardown_provider("token", ledger, _project_with_state(tmp_path))
     assert provider_calls == [("droplet", "11")]
+
+
+def test_firewalls_named_finds_the_deployment_qualified_firewall_and_nothing_else(monkeypatch):
+    listing = [
+        {"id": "a", "name": "aiform-default-fw-1"},
+        {"id": "b", "name": "fw-1"},
+        {"id": "c", "name": "aiform-other-fw-1"},
+    ]
+    monkeypatch.setattr(live, "list_firewalls", lambda token: listing)
+    assert [f["id"] for f in live.firewalls_named("t", "fw-1")] == ["a"]

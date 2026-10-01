@@ -110,7 +110,9 @@ def droplets_named(token, name: str) -> list[dict]:
 
 
 def firewalls_named(token, name: str) -> list[dict]:
-    return [f for f in list_firewalls(token) if f.get("name") == name]
+    # #249: a firewall cannot carry a tag, so aiform creates it as
+    # `aiform-<deployment>-<name>`; every test here runs in "default".
+    return [f for f in list_firewalls(token) if f.get("name") == f"aiform-default-{name}"]
 
 
 def rule_ports(firewall: dict) -> set[str]:
