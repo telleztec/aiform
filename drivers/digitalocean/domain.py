@@ -9,7 +9,7 @@ from collections import defaultdict
 from typing import Any
 
 from aiform.compare import canonical_key
-from aiform.driver import ResourceDriver
+from aiform.driver import DEPLOYMENT_TAG_PREFIX, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 from drivers.digitalocean._common import fetch_all_pages
 
@@ -24,6 +24,7 @@ REQUEST_TIMEOUT_SECONDS = 30
 # propagation to either sink.
 logger = logging.getLogger("aiform.driver.digitalocean.domain")
 
+DEFAULT_ZONE_TTL = 1800
 _RECORD_TYPES = ["A", "AAAA", "CAA", "CNAME", "MX", "NS", "SRV", "TXT"]
 _BASE_FIELDS = frozenset({"type", "name", "data", "ttl"})
 # Scalar type enforcement -- mirrors compute.py's
@@ -247,6 +248,14 @@ class Driver(ResourceDriver):
                         "(e.g. 'www.example.com') instead"
                     )
 
+        if self._is_apex_marker_text(record_type, record["name"], record["data"]):
+            raise ValueError(
+                f"records[{index}]: apex TXT record {record['data']!r} begins "
+                f"{DEPLOYMENT_TAG_PREFIX!r}, which aiform reserves for the zone's "
+                "deployment marker; read() would hide it, leaving it permanently "
+                "missing from the diff"
+            )
+
         if (
             record_type == "NS"
             and record["name"] == "@"
@@ -334,8 +343,23 @@ class Driver(ResourceDriver):
             and self._is_do_managed_ns_data(raw_record.get("data"))
         )
 
+    @staticmethod
+    def _is_apex_marker_text(record_type: str, name: str, data: Any) -> bool:
+        return (
+            record_type == "TXT"
+            and name == "@"
+            and isinstance(data, str)
+            and data.strip('"').startswith(DEPLOYMENT_TAG_PREFIX)
+        )
+
     def _filter_managed(self, raw_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [r for r in raw_records if r["type"] != "SOA" and not self._is_do_managed_ns(r)]
+        return [
+            r
+            for r in raw_records
+            if r["type"] != "SOA"
+            and not self._is_do_managed_ns(r)
+            and not self._is_apex_marker_text(r["type"], r["name"], r.get("data"))
+        ]
 
     def _sort_key(self, record: dict[str, Any]) -> tuple:
         return (
@@ -362,7 +386,18 @@ class Driver(ResourceDriver):
 
         self._request("POST", f"{BASE_URL}/domains", credentials, body={"name": name})
 
-        for record in records:
+        wire_records = list(records)
+        if self._deployment_tag is not None:
+            wire_records.append(
+                {
+                    "type": "TXT",
+                    "name": "@",
+                    "data": self._deployment_tag,
+                    "ttl": self._marker_ttl(records),
+                }
+            )
+
+        for record in wire_records:
             try:
                 self._post_record(name, record, credentials)
             except Exception as exc:
@@ -385,6 +420,15 @@ class Driver(ResourceDriver):
                 raise
 
         return self.read(name, credentials)
+
+    def _marker_ttl(self, records: list[dict[str, Any]]) -> int:
+        # DigitalOcean rewrites an existing RRset's TTL to match a newer
+        # record at the same name and type, so a marker with its own TTL
+        # would show the user's apex TXT as drifted.
+        for record in records:
+            if record["type"] == "TXT" and record["name"] == "@":
+                return record["ttl"]
+        return DEFAULT_ZONE_TTL
 
     def _to_wire_record(self, record: dict[str, Any]) -> dict[str, Any]:
         # The only place a trailing dot is added. Internally (validation,

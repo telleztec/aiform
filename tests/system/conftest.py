@@ -396,8 +396,8 @@ def count_driver_reads(monkeypatch) -> list[str]:
     calls: list[str] = []
     real_load_driver = orchestrator.load_driver
 
-    def counting_load_driver(provider, resource_type):
-        driver = real_load_driver(provider, resource_type)
+    def counting_load_driver(provider, resource_type, reserved_tags=()):
+        driver = real_load_driver(provider, resource_type, reserved_tags=reserved_tags)
         real_read = driver.read
 
         def counting_read(id, credentials):
@@ -1232,7 +1232,9 @@ def _sweep_leaked_system_test_firewalls(_require_live_credentials):
     swept = []
     for firewall in firewalls:
         name = firewall.get("name", "")
-        if not name.startswith(SYSTEM_TEST_FW_PREFIX):
+        # `in`, not startswith: since #249 create() writes
+        # aiform-<deployment>-<name>, so the prefix is no longer first.
+        if SYSTEM_TEST_FW_PREFIX not in name:
             continue
         if SYSTEM_TEST_TAG not in (firewall.get("tags") or []):
             continue

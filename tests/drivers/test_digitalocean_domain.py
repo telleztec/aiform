@@ -2013,3 +2013,205 @@ class TestObservabilityNotImplemented:
     def test_metrics_declines(self, driver):
         with pytest.raises(CapabilityNotSupported):
             driver.metrics(DOMAIN, CREDENTIALS)
+
+
+RESERVED = ("aiform-managed", "aiform:prod")
+MARKER = "aiform:prod"
+
+
+@pytest.fixture
+def tagged_driver() -> Driver:
+    return Driver(reserved_tags=RESERVED)
+
+
+def marker_posts(fake_urlopen) -> list[dict]:
+    return [
+        c
+        for c in fake_urlopen.calls
+        if c["method"] == "POST"
+        and c["url"] == records_url(DOMAIN)
+        and c["body"].get("data") == MARKER
+    ]
+
+
+def script_empty_read_back(fake_urlopen):
+    fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+    fake_urlopen.script(
+        "GET", records_first_page_url(DOMAIN), FakeHTTPResponse(200, {"domain_records": []})
+    )
+
+
+class TestReservedTagsMarkerRecord:
+    """#249: a zone cannot carry a tag, so create() adds an apex TXT marker."""
+
+    def test_create_posts_the_marker_at_the_apex_with_the_default_ttl(
+        self, tagged_driver, fake_urlopen
+    ):
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST", records_url(DOMAIN), FakeHTTPResponse(201, {"domain_record": do_record()})
+        )
+        script_empty_read_back(fake_urlopen)
+
+        tagged_driver.create(DOMAIN, {"records": []}, CREDENTIALS)
+
+        posts = marker_posts(fake_urlopen)
+        assert len(posts) == 1
+        assert posts[0]["body"] == {"type": "TXT", "name": "@", "data": MARKER, "ttl": 1800}
+
+    def test_marker_ttl_matches_the_users_apex_txt_records(self, tagged_driver, fake_urlopen):
+        records = [{"type": "TXT", "name": "@", "data": '"v=spf1 -all"', "ttl": 300}]
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST", records_url(DOMAIN), FakeHTTPResponse(201, {"domain_record": do_record()})
+        )
+        script_empty_read_back(fake_urlopen)
+
+        tagged_driver.create(DOMAIN, {"records": records}, CREDENTIALS)
+
+        assert marker_posts(fake_urlopen)[0]["body"]["ttl"] == 300
+
+    def test_a_non_apex_or_non_txt_record_does_not_set_the_marker_ttl(
+        self, tagged_driver, fake_urlopen
+    ):
+        records = [
+            {"type": "TXT", "name": "_dmarc", "data": '"v=DMARC1"', "ttl": 300},
+            {"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 600},
+        ]
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST", records_url(DOMAIN), FakeHTTPResponse(201, {"domain_record": do_record()})
+        )
+        script_empty_read_back(fake_urlopen)
+
+        tagged_driver.create(DOMAIN, {"records": records}, CREDENTIALS)
+
+        assert marker_posts(fake_urlopen)[0]["body"]["ttl"] == 1800
+
+    def test_create_without_reserved_tags_posts_no_marker(self, driver, fake_urlopen):
+        script_create_zone(fake_urlopen)
+        script_empty_read_back(fake_urlopen)
+
+        driver.create(DOMAIN, {"records": []}, CREDENTIALS)
+
+        assert marker_posts(fake_urlopen) == []
+        assert not [c for c in fake_urlopen.calls if c["url"] == records_url(DOMAIN)]
+
+    def test_marker_post_failure_rolls_the_zone_back(self, tagged_driver, fake_urlopen):
+        script_create_zone(fake_urlopen)
+        fake_urlopen.script(
+            "POST",
+            records_url(DOMAIN),
+            http_error(records_url(DOMAIN), 422, {"message": "nope"}),
+        )
+        fake_urlopen.script("DELETE", domain_url(DOMAIN), FakeHTTPResponse(204, None))
+
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            tagged_driver.create(DOMAIN, {"records": []}, CREDENTIALS)
+
+        assert excinfo.value.code == 422
+        assert any(
+            c["method"] == "DELETE" and c["url"] == domain_url(DOMAIN) for c in fake_urlopen.calls
+        )
+
+    def test_read_drops_the_marker_record(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {
+                    "domain_records": [
+                        do_record(id=1, type="A", name="@", data="203.0.113.10"),
+                        do_record(id=2, type="TXT", name="@", data=MARKER),
+                        do_record(id=3, type="TXT", name="@", data="aiform:other"),
+                    ]
+                },
+            ),
+        )
+
+        result = driver.read(DOMAIN, CREDENTIALS)
+
+        assert result["records"] == [
+            {"type": "A", "name": "@", "data": "203.0.113.10", "ttl": 1800}
+        ]
+
+    def test_read_keeps_a_non_apex_txt_that_merely_starts_with_the_prefix(
+        self, driver, fake_urlopen
+    ):
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {"domain_records": [do_record(id=2, type="TXT", name="www", data="aiform:x")]},
+            ),
+        )
+
+        assert len(driver.read(DOMAIN, CREDENTIALS)["records"]) == 1
+
+    def test_update_never_touches_the_marker_record(self, tagged_driver, fake_urlopen):
+        current = {"id": DOMAIN, "ttl": 1800, "records": []}
+        desired = {"records": []}
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200, {"domain_records": [do_record(id=9, type="TXT", name="@", data=MARKER)]}
+            ),
+        )
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+
+        result = tagged_driver.update(DOMAIN, current, desired, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] in ("PUT", "POST", "DELETE")]
+        assert result["records"] == []
+
+    def test_no_diff_between_a_zone_with_the_marker_and_the_users_records(
+        self, driver, fake_urlopen
+    ):
+        desired = {"records": [{"type": "TXT", "name": "@", "data": '"v=spf1 -all"', "ttl": 300}]}
+        fake_urlopen.script("GET", domain_url(DOMAIN), FakeHTTPResponse(200, do_domain()))
+        fake_urlopen.script(
+            "GET",
+            records_first_page_url(DOMAIN),
+            FakeHTTPResponse(
+                200,
+                {
+                    "domain_records": [
+                        do_record(id=1, type="TXT", name="@", data='"v=spf1 -all"', ttl=300),
+                        do_record(id=2, type="TXT", name="@", data=MARKER, ttl=300),
+                    ]
+                },
+            ),
+        )
+
+        live = driver.read(DOMAIN, CREDENTIALS)
+
+        assert diff_attributes(live, desired, unordered_fields=driver.UNORDERED_FIELDS) == {}
+
+    @pytest.mark.parametrize("data", ["aiform:prod", '"aiform:other"', "aiform:"])
+    def test_create_rejects_a_users_apex_txt_that_looks_like_the_marker(
+        self, tagged_driver, fake_urlopen, data
+    ):
+        records = [{"type": "TXT", "name": "@", "data": data, "ttl": 1800}]
+
+        with pytest.raises(ValueError, match="aiform:"):
+            tagged_driver.create(DOMAIN, {"records": records}, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_update_rejects_a_users_apex_txt_that_looks_like_the_marker(self, driver, fake_urlopen):
+        records = [{"type": "TXT", "name": "@", "data": "aiform:x", "ttl": 1800}]
+
+        with pytest.raises(ValueError, match="aiform:"):
+            driver.update(
+                DOMAIN,
+                {"id": DOMAIN, "ttl": 1800, "records": []},
+                {"records": records},
+                CREDENTIALS,
+            )
+
+        assert fake_urlopen.calls == []

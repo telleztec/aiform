@@ -2,9 +2,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any
 
 from aiform.models import HealthReport, Sample
+
+AIFORM_MANAGED_TAG = "aiform-managed"
+DEPLOYMENT_TAG_PREFIX = "aiform:"
+
+
+def reserved_tags(deployment: str) -> tuple[str, str]:
+    return (AIFORM_MANAGED_TAG, f"{DEPLOYMENT_TAG_PREFIX}{deployment}")
+
+
+def is_reserved_tag(tag: str) -> bool:
+    return tag == AIFORM_MANAGED_TAG or tag.startswith(DEPLOYMENT_TAG_PREFIX)
 
 
 class DriverUpdateNotSupported(Exception):
@@ -110,6 +122,31 @@ class ResourceDriver(ABC):
     # place, or it corrupts every other driver still inheriting the
     # base's empty list.
     UNORDERED_FIELDS: list[str] = []
+
+    # specs/resource_tagging.md. Stripping and rejecting depend only on
+    # is_reserved_tag(), not on what this instance was given, so a driver
+    # built without tags (observability, a test) still never leaks one
+    # into read()'s output.
+    def __init__(self, reserved_tags: Sequence[str] = ()) -> None:
+        self.reserved_tags: tuple[str, ...] = tuple(reserved_tags)
+        self._deployment_tag: str | None = next(
+            (t for t in self.reserved_tags if t.startswith(DEPLOYMENT_TAG_PREFIX)), None
+        )
+
+    def _reject_reserved_tags(self, requested_tags: Sequence[str]) -> None:
+        for tag in requested_tags:
+            if is_reserved_tag(tag):
+                raise ValueError(
+                    f"tag {tag!r} is reserved: aiform adds {AIFORM_MANAGED_TAG!r} and "
+                    f"'{DEPLOYMENT_TAG_PREFIX}<deployment>' itself, remove it from 'tags'"
+                )
+
+    def _tags_for_create(self, requested_tags: Sequence[str]) -> list[str]:
+        self._reject_reserved_tags(requested_tags)
+        return [*requested_tags, *self.reserved_tags]
+
+    def _tags_for_attributes(self, live_tags: Sequence[str]) -> list[str]:
+        return [t for t in live_tags if not is_reserved_tag(t)]
 
     @abstractmethod
     def create(

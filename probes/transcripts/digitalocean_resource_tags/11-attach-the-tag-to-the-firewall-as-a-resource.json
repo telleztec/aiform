@@ -1,0 +1,31 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 385,
+ "note": "attach the tag to the firewall as a resource",
+ "prediction": {
+  "notes": "firewall is not a taggable resource_type",
+  "status": 422
+ },
+ "prediction_matched": false,
+ "probed_at": "2026-10-01T19:12:30.828326+00:00",
+ "request": {
+  "body": {
+   "resources": [
+    {
+     "resource_id": "a9a81a88-e411-4065-a44c-2ec12a43dd95",
+     "resource_type": "firewall"
+    }
+   ]
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/tags/aiform:tagprobe-4742f0/resources"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 11
+}

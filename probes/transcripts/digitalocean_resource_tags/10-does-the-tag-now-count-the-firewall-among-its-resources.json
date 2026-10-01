@@ -1,0 +1,48 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 267,
+ "note": "does the tag now count the firewall among its resources",
+ "prediction": {
+  "notes": "resources.count stays 0 if `tags` on a firewall is only a selector",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:30.559866+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/tags/aiform:tagprobe-4742f0"
+ },
+ "response": {
+  "body": {
+   "tag": {
+    "name": "aiform:tagprobe-4742f0",
+    "resources": {
+     "count": 1,
+     "databases": {
+      "count": 0
+     },
+     "droplets": {
+      "count": 1,
+      "last_tagged_uri": "https://api.digitalocean.com/v2/droplets/1"
+     },
+     "images": {
+      "count": 0
+     },
+     "last_tagged_uri": "https://api.digitalocean.com/v2/droplets/1",
+     "volume_snapshots": {
+      "count": 0
+     },
+     "volumes": {
+      "count": 0
+     }
+    }
+   }
+  },
+  "status": 200
+ },
+ "seq": 10
+}

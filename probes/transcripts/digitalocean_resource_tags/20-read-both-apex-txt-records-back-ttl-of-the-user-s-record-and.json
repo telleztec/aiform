@@ -1,0 +1,55 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 259,
+ "note": "read both apex TXT records back: ttl of the user's record, and the marker value",
+ "prediction": {
+  "notes": "domain.py records that DigitalOcean silently rectifies a mismatched ttl across an RRset; the first record's ttl is expected to read 300 now. The marker's data is expected verbatim, colon and all",
+  "status": 200
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:33.690075+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/domains/systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com/records?type=TXT"
+ },
+ "response": {
+  "body": {
+   "domain_records": [
+    {
+     "data": "user-owned-text",
+     "flags": null,
+     "id": 1834110347,
+     "name": "@",
+     "port": null,
+     "priority": null,
+     "tag": null,
+     "ttl": 300,
+     "type": "TXT",
+     "weight": null
+    },
+    {
+     "data": "aiform:prod",
+     "flags": null,
+     "id": 1834110348,
+     "name": "@",
+     "port": null,
+     "priority": null,
+     "tag": null,
+     "ttl": 300,
+     "type": "TXT",
+     "weight": null
+    }
+   ],
+   "links": {},
+   "meta": {
+    "total": 2
+   }
+  },
+  "status": 200
+ },
+ "seq": 20
+}

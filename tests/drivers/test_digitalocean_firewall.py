@@ -963,3 +963,72 @@ class TestObservabilityNotImplemented:
     def test_metrics_declines(self, driver):
         with pytest.raises(CapabilityNotSupported):
             driver.metrics(firewall_id(), CREDENTIALS)
+
+
+class TestDeploymentNameInTheFirewallName:
+    """#249: a firewall cannot carry a tag, so the deployment goes in its name."""
+
+    @pytest.mark.parametrize(
+        ("reserved", "expected"),
+        [
+            (("aiform-managed", "aiform:prod"), "aiform-prod-web-firewall"),
+            (("aiform-managed", "aiform:default"), "aiform-default-web-firewall"),
+            (("aiform-managed", "aiform:my_stack"), "aiform-my-stack-web-firewall"),
+        ],
+    )
+    def test_create_posts_the_deployment_qualified_name(self, fake_urlopen, reserved, expected):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        Driver(reserved_tags=reserved).create(NAME, minimal_params(), CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["name"] == expected
+
+    def test_create_without_reserved_tags_keeps_the_plain_name(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        driver.create(NAME, minimal_params(), CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["name"] == NAME
+
+    def test_create_sends_no_tags_field_beyond_the_users_selector(self, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        Driver(reserved_tags=("aiform-managed", "aiform:prod")).create(
+            NAME, minimal_params(), CREDENTIALS
+        )
+
+        assert fake_urlopen.calls[0]["body"]["tags"] == []
+
+    def test_a_reserved_tag_in_the_droplet_selector_is_accepted(self, fake_urlopen):
+        params = {**minimal_params(), "tags": ["aiform:prod"]}
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        Driver(reserved_tags=("aiform-managed", "aiform:prod")).create(NAME, params, CREDENTIALS)
+
+        assert fake_urlopen.calls[0]["body"]["tags"] == ["aiform:prod"]
+
+    def test_update_keeps_the_live_name(self, fake_urlopen):
+        fake_urlopen.script(
+            "PUT", firewall_url(firewall_id()), FakeHTTPResponse(200, created_payload())
+        )
+        script_read(fake_urlopen)
+        current = {**driver_current(), "name": "created-before-this-change"}
+
+        Driver(reserved_tags=("aiform-managed", "aiform:prod")).update(
+            firewall_id(), current, minimal_params(), CREDENTIALS
+        )
+
+        assert fake_urlopen.calls[0]["body"]["name"] == "created-before-this-change"
+
+    def test_read_returns_the_live_name_untouched(self, fake_urlopen):
+        script_read(fake_urlopen)
+
+        result = Driver(reserved_tags=("aiform-managed", "aiform:prod")).read(
+            firewall_id(), CREDENTIALS
+        )
+
+        assert result["name"] == created_payload()["firewall"]["name"]

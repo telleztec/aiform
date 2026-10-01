@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 from aiform import log
-from aiform.driver import ResourceDriver
+from aiform.driver import DEPLOYMENT_TAG_PREFIX, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
@@ -424,11 +424,24 @@ class Driver(ResourceDriver):
 
     # --- ResourceDriver ---------------------------------------------
 
+    def _name_with_deployment(self, name: str) -> str:
+        # A firewall cannot carry a tag (probe session
+        # digitalocean_resource_tags: the attach is a silent 204 no-op), so
+        # the deployment goes in the name. DigitalOcean rejects '_' in a
+        # firewall name, hence the lossy mapping; only create() uses this.
+        if self._deployment_tag is None:
+            return name
+        deployment = self._deployment_tag.removeprefix(DEPLOYMENT_TAG_PREFIX).replace("_", "-")
+        return f"aiform-{deployment}-{name}"
+
     def create(self, name: str, params: dict[str, Any], credentials: dict[str, str]):
         self._validate_params(params)
         try:
             payload = self._request(
-                "POST", f"{BASE_URL}/firewalls", credentials, body=self._wire_body(name, params)
+                "POST",
+                f"{BASE_URL}/firewalls",
+                credentials,
+                body=self._wire_body(self._name_with_deployment(name), params),
             )
         except urllib.error.HTTPError as exc:
             self._fold_do_error_into_exc(exc)

@@ -1,0 +1,40 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 323,
+ "note": "a firewall name of 256 characters",
+ "prediction": {
+  "status": 422
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:36.243922+00:00",
+ "request": {
+  "body": {
+   "inbound_rules": [
+    {
+     "ports": "22",
+     "protocol": "tcp",
+     "sources": {
+      "addresses": [
+       "0.0.0.0/0"
+      ]
+     }
+    }
+   ],
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/firewalls"
+ },
+ "response": {
+  "body": {
+   "id": "unprocessable_entity",
+   "message": "invalid name",
+   "request_id": "a13759ea-9dcb-40c1-a57c-5455a40621a3"
+  },
+  "status": 422
+ },
+ "seq": 28
+}

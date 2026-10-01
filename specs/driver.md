@@ -172,28 +172,32 @@ in Behavior below.
   as `.unsupported_fields == []`; the module doesn't distinguish "caller
   passed an empty list" from "caller passed nothing."
 
-## Addendum: marker-tag helpers (`specs/resource_tagging.md`, not yet implemented)
+## Addendum: reserved tags (`specs/resource_tagging.md`, #249)
 
-`specs/resource_tagging.md` adds a module-level constant,
-`AIFORM_MANAGED_TAG = "aiform-managed"`, and two concrete (non-abstract)
-methods to `ResourceDriver`:
+`aiform/driver.py` adds `AIFORM_MANAGED_TAG = "aiform-managed"`,
+`DEPLOYMENT_TAG_PREFIX = "aiform:"`, `reserved_tags(deployment)` (returns
+`(AIFORM_MANAGED_TAG, "aiform:<deployment>")`) and `is_reserved_tag(tag)`
+(exactly `aiform-managed`, or any string starting `aiform:`).
+
+`ResourceDriver` gains a constructor and three concrete (non-abstract)
+methods; this file's Interface block above shows only the abstract four:
 
 ```python
-def _tags_for_create(self, requested_tags: list[str]) -> list[str]: ...
-def _tags_for_attributes(self, live_tags: list[str]) -> list[str]: ...
+def __init__(self, reserved_tags: Sequence[str] = ()) -> None: ...
+def _reject_reserved_tags(self, requested_tags: Sequence[str]) -> None: ...
+def _tags_for_create(self, requested_tags: Sequence[str]) -> list[str]: ...
+def _tags_for_attributes(self, live_tags: Sequence[str]) -> list[str]: ...
 ```
 
-Per `CLAUDE.md`'s "follow the `ResourceDriver` interface in `PLAN.md`
-§4 exactly," `PLAN.md` §4's code block has been updated to include
-them, and this file's Interface code block above should be updated to
-match at implementation time. Not done as part of that spec or this one
-— this addendum exists so a reader of this file doesn't miss that the
-contract is about to grow, and isn't misled into thinking the four
-abstract methods above are still the whole story. See
-`specs/resource_tagging.md`'s Behavior/Edge cases sections for what
-these two methods do, when a driver should call them, and why they're
-concrete rather than abstract (no flag gates them — a driver opts in by
-calling them from its own methods, or doesn't).
+The orchestrator computes `reserved_tags(st.deployment)` and passes it to the
+driver it loads (`orchestrator.load_driver(..., reserved_tags=...)`); the base
+class stores it as `self.reserved_tags` and `self._deployment_tag` (the one
+starting `aiform:`, or `None`). `_tags_for_create` raises `ValueError` naming a
+reserved tag in the requested list, else appends `self.reserved_tags`;
+`_tags_for_attributes` removes every reserved tag. A driver built with no
+reserved tags (the default) attaches none, and still rejects and strips.
+What each resource kind does with them (tag, name, TXT marker) is
+`specs/resource_tagging.md`.
 
 ## Out of scope
 

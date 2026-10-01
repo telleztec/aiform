@@ -1,0 +1,41 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 257,
+ "note": "a user's own apex TXT record, ttl 1800",
+ "prediction": {
+  "status": 201
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-01T19:12:33.179413+00:00",
+ "request": {
+  "body": {
+   "data": "user-owned-text",
+   "name": "@",
+   "ttl": 1800,
+   "type": "TXT"
+  },
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "POST",
+  "url": "https://api.digitalocean.com/v2/domains/systest-20261001t191232z-c9e3a7-tagprobe.cloudaiform.com/records"
+ },
+ "response": {
+  "body": {
+   "domain_record": {
+    "data": "user-owned-text",
+    "flags": null,
+    "id": 1834110347,
+    "name": "@",
+    "port": null,
+    "priority": null,
+    "tag": null,
+    "ttl": 1800,
+    "type": "TXT",
+    "weight": null
+   }
+  },
+  "status": 201
+ },
+ "seq": 18
+}
