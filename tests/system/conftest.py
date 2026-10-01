@@ -1215,7 +1215,9 @@ def _sweep_leaked_system_test_firewalls(_require_live_credentials):
     swept = []
     for firewall in firewalls:
         name = firewall.get("name", "")
-        if not name.startswith(SYSTEM_TEST_FW_PREFIX):
+        # `in`, not startswith: since #249 create() writes
+        # aiform-<deployment>-<name>, so the prefix is no longer first.
+        if SYSTEM_TEST_FW_PREFIX not in name:
             continue
         if SYSTEM_TEST_TAG not in (firewall.get("tags") or []):
             continue

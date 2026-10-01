@@ -134,6 +134,13 @@ class TestFullLifecycleSequence:
         assert st.resources[key].attributes["region"] == live["region"]["slug"]
         assert st.resources[key].attributes["size"] == live["size_slug"]
 
+        # #249: both reserved tags are on the droplet, and neither reached
+        # state (read() strips them, so the plans above stayed no-ops).
+        assert {"aiform-managed", "aiform:default"} <= set(live["tags"]), live["tags"]
+        tracked_tags = st.resources[key].attributes["tags"]
+        assert "aiform-managed" not in tracked_tags
+        assert "aiform:default" not in tracked_tags
+
         # Case 6a: in-place update (size only).
         write_aiform_md(project_dir, name=name, size=ALTERNATE_SIZE)
         code = cli.main(["plan", "create", "--state-file", str(state_path)])
@@ -177,7 +184,10 @@ class TestFullLifecycleSequence:
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert str(live["id"]) == droplet_id  # in-place: the droplet survives
-        assert sorted(live["tags"]) == sorted([SYSTEM_TEST_TAG, IN_PLACE_TAG])
+        # The reserved tags survive a tags-only update (#249).
+        assert sorted(live["tags"]) == sorted(
+            [SYSTEM_TEST_TAG, IN_PLACE_TAG, "aiform-managed", "aiform:default"]
+        )
         assert state.load(state_path, deployment="default").resources[key].id == droplet_id
 
         # And it must converge. `tags` is compared as a list, so if DO ever

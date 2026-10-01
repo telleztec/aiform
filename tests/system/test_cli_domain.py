@@ -140,10 +140,20 @@ def _is_do_managed_ns(record: dict) -> bool:
     )
 
 
+def _is_marker(record: dict) -> bool:
+    return (
+        record["type"] == "TXT"
+        and record["name"] == "@"
+        and str(record.get("data") or "").strip('"').startswith("aiform:")
+    )
+
+
 def _managed(records: list[dict]) -> list[dict]:
     """The records a user manages -- what read() should report, i.e.
-    everything DO did not create for itself."""
-    return [r for r in records if r["type"] != "SOA" and not _is_do_managed_ns(r)]
+    everything DO did not create for itself, and not the #249 marker."""
+    return [
+        r for r in records if r["type"] != "SOA" and not _is_do_managed_ns(r) and not _is_marker(r)
+    ]
 
 
 def _record_identity(record: dict) -> tuple:
@@ -263,6 +273,14 @@ class TestDomainLifecycleSequence:
 
         live_records = list_domain_records(token, zone)
 
+        # #249: a zone cannot carry a tag, so create() wrote an apex TXT
+        # marker. It must be live, must share the user's apex TXT ttl (DO
+        # rectifies an RRset's ttl), and must not have reached state.
+        marker = _find_live(live_records, type="TXT", name="@", data="aiform:default")
+        assert marker["ttl"] == TTL
+        user_txt = _find_live(live_records, type="TXT", name="@", data="v=spf1 -all")
+        assert user_txt["ttl"] == TTL, "the marker's ttl rectified the user's TXT record"
+
         # The dot asymmetry. Every _FQDN_TYPES record above was written
         # dotless; DO requires the dot on the wire but must return the
         # value without one, or the dotless canonical form the user wrote
@@ -346,7 +364,7 @@ class TestDomainLifecycleSequence:
         assert delegated["data"] == "ns1.digitalocean.com"
 
         # TXT stored verbatim, quotes and all.
-        txt = _find_live(live_records, type="TXT", name="@")
+        txt = _find_live(_managed(live_records), type="TXT", name="@")
         assert txt["data"] == '"v=spf1 include:_spf.example.com -all"', (
             f"expected TXT data stored verbatim, got {txt['data']!r}"
         )
@@ -437,7 +455,8 @@ class TestDomainLifecycleSequence:
         assert "(likely replace)" not in captured.out
 
         live_records = list_domain_records(token, zone)
-        assert not [r for r in live_records if r["type"] == "TXT"]
+        assert not [r for r in _managed(live_records) if r["type"] == "TXT"]
+        _find_live(live_records, type="TXT", name="@", data="aiform:default")  # marker survives
         surviving_mx = _find_live(live_records, type="MX", data="mail.example.com")
         assert surviving_mx["id"] == mx_id, "the untouched MX record was recreated"
         assert _find_live(live_records, type="MX", data="mail2.example.com")["priority"] == 20

@@ -126,6 +126,12 @@ class TestFirewallLifecycle:
         live = get_firewall_or_none(token, firewall_id)
         assert live is not None, "firewall was not created on DigitalOcean's side"
 
+        # #249: a firewall cannot carry a tag, so the deployment name is
+        # in the name instead.
+        assert live["name"] == f"aiform-default-{name}", (
+            f"expected the deployment-qualified firewall name, got {live['name']!r}"
+        )
+
         # The premise this whole suite rests on: nothing was attached, so
         # nothing can have been affected.
         assert live["droplet_ids"] == [], (
