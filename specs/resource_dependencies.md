@@ -1038,8 +1038,8 @@ describe declared ordering intent rather than what was built, a later `plan`
 re-syncs them from the file, and it is what makes the adopt-only case work at
 all.
 
-The consequence lands on exactly one invocation: **`aiform plan destroy` with
-no file arguments.** That form reads `StateEntry.depends_on`, so a
+The consequence lands on exactly one invocation: **`aiform plan destroy --all`
+(destroy-all, no file arguments).** That form reads `StateEntry.depends_on`, so a
 `depends_on` edit made since the last `plan` is not reflected — run `plan`
 first and it is. Every other producer reads the current frontmatter and is
 never stale: `plan destroy <files>` builds its edges from
@@ -1212,8 +1212,8 @@ one.
 
 - **Live, the retrofit case** — added after review found the check above cannot
   see it. Apply the three files *without* `depends_on`, then add `depends_on`
-  to the already-tracked `app-01` and run `plan` again, then `plan destroy`
-  with no arguments. Every resource in the first check is brand new, so it
+  to the already-tracked `app-01` and run `plan` again, then `plan destroy --all
+  --deployment <name> --yes`. Every resource in the first check is brand new, so it
   reaches state through `_new_state_entry()`; adopting `depends_on` on a
   tracked file is a NO_OP and takes an entirely different path, which is
   exactly where it was found broken. A check that only ever creates fresh

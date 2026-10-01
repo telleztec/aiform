@@ -2963,8 +2963,8 @@ class TestBuildDestroyPlan:
             )
 
     def test_state_driven_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
-        # The invocation a user actually types: `aiform plan destroy`, no
-        # file arguments -- reads StateEntry.depends_on since there are no
+        # The invocation a user actually types: `aiform plan destroy --all`,
+        # no file arguments -- reads StateEntry.depends_on since there are no
         # files to read frontmatter from.
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
