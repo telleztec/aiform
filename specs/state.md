@@ -76,12 +76,13 @@ The `ValueError` message is
 | starts with `-` or `_` | `must start with a-z or 0-9` |
 
 A correction is appended as `; try {suggestion!r}` (before the full stop) only
-when one exists: the name lowercased with every character outside `a-z0-9_-`
-replaced by `-`, offered only if that string itself passes the rule. It is never
-offered for empty or over-long input, or when the first character is still `-`
+when one exists: the name with surrounding whitespace stripped, lowercased, and every
+character outside `a-z0-9_-` replaced by `-`, offered only if that string itself passes the rule. It is never
+offered for empty or over-long input, for whitespace-only input, or when the first character is still `-`
 or `_` (`-Prod`), so the message never suggests a name that would be refused.
 Examples: `'Prod'` gives `uppercase letters are not allowed; try 'prod'`;
 `'my app'` gives `characters other than a-z, 0-9, '-' and '_' are not allowed; try 'my-app'`;
+`'prod '`, `'prod\n'` and `' prod'` each suggest `'prod'`, never `'prod-'`;
 `'-prod'` gives `must start with a-z or 0-9` with no suggestion. The allowed
 list says "characters from a-z, 0-9, ..." rather than "lowercase letters,
 digits, ...", because the earlier phrasing read as "1 to 63 letters"; ASCII-only

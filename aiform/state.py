@@ -41,7 +41,7 @@ def _deployment_name_problems(name: str) -> list[str]:
 def validate_deployment_name(name: str) -> str:
     if not _DEPLOYMENT_NAME.fullmatch(name):
         reasons = ", ".join(_deployment_name_problems(name))
-        suggestion = re.sub(r"[^a-z0-9_-]", "-", name.lower())
+        suggestion = re.sub(r"[^a-z0-9_-]", "-", name.strip().lower())
         if _DEPLOYMENT_NAME.fullmatch(suggestion):
             reasons += f"; try {suggestion!r}"
         raise ValueError(
