@@ -682,7 +682,8 @@ errors, so all of them behave and are tested the same way:
    `len(planned)` and the path is `args.state_file.absolute()` (the form
    `DeploymentMismatchError` already uses). The answer, stripped of surrounding
    whitespace, must equal `X` exactly and case-sensitively. Anything else,
-   including an empty answer, prints `Aborted: ... Nothing was destroyed.` and
+   including an empty answer or end-of-file (Ctrl-D; `read_answer` returns EOF as
+   an empty answer), prints `Aborted: ... Nothing was destroyed.` and
    returns exit 1 with zero Anthropic calls; there is no re-prompt, because a
    second chance is a second keystroke habit. A correct name falls through to
    step 3 and its `(y/n)` (or none under `--yes`; `--yes` is refused above

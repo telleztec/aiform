@@ -5187,11 +5187,33 @@ class TestReadAnswer:
 
         assert orchestrator.read_answer("? ") == "answer"
 
+    def test_eof_is_an_empty_answer_not_a_traceback(self, monkeypatch):
+        def closed(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: None)
+        monkeypatch.setattr("builtins.input", closed)
+
+        assert orchestrator.read_answer("? ") == ""
+
+    def test_eof_at_a_yes_no_prompt_counts_as_no(self, monkeypatch):
+        asked = []
+
+        def closed(prompt=""):
+            asked.append(prompt)
+            assert len(asked) < 3, "default_confirm looped on EOF"
+            raise EOFError
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: None)
+        monkeypatch.setattr("builtins.input", closed)
+
+        assert orchestrator.default_confirm("Apply this plan?") is False
+
     def test_default_confirm_reads_through_it_once_per_attempt(self, monkeypatch):
         prompts = []
         answers = iter(["maybe", "y"])
         monkeypatch.setattr(
-            orchestrator, "read_answer", lambda prompt: prompts.append(prompt) or next(answers)
+            orchestrator, "_read_input", lambda prompt: prompts.append(prompt) or next(answers)
         )
 
         assert orchestrator.default_confirm("Apply this plan?") is True

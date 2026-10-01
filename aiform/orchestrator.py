@@ -1014,7 +1014,7 @@ class ApplyResult:
     aborted: bool
 
 
-def read_answer(prompt: str) -> str:
+def _read_input(prompt: str) -> str:
     # Gate #2's review call takes tens of seconds with nothing on screen, so a
     # keystroke typed during it is already queued in the terminal when the
     # prompt finally appears, and input() would take it as the answer to a
@@ -1033,9 +1033,19 @@ def read_answer(prompt: str) -> str:
     return input(prompt)
 
 
+def read_answer(prompt: str) -> str:
+    try:
+        return _read_input(prompt)
+    except EOFError:
+        return ""
+
+
 def default_confirm(prompt: str) -> bool:
     while True:
-        answer = read_answer(f"{prompt} (y/n): ").strip().lower()
+        try:
+            answer = _read_input(f"{prompt} (y/n): ").strip().lower()
+        except EOFError:
+            return False
         if answer == "y":
             return True
         if answer == "n":

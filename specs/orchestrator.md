@@ -886,20 +886,25 @@ for its caller.
    #182). A non-tty stdin has nothing to flush, and a failed flush never
    blocks the confirmation itself.
    The flush-then-`input()` part is its own function,
-   `read_answer(prompt: str) -> str`: it flushes (best-effort, as above), then
-   returns `input(prompt)` untouched. `default_confirm` calls it once per
-   attempt, with `{prompt} (y/n): `, and does the `y`/`n` interpretation
-   itself. It is public because `aiform/cli.py`'s typed-deployment-name prompt
-   for `plan destroy --all` (`specs/cli.md`) is the second caller: a second
-   copy of the flush is exactly how the #163/#182 protection would drift, and
-   a destroy-all prompt answered by a stray queued keystroke is the failure
-   it exists to prevent. `default_confirm`'s behaviour is unchanged.
+   `_read_input(prompt: str) -> str`: it flushes (best-effort, as above), then
+   returns `input(prompt)` untouched, so `EOFError` propagates from it.
+   `default_confirm` calls it once per attempt, with `{prompt} (y/n): `, does
+   the `y`/`n` interpretation itself, and returns `False` on `EOFError`
+   (Ctrl-D, or stdin closed under the prompt): EOF is "no", the fail-safe,
+   never an approval, never a traceback and never an endless re-ask.
+   The public `read_answer(prompt: str) -> str` is `_read_input` with EOF
+   returned as an empty answer instead of raised. It is public because
+   `aiform/cli.py`'s typed-deployment-name prompt for `plan destroy --all`
+   (`specs/cli.md`) is the second caller: a second copy of the flush is
+   exactly how the #163/#182 protection would drift, and a destroy-all prompt
+   answered by a stray queued keystroke is the failure it exists to prevent.
+   The typed-name prompt treats the empty answer like any other wrong answer
+   (abort, exit 1). `default_confirm`'s behaviour is unchanged apart from EOF.
    This only ever loops against a real TTY: `aiform/cli.py`'s `_confirm`
    raises `RuntimeError` before calling `default_confirm` at all when
    `sys.stdin` isn't one (see "Confirmation and non-interactive runs" in
-   `specs/cli.md`). Called directly against exhausted stdin, it raises
-   `EOFError` from `input()` instead of looping forever or picking a
-   default — left to propagate, deliberately.
+   `specs/cli.md`). Called directly against exhausted stdin, it returns `False` (see above)
+   instead of looping forever or picking a default of yes.
    `termios` is POSIX-only, so importing this module — and therefore
    `aiform.cli` — now requires a POSIX platform. That is a deliberate
    narrowing, not an oversight: macOS and Linux are the only platforms

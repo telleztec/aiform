@@ -883,7 +883,10 @@ def keyboard(monkeypatch, capsys):
             board.output_at_prompt.append(capsys.readouterr().out)
             if not board.answers:
                 raise AssertionError(f"unexpected prompt {prompt!r}")
-            return board.answers.pop(0)
+            answer = board.answers.pop(0)
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
 
         monkeypatch.setattr(cli.sys, "stdin", FakeStdin(tty))
         monkeypatch.setattr(
@@ -1101,6 +1104,23 @@ class TestDestroyAllWithoutAnExplicitDeployment:
     ):
         before = default_state.read_bytes()
         board = keyboard([typed, "default", "y"])
+
+        code = cli.main(["plan", "destroy", "--all"])
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "Aborted" in captured.err + captured.out
+        assert "Nothing was destroyed" in captured.err + captured.out
+        assert len(board.prompts) == 1
+        assert applied.calls == []
+        assert default_state.read_bytes() == before
+        assert reach.total() == 0, vars(reach)
+
+    def test_eof_at_the_name_prompt_aborts_like_an_empty_answer(
+        self, default_state, reach, applied, keyboard, capsys
+    ):
+        before = default_state.read_bytes()
+        board = keyboard([EOFError()])
 
         code = cli.main(["plan", "destroy", "--all"])
 
