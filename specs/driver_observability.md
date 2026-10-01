@@ -1322,8 +1322,9 @@ what naming a resource, or not, already said.
 `--all`.
 
 **Reasoning.** `plan refresh`, `plan show` and `plan create` all operate on
-everything when given no arguments, and `plan destroy` does too while being
-destructive; a read-only command needing a flag to do what its siblings do by
+everything when given no arguments; `plan destroy` used to as well, and since
+#201 it needs `--all` precisely because it is destructive, which is the reason
+it differs and is not a precedent for this command; a read-only command needing a flag to do what its siblings do by
 default is the inconsistency. Keeping `--all` as a synonym would be a second
 spelling of one meaning — what `specs/driver.md`'s "one writable spelling per
 value" addendum warns against for driver fields, applied to the CLI.

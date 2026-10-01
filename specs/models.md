@@ -358,7 +358,7 @@ class StateEntry(BaseModel):
 
 `depends_on` is defaulted so a `state.json` written before this field
 existed loads unchanged. It records the dependencies **as of the last
-apply**, which is what lets `aiform plan destroy` with no file arguments
+apply**, which is what lets `aiform plan destroy --all`
 order its teardown — that path reads state and ignores files entirely.
 The staleness that implies is deliberate and documented in
 `specs/resource_dependencies.md`: editing `depends_on` and destroying

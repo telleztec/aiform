@@ -520,8 +520,8 @@ happen to share a name. The duplicate-key check below is likewise per-run.
 
 **Deferred, filed as #201:** that isolation is entirely positional. Nothing
 records which deployment a state file belongs to, and nothing in `plan` output
-says which one is about to be acted on — so `aiform plan destroy` with no file
-arguments, run from the wrong directory, is indistinguishable from the run the
+says which one is about to be acted on — so `aiform plan destroy --all` (then spelled
+with no file arguments), run from the wrong directory, is indistinguishable from the run the
 user intended until it has happened. Out of scope here by decision; this spec
 only pins that dependency resolution never crosses the boundary.
 
@@ -858,7 +858,7 @@ three are covered:
 
 - **`build_destroy_plan()`'s state-driven destroy-all path** — reads
   `StateEntry.depends_on` and orders in reverse topological. This is the
-  invocation a user actually types (`aiform plan destroy`, no arguments), so
+  invocation a user actually types (`aiform plan destroy --all`), so
   leaving it unordered would mean the feature ordered only the invocation
   nobody uses.
 
@@ -1018,7 +1018,7 @@ involves a legacy artifact. Adding `depends_on:` changes no `params`, so the
 action is **NO_OP**, and `apply_plan()` skips NO_OP before any state write. NO_OP is therefore the
 one action that never reaches either apply-time write. Without the plan-time
 write, adopting `depends_on` on an existing resource never reached `state.json`
-at all, so `aiform plan destroy` with no arguments kept ordering by empty
+at all, so `aiform plan destroy --all` kept ordering by empty
 edges — *permanently*, since there is nothing non-NO_OP to apply and no way to
 repair it but hand-editing state. For the canonical `app`-depends-on-`db` case
 that was **worse than not having the feature**: the prior code iterated state
@@ -1203,8 +1203,7 @@ one.
   `db-01`, `cache-01`, and `app-01` depending on both — verifying that `plan
   create` lists both targets first and prints the `depends on:` line, that
   `plan apply --verbose` completes both creates before `app-01` begins, that a
-  re-run makes zero Anthropic calls, and that `plan destroy` **with no file
-  arguments** destroys `app-01` before either target. Smallest droplet size,
+  re-run makes zero Anthropic calls, and that `plan destroy --all` destroys `app-01` before either target. Smallest droplet size,
   `aiform`-tagged, destroyed immediately.
 
   Name the files so that **alphabetical order contradicts the required order**

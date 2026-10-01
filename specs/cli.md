@@ -85,12 +85,17 @@ writes its own default over a same-`dest` value parsed at the parent level,
 which is the defect #134 documents for `-v`. `_resolve_deployment` merges the
 positions afterwards. The same value at more than one position is harmless;
 different values are a usage error (exit 2, nothing run, the invoked
-subcommand's usage printed) whose message names both:
-`conflicting deployments: --deployment a and --deployment b`. It is the same
+subcommand's usage printed) whose message names every conflicting designator,
+sorted and joined with ` and `:
+`conflicting deployments: --deployment a and --deployment b`, and with three,
+`conflicting deployments: --deployment a and --deployment b and --deployment c`.
+It is the same
 check, and the same message shape, as `--deployment` against `@name`: every
 spelling of a deployment, flag at any position or `@name`, is one set, and a
 set of more than one is refused. A name invalid under
-`state.validate_deployment_name` is the same usage error at every position.
+`state.validate_deployment_name` is the same usage error at every position:
+`error: argument --deployment: <the validator's message>`, with the invoked
+subcommand's usage printed.
 The resolved value is the deployment the caller
 means to act on, and every command passes it as
 `deployment=` to whatever calls `state.load()` on its behalf
@@ -99,18 +104,28 @@ means to act on, and every command passes it as
 and `resource`'s direct loads). The check itself is `state.load()`'s, not
 this module's (`specs/state.md`): a state file that names a different
 deployment raises `DeploymentMismatchError` before any driver load,
-credential resolution, provider call or LLM call. The argument type is a thin wrapper
+credential resolution, provider call or LLM call. The **leaf** `--deployment` has an argument type, a thin wrapper
 around `state.validate_deployment_name` that re-raises its `ValueError` as
-`argparse.ArgumentTypeError` (argparse would otherwise discard the message), so
-a name that could not be a directory segment is a usage error (exit 2) that
-states the rule, before anything runs.
+`argparse.ArgumentTypeError` (argparse would otherwise discard the message). The
+**root and group** `--deployment` take plain strings and are validated by
+`_resolve_deployment` with the same function and the same message text,
+through `parser.error` on the invoked subcommand's usage parser. They cannot
+carry the argument type: it would fail inside argparse, before the subcommand
+is known, and print the *root* usage for a command the user typed into
+`plan show`. Either way a name that could not be a directory segment is a usage
+error (exit 2) that states the rule and shows the invoked subcommand's usage,
+before anything runs.
+`_resolve_deployment` also records `args.deployment_explicit`: true when any
+position or an `@name` named a deployment, false when `default` was filled in.
+`plan destroy --all` reads it (below); nothing else does.
 `--state-file` and `--deployment` are independent: the first says which file
 to read, the second says which deployment the caller believes that file
 holds.
 
 **`@name` shorthand (`plan create`/`apply`/`destroy` only).** A `files`
 positional that starts with `@` is a deployment designator, not a path:
-`aiform plan destroy @prod` means `aiform plan destroy --deployment prod`. It is
+`aiform plan destroy --all @prod` means `aiform plan destroy --all --deployment prod`,
+and counts as an explicit deployment for destroy-all exactly as the flag does. It is
 removed from `files` before anything treats `files` as paths, so `[]` still
 means "discover in the cwd" and never a file called `@prod`. The rest after
 the `@` goes through the same `validate_deployment_name` as the flag, and a bad
@@ -590,12 +605,42 @@ takes an already-built plan):
   for a script's purposes). Exit 2 on the same exception set `plan
   create` uses, from either the planning or the apply call.
 
-### `aiform plan destroy [@<name>] [<file>.aiform.md ...] [--yes] [--force] [--state-file <path>] [--deployment <name>]`
+### `aiform plan destroy [@<name>] (<file>.aiform.md ... | --all) [--yes] [--force] [--state-file <path>] [--deployment <name>]`
 
 Mechanism A (`PLAN.md` "Resource deletion"): plans and applies in one
 pass, unconditionally subject to gate #2 by construction (every entry
 `build_destroy_plan` produces is `action=DESTROY`, and `apply_plan`'s
 `needs_review` is true whenever any entry is a destroy).
+
+**Destroy-all is explicit (#201).** Destroying every tracked resource used to be
+what `plan destroy` with no arguments did, guarded by one `(y/n)`, and a run in
+the wrong directory looked exactly like a run in the right one. It now takes
+`--all` (`store_true`) and proof of which deployment is meant. An explicit
+`--deployment prod` at any position, or `@prod`, **is** that proof: typing the
+name is the declaration, so there is no separate confirmation flag. The
+implicit `default` does not count, because it is what a wrong-directory run
+resolves to (`args.deployment_explicit`, above); destroy-all of a deployment
+named `default` needs `--deployment default`. `plan destroy <files>` is
+unchanged: naming the files is its own scope, `--all` is not needed and no
+name is typed.
+
+The scope checks are pure argument checks. `main()` runs them right after
+`_resolve_deployment`, for `plan destroy` only, and each is a usage error
+(`parser.error` on the destroy parser: exit 2, usage printed, nothing run — no
+state load, no client, no provider or LLM call). `--yes` and a non-TTY stdin
+failing the explicit-deployment rule are usage errors too, not handled
+errors, so all of them behave and are tested the same way:
+
+| Invocation | Result |
+|---|---|
+| no files, no `--all` | usage error: needs files or `--all` |
+| `--all` with files (after `@name` is stripped) | usage error: the two are exclusive |
+| `--all`, explicit deployment, `--yes` | proceeds; no prompt of any kind |
+| `--all`, explicit deployment | proceeds to the `(y/n)` below |
+| `--all`, no explicit deployment, `--yes` | usage error: `destroy-all needs an explicit deployment: pass --deployment <name>`. `--yes` never supplies the name |
+| `--all`, no explicit deployment, stdin not a TTY | usage error, same message: nothing can be typed |
+| `--all`, no explicit deployment, TTY | typed-name prompt (step 2a) |
+| `--all`, resolved state is empty | no typed-name prompt: nothing to destroy |
 
 1. `orchestrator.build_destroy_plan(paths, state_path=..., deployment=..., force=args.force)`
    — no `client` parameter (`build_destroy_plan` never calls an LLM —
@@ -612,25 +657,61 @@ pass, unconditionally subject to gate #2 by construction (every entry
    `plan apply`'s `--yes` tally-line marker (issue #162) — destroy
    routes through the same `_plan_apply_and_report` call site, so this
    isn't a separate implementation, just the same behavior reached from
-   a second command. That sameness includes the `depends on:` line
+   a second command. (`_plan_apply_and_report` takes two optional keyword
+   arguments for destroy-all, `before_apply`, a no-argument callable returning
+   an exit code or `None`, run after the plan prints and before `apply_plan`,
+   where a non-`None` return ends the command; and `confirm`, defaulting to
+   `_confirm`. Step 2a and step 3 below are those two.) That sameness includes the `depends on:` line
    described under `plan create`: it prints here too, and for a destroy
    it is load-bearing rather than incidental, because it is what
    explains why the teardown is in the order shown. Its source differs
    by invocation — frontmatter when files were named, `StateEntry`'s
-   recorded edges for the no-argument destroy-all form
+   recorded edges for the `--all` destroy-all form
    (`specs/resource_dependencies.md`). Under `--force`, step 1's
    `warnings` are passed to `_print_plan()` here instead of the `[]` it
    passed before this — one `Warning:` line per dropped dangling edge,
    printed after the tally line, same rendering `plan create`'s
    uncovered-resource warnings already use.
-3. `orchestrator.apply_plan(planned, state_path=..., deployment=..., yes=args.yes, confirm=_confirm, on_review=_print_review_flags, client=<counting client>)` —
+   2a. **Typed deployment name** — `--all` only, only when no deployment was
+   explicit, only when `planned` is non-empty. After the plan has printed and
+   **before** `apply_plan` (so before gate #2's LLM call), `_confirm_deployment_name`
+   asks `This will destroy ALL N resources in deployment 'X' (state file:
+   <absolute path>). Type the deployment name to confirm: ` through
+   `orchestrator.read_answer` (the shared flush-then-`input()` helper,
+   `specs/orchestrator.md`), where `X` is the resolved deployment, `N` is
+   `len(planned)` and the path is `args.state_file.absolute()` (the form
+   `DeploymentMismatchError` already uses). The answer, stripped of surrounding
+   whitespace, must equal `X` exactly and case-sensitively. Anything else,
+   including an empty answer, prints `Aborted: ... Nothing was destroyed.` and
+   returns exit 1 with zero Anthropic calls; there is no re-prompt, because a
+   second chance is a second keystroke habit. A correct name falls through to
+   step 3 and its `(y/n)` (or none under `--yes`; `--yes` is refused above
+   unless the deployment was explicit, so in practice the `(y/n)` follows). The
+   resolved name was already checked against the loaded state by
+   `build_destroy_plan`, so typing it proves the user read the deployment, not
+   that the file agrees.
+3. `orchestrator.apply_plan(planned, state_path=..., deployment=..., yes=args.yes, confirm=<_confirm, or the destroy-all wrapper>, on_review=_print_review_flags, client=<counting client>)` —
    the counting client is still passed here even though step 1 made
    no LLM calls, since `apply_plan` itself may (gate #2's batch review
-   always fires for a destroy plan).
+   always fires for a destroy plan). **For `--all` the `(y/n)` names what is
+   about to happen:** `destroy ALL N resources in deployment 'X' (state file:
+   <absolute path>)? (y/n): `, not `apply_plan`'s hardcoded `Apply this plan?`.
+   `cli.py` passes a wrapper `confirm` that ignores the prompt it is handed and
+   calls `_confirm` with that text; `apply_plan`'s signature and the
+   file-argument forms are untouched. Substituting unconditionally is safe
+   because a destroy plan holds only `DESTROY` entries, so the one confirmation
+   `apply_plan` can ask is the top-level one (the `Replace <key>?` prompt
+   belongs to `UPDATE` entries). The alternative, a `prompt` parameter on
+   `apply_plan`, would widen an orchestrator signature for a message only this
+   command wants.
 4. Same `ApplyResult` printing as `plan apply`, including `on_review`
    printing that review's flags live rather than `_print_apply_result`
    printing them after the fact.
-- Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error).
+- Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error). A wrong
+  or empty typed name (step 2a) is an abort, exit 1; every refusal in the
+  table above is a usage error, exit 2.
+- Help string: `plan destroy` lists `--all` and its `--deployment DEPLOYMENT`;
+  `--all`'s help says it destroys every resource tracked in the deployment.
 
 ### `aiform plan refresh [--state-file <path>] [--deployment <name>]`
 
@@ -683,7 +764,11 @@ exactly `y` or `n`, no implied default — #182) and the pre-prompt input
 flush that makes the answer trustworthy (`specs/orchestrator.md` step 2,
 #163) live in one implementation rather than two copies that can drift. The
 raise-on-no-TTY behaviour stays this module's, which is why `_confirm` —
-not `default_confirm` — is still what `apply_plan()` is handed.
+not `default_confirm` — is still what `apply_plan()` is handed. Both
+`default_confirm` and the typed-deployment-name prompt of `plan destroy --all`
+read through one helper, `orchestrator.read_answer(prompt)`, which flushes the
+terminal's input queue and then calls `input()`; the #163/#182 fix therefore
+lives in one place and neither prompt can drift from it.
 This exists specifically for `specs/orchestrator.md` judgment call
 7's scenario: a fully non-interactive `--yes` run that still hits the
 single-resource `DriverUpdateNotSupported` fallback confirmation (never

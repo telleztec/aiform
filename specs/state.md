@@ -58,8 +58,15 @@ platform: no slash or backslash, no leading dot or hyphen (a leading hyphen
 reads as a flag), no whitespace, no case folding surprises, bounded length. A
 later ticket will use the name as a directory under a home directory, and a
 name that is valid here must never need escaping there. `State` runs the
-same function as a field validator, and `cli.py` runs it as the `--deployment`
-argument type, so the rule lives in one place.
+same function as a field validator, and `cli.py` runs it on every `--deployment`
+value (as the argument type on the leaf; from `_resolve_deployment` for the root
+and group positions, `specs/cli.md`), so the rule lives in one place.
+
+The `ValueError` message is
+`invalid deployment name {name!r}: use 1 to 63 characters from a-z, 0-9, '-' or '_' (ASCII only), starting with a-z or 0-9`.
+It says "characters from a-z, 0-9, ..." rather than "lowercase letters, digits,
+...", because the earlier phrasing read as "1 to 63 letters" and hid that the
+alphabet is ASCII only.
 
 Old state files are not read: a `state.json` with no `deployment` key is
 refused by `load()` with `StateMissingDeploymentError` (`specs/exceptions.md`),

@@ -783,7 +783,8 @@ Mechanism A. `state = state.load(state_path, deployment=deployment)`.
 
 - `paths` given: for each, `spec = parser.parse_frontmatter(path.read_text(encoding="utf-8-sig"))`,
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
-- `paths` falsy: one target per `state.resources` entry, `aiform_md_path =
+- `paths` falsy (`plan destroy --all`; `cli.py` refuses no files without `--all`, so
+  this branch is reached only by an explicit `--all`, `specs/cli.md`): one target per `state.resources` entry, `aiform_md_path =
   Path(state_entry.aiform_md_path)`.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
@@ -884,6 +885,15 @@ for its caller.
    mistaken for the answer to a prompt the user hasn't seen yet (#163,
    #182). A non-tty stdin has nothing to flush, and a failed flush never
    blocks the confirmation itself.
+   The flush-then-`input()` part is its own function,
+   `read_answer(prompt: str) -> str`: it flushes (best-effort, as above), then
+   returns `input(prompt)` untouched. `default_confirm` calls it once per
+   attempt, with `{prompt} (y/n): `, and does the `y`/`n` interpretation
+   itself. It is public because `aiform/cli.py`'s typed-deployment-name prompt
+   for `plan destroy --all` (`specs/cli.md`) is the second caller: a second
+   copy of the flush is exactly how the #163/#182 protection would drift, and
+   a destroy-all prompt answered by a stray queued keystroke is the failure
+   it exists to prevent. `default_confirm`'s behaviour is unchanged.
    This only ever loops against a real TTY: `aiform/cli.py`'s `_confirm`
    raises `RuntimeError` before calling `default_confirm` at all when
    `sys.stdin` isn't one (see "Confirmation and non-interactive runs" in
