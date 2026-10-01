@@ -163,6 +163,7 @@ def interrupt_after_state_save(
     def save(st: Any, *args: Any, **kwargs: Any) -> None:
         nonlocal matches
         real(st, *args, **kwargs)
+        fault.seen.append(("state.save", ",".join(sorted(st.resources))))
         if fault.fired or not predicate(st):
             return
         matches += 1

@@ -136,41 +136,42 @@ def teardown_provider(token, ledger: Ledger, project_dir: Path) -> None:
     """Two passes, because the first depends on the code under test and on a
     state entry existing, and an interrupted create may leave neither."""
     state_path = project_dir / ".aiform" / "state.json"
-    if state_path.exists():
-        try:
-            ledger.note_state(state.load(state_path, deployment="default"))
-            code = cli.main(
-                [
-                    "plan",
-                    "destroy",
-                    "--all",
-                    "--deployment",
-                    "default",
-                    "--yes",
-                    "--state-file",
-                    str(state_path),
-                ]
-            )
-            if code != 0:
-                warnings.warn(f"teardown 'plan destroy' exited {code}", stacklevel=2)
-        except Exception as exc:
-            warnings.warn(f"teardown 'plan destroy' raised {exc!r}", stacklevel=2)
-
-    failures: list[str] = []
-    for droplet_id in sorted(
-        ledger.droplet_ids_to_delete(lambda: list_droplets_tagged(token, SYSTEM_TEST_TAG))
-    ):
-        try:
-            destroy_droplet_or_shout(token, droplet_id, f"droplet {droplet_id}")
-        except RuntimeError as exc:
-            failures.append(str(exc))
-    for firewall_id in sorted(ledger.firewall_ids_to_delete(lambda: list_firewalls(token))):
-        try:
-            delete_firewall_directly(token, firewall_id)
-        except Exception as exc:
-            failures.append(f"could not delete firewall {firewall_id}: {exc!r}")
-    if failures:
-        raise RuntimeError("; ".join(failures))
+    try:
+        if state_path.exists():
+            try:
+                ledger.note_state(state.load(state_path, deployment="default"))
+                code = cli.main(
+                    [
+                        "plan",
+                        "destroy",
+                        "--all",
+                        "--deployment",
+                        "default",
+                        "--yes",
+                        "--state-file",
+                        str(state_path),
+                    ]
+                )
+                if code != 0:
+                    warnings.warn(f"teardown 'plan destroy' exited {code}", stacklevel=2)
+            except Exception as exc:
+                warnings.warn(f"teardown 'plan destroy' raised {exc!r}", stacklevel=2)
+    finally:
+        failures: list[str] = []
+        for droplet_id in sorted(
+            ledger.droplet_ids_to_delete(lambda: list_droplets_tagged(token, SYSTEM_TEST_TAG))
+        ):
+            try:
+                destroy_droplet_or_shout(token, droplet_id, f"droplet {droplet_id}")
+            except RuntimeError as exc:
+                failures.append(str(exc))
+        for firewall_id in sorted(ledger.firewall_ids_to_delete(lambda: list_firewalls(token))):
+            try:
+                delete_firewall_directly(token, firewall_id)
+            except Exception as exc:
+                failures.append(f"could not delete firewall {firewall_id}: {exc!r}")
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
 
 @pytest.fixture
@@ -232,9 +233,10 @@ class Runner:
                 summary = f"Plan: 0 to create, 0 to update, 0 to destroy, {len(keys)} no-op."
                 assert summary in captured.out, f"{step} was not a no-op:\n{captured.out}"
             else:
-                assert "to create" not in captured.out or "Plan: 0 to create, 0 to update" in (
-                    captured.out
-                ), f"{step} planned work with nothing declared:\n{captured.out}"
+                summary = "Plan: 0 to create, 0 to update, 0 to destroy"
+                assert "Plan:" not in captured.out or summary in captured.out, (
+                    f"{step} planned work with nothing declared:\n{captured.out}"
+                )
             for key in keys:
                 assert f"= {key}: no-op" in captured.out, f"{step}: {key} is not a no-op"
             assert "Warning:" not in captured.out, f"{step} warned:\n{captured.out}"
@@ -281,7 +283,7 @@ class TestInterruptedCreate:
                 "GET",
                 r"/v2/droplets/\d+$",
                 response_predicate=lambda body: (
-                    bool(body) and body["droplet"]["status"] != "active"
+                    bool(body) and body.get("droplet", {}).get("status") != "active"
                 ),
             )
         else:

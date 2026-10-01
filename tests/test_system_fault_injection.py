@@ -267,6 +267,12 @@ class TestInterruptAfterStateSave:
         assert saved == [marker]
         assert fault.fired is True
 
+    def test_every_save_is_recorded_so_a_stage_that_never_fires_can_be_diagnosed(self, saved):
+        with interrupt_after_state_save(lambda st: "b" in st.resources) as fault:
+            state.save(types.SimpleNamespace(resources={}), "ignored")
+            state.save(types.SimpleNamespace(resources={"a": 1, "z": 2}), "ignored")
+        assert fault.seen == [("state.save", ""), ("state.save", "a,z")]
+
     def test_a_save_whose_state_fails_the_predicate_does_not_fire(self, saved):
         with interrupt_after_state_save(lambda st: "a" in st.resources) as fault:
             state.save(types.SimpleNamespace(resources={}), "ignored")
