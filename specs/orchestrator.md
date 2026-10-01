@@ -246,7 +246,9 @@ def is_delete_marked(path: Path) -> bool: ...
 def driver_path(provider: str, resource_type: str) -> Path: ...
 
 
-def load_driver(provider: str, resource_type: str) -> ResourceDriver: ...
+def load_driver(
+    provider: str, resource_type: str, reserved_tags: Sequence[str] = ()
+) -> ResourceDriver: ...
 
 
 def driver_info_for(
@@ -408,13 +410,16 @@ installed-package location (mirrors `llm.PROMPTS_DIR`'s construction),
 **not** relative to the end user's project `cwd`. Drivers ship inside
 the `aiform` package itself (`PLAN.md` §1), never per-project.
 
-### `load_driver(provider, resource_type) -> ResourceDriver`
+### `load_driver(provider, resource_type, reserved_tags=()) -> ResourceDriver`
 
 `importlib.util.spec_from_file_location(...)` /
 `module_from_spec(spec)` / `spec.loader.exec_module(module)` against
 `driver_path(provider, resource_type)`, then `module.Driver()` — exactly
 `PLAN.md` §4's "Orchestrator invocation contract": the class name is
-always literally `Driver`, never searched for. `FileNotFoundError`
+always literally `Driver`, never searched for. `reserved_tags` is passed to
+the constructor, `module.Driver(reserved_tags=reserved_tags)`; callers that
+act on a deployment's resources pass `reserved_tags(state.deployment)`
+(`specs/resource_tagging.md`), and the observability commands pass none. `FileNotFoundError`
 (driver file doesn't exist) is caught and re-raised as
 `PlanBlockedError` naming the missing `(provider, resource_type)` pair
 (`PLAN.md` §5 step 3's "Driver file missing" case). Any other failure
@@ -588,7 +593,8 @@ a step knows it is one call away rather than missing:
      caveat below).
   4. Driver resolution, **cached per `(provider, resource_type)` for the
      lifetime of this call** (judgment call 5): `driver =
-     load_driver(spec.provider, spec.resource)`; `driver_info =
+     load_driver(spec.provider, spec.resource,
+     reserved_tags=reserved_tags(state.deployment))`; `driver_info =
      driver_info_for(spec.provider, spec.resource, state)`.
   5. Credentials, **cached per `provider`**: `credentials =
      config.resolve_credentials(spec.provider)`, `RuntimeError` caught
@@ -1016,7 +1022,8 @@ for its caller.
        prediction said so. `pr.entry` itself is never mutated in either
        case; this is a copy built solely for the returned result.
    - `DESTROY` → if `pr.state_entry is not None`: `driver =
-     load_driver(pr.provider, pr.resource_type)`, `credentials =
+     load_driver(pr.provider, pr.resource_type,
+     reserved_tags=reserved_tags(state.deployment))`, `credentials =
      config.resolve_credentials(pr.provider)` (`RuntimeError` →
      `PlanBlockedError`, same as judgment call 3) — **no `driver_info_for()`
      call** (judgment call 4). `driver.delete(pr.state_entry.id, credentials)`
