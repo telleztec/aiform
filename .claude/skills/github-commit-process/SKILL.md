@@ -479,8 +479,14 @@ EOF
 
 ## After the PR is open
 
-Report the PR URL, then do **both** of these — they are independent and
-neither waits on the other:
+Report the PR URL. Then update the branch, before either step below:
+
+- Run `git fetch origin && git log --oneline HEAD..origin/main`.
+- If it prints commits, `git merge origin/main` and push. No rebase, no force push.
+- If the merge conflicts, resolve it like any other change and tell the human.
+
+Then do **both** of these — they are independent and neither waits on the
+other:
 
 1. **Start the watch loop immediately** (`/review-watch <PR>`). The human may
    approve at any time, including before the LLM review has run.
@@ -785,7 +791,8 @@ no new loop nothing is listening.
 
 ### If the merge is rejected as behind `main`
 
-That is `strict: true` working, not an error to force past. Update the branch,
+That is `strict: true` working, not an error to force past. This covers `main`
+moving after the early update. Update the branch,
 which mints a **new head SHA** — so all four gates must be satisfied on it,
 and the prior `/claude-merge-approved` does not carry over. If the update is a
 mechanical merge or rebase with no content change, say so when asking for
