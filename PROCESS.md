@@ -160,9 +160,10 @@ The human, having seen that specific written plan, says to proceed with
   above) and responds with something that unambiguously greenlights that
   approach — "yes, do that," "go ahead with the backoff-cap approach,"
   approving a plan-mode exit, and the like.
-- **Counts:** a recorded `approve: "approved"` on a decision-artifact page
-  for that specific plan, read back and quoted in chat
-  (`.claude/skills/decision-artifact/SKILL.md`).
+- **Counts:** a recorded `approve: "approved"` on a decision-artifact page,
+  read back and quoted in chat (`.claude/skills/decision-artifact/SKILL.md`),
+  only if the agent did not write the record and the doc's `plan` field
+  equals the plan id of the plan actually shown.
 - **Does not count:** the human describing a bug or problem — "the live
   test keeps timing out." That's a problem report, not a plan.
 - **Does not count:** the human agreeing the problem is worth fixing —

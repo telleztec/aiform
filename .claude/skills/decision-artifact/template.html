@@ -40,6 +40,11 @@ button:disabled{opacity:.5;cursor:default}
 <tr><td>S1</td><td>Describe it</td><td>Describe the outcome</td></tr>
 </table></div>
 
+<h2>Cost and safety</h2>
+<ul>
+<li>Billable runs, what can leak, what is never touched. Delete this section when it does not apply.</li>
+</ul>
+
 <h2>Decisions for you</h2>
 
 <div class="card"><h3>1. Example decision</h3>
@@ -47,49 +52,51 @@ button:disabled{opacity:.5;cursor:default}
 <label class="opt"><input type="radio" name="d1" value="alt"><b>Alternative</b><br><span class="mute">Trade-off in one sentence.</span></label>
 </div>
 
+<div class="card"><h3>Notes</h3>
+<textarea id="note" placeholder="Anything to change, add or drop..."></textarea>
+</div>
+
 <div class="card"><h3>Approval</h3>
 <label class="opt"><input type="radio" name="approve" value="approved"><b>Approved, as modified by my choices above</b></label>
 <label class="opt"><input type="radio" name="approve" value="revise"><b>Revise first (see my note)</b></label>
 </div>
 
-<div class="card"><h3>Notes</h3>
-<textarea id="note" placeholder="Anything to change, add or drop..."></textarea>
-</div>
-
 <p><button id="send" disabled>Send my decisions</button><span id="status" class="mute"></span></p>
-
-<h2>Cost and safety</h2>
-<ul>
-<li>Billable runs, what can leak, what is never touched. Delete this section when it does not apply.</li>
-</ul>
 </main>
 <script>
-(async()=>{
-const DOC='decisions/PLAN_ID';
+(()=>{
+const PLAN_ID='PLAN_ID';
+const DOC='decisions/'+PLAN_ID;
 const names=['d1','approve'];
 const send=document.getElementById('send'),st=document.getElementById('status');
 const val=n=>{const e=document.querySelector('input[name='+n+']:checked');return e?e.value:null};
-const check=()=>{send.disabled=!names.every(val)};
+let noDb=false;
+const check=()=>{send.disabled=noDb||!names.every(val)};
+const dbP=(async()=>{try{return await claude.use('db')}catch(e){return null}})();
 document.addEventListener('change',check);
-let db=null;
-try{db=await claude.use('db')}catch(e){}
-if(db){
-  try{
-    const s=await db.doc(DOC).get();
-    if(s.exists){const d=s.data();
-      names.forEach(n=>{const e=document.querySelector('input[name='+n+'][value="'+d[n]+'"]');if(e)e.checked=true});
-      document.getElementById('note').value=d.note||'';
-      st.textContent='Previously sent '+(d.at||'');check();}
-  }catch(e){}
-}else{st.textContent='Sending is unavailable in this view; reply in the terminal instead.'}
 send.addEventListener('click',async()=>{
+  const db=await dbP;
   if(!db)return;
-  const d={at:new Date().toISOString(),note:document.getElementById('note').value};
+  const d={plan:PLAN_ID,at:new Date().toISOString(),note:document.getElementById('note').value};
   names.forEach(n=>d[n]=val(n));
   send.disabled=true;
   try{await db.doc(DOC).set(d);st.textContent='Sent. Tell Claude in the terminal that you answered.'}
   catch(e){st.textContent='Could not save ('+(e&&e.code||'error')+'). Reply in the terminal instead.'}
-  send.disabled=false;
+  check();
 });
+(async()=>{
+  const db=await dbP;
+  if(!db){noDb=true;check();st.textContent='Sending is unavailable in this view; reply in the terminal instead.';return}
+  try{
+    const s=await db.doc(DOC).get();
+    if(s.exists){const d=s.data();
+      if(d.plan===PLAN_ID){
+        names.forEach(n=>{const e=document.querySelector('input[name='+n+'][value="'+d[n]+'"]');if(e)e.checked=true});
+        document.getElementById('note').value=d.note||'';
+        st.textContent='Previously sent '+(d.at||'');check();
+      }
+    }
+  }catch(e){}
+})();
 })();
 </script>
