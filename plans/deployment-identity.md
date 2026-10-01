@@ -3,6 +3,11 @@
 **Status: approved 2026-09-29 by the repo owner, as a three-PR sequence. This
 file is committed by PR 1 and describes all three.**
 
+**PR 2 status (2026-09-30): approved with a revision to the sequence below.
+There is no `--confirm-deployment` flag; an explicit `--deployment` or `@name`
+is the declaration, and the typed deployment name is only the interactive
+fallback. `--yes` still never satisfies it.**
+
 ## Context
 
 `aiform` supports several independent deployments, each in its own directory.
@@ -41,7 +46,9 @@ is recorded below as deferred.
    adds the `@name` positional shorthand.
 2. **PR 2 — make destroy-all explicit.** A no-argument `plan destroy` requires
    `--all` and an explicit deployment name. `--yes` never satisfies the name.
-   Interactive runs prompt for the typed name.
+   Interactive runs prompt for the typed name. (As built, a `plan destroy`
+   with neither files nor `--all` is a usage error, and the name is declared by
+   an explicit `--deployment` or `@name`.)
 3. **PR 3 — say which deployment you are about to act on** (`Closes #201`).
    Print the deployment, the state-file path and the resource count as a header
    on every `plan` and `apply`.

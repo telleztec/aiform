@@ -292,9 +292,10 @@ completely on its own.
    and never the model that authored the diff) against the diff. You launch
    this yourself — it does not wait on the human. Address findings, or
    explicitly note in the PR why a finding is being deferred — don't
-   silently ignore one either. **Then review your own fixes**: they are code
-   no pass has read, so run `/code-review-since <PR>` over each round until
-   the head commit has been covered. This step and the human's review are
+   silently ignore one either. New or changed error strings must satisfy
+   `.claude/skills/error-messages/SKILL.md`. **Then review your own fixes**:
+   they are code no pass has read, so run `/code-review-since <PR>` over each
+   round until the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
 7. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
@@ -579,6 +580,10 @@ What ties the two together is only that the status is pinned to the SHA.
 Making the log self-describing — a `git rev-parse HEAD` and
 `git status --porcelain` header — would fix that, and belongs with
 `scripts/run_system_tests.py` rather than in this document.
+
+**Update the branch before review starts.** After opening the PR, run `git fetch
+origin`; if `git log HEAD..origin/main` prints commits, merge `origin/main` in
+and push before the watch loop and `/code-review` start.
 
 **The two reviews are order-independent.** The human may approve before the
 LLM review runs or after; either order ends in a merge. Nothing waits on

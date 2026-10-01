@@ -1019,7 +1019,7 @@ class ApplyResult:
     aborted: bool
 
 
-def default_confirm(prompt: str) -> bool:
+def _read_input(prompt: str) -> str:
     # Gate #2's review call takes tens of seconds with nothing on screen, so a
     # keystroke typed during it is already queued in the terminal when the
     # prompt finally appears, and input() would take it as the answer to a
@@ -1031,12 +1031,26 @@ def default_confirm(prompt: str) -> bool:
     # later. Best-effort by design: a non-tty stdin (piped input, tests) has
     # no terminal queue and nothing to discard, and a failure to flush must
     # never be what stops a confirmation from being asked.
+    try:
+        termios.tcflush(sys.stdin, termios.TCIFLUSH)
+    except Exception:
+        pass
+    return input(prompt)
+
+
+def read_answer(prompt: str) -> str:
+    try:
+        return _read_input(prompt)
+    except EOFError:
+        return ""
+
+
+def default_confirm(prompt: str) -> bool:
     while True:
         try:
-            termios.tcflush(sys.stdin, termios.TCIFLUSH)
-        except Exception:
-            pass
-        answer = input(f"{prompt} (y/n): ").strip().lower()
+            answer = _read_input(f"{prompt} (y/n): ").strip().lower()
+        except EOFError:
+            return False
         if answer == "y":
             return True
         if answer == "n":

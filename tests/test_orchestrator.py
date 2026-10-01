@@ -3059,8 +3059,8 @@ class TestBuildDestroyPlan:
             )
 
     def test_state_driven_fan_in_destroyed_before_all_of_its_targets(self, tmp_path: Path):
-        # The invocation a user actually types: `aiform plan destroy`, no
-        # file arguments -- reads StateEntry.depends_on since there are no
+        # The invocation a user actually types: `aiform plan destroy --all`,
+        # no file arguments -- reads StateEntry.depends_on since there are no
         # files to read frontmatter from.
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
@@ -5261,6 +5261,59 @@ class TestDefaultConfirm:
         result = orchestrator.default_confirm("Apply this plan?")
 
         assert result is False
+
+
+class TestReadAnswer:
+    def test_flushes_the_terminal_queue_then_returns_the_raw_answer(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: calls.append("flush"))
+        monkeypatch.setattr(
+            "builtins.input", lambda prompt="": calls.append(("input", prompt)) or "  Prod \n"
+        )
+
+        assert orchestrator.read_answer("Type it: ") == "  Prod \n"
+        assert calls == ["flush", ("input", "Type it: ")]
+
+    def test_a_failed_flush_never_blocks_the_read(self, monkeypatch):
+        def broken(*args):
+            raise OSError("not a tty")
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", broken)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "answer")
+
+        assert orchestrator.read_answer("? ") == "answer"
+
+    def test_eof_is_an_empty_answer_not_a_traceback(self, monkeypatch):
+        def closed(prompt=""):
+            raise EOFError
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: None)
+        monkeypatch.setattr("builtins.input", closed)
+
+        assert orchestrator.read_answer("? ") == ""
+
+    def test_eof_at_a_yes_no_prompt_counts_as_no(self, monkeypatch):
+        asked = []
+
+        def closed(prompt=""):
+            asked.append(prompt)
+            assert len(asked) < 3, "default_confirm looped on EOF"
+            raise EOFError
+
+        monkeypatch.setattr(orchestrator.termios, "tcflush", lambda *args: None)
+        monkeypatch.setattr("builtins.input", closed)
+
+        assert orchestrator.default_confirm("Apply this plan?") is False
+
+    def test_default_confirm_reads_through_it_once_per_attempt(self, monkeypatch):
+        prompts = []
+        answers = iter(["maybe", "y"])
+        monkeypatch.setattr(
+            orchestrator, "_read_input", lambda prompt: prompts.append(prompt) or next(answers)
+        )
+
+        assert orchestrator.default_confirm("Apply this plan?") is True
+        assert prompts == ["Apply this plan? (y/n): "] * 2
 
 
 class TestDeploymentIsRequired:

@@ -221,7 +221,19 @@ class TestFullLifecycleSequence:
         assert replaced_id != droplet_id
 
         # Case 8: `plan destroy --yes` -- gate #2 fires unconditionally.
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_path),
+                "--verbose",
+            ]
+        )
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "case 8: plan destroy --yes")
         assert verbose_call_count(captured) >= 1

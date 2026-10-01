@@ -208,7 +208,19 @@ class TestFirewallLifecycle:
         # One call: gate #2 reviews a DESTROY. The last row of
         # specs/system_test_firewall.md's table, now actually asserted
         # rather than merely tabulated.
-        code = cli.main(["plan", "destroy", "--yes", "--state-file", str(state_path), "--verbose"])
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_path),
+                "--verbose",
+            ]
+        )
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan destroy")
         assert "[verbose] 1 Anthropic API call(s) made" in captured.err
