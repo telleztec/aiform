@@ -43,10 +43,23 @@ class Ledger:
         return self.droplet_ids | _ids_named(self.droplet_names, list_tagged)
 
     def firewall_ids_to_delete(self, list_all: Callable[[], list[dict]]) -> set[str]:
-        return self.firewall_ids | _ids_named(self.firewall_names, list_all)
+        return self.firewall_ids | _ids_named(
+            self.firewall_names, list_all, deployment_prefixed=True
+        )
 
 
-def _ids_named(names: set[str], listing: Callable[[], list[dict]]) -> set[str]:
+def _ids_named(
+    names: set[str], listing: Callable[[], list[dict]], *, deployment_prefixed: bool = False
+) -> set[str]:
     if not names:
         return set()
-    return {str(item["id"]) for item in listing() if item.get("name") in names}
+
+    def matches(listed: object) -> bool:
+        if listed in names:
+            return True
+        # Firewalls aiform creates are named `aiform-<deployment>-<name>` (#249).
+        return deployment_prefixed and any(
+            str(listed).startswith("aiform-") and str(listed).endswith("-" + n) for n in names
+        )
+
+    return {str(item["id"]) for item in listing() if matches(item.get("name"))}

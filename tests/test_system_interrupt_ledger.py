@@ -112,6 +112,22 @@ class TestWhichFirewallsToDelete:
         listing = [{"id": "b", "name": "fw"}, {"id": "c", "name": "fw-other"}]
         assert ledger.firewall_ids_to_delete(lambda: listing) == {"a", "b"}
 
+    def test_a_deployment_prefixed_name_is_matched(self):
+        ledger = Ledger()
+        ledger.firewall_names.add("aiform-system-test-fw-x-1")
+        listing = [
+            {"id": "a", "name": "aiform-default-aiform-system-test-fw-x-1"},
+            {"id": "b", "name": "aiform-system-test-fw-x-1"},
+            {"id": "c", "name": "aiform-default-aiform-system-test-fw-x-12"},
+            {"id": "d", "name": "other-aiform-system-test-fw-x-1"},
+        ]
+        assert ledger.firewall_ids_to_delete(lambda: listing) == {"a", "b"}
+
+    def test_a_droplet_name_is_never_matched_by_suffix(self):
+        ledger = Ledger()
+        ledger.droplet_names.add("mine")
+        assert ledger.droplet_ids_to_delete(lambda: [{"id": 9, "name": "aiform-x-mine"}]) == set()
+
     def test_nothing_is_listed_when_no_name_was_generated(self):
         ledger = Ledger()
 
