@@ -2727,3 +2727,11 @@ class TestReservedTags:
             tagged_driver.update("123", current, desired, CREDENTIALS)
 
         assert fake_urlopen.calls == []
+
+    def test_create_rejects_a_scalar_tags_value_instead_of_splitting_it(
+        self, tagged_driver, fake_urlopen
+    ):
+        with pytest.raises(ValueError, match="list"):
+            tagged_driver.create(NAME, {**BASE_PARAMS, "tags": "web"}, CREDENTIALS)
+
+        assert fake_urlopen.calls == []

@@ -212,7 +212,7 @@ class Driver(ResourceDriver):
             "size": droplet["size_slug"],
             "image": droplet["image"]["slug"],
             "status": droplet["status"],
-            "tags": droplet.get("tags", []),
+            "tags": self._tags_for_attributes(droplet.get("tags", [])),
             "ipv4_address": ipv4_address,
         }
 
@@ -332,6 +332,14 @@ class Driver(ResourceDriver):
         raise AssertionError("unreachable")  # the loop always returns or raises
 
     def create(self, name, params, credentials):
+        requested_tags = params.get("tags", [])
+        if not isinstance(requested_tags, list):
+            # _tags_for_create spreads its argument, so a scalar would
+            # otherwise be split into one tag per character.
+            raise ValueError(
+                f"droplet {name}: params 'tags' must be a list of strings, got {requested_tags!r}"
+            )
+        tags = self._tags_for_create(requested_tags)
         managed_key_id, _ = self._ensure_do_key_registered(credentials)
 
         body = {
@@ -340,9 +348,10 @@ class Driver(ResourceDriver):
             "size": params["size"],
             "image": params["image"],
         }
-        for key in ("ssh_keys", "backups", "monitoring", "tags"):
+        for key in ("ssh_keys", "backups", "monitoring"):
             if key in params:
                 body[key] = params[key]
+        body["tags"] = tags
 
         # Always on, no opt-out: this is what makes _power_off_droplet's
         # SSH-first path universally available on every droplet aiform
@@ -428,6 +437,7 @@ class Driver(ResourceDriver):
         # then approves hands the same malformed value to create() -- which
         # DO rejects, leaving the droplet deleted and nothing rebuilt.
         self._reject_malformed_values(id, diff_fields, desired)
+        self._reject_reserved_tags(desired.get("tags") or [])
 
         replace_forcing = [f for f in diff_fields if f not in _IN_PLACE_UPDATABLE_FIELDS]
         if replace_forcing:
@@ -448,7 +458,12 @@ class Driver(ResourceDriver):
         if "size" in diff_fields:
             self._resize_in_place(id, current, desired, credentials)
         if "tags" in diff_fields:
-            self._apply_tag_changes(id, current.get("tags") or [], desired["tags"], credentials)
+            self._apply_tag_changes(
+                id,
+                self._tags_for_attributes(current.get("tags") or []),
+                desired["tags"],
+                credentials,
+            )
         if "backups" in diff_fields:
             self._set_backups(id, desired["backups"], credentials)
 
