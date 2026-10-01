@@ -285,12 +285,11 @@ completely on its own.
    and never the model that authored the diff) against the diff. You launch
    this yourself — it does not wait on the human. Address findings, or
    explicitly note in the PR why a finding is being deferred — don't
-   silently ignore one either. **Then review your own fixes**: they are code
-   no pass has read, so run `/code-review-since <PR>` over each round until
-   the head commit has been covered. This step and the human's review are
+   silently ignore one either. New or changed error strings must satisfy
+   `.claude/skills/error-messages/SKILL.md`. **Then review your own fixes**:
+   they are code no pass has read, so run `/code-review-since <PR>` over each
+   round until the head commit has been covered. This step and the human's review are
    independent; neither blocks the other.
-   New or changed error strings must satisfy
-   `.claude/skills/error-messages/SKILL.md`.
 7. **PR.** Small, one module (or one tightly-coupled pair, e.g. a module
    and the exceptions it raises) per PR, following
    `.claude/skills/github-commit-process/SKILL.md`. A PR closes at most

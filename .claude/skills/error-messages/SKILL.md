@@ -9,10 +9,11 @@ Applies to new and changed messages. Do not rewrite untouched messages in a feat
 
 ## Format
 
-- Start with `Error: ` on the CLI. Keep the prefix.
+- `main()` adds `Error: ` when it prints a caught exception. Never put it in exception text.
+- A direct `print(..., file=sys.stderr)` in `aiform/cli.py` writes `Error: ` itself. Keep it there.
 - Write one short sentence: the problem, then the offending value.
 - Follow with at most one action line.
-- Start lowercase after the prefix. No trailing period on a one-line message.
+- Start lowercase after `Error: `. No trailing period on a one-line message.
 - Use plain words. Do not blame the user.
 - Do not use the word "illegal".
 
@@ -31,7 +32,7 @@ Author and reviewer both walk this list for every new or changed message.
 - Says what to do next.
 - One sentence plus at most one action line.
 - No stack trace, internals or secrets on stderr.
-- Exit code matches the table below.
+- Exit code matches the CLI section below.
 - Detail the user cannot act on is logged.
 - No banned phrase.
 
@@ -72,27 +73,27 @@ Shape after RFC 9457:
 
 ## Examples
 
-Before/after pairs below are illustrations, not applied changes. "Before" strings are quoted from the repo.
+Before/after pairs below are illustrations, not applied changes. "Before" strings are quoted from the repo. Each pair says whether it shows exception text (no prefix) or a printed line (with prefix).
 
-Filler verb, raw upstream text, no action (`aiform/exceptions.py`, `DriverExecutionError`):
+Filler verb, raw upstream text, no action (exception text, `aiform/exceptions.py`, `DriverExecutionError`):
 
-- Before: `digitalocean.compute driver failed during create: <upstream error>`
+- Before, rendered with the upstream error filled in: `digitalocean.compute driver failed during create: <upstream error>`
 - After: `cannot create digitalocean.compute 'web': <reason>` then `  details: .aiform/logs/`
 
-Rule not stated as an action, no flag named (`aiform/exceptions.py`, `DeploymentMismatchError`):
+Rule not stated as an action, no flag named (exception text, `aiform/exceptions.py`, `DeploymentMismatchError`):
 
-- Before: `this state file belongs to deployment 'a', not 'b'.`
-- After: `state file belongs to deployment 'a', not 'b'` then `  pass --deployment a, or point --state-file at another file`
+- Before, first line of three: `this state file belongs to deployment 'a', not 'b'.`
+- After: `state file belongs to deployment 'a', not 'b'` then `  pass --deployment a, or point --state-file at another file` then `  Nothing was read from the provider and nothing was changed.`
 
-Python list repr leaks into user text (`aiform/cli.py`, `_cmd_init`):
+Python list repr leaks into user text (printed line, `aiform/cli.py`, `_cmd_init`):
 
 - Before: `Error: unsupported provider 'aws'; supported: ['digitalocean']`
 - After: `Error: unsupported provider 'aws': use digitalocean`
 
-"invalid X" with no rule (`aiform/models.py`, dependency key validation):
+"invalid X" with no rule (exception text, `aiform/models.py`, `parse_dependency_key`):
 
-- Before: `malformed dependency key 'x': invalid provider 'Y'`
-- After: `provider 'Y' in dependency key 'x' is not allowed: use lowercase letters, digits and '_', starting with a letter`
+- Before: `malformed dependency key 'Y.compute.web': invalid provider 'Y'`
+- After: `provider 'Y' in dependency key 'Y.compute.web' is not allowed: use lowercase letters, digits and '_', starting with a lowercase letter`
 
 Already compliant, copy the shape (`aiform/state.py`, `validate_deployment_name`):
 
