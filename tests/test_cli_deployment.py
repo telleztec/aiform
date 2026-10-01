@@ -458,6 +458,15 @@ class TestAtNameShorthand:
         assert "@prod" in err and "@scratch" in err
         assert builds == []
 
+    def test_two_different_at_names_conflict_on_destroy_with_the_usage_of_that_command(
+        self, project, builds, capsys
+    ):
+        err = destroy_scope_error(capsys, ["plan", "destroy", "@prod", "@scratch"])
+
+        assert "conflicting deployments: @prod and @scratch" in err
+        assert "usage: aiform plan destroy " in err
+        assert builds == []
+
     @pytest.mark.parametrize("token", ["@", "@Prod", "@a/b", "@.x", "@-x"])
     def test_a_bad_at_name_is_a_usage_error(self, project, builds, capsys, token):
         with pytest.raises(SystemExit) as caught:
@@ -485,7 +494,6 @@ class TestAtNameShorthand:
         [
             (["plan", "create", "@prod", "--deployment", "scratch"], "usage: aiform plan create "),
             (["plan", "apply", "@Prod"], "usage: aiform plan apply "),
-            (["plan", "destroy", "@prod", "@scratch"], "usage: aiform plan destroy "),
             (
                 ["resource", "check", "@prod/web", "--deployment", "x"],
                 "usage: aiform resource check ",
