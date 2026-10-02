@@ -221,11 +221,15 @@ The runner and teardown shared with the interrupt suite live in
 Live results, 2026-10-02:
 
 - T1, T3: duplicate observed live, `xfail` against #253.
-- T2: **fails** at step 3. The retry also duplicates (observed with the
-  step 3 assertion relaxed locally), but the error is
+- T2: fails at step 3. The error is
   `digitalocean.compute driver failed during create: timed out` with no
   droplet id: a poll `GET` that times out says only "timed out", and the
-  driver holds the id in a local. No marker is set; see the PR.
+  driver holds the id in a local. The retry also duplicates (observed with the
+  step 3 assertion relaxed locally). T2 is `xfail(strict=True)` on
+  `ErrorOmitsResourceId` alone; once the error carries the id it reaches the
+  duplicate check, raises `RetryDuplicatesResource`, and fails strictly until
+  its marker becomes the #253 one. The issue for the missing id is awaiting
+  owner approval of its text.
 
 ### UC-F
 

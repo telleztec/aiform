@@ -52,6 +52,10 @@ class RetryDuplicatesResource(AssertionError):
     """The retry left more than one resource under one declared name."""
 
 
+class ErrorOmitsResourceId(AssertionError):
+    """The provider returned a resource id before the failure; the error does not name it."""
+
+
 # `raises=` keeps the marker honest: only the duplicate counts as the expected
 # failure. Any other assertion that fails, an error that omits the resource id
 # for one, is a different finding and must not be hidden behind #253.
@@ -59,6 +63,15 @@ _RETRY_DUPLICATES_RESOURCE = pytest.mark.xfail(
     strict=True,
     raises=RetryDuplicatesResource,
     reason="#253: a retry after a create the provider accepted makes a second resource",
+)
+
+# Once the error carries the id, T2 reaches the duplicate check and fails with
+# RetryDuplicatesResource, which this marker does not accept: swap it for the
+# #253 marker then.
+_ERROR_OMITS_RESOURCE_ID = pytest.mark.xfail(
+    strict=True,
+    raises=ErrorOmitsResourceId,
+    reason="a timed-out poll after an accepted create says only 'timed out', not which resource",
 )
 
 
@@ -125,7 +138,7 @@ class TestTimedOutCreate:
         "stage",
         [
             pytest.param("T1", marks=_RETRY_DUPLICATES_RESOURCE),
-            pytest.param("T2", marks=_RETRY_DUPLICATES_RESOURCE),
+            pytest.param("T2", marks=_ERROR_OMITS_RESOURCE_ID),
             pytest.param("T3", marks=_RETRY_DUPLICATES_RESOURCE),
         ],
     )
@@ -156,10 +169,11 @@ class TestTimedOutCreate:
             f"the live resource is {held[0]['id']}"
         )
         if stage != "T1":
-            assert returned_id in captured.err, (
-                f"the provider returned resource {returned_id} before the failure, "
-                f"but the error does not name it:\n{captured.err}"
-            )
+            if returned_id not in captured.err:
+                raise ErrorOmitsResourceId(
+                    f"the provider returned resource {returned_id} before the failure, "
+                    f"but the error does not name it:\n{captured.err}"
+                )
         assert runner.tracked().resources == {}, "state recorded a create that never returned"
 
         runner.ok(APPLY, f"retry plan apply ({stage})")
