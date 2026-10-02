@@ -29,6 +29,7 @@ from tests.system.conftest import (
     _find_droplet_id_by_name,
     destroy_droplet_or_shout,
     is_sweepable_droplet,
+    list_droplets_tagged,
     unique_zone_name,
     write_domain_aiform_md,
     zone_created_at,
@@ -308,3 +309,31 @@ class TestRecoveringADropletIdByName:
         )
         with pytest.warns(UserWarning, match="it is billing"):
             assert _find_droplet_id_by_name("tok", "wanted") is None
+
+
+class TestListingDropletsByTag:
+    def test_the_filter_is_sent_to_the_provider_not_applied_afterwards(self, monkeypatch):
+        # The interrupt suite looks droplets up by name to find the ones a
+        # killed run left behind. The production droplet is untagged, so it
+        # stays out of the response only if DigitalOcean does the filtering.
+        urls: list[str] = []
+
+        def fake_api(token, method, url, body=None):
+            urls.append(url)
+            return {"droplets": [{"id": 1, "name": "mine"}], "links": {}}
+
+        monkeypatch.setattr(conftest, "_do_api", fake_api)
+        assert list_droplets_tagged("tok", "aiform-system-test") == [{"id": 1, "name": "mine"}]
+        assert urls == [
+            "https://api.digitalocean.com/v2/droplets?per_page=200&tag_name=aiform-system-test"
+        ]
+
+    def test_the_tag_is_url_quoted(self, monkeypatch):
+        urls: list[str] = []
+        monkeypatch.setattr(
+            conftest,
+            "_do_api",
+            lambda token, method, url, body=None: urls.append(url) or {"droplets": []},
+        )
+        list_droplets_tagged("tok", "a&b=c")
+        assert urls[0].endswith("&tag_name=a%26b%3Dc")

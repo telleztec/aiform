@@ -699,7 +699,7 @@ def list_domain_records(token: str, zone: str) -> list[dict]:
     return payload.get("domain_records", [])
 
 
-def _list_all(token: str, collection: str) -> list[dict]:
+def _list_all(token: str, collection: str, *, query: str = "") -> list[dict]:
     """Every object in a paginated DigitalOcean collection.
 
     `next` comes out of a response *body*, and this loop sends the live
@@ -720,7 +720,7 @@ def _list_all(token: str, collection: str) -> list[dict]:
     listings exist to catch.
     """
     objects: list[dict] = []
-    url = f"{DO_API_BASE}/{collection}?per_page=200"
+    url = f"{DO_API_BASE}/{collection}?per_page=200{query}"
     pages = 0
     while url:
         parts = urllib.parse.urlsplit(url)
@@ -839,6 +839,12 @@ def unique_droplet_name(label: str = "attach") -> str:
 
 def list_droplets(token: str) -> list[dict]:
     return _list_all(token, "droplets")
+
+
+def list_droplets_tagged(token: str, tag: str) -> list[dict]:
+    """Only the droplets carrying `tag`. DigitalOcean filters server-side, so
+    an untagged droplet -- the production one -- is never in the response."""
+    return _list_all(token, "droplets", query=f"&tag_name={urllib.parse.quote(tag)}")
 
 
 def delete_droplet_directly(token: str, droplet_id: int | str) -> None:
