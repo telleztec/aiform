@@ -23,6 +23,7 @@ import pytest
 
 from aiform import state
 from tests.system.fault_injection import (
+    Fault,
     InjectedInterrupt,
     fail_request,
     interrupt_after_request,
@@ -491,6 +492,21 @@ class TestFailRequestWorkerLifetime:
                 assert time.monotonic() - started < 2
                 release.set()
                 fault.join()
+        finally:
+            release.set()
+
+    def test_a_bounded_join_names_every_worker_still_running(self):
+        release = threading.Event()
+        fault = Fault()
+        for request in ("POST /v2/droplets", "GET /v2/droplets/1"):
+            worker = threading.Thread(target=release.wait, daemon=True)
+            worker.start()
+            fault._workers.append((worker, request))
+        try:
+            with pytest.raises(RuntimeError) as raised:
+                fault.join(timeout=0.05)
+            assert "POST /v2/droplets" in str(raised.value)
+            assert "GET /v2/droplets/1" in str(raised.value)
         finally:
             release.set()
 

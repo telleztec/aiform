@@ -49,17 +49,20 @@ class Fault:
     def join(self, timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS) -> None:
         """Wait for every late provider call a `timeout` fault started.
 
-        Raises if one is still running, or if one failed: a late call that
+        Raises if any is still running, or if one failed: a late call that
         never reached the provider means the provider did not act, and a stage
         that goes on would pass without reproducing the shape it names.
         """
-        for worker, request in self._workers:
-            worker.join(timeout)
-            if worker.is_alive():
-                raise RuntimeError(
-                    f"a late provider call ({request}) is still running after {timeout}s; "
-                    "it may yet create a resource, so look for it by name at the provider"
-                )
+        deadline = time.monotonic() + timeout
+        for worker, _ in self._workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        running = [request for worker, request in self._workers if worker.is_alive()]
+        if running:
+            raise RuntimeError(
+                f"late provider calls ({', '.join(running)}) are still running after "
+                f"{timeout}s; they may yet create a resource, so look for it by name "
+                "at the provider"
+            )
         if self.worker_error is not None:
             raise RuntimeError("a late provider call failed") from self.worker_error
 
