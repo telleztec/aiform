@@ -38,11 +38,18 @@ class Fault:
     _workers: list[threading.Thread] = field(default_factory=list, repr=False)
 
     def join(self, timeout: float = 10.0) -> None:
-        """Wait for every late provider call a `timeout` fault started."""
+        """Wait for every late provider call a `timeout` fault started.
+
+        Raises if one is still running, or if one failed: a late call that
+        never reached the provider means the provider did not act, and a stage
+        that goes on would pass without reproducing the shape it names.
+        """
         for worker in self._workers:
             worker.join(timeout)
             if worker.is_alive():
                 raise RuntimeError(f"a late provider call is still running after {timeout}s")
+        if self.worker_error is not None:
+            raise RuntimeError("a late provider call failed") from self.worker_error
 
 
 class _ReplayedResponse:
@@ -189,8 +196,6 @@ def interrupt_after_state_save(
         state.save = real
 
 
-DEFAULT_DELAY_SECONDS = 1.5
-DEFAULT_DEADLINE_SECONDS = 1.0
 DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0
 
 
@@ -202,8 +207,8 @@ def _timeout(
     kwargs: dict,
     *,
     provider_acts: bool,
-    delay: float,
-    deadline: float,
+    delay: float = 1.5,
+    deadline: float = 1.0,
 ) -> Any:
     """The caller's deadline passes before the (slow) provider call returns."""
 
@@ -224,7 +229,16 @@ def _timeout(
     raise TimeoutError(f"injected: {method} {url} timed out after {deadline}s")
 
 
-_FAILURES: dict[str, Callable[..., Any]] = {"timeout": _timeout}
+def _check_timeout_options(delay: float = 1.5, deadline: float = 1.0) -> None:
+    if delay <= deadline:
+        raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
+
+
+# kind -> (handler, option checker). Each kind owns its options: the handler
+# takes them as keywords, the checker rejects a bad set at the call.
+_FAILURES: dict[str, tuple[Callable[..., Any], Callable[..., None]]] = {
+    "timeout": (_timeout, _check_timeout_options),
+}
 
 
 def fail_request(
@@ -234,26 +248,25 @@ def fail_request(
     *,
     provider_acts: bool = True,
     occurrence: int = 1,
-    delay: float = DEFAULT_DELAY_SECONDS,
-    deadline: float = DEFAULT_DEADLINE_SECONDS,
     join_timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
+    **options: Any,
 ) -> contextlib.AbstractContextManager[Fault]:
     """Make the caller see `failure` on the `occurrence`th match, while the
-    provider (when `provider_acts`) still does the work. Arguments are checked
-    here, so a bad call fails at the call and not on entering the block."""
+    provider (when `provider_acts`) still does the work. `options` belong to
+    the kind (`timeout`: `delay`, `deadline`). Everything is checked here, so a
+    bad call fails at the call and not on entering the block."""
     if failure not in _FAILURES:
         raise ValueError(f"unknown failure {failure!r}; known: {', '.join(sorted(_FAILURES))}")
-    if delay <= deadline:
-        raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
+    handler, check_options = _FAILURES[failure]
+    check_options(**options)
     return _fail_request(
         method,
         url_pattern,
-        _FAILURES[failure],
+        handler,
         provider_acts=provider_acts,
         occurrence=occurrence,
-        delay=delay,
-        deadline=deadline,
         join_timeout=join_timeout,
+        options=options,
     )
 
 
@@ -265,9 +278,8 @@ def _fail_request(
     *,
     provider_acts: bool,
     occurrence: int,
-    delay: float,
-    deadline: float,
     join_timeout: float,
+    options: dict[str, Any],
 ) -> Iterator[Fault]:
     fault = Fault()
     pattern = re.compile(url_pattern)
@@ -285,14 +297,7 @@ def _fail_request(
                 return real(request, *args, **kwargs)
             fault.fired = True
             return failure(
-                fault,
-                real,
-                request,
-                args,
-                kwargs,
-                provider_acts=provider_acts,
-                delay=delay,
-                deadline=deadline,
+                fault, real, request, args, kwargs, provider_acts=provider_acts, **options
             )
 
         return urlopen

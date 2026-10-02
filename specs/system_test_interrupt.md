@@ -58,16 +58,19 @@ Each is a context manager yielding a `Fault`.
 
 ```python
 fail_request(method, url_pattern, failure, *, provider_acts=True, occurrence=1,
-             delay=1.5, deadline=1.0, join_timeout=10.0)
+             join_timeout=10.0, **options)   # timeout: delay=1.5, deadline=1.0
 Fault.worker_error: BaseException | None
-Fault.join(timeout=10.0)    # raises RuntimeError if a late call is still running
+Fault.join(timeout=10.0)    # RuntimeError if a late call is running or failed
 ```
 
 `fail_request` makes the caller see `failure` instead of the response. `failure`
-is a key into a small dispatch table (`_FAILURES`); `"timeout"` is the only one
-today and later kinds (URL failures) are added there, not as classes. Its
-arguments are checked at the call: an unknown `failure`, or `delay <= deadline`,
-raises `ValueError` before any block is entered.
+is a key into a small dispatch table (`_FAILURES`, kind -> handler and option
+checker); `"timeout"` is the only one today and later kinds (URL failures) are
+added there, not as classes. `**options` belong to the kind: `timeout` takes
+`delay` and `deadline`, another kind takes none and is never given or checked
+against them. Arguments are checked at the call: an unknown `failure`, an option
+the kind does not know (`TypeError`), or `delay <= deadline` (`ValueError`)
+raises before any block is entered.
 
 `tests/system/provider_profile.py` holds `ProviderProfile`: the create request,
 the poll request (each a `(method, url_pattern)` pair), `resource_id(body)`
@@ -111,9 +114,18 @@ no registry. A stage asks the profile and names no provider. Tested offline in
   interrupt. The worker's body is parsed into `Fault.response` when it
   arrives (so a ledger can learn the id), and any exception it hits lands in
   `Fault.worker_error`. With `provider_acts=False` no worker runs and the real
-  `urlopen` is never called. `join()` is bounded; leaving the block joins every
-  worker, after restoring `urlopen`, even when the body raised, and a worker
-  still running then is a `RuntimeError`.
+  `urlopen` is never called. `join()` is bounded and raises `RuntimeError` if a
+  worker is still running or if its call failed (a late call that never reached
+  the provider means the provider did not act, so the stage has not reproduced
+  the shape it names). Leaving the block joins every worker, after restoring
+  `urlopen`, even when the body raised. A worker still running at that point
+  cannot be stopped: its request may yet reach the provider after teardown, and
+  a resource it creates is caught only by teardown's by-name match and the
+  session sweep. The injected `TimeoutError` is an `Exception` (unlike
+  `InjectedInterrupt`), so a caller that catches it carries on: the driver's
+  `_poll_until` timeout is swallowed in the SSH power-off path
+  (`drivers/digitalocean/compute.py`), so a stage must not inject there and
+  expect a failure.
 - An injector fires at most once. Afterwards it passes everything through,
   so `finally` blocks that make provider calls are not cut off a second time.
 - Installing is scoped: the original `urlopen` and `save` are restored on

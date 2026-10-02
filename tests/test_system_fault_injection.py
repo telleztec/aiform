@@ -74,6 +74,14 @@ def provider(monkeypatch):
     return types.SimpleNamespace(reached=reached, bodies=bodies, responses=responses)
 
 
+def blocked_until(release: threading.Event):
+    def urlopen(*args, **kwargs):
+        release.wait(5)
+        return FakeResponse(b"{}")
+
+    return urlopen
+
+
 def call(method: str, url: str):
     request = urllib.request.Request(url, method=method)
     with urllib.request.urlopen(request, timeout=5) as response:
@@ -368,16 +376,30 @@ class TestFailRequestTimeout:
             fault.join()
         assert fault.response is None
 
-    def test_a_failure_in_the_late_call_is_recorded_not_raised_from_the_worker(self, monkeypatch):
+    def test_a_failed_late_call_is_recorded_and_makes_the_block_fail_loudly(self, monkeypatch):
         def refusing(request, *args, **kwargs):
             raise urllib.error.URLError("refused")
 
         monkeypatch.setattr(urllib.request, "urlopen", refusing)
-        with a_timeout() as fault:
-            with pytest.raises(TimeoutError):
-                call("POST", DROPLETS)
-            fault.join()
+        with pytest.raises(RuntimeError, match="late provider call failed") as raised:
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
         assert isinstance(fault.worker_error, urllib.error.URLError)
+        assert raised.value.__cause__ is fault.worker_error
+
+    def test_join_reports_a_failed_late_call_so_a_stage_cannot_pass_without_the_provider_acting(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+        )
+        with pytest.raises(RuntimeError, match="late provider call failed"):
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                with pytest.raises(RuntimeError, match="late provider call failed"):
+                    fault.join()
 
     def test_a_request_that_does_not_match_passes_straight_through(self, provider):
         with a_timeout() as fault:
@@ -422,6 +444,10 @@ class TestFailRequestTimeout:
             fault.join()
         assert fault.seen == [("GET", DROPLETS), ("POST", DROPLETS)]
 
+    def test_a_timing_option_the_kind_does_not_know_is_rejected(self):
+        with pytest.raises(TypeError):
+            fail_request("POST", r"/x$", "timeout", sleepiness=3)
+
     def test_the_deadline_must_be_shorter_than_the_delay(self):
         with pytest.raises(ValueError, match="delay"):
             fail_request("POST", r"/x$", "timeout", delay=0.1, deadline=0.1)
@@ -441,7 +467,7 @@ class TestFailRequestTimeout:
 class TestFailRequestWorkerLifetime:
     def test_a_bounded_join_reports_a_worker_that_will_not_finish(self, monkeypatch):
         release = threading.Event()
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: release.wait(5))
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
         try:
             with a_timeout() as fault:
                 with pytest.raises(TimeoutError):
@@ -474,7 +500,7 @@ class TestFailRequestWorkerLifetime:
 
     def test_exit_does_not_wait_forever_on_a_hung_worker(self, monkeypatch):
         release = threading.Event()
-        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: release.wait(5))
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
         started = time.monotonic()
         try:
             with pytest.raises(RuntimeError, match="still running"):
@@ -491,3 +517,24 @@ class TestFailRequestWorkerLifetime:
         finally:
             release.set()
         assert time.monotonic() - started < 3
+
+
+class TestFailureKindsOwnTheirOptions:
+    def test_a_kind_without_timing_options_is_neither_given_nor_checked_against_them(
+        self, provider, monkeypatch
+    ):
+        from tests.system import fault_injection
+
+        seen_options = {}
+
+        def reset(fault, real, request, args, kwargs, *, provider_acts, **options):
+            seen_options.update(options)
+            raise ConnectionResetError("injected")
+
+        monkeypatch.setitem(fault_injection._FAILURES, "reset", (reset, lambda **options: None))
+        with fail_request("POST", r"/v2/droplets$", "reset", provider_acts=False) as fault:
+            with pytest.raises(ConnectionResetError):
+                call("POST", DROPLETS)
+        assert fault.fired is True
+        assert seen_options == {}
+        assert provider.reached == []
