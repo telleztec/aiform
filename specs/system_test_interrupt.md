@@ -18,7 +18,9 @@ Until now both were established by reading the code. A mock cannot settle
 either, because the mock encodes the same ordering assumption the
 orchestrator does.
 
-Plan and approval: `plans/interrupt-retry-live-tests.md` (#239).
+Plan and approval: `plans/interrupt-retry-live-tests.md` (#239). The timeout
+and URL-failure follow-ups (a stack on the same injector):
+`plans/fault-timeout-live-tests.md`.
 
 ## Interface
 
@@ -54,6 +56,33 @@ interrupt_after_state_save(predicate, *, occurrence=1)
 
 Each is a context manager yielding a `Fault`.
 
+```python
+fail_request(method, url_pattern, failure, *, provider_acts=True, occurrence=1,
+             join_timeout=10.0, **options)   # timeout: delay=1.5, deadline=1.0
+Fault.worker_error: BaseException | None
+Fault.join(timeout=10.0)    # RuntimeError if a late call is running or failed
+```
+
+`fail_request` makes the caller see `failure` instead of the response. `failure`
+is a key into a small dispatch table (`_FAILURES`, kind -> handler and option
+checker); `"timeout"` is the only one today and later kinds (URL failures) are
+added there, not as classes. `**options` belong to the kind: `timeout` takes
+`delay` and `deadline`, another kind takes none and is never given or checked
+against them. Arguments are checked at the call: an unknown `failure`, an option
+the kind does not know (`TypeError`), or `delay <= deadline` (`ValueError`)
+raises before any block is entered.
+
+`tests/system/provider_profile.py` holds `ProviderProfile`: the create request,
+the poll request (each a `(method, url_pattern)` pair), `resource_id(body)`
+(the id in a create or poll response, or `None`), `not_ready(body)` (a poll
+body rewritten to report the resource not ready), `poll_loop` (the name of the
+driver function whose sleeps a stage may skip), and `list_owned(token)` for
+teardown. `DIGITALOCEAN` is the only instance; there is no registry. A stage's
+own logic asks the profile and names no provider; the shared helpers it reuses
+from the interrupt suite (`unique_droplet_name`, the ledger's `droplet_names`)
+still carry DigitalOcean words. Tested offline in
+`tests/test_system_provider_profile.py`.
+
 ## Behavior
 
 ### The injector
@@ -81,8 +110,34 @@ Each is a context manager yielding a `Fault`.
   calling the provider.
 - `interrupt_after_state_save` calls the real `state.save`, then raises on
   the `occurrence`th save whose state satisfies `predicate`.
-- An injector fires at most once. Afterwards it passes everything through,
-  so `finally` blocks that make provider calls are not cut off a second time.
+- `fail_request(..., "timeout")` is the race the client loses. On the
+  `occurrence`th match a worker thread sleeps `delay`, then calls the real
+  `urlopen`; the caller waits `deadline` and raises `TimeoutError`. `delay` is
+  longer than `deadline`, so the caller always loses and, with
+  `provider_acts=True`, the provider still acts: the #253 shape, without an
+  interrupt. The worker's body is parsed into `Fault.response` when it
+  arrives (so a ledger can learn the id), and any exception it hits lands in
+  `Fault.worker_error`. With `provider_acts=False` no worker runs and the real
+  `urlopen` is never called. `join()` is bounded and raises `RuntimeError` if a
+  worker is still running or if its call failed (a late call that never reached
+  the provider means the provider did not act, so the stage has not reproduced
+  the shape it names). Leaving the block joins every worker, after restoring
+  `urlopen`, even when the body raised. When the body raised, its exception
+  propagates and a join failure is attached to it as a note, so a failing
+  assertion is never replaced by "a late call is still running". The join
+  failure names the late request (method and URL) and says to look for the
+  resource by name. A worker still running at that point cannot be stopped:
+  its request may yet reach the provider after teardown, and a resource it
+  creates is caught only by teardown's by-name match; the session sweep skips
+  anything younger than 60 minutes, so it catches a leak only on a later run.
+  The injected `TimeoutError` is an `Exception` (unlike
+  `InjectedInterrupt`), so a caller that catches it carries on: the driver's
+  `_poll_until` timeout is swallowed in the SSH power-off path
+  (`drivers/digitalocean/compute.py`), so a stage must not inject there and
+  expect a failure.
+- `interrupt_*` and `fail_request` fire at most once. Afterwards they pass
+  everything through, so `finally` blocks that make provider calls are not cut
+  off a second time. `rewrite_responses` rewrites every match.
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
@@ -132,6 +187,73 @@ so a retry cannot know the first droplet exists and POSTs a second. The tests
 assert the desired behaviour (one droplet per declared name) under
 `xfail(strict=True, reason="#253...")`. The other stages converge, confirmed
 live.
+
+### Timeout stages
+
+`tests/system/test_cli_timeout.py`, four stages in one parametrized test
+(`-k T2` selects one). A real timeout cannot be waited for, so the caller
+loses a race: `fail_request(..., "timeout")` lets the real request reach the
+provider (T4 passes `provider_acts=False` and does not) and raises
+`TimeoutError("timed out")` at the caller, the message urllib itself gives, so
+nothing from the request leaks into aiform's error.
+Every stage asserts, in order:
+
+1. The faulted run exits non-zero and its stderr names the failed operation
+   (`driver failed during create`).
+2. The provider holds exactly one resource under the declared name, found by
+   name and not by the response the test injected, and the id in the
+   provider's response (read through `ProviderProfile.resource_id`) is that
+   resource's id. State tracks nothing.
+3. T2 and T3 only: the error names that id. T1 asserts the operation name only,
+   because no response was ever read. T4 is the control: in place of step 2's
+   provider assertions and of step 3, the provider holds nothing under the name,
+   because the request never reached it. State still tracks nothing.
+4. The retry exits 0 and leaves exactly one resource per declared name; the
+   duplicate is raised as `RetryDuplicatesResource`, which is what the
+   `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
+   accepts, so any other failed assertion is not hidden by it. T4 carries no
+   marker and must pass outright.
+5. A second run is a no-op with zero Anthropic calls.
+
+| Stage | Where the caller loses | Helper |
+|---|---|---|
+| T1 | the create `POST` | `fail_request` |
+| T2 | the first poll `GET` | `fail_request` |
+| T3 | every poll reports the resource not ready until the poll budget is spent | `rewrite_responses` + `skip_driver_sleeps` |
+| T4 | the create `POST`, which the provider never receives (`provider_acts=False`) | `fail_request` |
+
+`rewrite_responses(method, url_pattern, rewrite)` hands the real response body
+to `rewrite` and returns the result in its place; T3 passes the profile's
+`not_ready`. `skip_driver_sleeps(functions)` makes `time.sleep` return at once
+for calls made directly by a function named in `functions` (T3 passes the
+profile's `poll_loop`) in a module named `aiform_driver_*`, so the driver's own
+poll loop runs to exhaustion in seconds. A driver's other waits, such as the
+key-propagation backoff in create, still sleep: skipping them would let T3 die
+on a provider error instead of the exhausted poll budget. This patches the shared `time.sleep` and filters on caller, not a
+driver module attribute as the plan worded it, because `load_driver()` execs
+the driver afresh on every call and a module-level patch would not survive.
+
+The runner and teardown shared with the interrupt suite live in
+`tests/system/live_support.py`.
+
+Live results, 2026-10-02 (rerun on head `d38fb35` after review: 3 xfailed, no
+XPASS, no leaks):
+
+- T1, T3: duplicate observed live, `xfail` against #253.
+- T2: fails at step 3. The error is
+  `digitalocean.compute driver failed during create: timed out` with no
+  droplet id: a poll `GET` that times out says only "timed out", and the
+  driver holds the id in a local. The retry also duplicates (observed with the
+  step 3 assertion relaxed locally). T2 is `xfail(strict=True)` on
+  `ErrorOmitsResourceId` alone; once the error carries the id it reaches the
+  duplicate check, raises `RetryDuplicatesResource`, and fails strictly until
+  its marker becomes the #253 one. The issue for the missing id is awaiting
+  owner approval of its text.
+- T4 (live, 2026-10-02): passes. A create that times out without reaching the
+  provider leaves nothing there and nothing in state; the retry makes exactly
+  one droplet and the second run is a no-op. Against T1, which differs only in
+  that the provider does act, it shows the duplicate comes from the accepted
+  create and not from the timeout itself.
 
 ### UC-F
 
@@ -188,6 +310,12 @@ live.
 - **SIGKILL or a killed subprocess.** In-process injection reaches the same
   points deterministically; killing a process at a precise point is not
   reproducible.
+- **A non-urllib driver.** The injector wraps `urllib.request.urlopen`, which
+  every driver reaches today. A driver on an SDK with its own HTTP stack (boto3)
+  needs a different seam; not built.
+- **Moving the injector out of `tests/system/`.** It stays beside the suite that
+  uses it. Using it from a default-run test would be a move, taken when there
+  is a second user.
 - **Fixing anything found.** A stage that exposes a real bug is marked
   `xfail(strict=True)` with its issue number (C1 and C2: #253). No change to
   `aiform/` or `drivers/` in this work.

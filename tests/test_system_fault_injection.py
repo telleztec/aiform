@@ -13,6 +13,8 @@ live suite's own result, and the live suite is billable.
 
 import io
 import json
+import threading
+import time
 import types
 import urllib.error
 import urllib.request
@@ -22,9 +24,12 @@ import pytest
 from aiform import state
 from tests.system.fault_injection import (
     InjectedInterrupt,
+    fail_request,
     interrupt_after_request,
     interrupt_after_state_save,
     interrupt_before_request,
+    rewrite_responses,
+    skip_driver_sleeps,
 )
 
 
@@ -69,6 +74,14 @@ def provider(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     return types.SimpleNamespace(reached=reached, bodies=bodies, responses=responses)
+
+
+def blocked_until(release: threading.Event):
+    def urlopen(*args, **kwargs):
+        release.wait(5)
+        return FakeResponse(b"{}")
+
+    return urlopen
 
 
 def call(method: str, url: str):
@@ -307,3 +320,383 @@ class TestInterruptAfterStateSave:
             with interrupt_after_state_save(lambda st: True):
                 state.save(types.SimpleNamespace(resources={}), "ignored")
         assert state.save is installed
+
+
+SLOW = 0.3
+DEADLINE = 0.05
+
+
+def a_timeout(**kwargs):
+    return fail_request(
+        "POST", r"/v2/droplets$", "timeout", delay=SLOW, deadline=DEADLINE, **kwargs
+    )
+
+
+class TestFailRequestTimeout:
+    def test_the_caller_gives_up_at_the_deadline_with_a_timeout_error(self, provider):
+        with a_timeout() as fault:
+            started = time.monotonic()
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            elapsed = time.monotonic() - started
+            fault.join()
+
+        assert DEADLINE * 0.9 <= elapsed < SLOW
+
+    def test_the_error_carries_nothing_from_the_request(self, provider):
+        # A real urllib timeout says only "timed out". A message that echoed the
+        # URL would put the resource id in the output on the injector's say-so,
+        # and a stage asserting the driver reports the id would pass on that.
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError) as raised:
+                call("POST", DROPLETS)
+            fault.join()
+
+        assert str(raised.value) == "timed out"
+
+    def test_the_provider_has_not_been_reached_when_the_caller_gives_up(self, provider):
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            assert provider.reached == []
+            fault.join()
+
+    def test_the_provider_still_acts_after_the_caller_has_given_up(self, provider):
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            fault.join()
+
+        assert provider.reached == [("POST", DROPLETS)]
+        assert fault.fired is True
+
+    def test_the_late_response_is_recorded_so_the_caller_can_learn_the_resource_id(self, provider):
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 4242}}'
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            assert fault.response is None
+            fault.join()
+
+        assert fault.response == {"droplet": {"id": 4242}}
+        assert all(response.closed for response in provider.responses)
+
+    def test_a_late_response_that_is_not_json_is_recorded_as_none(self, provider):
+        provider.bodies[("POST", DROPLETS)] = b"not json"
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            fault.join()
+        assert fault.response is None
+
+    def test_a_failed_late_call_is_recorded_and_makes_the_block_fail_loudly(self, monkeypatch):
+        def refusing(request, *args, **kwargs):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", refusing)
+        with pytest.raises(RuntimeError, match="late provider call failed") as raised:
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+        assert isinstance(fault.worker_error, urllib.error.URLError)
+        assert raised.value.__cause__ is fault.worker_error
+
+    def test_join_reports_a_failed_late_call_so_a_stage_cannot_pass_without_the_provider_acting(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+        )
+        with pytest.raises(RuntimeError, match="late provider call failed"):
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                with pytest.raises(RuntimeError, match="late provider call failed"):
+                    fault.join()
+
+    def test_a_request_that_does_not_match_passes_straight_through(self, provider):
+        with a_timeout() as fault:
+            started = time.monotonic()
+            assert call("GET", DROPLETS) == {}
+            assert time.monotonic() - started < DEADLINE
+        assert fault.fired is False
+        assert provider.reached == [("GET", DROPLETS)]
+
+    def test_only_the_requested_occurrence_loses_the_race(self, provider):
+        with a_timeout(occurrence=2) as fault:
+            assert call("POST", DROPLETS) == {}
+            assert fault.fired is False
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            fault.join()
+        assert fault.fired is True
+        assert provider.reached == [("POST", DROPLETS)] * 2
+
+    def test_it_fires_at_most_once(self, provider):
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            assert call("POST", DROPLETS) == {}
+            fault.join()
+        assert provider.reached == [("POST", DROPLETS)] * 2
+
+    def test_a_provider_that_does_not_act_is_never_called(self, provider):
+        with a_timeout(provider_acts=False) as fault:
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            fault.join()
+        assert provider.reached == []
+        assert fault.fired is True
+        assert fault.response is None
+
+    def test_seen_lists_every_request_made_while_installed(self, provider):
+        with a_timeout() as fault:
+            call("GET", DROPLETS)
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+            fault.join()
+        assert fault.seen == [("GET", DROPLETS), ("POST", DROPLETS)]
+
+    def test_a_timing_option_the_kind_does_not_know_is_rejected(self):
+        with pytest.raises(TypeError):
+            fail_request("POST", r"/x$", "timeout", sleepiness=3)
+
+    def test_the_deadline_must_be_shorter_than_the_delay(self):
+        with pytest.raises(ValueError, match="delay"):
+            fail_request("POST", r"/x$", "timeout", delay=0.1, deadline=0.1)
+
+    def test_an_unknown_failure_kind_is_rejected_with_the_known_ones_named(self):
+        with pytest.raises(ValueError, match="timeout"):
+            fail_request("POST", r"/x$", "meltdown")
+
+    def test_a_bare_string_url_is_matched_as_a_get(self, provider):
+        with fail_request("GET", r"/v2/droplets$", "timeout", delay=SLOW, deadline=DEADLINE) as f:
+            with pytest.raises(TimeoutError):
+                urllib.request.urlopen(DROPLETS, timeout=5)
+            f.join()
+        assert provider.reached == [("GET", DROPLETS)]
+
+
+class TestFailRequestWorkerLifetime:
+    def test_a_bounded_join_reports_a_worker_that_will_not_finish(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        try:
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                started = time.monotonic()
+                with pytest.raises(RuntimeError, match="still running"):
+                    fault.join(timeout=0.1)
+                assert time.monotonic() - started < 2
+                release.set()
+                fault.join()
+        finally:
+            release.set()
+
+    def test_leaving_the_block_joins_the_worker_even_when_the_body_raises(self, provider):
+        with pytest.raises(ValueError, match="boom"):
+            with a_timeout():
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                raise ValueError("boom")
+
+        assert provider.reached == [("POST", DROPLETS)]
+
+    def test_a_failing_body_is_not_replaced_by_a_hung_worker(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        try:
+            with pytest.raises(AssertionError, match="the real finding") as raised:
+                with fail_request(
+                    "POST",
+                    r"/v2/droplets$",
+                    "timeout",
+                    delay=SLOW,
+                    deadline=DEADLINE,
+                    join_timeout=0.1,
+                ):
+                    with pytest.raises(TimeoutError):
+                        call("POST", DROPLETS)
+                    raise AssertionError("the real finding")
+        finally:
+            release.set()
+        assert any("still running" in note for note in raised.value.__notes__)
+
+    def test_a_failing_body_is_not_replaced_by_a_failed_late_call(self, monkeypatch):
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+        )
+        with pytest.raises(AssertionError, match="the real finding") as raised:
+            with a_timeout():
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                raise AssertionError("the real finding")
+        assert any("late provider call failed" in note for note in raised.value.__notes__)
+
+    def test_a_hung_worker_is_reported_with_the_request_to_hunt_for(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        try:
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                with pytest.raises(RuntimeError) as raised:
+                    fault.join(timeout=0.1)
+                release.set()
+                fault.join()
+        finally:
+            release.set()
+        message = str(raised.value)
+        assert f"POST {DROPLETS}" in message
+        assert "by name" in message
+
+    def test_urlopen_is_restored_on_exit_even_with_a_slow_worker(self, provider):
+        installed = urllib.request.urlopen
+        with a_timeout():
+            assert urllib.request.urlopen is not installed
+            with pytest.raises(TimeoutError):
+                call("POST", DROPLETS)
+        assert urllib.request.urlopen is installed
+
+    def test_exit_does_not_wait_forever_on_a_hung_worker(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        started = time.monotonic()
+        try:
+            with pytest.raises(RuntimeError, match="still running"):
+                with fail_request(
+                    "POST",
+                    r"/v2/droplets$",
+                    "timeout",
+                    delay=SLOW,
+                    deadline=DEADLINE,
+                    join_timeout=0.1,
+                ):
+                    with pytest.raises(TimeoutError):
+                        call("POST", DROPLETS)
+        finally:
+            release.set()
+        assert time.monotonic() - started < 3
+
+
+class TestFailureKindsOwnTheirOptions:
+    def test_a_kind_without_timing_options_is_neither_given_nor_checked_against_them(
+        self, provider, monkeypatch
+    ):
+        from tests.system import fault_injection
+
+        seen_options = {}
+
+        def reset(fault, real, request, args, kwargs, *, provider_acts, **options):
+            seen_options.update(options)
+            raise ConnectionResetError("injected")
+
+        monkeypatch.setitem(fault_injection._FAILURES, "reset", (reset, lambda **options: None))
+        with fail_request("POST", r"/v2/droplets$", "reset", provider_acts=False) as fault:
+            with pytest.raises(ConnectionResetError):
+                call("POST", DROPLETS)
+        assert fault.fired is True
+        assert seen_options == {}
+        assert provider.reached == []
+
+
+DROPLET_42 = "https://api.digitalocean.com/v2/droplets/42"
+
+
+def reports_new(body):
+    body["droplet"]["status"] = "new"
+    return body
+
+
+class TestRewriteResponses:
+    @pytest.fixture(autouse=True)
+    def an_active_droplet(self, provider):
+        provider.bodies[("GET", DROPLET_42)] = b'{"droplet": {"id": 42, "status": "active"}}'
+
+    def test_every_match_hands_the_caller_the_rewritten_body(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new):
+            first = call("GET", DROPLET_42)
+            second = call("GET", DROPLET_42)
+
+        assert first == second == {"droplet": {"id": 42, "status": "new"}}
+
+    def test_the_provider_is_reached_by_every_matching_call(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            call("GET", DROPLET_42)
+            call("GET", DROPLET_42)
+
+        assert provider.reached == [("GET", DROPLET_42)] * 2
+        assert fault.fired is True
+
+    def test_the_real_body_is_kept_so_the_caller_can_learn_the_resource_id(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            call("GET", DROPLET_42)
+
+        assert fault.response == {"droplet": {"id": 42, "status": "active"}}
+
+    def test_a_non_match_is_returned_untouched(self, provider):
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 7, "status": "new"}}'
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            assert call("POST", DROPLETS) == {"droplet": {"id": 7, "status": "new"}}
+
+        assert fault.fired is False
+
+    def test_a_body_that_is_not_json_is_returned_untouched(self, provider):
+        provider.bodies[("GET", DROPLET_42)] = b"not json"
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            with pytest.raises(ValueError):
+                call("GET", DROPLET_42)
+
+        assert fault.fired is False
+
+    def test_urlopen_is_restored_afterwards(self, provider):
+        installed = urllib.request.urlopen
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new):
+            assert urllib.request.urlopen is not installed
+        assert urllib.request.urlopen is installed
+
+
+def called_from(module_name: str, function: str, seconds: float) -> None:
+    """Run `time.sleep(seconds)` inside a function called `function`, in code
+    whose module is `module_name`, the way load_driver() names a driver it
+    exec's from disk."""
+    namespace = {"__name__": module_name, "time": time}
+    exec(f"def {function}(seconds):\n    time.sleep(seconds)", namespace)
+    namespace[function](seconds)
+
+
+DRIVER = "aiform_driver_digitalocean_compute"
+
+
+class TestSkipDriverSleeps:
+    def test_a_named_function_of_a_driver_loaded_from_disk_does_not_wait(self):
+        with skip_driver_sleeps({"_poll_until"}):
+            started = time.monotonic()
+            called_from(DRIVER, "_poll_until", 2.0)
+            assert time.monotonic() - started < 1.0
+
+    def test_another_function_of_the_same_driver_still_waits(self):
+        with skip_driver_sleeps({"_poll_until"}):
+            started = time.monotonic()
+            called_from(DRIVER, "_create_droplet", 0.2)
+            assert time.monotonic() - started >= 0.2
+
+    def test_the_named_function_of_any_other_module_still_waits(self):
+        with skip_driver_sleeps({"_poll_until"}):
+            started = time.monotonic()
+            called_from("some_other_module", "_poll_until", 0.2)
+            assert time.monotonic() - started >= 0.2
+
+    def test_the_real_sleep_is_restored_afterwards(self):
+        installed = time.sleep
+        with skip_driver_sleeps({"_poll_until"}):
+            assert time.sleep is not installed
+        assert time.sleep is installed
+
+    def test_the_real_sleep_is_restored_when_the_body_raises(self):
+        installed = time.sleep
+        with pytest.raises(RuntimeError):
+            with skip_driver_sleeps({"_poll_until"}):
+                raise RuntimeError("boom")
+        assert time.sleep is installed

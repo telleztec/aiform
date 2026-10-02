@@ -4,7 +4,8 @@ import types
 
 import pytest
 
-from tests.system import test_cli_interrupt as live
+from tests.system import live_support as live
+from tests.system import test_cli_interrupt as interrupt_suite
 from tests.system.provider_ledger import Ledger
 
 
@@ -67,5 +68,5 @@ def test_firewalls_named_finds_the_deployment_qualified_firewall_and_nothing_els
         {"id": "b", "name": "fw-1"},
         {"id": "c", "name": "aiform-other-fw-1"},
     ]
-    monkeypatch.setattr(live, "list_firewalls", lambda token: listing)
-    assert [f["id"] for f in live.firewalls_named("t", "fw-1")] == ["a"]
+    monkeypatch.setattr(interrupt_suite, "list_firewalls", lambda token: listing)
+    assert [f["id"] for f in interrupt_suite.firewalls_named("t", "fw-1")] == ["a"]
