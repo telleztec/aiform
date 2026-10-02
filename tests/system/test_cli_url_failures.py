@@ -25,9 +25,10 @@ failure is injected (`fail_request(..., "reset" | "http_500" | "http_503" |
 "http_429")`) and, for every kind but `http_429`, the real request reaches the
 provider first: the caller sees a failure, the provider did the work.
 
-A cell names no provider. It asks the `ProviderProfile` which request creates,
-polls, resizes and destroys the resource, where the id sits in a response and
-how to list what the suite owns.
+No cell names a provider in its requests: it asks the `ProviderProfile` which
+request creates, polls, resizes and destroys the resource, where the id sits in
+a response and how to list what the suite owns. `resize-http503` still reads the
+resized attribute (`size_slug`) straight from the listing.
 """
 
 import contextlib

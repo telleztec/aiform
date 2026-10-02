@@ -306,8 +306,10 @@ Live results, 2026-10-02, head `5eaaa75`: 3 passed (`create-http429`,
 `create-http503` against #253; the four `poll-*` on the missing id), no XPASS.
 No droplets or firewalls remained and only the `cloudaiform.com` zone.
 
-A cell names no provider: the requests come from `ProviderProfile.create`,
-`.poll`, `.resize` (method, URL pattern, body pattern) and `.destroy`.
+No cell names a provider in its requests: they come from
+`ProviderProfile.create`, `.poll`, `.resize` (method, URL pattern, body pattern)
+and `.destroy`. One attribute is not behind the profile: `resize-http503` reads
+the resized size (`size_slug`) straight from the listing.
 
 ### UC-F
 
