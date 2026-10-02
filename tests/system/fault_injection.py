@@ -13,12 +13,15 @@ it offline against a fake `urlopen`.
 
 import contextlib
 import copy
+import email.message
+import errno
 import io
 import json
 import re
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
@@ -46,17 +49,20 @@ class Fault:
     def join(self, timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS) -> None:
         """Wait for every late provider call a `timeout` fault started.
 
-        Raises if one is still running, or if one failed: a late call that
+        Raises if any is still running, or if one failed: a late call that
         never reached the provider means the provider did not act, and a stage
         that goes on would pass without reproducing the shape it names.
         """
-        for worker, request in self._workers:
-            worker.join(timeout)
-            if worker.is_alive():
-                raise RuntimeError(
-                    f"a late provider call ({request}) is still running after {timeout}s; "
-                    "it may yet create a resource, so look for it by name at the provider"
-                )
+        deadline = time.monotonic() + timeout
+        for worker, _ in self._workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        running = [request for worker, request in self._workers if worker.is_alive()]
+        if running:
+            raise RuntimeError(
+                f"late provider calls ({', '.join(running)}) are still running after "
+                f"{timeout}s; they may yet create a resource, so look for it by name "
+                "at the provider"
+            )
         if self.worker_error is not None:
             raise RuntimeError("a late provider call failed") from self.worker_error
 
@@ -91,6 +97,11 @@ def _describe(request: Any) -> tuple[str, str]:
     if isinstance(request, str):
         return "GET", request
     return request.get_method(), request.full_url
+
+
+def _body_text(request: Any) -> str:
+    data = getattr(request, "data", None)
+    return data.decode(errors="replace") if isinstance(data, bytes) else ""
 
 
 def _parse(body: bytes) -> dict | None:
@@ -301,10 +312,60 @@ def _check_timeout_options(
         raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
 
 
+def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, kwargs: dict):
+    """Run the real request and keep its body, so the ledger learns any id the
+    provider handed out even though the caller never sees the response."""
+    with real(request, *args, **kwargs) as response:
+        fault.response = _parse(response.read())
+
+
+def _reset(
+    fault: Fault, real: Callable, request: Any, args: tuple, kwargs: dict, *, provider_acts: bool
+) -> Any:
+    """The connection drops after the provider has (when it acts) done the work."""
+    if provider_acts:
+        _let_provider_act(fault, real, request, args, kwargs)
+    raise urllib.error.URLError(ConnectionResetError(errno.ECONNRESET, "Connection reset by peer"))
+
+
+def _http_error(status: int, error_id: str, message: str) -> Callable[..., Any]:
+    def fail(
+        fault: Fault,
+        real: Callable,
+        request: Any,
+        args: tuple,
+        kwargs: dict,
+        *,
+        provider_acts: bool,
+    ) -> Any:
+        """The caller gets a synthetic error response; the real one, when the
+        provider acts, is read and dropped."""
+        if provider_acts:
+            _let_provider_act(fault, real, request, args, kwargs)
+        body = json.dumps({"id": error_id, "message": message}).encode()
+        raise urllib.error.HTTPError(
+            _describe(request)[1], status, message, email.message.Message(), io.BytesIO(body)
+        )
+
+    return fail
+
+
+def _no_options() -> None:
+    pass
+
+
+# A 429 is the provider refusing before it does anything, so "the provider
+# acted" contradicts the kind.
+_NEVER_REACHES_PROVIDER = frozenset({"http_429"})
+
 # kind -> (handler, option checker). Each kind owns its options: the handler
 # takes them as keywords, the checker rejects a bad set at the call.
 _FAILURES: dict[str, tuple[Callable[..., Any], Callable[..., None]]] = {
     "timeout": (_timeout, _check_timeout_options),
+    "reset": (_reset, _no_options),
+    "http_500": (_http_error(500, "server_error", "Server Error"), _no_options),
+    "http_503": (_http_error(503, "service_unavailable", "Service Unavailable"), _no_options),
+    "http_429": (_http_error(429, "too_many_requests", "API Rate limit exceeded."), _no_options),
 }
 
 
@@ -315,15 +376,20 @@ def fail_request(
     *,
     provider_acts: bool = True,
     occurrence: int = 1,
+    body_pattern: str | None = None,
     join_timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
     **options: Any,
 ) -> contextlib.AbstractContextManager[Fault]:
     """Make the caller see `failure` on the `occurrence`th match, while the
     provider (when `provider_acts`) still does the work. `options` belong to
-    the kind (`timeout`: `delay`, `deadline`). Everything is checked here, so a
-    bad call fails at the call and not on entering the block."""
+    the kind (`timeout`: `delay`, `deadline`). `body_pattern` narrows a match to
+    requests whose body it also matches, for endpoints that serve several
+    operations (a droplet's `/actions`). Everything is checked here, so a bad
+    call fails at the call and not on entering the block."""
     if failure not in _FAILURES:
         raise ValueError(f"unknown failure {failure!r}; known: {', '.join(sorted(_FAILURES))}")
+    if failure in _NEVER_REACHES_PROVIDER and provider_acts:
+        raise ValueError(f"{failure} never reaches the provider; pass provider_acts=False")
     handler, check_options = _FAILURES[failure]
     check_options(**options)
     return _fail_request(
@@ -332,6 +398,7 @@ def fail_request(
         handler,
         provider_acts=provider_acts,
         occurrence=occurrence,
+        body_pattern=body_pattern,
         join_timeout=join_timeout,
         options=options,
     )
@@ -345,11 +412,13 @@ def _fail_request(
     *,
     provider_acts: bool,
     occurrence: int,
+    body_pattern: str | None,
     join_timeout: float,
     options: dict[str, Any],
 ) -> Iterator[Fault]:
     fault = Fault()
     pattern = re.compile(url_pattern)
+    body_re = re.compile(body_pattern) if body_pattern is not None else None
     matches = 0
 
     def factory(real: Callable) -> Callable:
@@ -357,7 +426,12 @@ def _fail_request(
             nonlocal matches
             request_method, url = _describe(request)
             fault.seen.append((request_method, url))
-            if fault.fired or request_method != method or not pattern.search(url):
+            if (
+                fault.fired
+                or request_method != method
+                or not pattern.search(url)
+                or (body_re is not None and not body_re.search(_body_text(request)))
+            ):
                 return real(request, *args, **kwargs)
             matches += 1
             if matches < occurrence:
