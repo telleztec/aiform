@@ -12,6 +12,7 @@ it offline against a fake `urlopen`.
 """
 
 import contextlib
+import copy
 import io
 import json
 import re
@@ -194,6 +195,39 @@ def interrupt_after_state_save(
         yield fault
     finally:
         state.save = real
+
+
+@contextlib.contextmanager
+def rewrite_responses(
+    method: str, url_pattern: str, rewrite: Callable[[dict], dict]
+) -> Iterator[Fault]:
+    """Give the caller `rewrite(body)` in place of every matching JSON
+    response, e.g. a poll that never reports the resource ready. The provider
+    is reached as usual; `fault.response` keeps the last real body."""
+    fault = Fault()
+    pattern = re.compile(url_pattern)
+
+    def factory(real: Callable) -> Callable:
+        def urlopen(request: Any, *args: Any, **kwargs: Any) -> Any:
+            request_method, url = _describe(request)
+            fault.seen.append((request_method, url))
+            response = real(request, *args, **kwargs)
+            if request_method != method or not pattern.search(url):
+                return response
+            with response:
+                body = response.read()
+            parsed = _parse(body)
+            if parsed is None:
+                return _ReplayedResponse(response, body)
+            fault.fired = True
+            fault.response = parsed
+            rewritten = json.dumps(rewrite(copy.deepcopy(parsed))).encode()
+            return _ReplayedResponse(response, rewritten)
+
+        return urlopen
+
+    with _patched_urlopen(factory):
+        yield fault
 
 
 DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0

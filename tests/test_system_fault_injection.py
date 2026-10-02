@@ -28,6 +28,7 @@ from tests.system.fault_injection import (
     interrupt_after_request,
     interrupt_after_state_save,
     interrupt_before_request,
+    rewrite_responses,
 )
 
 
@@ -549,3 +550,59 @@ class TestFailureKindsOwnTheirOptions:
         assert fault.fired is True
         assert seen_options == {}
         assert provider.reached == []
+
+
+DROPLET_42 = "https://api.digitalocean.com/v2/droplets/42"
+
+
+def reports_new(body):
+    body["droplet"]["status"] = "new"
+    return body
+
+
+class TestRewriteResponses:
+    @pytest.fixture(autouse=True)
+    def an_active_droplet(self, provider):
+        provider.bodies[("GET", DROPLET_42)] = b'{"droplet": {"id": 42, "status": "active"}}'
+
+    def test_every_match_hands_the_caller_the_rewritten_body(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new):
+            first = call("GET", DROPLET_42)
+            second = call("GET", DROPLET_42)
+
+        assert first == second == {"droplet": {"id": 42, "status": "new"}}
+
+    def test_the_provider_is_reached_by_every_matching_call(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            call("GET", DROPLET_42)
+            call("GET", DROPLET_42)
+
+        assert provider.reached == [("GET", DROPLET_42)] * 2
+        assert fault.fired is True
+
+    def test_the_real_body_is_kept_so_the_caller_can_learn_the_resource_id(self, provider):
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            call("GET", DROPLET_42)
+
+        assert fault.response == {"droplet": {"id": 42, "status": "active"}}
+
+    def test_a_non_match_is_returned_untouched(self, provider):
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 7, "status": "new"}}'
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            assert call("POST", DROPLETS) == {"droplet": {"id": 7, "status": "new"}}
+
+        assert fault.fired is False
+
+    def test_a_body_that_is_not_json_is_returned_untouched(self, provider):
+        provider.bodies[("GET", DROPLET_42)] = b"not json"
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            with pytest.raises(ValueError):
+                call("GET", DROPLET_42)
+
+        assert fault.fired is False
+
+    def test_urlopen_is_restored_afterwards(self, provider):
+        installed = urllib.request.urlopen
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new):
+            assert urllib.request.urlopen is not installed
+        assert urllib.request.urlopen is installed
