@@ -231,7 +231,8 @@ the driver afresh on every call and a module-level patch would not survive.
 The runner and teardown shared with the interrupt suite live in
 `tests/system/live_support.py`.
 
-Live results, 2026-10-02:
+Live results, 2026-10-02 (rerun on head `d38fb35` after review: 3 xfailed, no
+XPASS, no leaks):
 
 - T1, T3: duplicate observed live, `xfail` against #253.
 - T2: fails at step 3. The error is
