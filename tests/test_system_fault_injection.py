@@ -341,6 +341,17 @@ class TestFailRequestTimeout:
 
         assert DEADLINE * 0.9 <= elapsed < SLOW
 
+    def test_the_error_carries_nothing_from_the_request(self, provider):
+        # A real urllib timeout says only "timed out". A message that echoed the
+        # URL would put the resource id in the output on the injector's say-so,
+        # and a stage asserting the driver reports the id would pass on that.
+        with a_timeout() as fault:
+            with pytest.raises(TimeoutError) as raised:
+                call("POST", DROPLETS)
+            fault.join()
+
+        assert str(raised.value) == "timed out"
+
     def test_the_provider_has_not_been_reached_when_the_caller_gives_up(self, provider):
         with a_timeout() as fault:
             with pytest.raises(TimeoutError):

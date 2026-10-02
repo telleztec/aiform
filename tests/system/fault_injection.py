@@ -225,8 +225,7 @@ def _timeout(
         fault._workers.append(worker)
         worker.start()
     time.sleep(deadline)
-    method, url = _describe(request)
-    raise TimeoutError(f"injected: {method} {url} timed out after {deadline}s")
+    raise TimeoutError("timed out")
 
 
 def _check_timeout_options(delay: float = 1.5, deadline: float = 1.0) -> None:
