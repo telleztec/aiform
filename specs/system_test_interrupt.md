@@ -65,10 +65,10 @@ Fault.join(timeout=10.0)    # RuntimeError if a late call is running or failed
 
 `fail_request` makes the caller see `failure` instead of the response. `failure`
 is a key into a small dispatch table (`_FAILURES`, kind -> handler and option
-checker); `"timeout"` is the only one today and later kinds (URL failures) are
-added there, not as classes. `**options` belong to the kind: `timeout` takes
-`delay` and `deadline`, another kind takes none and is never given or checked
-against them. Arguments are checked at the call: an unknown `failure`, an option
+checker); the kinds are `"timeout"`, `"reset"`, `"http_500"`, `"http_503"` and
+`"http_429"`, and a new kind is added there, not as a class. `**options` belong
+to the kind: `timeout` takes `delay` and `deadline`, another kind takes none and
+is never given or checked against them. Arguments are checked at the call: an unknown `failure`, an option
 the kind does not know (`TypeError`), or `delay <= deadline` (`ValueError`)
 raises before any block is entered.
 
