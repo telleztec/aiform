@@ -69,6 +69,28 @@ class TestDigitalOceanResourceId:
         assert DIGITALOCEAN.resource_id(body) is None
 
 
+class TestDigitalOceanNotReady:
+    def test_a_poll_body_reports_the_resource_new_and_keeps_the_rest(self):
+        body = {"droplet": {"id": 4, "status": "active", "name": "web"}, "links": {}}
+        assert DIGITALOCEAN.not_ready(body) == {
+            "droplet": {"id": 4, "status": "new", "name": "web"},
+            "links": {},
+        }
+
+    def test_the_body_it_is_given_is_not_mutated(self):
+        body = {"droplet": {"id": 4, "status": "active"}}
+        DIGITALOCEAN.not_ready(body)
+        assert body["droplet"]["status"] == "active"
+
+    @pytest.mark.parametrize("body", [{}, {"x": 1}, {"droplet": None}])
+    def test_a_body_with_no_resource_is_returned_as_it_is(self, body):
+        assert DIGITALOCEAN.not_ready(body) == body
+
+
+def test_the_poll_loop_is_the_function_whose_sleeps_a_stage_may_skip():
+    assert DIGITALOCEAN.poll_loop == "_poll_until"
+
+
 class TestWithTheInjector:
     def test_the_create_request_is_what_fail_request_fires_on(self, monkeypatch):
         class Response(io.BytesIO):
@@ -98,6 +120,7 @@ def test_a_profile_is_a_plain_value():
         poll=("GET", r"/things/\d+$"),
         resource_id=lambda body: None,
         list_owned=lambda token: [],
-        delete=lambda token, resource_id: None,
+        not_ready=lambda body: body,
+        poll_loop="poll",
     )
     assert profile.name == "x"

@@ -110,6 +110,22 @@ class Runner:
         self._note()
         return fault
 
+    def faulted_run(self, argv: list[str], injector, step: str):
+        """Like `faulted`, for a fault that makes the run fail without an
+        interrupt: the run returns, and the injection point must have fired."""
+        with injector as fault:
+            code = cli.main(argv)
+        captured = self.capsys.readouterr()
+        if not fault.fired:
+            pytest.fail(
+                f"{step}: the injection point was never reached, so nothing was "
+                f"tested (the run exited {code})\n--- stderr ---\n{captured.err}"
+                f"\n--- calls seen ---\n{fault.seen}"
+            )
+        self.ledger.note_response(fault.response)
+        self._note()
+        return code, captured, fault
+
     def assert_second_run_is_a_noop(self, keys: list[str]) -> None:
         for argv in (["plan", "apply", "--yes", "--verbose"], ["plan", "create", "--verbose"]):
             step = " ".join(argv)
