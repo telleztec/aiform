@@ -544,13 +544,145 @@ class TestFailureKindsOwnTheirOptions:
             seen_options.update(options)
             raise ConnectionResetError("injected")
 
-        monkeypatch.setitem(fault_injection._FAILURES, "reset", (reset, lambda **options: None))
-        with fail_request("POST", r"/v2/droplets$", "reset", provider_acts=False) as fault:
+        monkeypatch.setitem(fault_injection._FAILURES, "stand_in", (reset, lambda **options: None))
+        with fail_request("POST", r"/v2/droplets$", "stand_in", provider_acts=False) as fault:
             with pytest.raises(ConnectionResetError):
                 call("POST", DROPLETS)
         assert fault.fired is True
         assert seen_options == {}
         assert provider.reached == []
+
+
+class TestFailRequestReset:
+    def test_the_caller_sees_a_connection_reset_wrapped_in_a_url_error(self, provider):
+        with fail_request("POST", r"/v2/droplets$", "reset") as fault:
+            with pytest.raises(urllib.error.URLError) as raised:
+                call("POST", DROPLETS)
+        assert isinstance(raised.value.reason, ConnectionResetError)
+        assert fault.fired is True
+
+    def test_the_provider_acts_before_the_connection_drops(self, provider):
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 4242}}'
+        with fail_request("POST", r"/v2/droplets$", "reset") as fault:
+            with pytest.raises(urllib.error.URLError):
+                call("POST", DROPLETS)
+        assert provider.reached == [("POST", DROPLETS)]
+        assert fault.response == {"droplet": {"id": 4242}}
+        assert all(response.closed for response in provider.responses)
+
+    def test_a_provider_that_does_not_act_is_never_called(self, provider):
+        with fail_request("POST", r"/v2/droplets$", "reset", provider_acts=False) as fault:
+            with pytest.raises(urllib.error.URLError):
+                call("POST", DROPLETS)
+        assert provider.reached == []
+        assert fault.response is None
+
+    def test_a_timing_option_is_rejected(self):
+        with pytest.raises(TypeError):
+            fail_request("POST", r"/x$", "reset", delay=1)
+
+
+@pytest.mark.parametrize(
+    ("kind", "status"), [("http_500", 500), ("http_503", 503)], ids=["http_500", "http_503"]
+)
+class TestFailRequestServerError:
+    def test_the_caller_sees_an_http_error_with_that_status(self, provider, kind, status):
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("POST", DROPLETS)
+        assert raised.value.code == status
+        assert raised.value.url == DROPLETS
+        assert fault.fired is True
+
+    def test_the_synthetic_error_body_is_readable_json_with_a_message(self, provider, kind, status):
+        with fail_request("POST", r"/v2/droplets$", kind):
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("POST", DROPLETS)
+        assert isinstance(json.loads(raised.value.read())["message"], str)
+
+    def test_the_real_call_runs_and_its_response_is_discarded_but_recorded(
+        self, provider, kind, status
+    ):
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 4242}}'
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("POST", DROPLETS)
+        assert provider.reached == [("POST", DROPLETS)]
+        assert fault.response == {"droplet": {"id": 4242}}
+        assert b"4242" not in raised.value.read()
+        assert all(response.closed for response in provider.responses)
+
+    def test_a_provider_that_does_not_act_is_never_called(self, provider, kind, status):
+        with fail_request("POST", r"/v2/droplets$", kind, provider_acts=False) as fault:
+            with pytest.raises(urllib.error.HTTPError):
+                call("POST", DROPLETS)
+        assert provider.reached == []
+        assert fault.response is None
+
+    def test_only_the_requested_occurrence_fails(self, provider, kind, status):
+        with fail_request("GET", r"/v2/droplets/\d+$", kind, occurrence=2) as fault:
+            call("GET", DROPLET_42)
+            assert fault.fired is False
+            with pytest.raises(urllib.error.HTTPError):
+                call("GET", DROPLET_42)
+            call("GET", DROPLET_42)
+        assert provider.reached == [("GET", DROPLET_42)] * 3
+
+
+class TestFailRequestRateLimited:
+    def test_the_caller_sees_a_429(self, provider):
+        with fail_request("POST", r"/v2/droplets$", "http_429", provider_acts=False) as fault:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("POST", DROPLETS)
+        assert raised.value.code == 429
+        assert fault.fired is True
+
+    def test_the_provider_never_sees_the_call(self, provider):
+        with fail_request("POST", r"/v2/droplets$", "http_429", provider_acts=False) as fault:
+            with pytest.raises(urllib.error.HTTPError):
+                call("POST", DROPLETS)
+        assert provider.reached == []
+        assert fault.response is None
+
+    def test_a_provider_that_acts_is_a_contradiction_and_is_rejected_at_the_call(self):
+        with pytest.raises(ValueError, match="http_429"):
+            fail_request("POST", r"/x$", "http_429")
+
+
+class TestFailRequestBodyPattern:
+    def test_only_a_request_whose_body_matches_counts(self, provider, monkeypatch):
+        url = DROPLETS + "/42/actions"
+        with fail_request("POST", r"/actions$", "http_503", body_pattern=r'"type":\s*"resize"'):
+            request = urllib.request.Request(url, data=b'{"type": "power_off"}', method="POST")
+            urllib.request.urlopen(request, timeout=5).close()
+            request = urllib.request.Request(url, data=b'{"type": "resize"}', method="POST")
+            with pytest.raises(urllib.error.HTTPError):
+                urllib.request.urlopen(request, timeout=5)
+        assert len(provider.reached) == 2
+
+    def test_a_request_without_a_body_never_matches_a_body_pattern(self, provider):
+        with fail_request("GET", r"/v2/droplets$", "http_503", body_pattern="x") as fault:
+            call("GET", DROPLETS)
+        assert fault.fired is False
+
+    def test_a_timeout_is_matched_on_the_body_too(self, provider):
+        url = DROPLETS + "/42/actions"
+        with fail_request(
+            "POST",
+            r"/actions$",
+            "timeout",
+            body_pattern="resize",
+            delay=SLOW,
+            deadline=DEADLINE,
+        ) as fault:
+            request = urllib.request.Request(url, data=b'{"type": "power_on"}', method="POST")
+            urllib.request.urlopen(request, timeout=5).close()
+            assert fault.fired is False
+            request = urllib.request.Request(url, data=b'{"type": "resize"}', method="POST")
+            with pytest.raises(TimeoutError):
+                urllib.request.urlopen(request, timeout=5)
+            fault.join()
+        assert fault.fired is True
 
 
 DROPLET_42 = "https://api.digitalocean.com/v2/droplets/42"
