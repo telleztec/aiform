@@ -15,6 +15,8 @@ import contextlib
 import io
 import json
 import re
+import threading
+import time
 import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -32,6 +34,15 @@ class Fault:
     fired: bool = False
     response: dict | None = None
     seen: list[tuple[str, str]] = field(default_factory=list)
+    worker_error: BaseException | None = None
+    _workers: list[threading.Thread] = field(default_factory=list, repr=False)
+
+    def join(self, timeout: float = 10.0) -> None:
+        """Wait for every late provider call a `timeout` fault started."""
+        for worker in self._workers:
+            worker.join(timeout)
+            if worker.is_alive():
+                raise RuntimeError(f"a late provider call is still running after {timeout}s")
 
 
 class _ReplayedResponse:
@@ -176,3 +187,118 @@ def interrupt_after_state_save(
         yield fault
     finally:
         state.save = real
+
+
+DEFAULT_DELAY_SECONDS = 1.5
+DEFAULT_DEADLINE_SECONDS = 1.0
+DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0
+
+
+def _timeout(
+    fault: Fault,
+    real: Callable,
+    request: Any,
+    args: tuple,
+    kwargs: dict,
+    *,
+    provider_acts: bool,
+    delay: float,
+    deadline: float,
+) -> Any:
+    """The caller's deadline passes before the (slow) provider call returns."""
+
+    def late_call() -> None:
+        time.sleep(delay)
+        try:
+            with real(request, *args, **kwargs) as response:
+                fault.response = _parse(response.read())
+        except BaseException as exc:
+            fault.worker_error = exc
+
+    if provider_acts:
+        worker = threading.Thread(target=late_call, daemon=True)
+        fault._workers.append(worker)
+        worker.start()
+    time.sleep(deadline)
+    method, url = _describe(request)
+    raise TimeoutError(f"injected: {method} {url} timed out after {deadline}s")
+
+
+_FAILURES: dict[str, Callable[..., Any]] = {"timeout": _timeout}
+
+
+def fail_request(
+    method: str,
+    url_pattern: str,
+    failure: str,
+    *,
+    provider_acts: bool = True,
+    occurrence: int = 1,
+    delay: float = DEFAULT_DELAY_SECONDS,
+    deadline: float = DEFAULT_DEADLINE_SECONDS,
+    join_timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS,
+) -> contextlib.AbstractContextManager[Fault]:
+    """Make the caller see `failure` on the `occurrence`th match, while the
+    provider (when `provider_acts`) still does the work. Arguments are checked
+    here, so a bad call fails at the call and not on entering the block."""
+    if failure not in _FAILURES:
+        raise ValueError(f"unknown failure {failure!r}; known: {', '.join(sorted(_FAILURES))}")
+    if delay <= deadline:
+        raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
+    return _fail_request(
+        method,
+        url_pattern,
+        _FAILURES[failure],
+        provider_acts=provider_acts,
+        occurrence=occurrence,
+        delay=delay,
+        deadline=deadline,
+        join_timeout=join_timeout,
+    )
+
+
+@contextlib.contextmanager
+def _fail_request(
+    method: str,
+    url_pattern: str,
+    failure: Callable[..., Any],
+    *,
+    provider_acts: bool,
+    occurrence: int,
+    delay: float,
+    deadline: float,
+    join_timeout: float,
+) -> Iterator[Fault]:
+    fault = Fault()
+    pattern = re.compile(url_pattern)
+    matches = 0
+
+    def factory(real: Callable) -> Callable:
+        def urlopen(request: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal matches
+            request_method, url = _describe(request)
+            fault.seen.append((request_method, url))
+            if fault.fired or request_method != method or not pattern.search(url):
+                return real(request, *args, **kwargs)
+            matches += 1
+            if matches < occurrence:
+                return real(request, *args, **kwargs)
+            fault.fired = True
+            return failure(
+                fault,
+                real,
+                request,
+                args,
+                kwargs,
+                provider_acts=provider_acts,
+                delay=delay,
+                deadline=deadline,
+            )
+
+        return urlopen
+
+    try:
+        with _patched_urlopen(factory):
+            yield fault
+    finally:
+        fault.join(join_timeout)
