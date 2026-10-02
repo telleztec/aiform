@@ -18,7 +18,9 @@ Until now both were established by reading the code. A mock cannot settle
 either, because the mock encodes the same ordering assumption the
 orchestrator does.
 
-Plan and approval: `plans/interrupt-retry-live-tests.md` (#239).
+Plan and approval: `plans/interrupt-retry-live-tests.md` (#239). The timeout
+and URL-failure follow-ups (a stack on the same injector):
+`plans/fault-timeout-live-tests.md`.
 
 ## Interface
 
@@ -54,6 +56,26 @@ interrupt_after_state_save(predicate, *, occurrence=1)
 
 Each is a context manager yielding a `Fault`.
 
+```python
+fail_request(method, url_pattern, failure, *, provider_acts=True, occurrence=1,
+             delay=1.5, deadline=1.0, join_timeout=10.0)
+Fault.worker_error: BaseException | None
+Fault.join(timeout=10.0)    # raises RuntimeError if a late call is still running
+```
+
+`fail_request` makes the caller see `failure` instead of the response. `failure`
+is a key into a small dispatch table (`_FAILURES`); `"timeout"` is the only one
+today and later kinds (URL failures) are added there, not as classes. Its
+arguments are checked at the call: an unknown `failure`, or `delay <= deadline`,
+raises `ValueError` before any block is entered.
+
+`tests/system/provider_profile.py` holds `ProviderProfile`: the create request,
+the poll request (each a `(method, url_pattern)` pair), `resource_id(body)`
+(the id in a create or poll response, or `None`), and `list_owned(token)` /
+`delete(token, id)` for teardown. `DIGITALOCEAN` is the only instance; there is
+no registry. A stage asks the profile and names no provider. Tested offline in
+`tests/test_system_provider_profile.py`.
+
 ## Behavior
 
 ### The injector
@@ -81,6 +103,17 @@ Each is a context manager yielding a `Fault`.
   calling the provider.
 - `interrupt_after_state_save` calls the real `state.save`, then raises on
   the `occurrence`th save whose state satisfies `predicate`.
+- `fail_request(..., "timeout")` is the race the client loses. On the
+  `occurrence`th match a worker thread sleeps `delay`, then calls the real
+  `urlopen`; the caller waits `deadline` and raises `TimeoutError`. `delay` is
+  longer than `deadline`, so the caller always loses and, with
+  `provider_acts=True`, the provider still acts: the #253 shape, without an
+  interrupt. The worker's body is parsed into `Fault.response` when it
+  arrives (so a ledger can learn the id), and any exception it hits lands in
+  `Fault.worker_error`. With `provider_acts=False` no worker runs and the real
+  `urlopen` is never called. `join()` is bounded; leaving the block joins every
+  worker, after restoring `urlopen`, even when the body raised, and a worker
+  still running then is a `RuntimeError`.
 - An injector fires at most once. Afterwards it passes everything through,
   so `finally` blocks that make provider calls are not cut off a second time.
 - Installing is scoped: the original `urlopen` and `save` are restored on
@@ -188,6 +221,12 @@ live.
 - **SIGKILL or a killed subprocess.** In-process injection reaches the same
   points deterministically; killing a process at a precise point is not
   reproducible.
+- **A non-urllib driver.** The injector wraps `urllib.request.urlopen`, which
+  every driver reaches today. A driver on an SDK with its own HTTP stack (boto3)
+  needs a different seam; not built.
+- **Moving the injector out of `tests/system/`.** It stays beside the suite that
+  uses it. Using it from a default-run test would be a move, taken when there
+  is a second user.
 - **Fixing anything found.** A stage that exposes a real bug is marked
   `xfail(strict=True)` with its issue number (C1 and C2: #253). No change to
   `aiform/` or `drivers/` in this work.
