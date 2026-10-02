@@ -189,7 +189,7 @@ live.
   points deterministically; killing a process at a precise point is not
   reproducible.
 - **Fixing anything found.** A stage that exposes a real bug is marked
-  `xfail(strict=True)` with its issue number once one is filed. No change to
+  `xfail(strict=True)` with its issue number (C1 and C2: #253). No change to
   `aiform/` or `drivers/` in this work.
 - **Domains.** They add nothing the firewall update stages do not, and need the
   zone parent.
