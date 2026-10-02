@@ -24,6 +24,8 @@ class ProviderProfile:
     name: str
     create: tuple[str, str]
     poll: tuple[str, str]
+    resize: tuple[str, str, str]
+    destroy: tuple[str, str]
     resource_id: Callable[[dict | None], str | None]
     list_owned: Callable[[str], list[dict]]
     delete: Callable[[str, str], None]
@@ -40,6 +42,8 @@ DIGITALOCEAN = ProviderProfile(
     name="digitalocean",
     create=("POST", r"/v2/droplets$"),
     poll=("GET", r"/v2/droplets/\d+$"),
+    resize=("POST", r"/v2/droplets/\d+/actions$", r'"type":\s*"resize"'),
+    destroy=("DELETE", r"/v2/droplets/\d+$"),
     resource_id=_droplet_id,
     list_owned=lambda token: list_droplets_tagged(token, SYSTEM_TEST_TAG),
     delete=lambda token, resource_id: destroy_droplet_or_shout(

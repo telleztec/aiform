@@ -28,6 +28,44 @@ def matches(method: str, url_pattern: str, request_method: str, url: str) -> boo
     return method == request_method and re.search(url_pattern, url) is not None
 
 
+ACTIONS = f"{POLL}/actions"
+RESIZE_BODY = '{"type": "resize", "disk": false, "size": "s-1vcpu-1gb"}'
+POWER_OFF_BODY = '{"type": "power_off"}'
+
+
+class TestDigitalOceanResizeAndDestroy:
+    def test_the_resize_request_is_the_actions_post_whose_body_says_resize(self):
+        method, url_pattern, body_pattern = DIGITALOCEAN.resize
+        assert matches(method, url_pattern, "POST", ACTIONS)
+        assert re.search(body_pattern, RESIZE_BODY)
+
+    def test_the_resize_request_does_not_match_the_other_actions(self):
+        _, _, body_pattern = DIGITALOCEAN.resize
+        assert not re.search(body_pattern, POWER_OFF_BODY)
+        assert not re.search(body_pattern, '{"type": "power_on"}')
+
+    @pytest.mark.parametrize("method, url", [("GET", ACTIONS), ("POST", POLL), ("POST", CREATE)])
+    def test_the_resize_request_does_not_match_anything_else(self, method, url):
+        method_pattern, url_pattern, _ = DIGITALOCEAN.resize
+        assert not matches(method_pattern, url_pattern, method, url)
+
+    def test_the_destroy_request_is_the_delete_of_one_droplet(self):
+        assert matches(*DIGITALOCEAN.destroy, "DELETE", POLL)
+
+    @pytest.mark.parametrize(
+        "method, url",
+        [
+            ("GET", POLL),
+            ("DELETE", CREATE),
+            ("DELETE", ACTIONS),
+            ("DELETE", "https://api.digitalocean.com/v2/droplets/4242/resources"),
+            ("DELETE", "https://api.digitalocean.com/v2/tags/aiform/resources"),
+        ],
+    )
+    def test_the_destroy_request_does_not_match_anything_else(self, method, url):
+        assert not matches(*DIGITALOCEAN.destroy, method, url)
+
+
 class TestDigitalOceanRequests:
     def test_the_create_request_is_the_droplet_post(self):
         assert matches(*DIGITALOCEAN.create, "POST", CREATE)
@@ -96,6 +134,8 @@ def test_a_profile_is_a_plain_value():
         name="x",
         create=("POST", r"/things$"),
         poll=("GET", r"/things/\d+$"),
+        resize=("POST", r"/things/\d+/resize$", r"resize"),
+        destroy=("DELETE", r"/things/\d+$"),
         resource_id=lambda body: None,
         list_owned=lambda token: [],
         delete=lambda token, resource_id: None,
