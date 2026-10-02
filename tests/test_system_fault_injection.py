@@ -503,6 +503,54 @@ class TestFailRequestWorkerLifetime:
 
         assert provider.reached == [("POST", DROPLETS)]
 
+    def test_a_failing_body_is_not_replaced_by_a_hung_worker(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        try:
+            with pytest.raises(AssertionError, match="the real finding") as raised:
+                with fail_request(
+                    "POST",
+                    r"/v2/droplets$",
+                    "timeout",
+                    delay=SLOW,
+                    deadline=DEADLINE,
+                    join_timeout=0.1,
+                ):
+                    with pytest.raises(TimeoutError):
+                        call("POST", DROPLETS)
+                    raise AssertionError("the real finding")
+        finally:
+            release.set()
+        assert any("still running" in note for note in raised.value.__notes__)
+
+    def test_a_failing_body_is_not_replaced_by_a_failed_late_call(self, monkeypatch):
+        monkeypatch.setattr(
+            urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("down"))
+        )
+        with pytest.raises(AssertionError, match="the real finding") as raised:
+            with a_timeout():
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                raise AssertionError("the real finding")
+        assert any("late provider call failed" in note for note in raised.value.__notes__)
+
+    def test_a_hung_worker_is_reported_with_the_request_to_hunt_for(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr(urllib.request, "urlopen", blocked_until(release))
+        try:
+            with a_timeout() as fault:
+                with pytest.raises(TimeoutError):
+                    call("POST", DROPLETS)
+                with pytest.raises(RuntimeError) as raised:
+                    fault.join(timeout=0.1)
+                release.set()
+                fault.join()
+        finally:
+            release.set()
+        message = str(raised.value)
+        assert f"POST {DROPLETS}" in message
+        assert "by name" in message
+
     def test_urlopen_is_restored_on_exit_even_with_a_slow_worker(self, provider):
         installed = urllib.request.urlopen
         with a_timeout():
@@ -741,35 +789,46 @@ class TestRewriteResponses:
         assert urllib.request.urlopen is installed
 
 
-def called_from(module_name: str, seconds: float) -> None:
-    """Run `time.sleep(seconds)` as code whose module is `module_name`, the way
-    load_driver() names a driver it exec's from disk."""
+def called_from(module_name: str, function: str, seconds: float) -> None:
+    """Run `time.sleep(seconds)` inside a function called `function`, in code
+    whose module is `module_name`, the way load_driver() names a driver it
+    exec's from disk."""
     namespace = {"__name__": module_name, "time": time}
-    exec("time.sleep(seconds)", namespace, {"seconds": seconds})
+    exec(f"def {function}(seconds):\n    time.sleep(seconds)", namespace)
+    namespace[function](seconds)
+
+
+DRIVER = "aiform_driver_digitalocean_compute"
 
 
 class TestSkipDriverSleeps:
-    def test_a_driver_loaded_from_disk_does_not_wait(self):
-        with skip_driver_sleeps():
+    def test_a_named_function_of_a_driver_loaded_from_disk_does_not_wait(self):
+        with skip_driver_sleeps({"_poll_until"}):
             started = time.monotonic()
-            called_from("aiform_driver_digitalocean_compute", 2.0)
+            called_from(DRIVER, "_poll_until", 2.0)
             assert time.monotonic() - started < 1.0
 
-    def test_any_other_caller_still_waits(self):
-        with skip_driver_sleeps():
+    def test_another_function_of_the_same_driver_still_waits(self):
+        with skip_driver_sleeps({"_poll_until"}):
             started = time.monotonic()
-            called_from("some_other_module", 0.2)
+            called_from(DRIVER, "_create_droplet", 0.2)
+            assert time.monotonic() - started >= 0.2
+
+    def test_the_named_function_of_any_other_module_still_waits(self):
+        with skip_driver_sleeps({"_poll_until"}):
+            started = time.monotonic()
+            called_from("some_other_module", "_poll_until", 0.2)
             assert time.monotonic() - started >= 0.2
 
     def test_the_real_sleep_is_restored_afterwards(self):
         installed = time.sleep
-        with skip_driver_sleeps():
+        with skip_driver_sleeps({"_poll_until"}):
             assert time.sleep is not installed
         assert time.sleep is installed
 
     def test_the_real_sleep_is_restored_when_the_body_raises(self):
         installed = time.sleep
         with pytest.raises(RuntimeError):
-            with skip_driver_sleeps():
+            with skip_driver_sleeps({"_poll_until"}):
                 raise RuntimeError("boom")
         assert time.sleep is installed

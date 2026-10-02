@@ -51,7 +51,6 @@ from tests.system.test_cli_timeout import (
     CREATE_FAILED,
     ErrorOmitsResourceId,
     RetryDuplicatesResource,
-    faulted_apply,
     owned_named,
 )
 
@@ -127,7 +126,7 @@ def wait_until_unowned(profile, token, name: str) -> list[dict]:
 
 
 def faulted_run(runner: Runner, injector: contextlib.AbstractContextManager[Fault], step: str):
-    code, captured, fault = faulted_apply(runner, injector, step)
+    code, captured, fault = runner.faulted_run(APPLY, injector, step)
     assert code != 0, f"{step} exited 0\n{captured.out}"
     return captured, fault
 

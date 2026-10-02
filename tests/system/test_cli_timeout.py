@@ -35,7 +35,6 @@ from pathlib import Path
 
 import pytest
 
-from aiform import cli
 from tests.system.conftest import live_token, unique_droplet_name, write_aiform_md
 from tests.system.fault_injection import Fault, fail_request, rewrite_responses, skip_driver_sleeps
 from tests.system.live_support import APPLY, Runner, teardown_provider
@@ -104,33 +103,15 @@ def stage_injector(
     if stage == "T2":
         return lambda: fail_request(poll_method, poll_url, "timeout")
 
-    def never_ready(body: dict) -> dict:
-        for value in body.values():
-            if isinstance(value, dict) and "status" in value:
-                value["status"] = "new"
-        return body
-
     @contextlib.contextmanager
     def every_poll_reports_not_ready():
-        with skip_driver_sleeps(), rewrite_responses(poll_method, poll_url, never_ready) as fault:
+        with (
+            skip_driver_sleeps({profile.poll_loop}),
+            rewrite_responses(poll_method, poll_url, profile.not_ready) as fault,
+        ):
             yield fault
 
     return every_poll_reports_not_ready
-
-
-def faulted_apply(runner: Runner, injector: contextlib.AbstractContextManager[Fault], step: str):
-    with injector as fault:
-        code = cli.main(APPLY)
-    captured = runner.capsys.readouterr()
-    if not fault.fired:
-        pytest.fail(
-            f"{step}: the injection point was never reached, so nothing was tested "
-            f"(the run exited {code})\n--- stderr ---\n{captured.err}"
-            f"\n--- calls seen ---\n{fault.seen}"
-        )
-    runner.ledger.note_response(fault.response)
-    runner.ledger.note_state(runner.tracked())
-    return code, captured, fault
 
 
 class TestTimedOutCreate:
@@ -150,8 +131,8 @@ class TestTimedOutCreate:
         ledger.droplet_names.add(name)
         write_aiform_md(project_dir, name=name, filename="droplet.aiform.md")
 
-        code, captured, fault = faulted_apply(
-            runner, stage_injector(stage, PROFILE)(), f"plan apply ({stage})"
+        code, captured, fault = runner.faulted_run(
+            APPLY, stage_injector(stage, PROFILE)(), f"plan apply ({stage})"
         )
 
         assert code != 0, f"the faulted run exited 0\n{captured.out}"

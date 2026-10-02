@@ -23,11 +23,15 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
 from aiform import state
+
+DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0
+DEFAULT_DELAY_SECONDS = 1.5
+DEFAULT_DEADLINE_SECONDS = 1.0
 
 
 class InjectedInterrupt(KeyboardInterrupt):
@@ -40,19 +44,22 @@ class Fault:
     response: dict | None = None
     seen: list[tuple[str, str]] = field(default_factory=list)
     worker_error: BaseException | None = None
-    _workers: list[threading.Thread] = field(default_factory=list, repr=False)
+    _workers: list[tuple[threading.Thread, str]] = field(default_factory=list, repr=False)
 
-    def join(self, timeout: float = 10.0) -> None:
+    def join(self, timeout: float = DEFAULT_JOIN_TIMEOUT_SECONDS) -> None:
         """Wait for every late provider call a `timeout` fault started.
 
         Raises if one is still running, or if one failed: a late call that
         never reached the provider means the provider did not act, and a stage
         that goes on would pass without reproducing the shape it names.
         """
-        for worker in self._workers:
+        for worker, request in self._workers:
             worker.join(timeout)
             if worker.is_alive():
-                raise RuntimeError(f"a late provider call is still running after {timeout}s")
+                raise RuntimeError(
+                    f"a late provider call ({request}) is still running after {timeout}s; "
+                    "it may yet create a resource, so look for it by name at the provider"
+                )
         if self.worker_error is not None:
             raise RuntimeError("a late provider call failed") from self.worker_error
 
@@ -240,17 +247,22 @@ def rewrite_responses(
 
 
 @contextlib.contextmanager
-def skip_driver_sleeps(module_prefix: str = "aiform_driver_") -> Iterator[None]:
-    """Make a driver's own waits return at once, so a poll budget runs out in
-    seconds. `load_driver()` exec's each driver into a fresh module on every
-    call, so a patch on a driver module would not survive; this patches the
-    shared `time.sleep` and skips only callers whose module name starts with
-    `module_prefix`. Everything else, the injector's own waits included, sleeps."""
+def skip_driver_sleeps(
+    functions: Collection[str], module_prefix: str = "aiform_driver_"
+) -> Iterator[None]:
+    """Make the waits of the named driver functions return at once, so a poll
+    budget runs out in seconds. `load_driver()` exec's each driver into a fresh
+    module on every call, so a patch on a driver module would not survive; this
+    patches the shared `time.sleep` and skips only calls made directly by a
+    function in `functions` whose module name starts with `module_prefix`.
+    Every other wait sleeps: the injector's own, and a driver's backoffs that
+    the stage is not trying to exhaust."""
     real = time.sleep
 
     def sleep(seconds: float) -> None:
-        caller = sys._getframe(1).f_globals.get("__name__", "")
-        if not caller.startswith(module_prefix):
+        caller = sys._getframe(1)
+        in_driver = caller.f_globals.get("__name__", "").startswith(module_prefix)
+        if not (in_driver and caller.f_code.co_name in functions):
             real(seconds)
 
     time.sleep = sleep
@@ -258,9 +270,6 @@ def skip_driver_sleeps(module_prefix: str = "aiform_driver_") -> Iterator[None]:
         yield
     finally:
         time.sleep = real
-
-
-DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0
 
 
 def _timeout(
@@ -271,8 +280,8 @@ def _timeout(
     kwargs: dict,
     *,
     provider_acts: bool,
-    delay: float = 1.5,
-    deadline: float = 1.0,
+    delay: float = DEFAULT_DELAY_SECONDS,
+    deadline: float = DEFAULT_DEADLINE_SECONDS,
 ) -> Any:
     """The caller's deadline passes before the (slow) provider call returns."""
 
@@ -286,13 +295,16 @@ def _timeout(
 
     if provider_acts:
         worker = threading.Thread(target=late_call, daemon=True)
-        fault._workers.append(worker)
+        request_method, url = _describe(request)
+        fault._workers.append((worker, f"{request_method} {url}"))
         worker.start()
     time.sleep(deadline)
     raise TimeoutError("timed out")
 
 
-def _check_timeout_options(delay: float = 1.5, deadline: float = 1.0) -> None:
+def _check_timeout_options(
+    delay: float = DEFAULT_DELAY_SECONDS, deadline: float = DEFAULT_DEADLINE_SECONDS
+) -> None:
     if delay <= deadline:
         raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
 
@@ -431,5 +443,10 @@ def _fail_request(
     try:
         with _patched_urlopen(factory):
             yield fault
-    finally:
-        fault.join(join_timeout)
+    except BaseException as body_error:
+        try:
+            fault.join(join_timeout)
+        except RuntimeError as late:
+            body_error.add_note(str(late))
+        raise
+    fault.join(join_timeout)
