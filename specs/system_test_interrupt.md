@@ -178,6 +178,55 @@ assert the desired behaviour (one droplet per declared name) under
 `xfail(strict=True, reason="#253...")`. The other stages converge, confirmed
 live.
 
+### Timeout stages
+
+`tests/system/test_cli_timeout.py`, three stages in one parametrized test
+(`-k T2` selects one). A real timeout cannot be waited for, so the caller
+loses a race: `fail_request(..., "timeout")` lets the real request reach the
+provider and raises `TimeoutError("timed out")` at the caller, the message
+urllib itself gives, so nothing from the request leaks into aiform's error.
+Every stage asserts, in order:
+
+1. The faulted run exits non-zero and its stderr names the failed operation
+   (`driver failed during create`).
+2. The provider holds exactly one resource under the declared name, found by
+   name and not by the response the test injected, and the id in the
+   provider's response (read through `ProviderProfile.resource_id`) is that
+   resource's id. State tracks nothing.
+3. T2 and T3 only: the error names that id. T1 asserts the operation name only,
+   because no response was ever read.
+4. The retry exits 0 and leaves exactly one resource per declared name; the
+   duplicate is raised as `RetryDuplicatesResource`, which is what the
+   `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
+   accepts, so any other failed assertion is not hidden by it.
+5. A second run is a no-op with zero Anthropic calls.
+
+| Stage | Where the caller loses | Helper |
+|---|---|---|
+| T1 | the create `POST` | `fail_request` |
+| T2 | the first poll `GET` | `fail_request` |
+| T3 | every poll reports the resource not ready until the poll budget is spent | `rewrite_responses` + `skip_driver_sleeps` |
+
+`rewrite_responses(method, url_pattern, rewrite)` hands the real response body
+to `rewrite` and returns the result in its place. `skip_driver_sleeps()` makes
+`time.sleep` return at once for callers whose module is named
+`aiform_driver_*`, so the driver's own `_poll_until` runs to exhaustion in
+seconds. This patches the shared `time.sleep` and filters on caller, not a
+driver module attribute as the plan worded it, because `load_driver()` execs
+the driver afresh on every call and a module-level patch would not survive.
+
+The runner and teardown shared with the interrupt suite live in
+`tests/system/live_support.py`.
+
+Live results, 2026-10-02:
+
+- T1, T3: duplicate observed live, `xfail` against #253.
+- T2: **fails** at step 3. The retry also duplicates (observed with the
+  step 3 assertion relaxed locally), but the error is
+  `digitalocean.compute driver failed during create: timed out` with no
+  droplet id: a poll `GET` that times out says only "timed out", and the
+  driver holds the id in a local. No marker is set; see the PR.
+
 ### UC-F
 
 - **Refusal.** A droplet and the firewall that references it are applied.
