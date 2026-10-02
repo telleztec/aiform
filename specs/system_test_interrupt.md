@@ -193,7 +193,7 @@ live.
 `tests/system/test_cli_timeout.py`, four stages in one parametrized test
 (`-k T2` selects one). A real timeout cannot be waited for, so the caller
 loses a race: `fail_request(..., "timeout")` lets the real request reach the
-provider and raises `TimeoutError("timed out")` at the caller, the message
+provider (T4 passes `provider_acts=False` and does not) and raises `TimeoutError("timed out")` at the caller, the message
 urllib itself gives, so nothing from the request leaks into aiform's error.
 Every stage asserts, in order:
 
@@ -206,11 +206,12 @@ Every stage asserts, in order:
 3. T2 and T3 only: the error names that id. T1 asserts the operation name only,
    because no response was ever read. T4 is the control and replaces steps 2
    and 3: the provider holds nothing under the name, because the request never
-   reached it, and the injector recorded no response.
+   reached it.
 4. The retry exits 0 and leaves exactly one resource per declared name; the
    duplicate is raised as `RetryDuplicatesResource`, which is what the
    `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
-   accepts, so any other failed assertion is not hidden by it.
+   accepts, so any other failed assertion is not hidden by it. T4 carries no
+   marker and must pass outright.
 5. A second run is a no-op with zero Anthropic calls.
 
 | Stage | Where the caller loses | Helper |
@@ -249,8 +250,9 @@ XPASS, no leaks):
   owner approval of its text.
 - T4 (live, 2026-10-02): passes. A create that times out without reaching the
   provider leaves nothing there and nothing in state; the retry makes exactly
-  one droplet and the second run is a no-op. It shows the duplicate in T1 and T3
-  comes from the accepted create and not from the timeout itself.
+  one droplet and the second run is a no-op. Against T1, which differs only in
+  that the provider does act, it shows the duplicate comes from the accepted
+  create and not from the timeout itself.
 
 ### UC-F
 

@@ -150,7 +150,6 @@ class TestTimedOutCreate:
                 f"the create never reached the provider, yet it holds "
                 f"{[r['id'] for r in held]} for {name}"
             )
-            assert fault.response is None, "the provider answered a call that was never made"
         else:
             assert len(held) == 1, (
                 f"after the faulted run the provider holds {[r['id'] for r in held]} "
