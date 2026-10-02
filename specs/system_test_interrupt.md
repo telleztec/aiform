@@ -126,12 +126,12 @@ firewalls, which are free, and only the rules change.
 
 ### Expected results
 
-C1 and C2 are expected to **fail** today. `create()` has no idempotency key
-and no lookup by name, and state is written only after `create()` returns, so
-a retry cannot know the first droplet exists and POSTs a second. The tests
-assert the desired behaviour (one droplet per declared name) and carry no
-`xfail` marker until a live run proves it and an issue number exists. The
-other stages are expected to converge.
+C1 and C2 **fail** today, confirmed live (#253). `create()` has no idempotency
+key and no lookup by name, and state is written only after `create()` returns,
+so a retry cannot know the first droplet exists and POSTs a second. The tests
+assert the desired behaviour (one droplet per declared name) under
+`xfail(strict=True, reason="#253...")`. The other stages converge, confirmed
+live.
 
 ### UC-F
 
