@@ -22,7 +22,9 @@ slow request, while the provider goes on to do the work, leaves the provider
 and aiform's state in a condition a plain re-run repairs. A real timeout cannot
 be waited for, so the injector makes the caller lose a race instead
 (`fail_request(..., "timeout")`): the provider is slow, the caller's deadline
-passes first, and the provider still acts.
+passes first, and the provider still acts. T4 is the control: the same
+deadline passes but the request never reaches the provider, so nothing exists
+to duplicate and the retry must make exactly one resource.
 
 A stage names no provider. It asks the `ProviderProfile` which request creates
 the resource, which one polls it, where the id sits in a response and how to
@@ -102,6 +104,8 @@ def stage_injector(
         return lambda: fail_request(create_method, create_url, "timeout")
     if stage == "T2":
         return lambda: fail_request(poll_method, poll_url, "timeout")
+    if stage == "T4":
+        return lambda: fail_request(create_method, create_url, "timeout", provider_acts=False)
 
     @contextlib.contextmanager
     def every_poll_reports_not_ready():
@@ -121,6 +125,7 @@ class TestTimedOutCreate:
             pytest.param("T1", marks=_RETRY_DUPLICATES_RESOURCE),
             pytest.param("T2", marks=_ERROR_OMITS_RESOURCE_ID),
             pytest.param("T3", marks=_RETRY_DUPLICATES_RESOURCE),
+            pytest.param("T4"),
         ],
     )
     def test_a_rerun_converges_with_one_resource_per_declared_name(
@@ -140,17 +145,23 @@ class TestTimedOutCreate:
             f"the error does not name the failed operation:\n{captured.err}"
         )
         held = owned_named(PROFILE, token, name)
-        assert len(held) == 1, (
-            f"after the faulted run the provider holds {[r['id'] for r in held]} "
-            f"for {name}, expected the one the provider accepted"
-        )
-        returned_id = PROFILE.resource_id(fault.response)
-        assert returned_id == str(held[0]["id"]), (
-            f"the provider's response carried id {returned_id}, "
-            f"the live resource is {held[0]['id']}"
-        )
-        if stage != "T1":
-            if returned_id not in captured.err:
+        if stage == "T4":
+            assert held == [], (
+                f"the create never reached the provider, yet it holds "
+                f"{[r['id'] for r in held]} for {name}"
+            )
+            assert fault.response is None, "the provider answered a call that was never made"
+        else:
+            assert len(held) == 1, (
+                f"after the faulted run the provider holds {[r['id'] for r in held]} "
+                f"for {name}, expected the one the provider accepted"
+            )
+            returned_id = PROFILE.resource_id(fault.response)
+            assert returned_id == str(held[0]["id"]), (
+                f"the provider's response carried id {returned_id}, "
+                f"the live resource is {held[0]['id']}"
+            )
+            if stage != "T1" and returned_id not in captured.err:
                 raise ErrorOmitsResourceId(
                     f"the provider returned resource {returned_id} before the failure, "
                     f"but the error does not name it:\n{captured.err}"
