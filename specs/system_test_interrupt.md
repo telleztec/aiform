@@ -74,9 +74,13 @@ raises before any block is entered.
 
 `tests/system/provider_profile.py` holds `ProviderProfile`: the create request,
 the poll request (each a `(method, url_pattern)` pair), `resource_id(body)`
-(the id in a create or poll response, or `None`), and `list_owned(token)` /
-`delete(token, id)` for teardown. `DIGITALOCEAN` is the only instance; there is
-no registry. A stage asks the profile and names no provider. Tested offline in
+(the id in a create or poll response, or `None`), `not_ready(body)` (a poll
+body rewritten to report the resource not ready), `poll_loop` (the name of the
+driver function whose sleeps a stage may skip), and `list_owned(token)` for
+teardown. `DIGITALOCEAN` is the only instance; there is no registry. A stage's
+own logic asks the profile and names no provider; the shared helpers it reuses
+from the interrupt suite (`unique_droplet_name`, the ledger's `droplet_names`)
+still carry DigitalOcean words. Tested offline in
 `tests/test_system_provider_profile.py`.
 
 ## Behavior
@@ -118,16 +122,22 @@ no registry. A stage asks the profile and names no provider. Tested offline in
   worker is still running or if its call failed (a late call that never reached
   the provider means the provider did not act, so the stage has not reproduced
   the shape it names). Leaving the block joins every worker, after restoring
-  `urlopen`, even when the body raised. A worker still running at that point
-  cannot be stopped: its request may yet reach the provider after teardown, and
-  a resource it creates is caught only by teardown's by-name match and the
-  session sweep. The injected `TimeoutError` is an `Exception` (unlike
+  `urlopen`, even when the body raised. When the body raised, its exception
+  propagates and a join failure is attached to it as a note, so a failing
+  assertion is never replaced by "a late call is still running". The join
+  failure names the late request (method and URL) and says to look for the
+  resource by name. A worker still running at that point cannot be stopped:
+  its request may yet reach the provider after teardown, and a resource it
+  creates is caught only by teardown's by-name match; the session sweep skips
+  anything younger than 60 minutes, so it catches a leak only on a later run.
+  The injected `TimeoutError` is an `Exception` (unlike
   `InjectedInterrupt`), so a caller that catches it carries on: the driver's
   `_poll_until` timeout is swallowed in the SSH power-off path
   (`drivers/digitalocean/compute.py`), so a stage must not inject there and
   expect a failure.
-- An injector fires at most once. Afterwards it passes everything through,
-  so `finally` blocks that make provider calls are not cut off a second time.
+- `interrupt_*` and `fail_request` fire at most once. Afterwards they pass
+  everything through, so `finally` blocks that make provider calls are not cut
+  off a second time. `rewrite_responses` rewrites every match.
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
@@ -208,10 +218,13 @@ Every stage asserts, in order:
 | T3 | every poll reports the resource not ready until the poll budget is spent | `rewrite_responses` + `skip_driver_sleeps` |
 
 `rewrite_responses(method, url_pattern, rewrite)` hands the real response body
-to `rewrite` and returns the result in its place. `skip_driver_sleeps()` makes
-`time.sleep` return at once for callers whose module is named
-`aiform_driver_*`, so the driver's own `_poll_until` runs to exhaustion in
-seconds. This patches the shared `time.sleep` and filters on caller, not a
+to `rewrite` and returns the result in its place; T3 passes the profile's
+`not_ready`. `skip_driver_sleeps(functions)` makes `time.sleep` return at once
+for calls made directly by a function named in `functions` (T3 passes the
+profile's `poll_loop`) in a module named `aiform_driver_*`, so the driver's own
+poll loop runs to exhaustion in seconds. A driver's other waits, such as the
+key-propagation backoff in create, still sleep: skipping them would let T3 die
+on a provider error instead of the exhausted poll budget. This patches the shared `time.sleep` and filters on caller, not a
 driver module attribute as the plan worded it, because `load_driver()` execs
 the driver afresh on every call and a module-level patch would not survive.
 

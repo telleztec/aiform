@@ -44,8 +44,8 @@ a no-op with zero Anthropic calls.
   every driver today calls `urllib` directly. An SDK-based driver (boto3) needs
   a different seam; noted, not built.
 - A `ProviderProfile` (create request, poll request, resource-id reader, ledger
-  list/delete hooks) keeps the stages from hard-coding DigitalOcean. DO is the
-  only implementation; no registry.
+  list hook, a not-ready rewrite and the poll loop's name) keeps the stages
+  from hard-coding DigitalOcean. DO is the only implementation; no registry.
 - Id assertion, generic: when the provider returned a resource id before the
   failure, the error output contains it, read through the profile. When the
   failure precedes any id (the create POST), the stage asserts only that the
