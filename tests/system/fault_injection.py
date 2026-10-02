@@ -16,6 +16,7 @@ import copy
 import io
 import json
 import re
+import sys
 import threading
 import time
 import urllib.request
@@ -228,6 +229,27 @@ def rewrite_responses(
 
     with _patched_urlopen(factory):
         yield fault
+
+
+@contextlib.contextmanager
+def skip_driver_sleeps(module_prefix: str = "aiform_driver_") -> Iterator[None]:
+    """Make a driver's own waits return at once, so a poll budget runs out in
+    seconds. `load_driver()` exec's each driver into a fresh module on every
+    call, so a patch on a driver module would not survive; this patches the
+    shared `time.sleep` and skips only callers whose module name starts with
+    `module_prefix`. Everything else, the injector's own waits included, sleeps."""
+    real = time.sleep
+
+    def sleep(seconds: float) -> None:
+        caller = sys._getframe(1).f_globals.get("__name__", "")
+        if not caller.startswith(module_prefix):
+            real(seconds)
+
+    time.sleep = sleep
+    try:
+        yield
+    finally:
+        time.sleep = real
 
 
 DEFAULT_JOIN_TIMEOUT_SECONDS = 10.0

@@ -29,6 +29,7 @@ from tests.system.fault_injection import (
     interrupt_after_state_save,
     interrupt_before_request,
     rewrite_responses,
+    skip_driver_sleeps,
 )
 
 
@@ -606,3 +607,37 @@ class TestRewriteResponses:
         with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new):
             assert urllib.request.urlopen is not installed
         assert urllib.request.urlopen is installed
+
+
+def called_from(module_name: str, seconds: float) -> None:
+    """Run `time.sleep(seconds)` as code whose module is `module_name`, the way
+    load_driver() names a driver it exec's from disk."""
+    namespace = {"__name__": module_name, "time": time}
+    exec("time.sleep(seconds)", namespace, {"seconds": seconds})
+
+
+class TestSkipDriverSleeps:
+    def test_a_driver_loaded_from_disk_does_not_wait(self):
+        with skip_driver_sleeps():
+            started = time.monotonic()
+            called_from("aiform_driver_digitalocean_compute", 2.0)
+            assert time.monotonic() - started < 1.0
+
+    def test_any_other_caller_still_waits(self):
+        with skip_driver_sleeps():
+            started = time.monotonic()
+            called_from("some_other_module", 0.2)
+            assert time.monotonic() - started >= 0.2
+
+    def test_the_real_sleep_is_restored_afterwards(self):
+        installed = time.sleep
+        with skip_driver_sleeps():
+            assert time.sleep is not installed
+        assert time.sleep is installed
+
+    def test_the_real_sleep_is_restored_when_the_body_raises(self):
+        installed = time.sleep
+        with pytest.raises(RuntimeError):
+            with skip_driver_sleeps():
+                raise RuntimeError("boom")
+        assert time.sleep is installed
