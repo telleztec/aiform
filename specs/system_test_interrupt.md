@@ -126,6 +126,21 @@ no registry. A stage asks the profile and names no provider. Tested offline in
   `_poll_until` timeout is swallowed in the SSH power-off path
   (`drivers/digitalocean/compute.py`), so a stage must not inject there and
   expect a failure.
+- `fail_request` takes four more kinds. Each gives the caller a failure; for
+  every kind but `http_429`, `provider_acts=True` (the default) lets the real
+  request reach the provider first, and its body is parsed into
+  `Fault.response`.
+  - `reset` raises `URLError(ConnectionResetError(ECONNRESET, ...))`: the
+    connection drops.
+  - `http_500`, `http_503`, `http_429` raise `HTTPError` with that status and a
+    JSON body `{"id", "message"}`.
+  - `http_429` is the provider refusing before it acts, so
+    `provider_acts=True` for it raises `ValueError` at the call.
+- `fail_request(..., body_pattern=...)` matches the request body as well as the
+  method and URL, for every kind. A request whose body does not match passes
+  through and does not count toward `occurrence`. It exists because a provider
+  can serve several operations from one endpoint: DigitalOcean's
+  `POST /v2/droplets/{id}/actions` carries `power_off`, `power_on` and `resize`.
 - An injector fires at most once. Afterwards it passes everything through,
   so `finally` blocks that make provider calls are not cut off a second time.
 - Installing is scoped: the original `urlopen` and `save` are restored on
@@ -230,6 +245,47 @@ Live results, 2026-10-02:
   duplicate check, raises `RetryDuplicatesResource`, and fails strictly until
   its marker becomes the #253 one. The issue for the missing id is awaiting
   owner approval of its text.
+
+### URL failure stages
+
+`tests/system/test_cli_url_failures.py`. A cell is selected by `-k` on its id.
+The injected failure is a request that comes back as an error, as opposed to
+one that never comes back (the timeout stages).
+
+| Cell id | Request that fails | Injected |
+|---|---|---|
+| `create-reset`, `create-http500`, `create-http503` | the create `POST` | provider acts |
+| `create-http429` | the create `POST` | provider does not act |
+| `poll-reset`, `poll-http500`, `poll-http503` | the first poll `GET` | provider acts |
+| `poll-http429` | the first poll `GET` | provider does not act |
+| `resize-http503` | the resize action `POST`, found by `body_pattern` | provider acts |
+| `delete-http503` | the delete `DELETE` | provider acts |
+
+`create-*` and `poll-*` assert what the timeout stages assert, in the same
+order, with these differences:
+
+- `create-http429` is the one control: the provider holds nothing, the retry
+  creates one resource, and it carries no marker.
+- `poll-http429` is not a control. The create `POST` before it was accepted, so
+  the provider holds one resource and the error does not name it.
+- The id is checked against the error for `poll-*` only; no response was read
+  for `create-*`.
+- Markers are provisional, set before the first live run: `create-*` (bar
+  429) `xfail(strict=True, raises=RetryDuplicatesResource)` against #253;
+  `poll-*` `xfail(strict=True, raises=ErrorOmitsResourceId)`.
+
+`resize-http503` applies, then changes the declared size and applies with the
+resize request failed. It asserts a non-zero exit naming `driver failed during
+update`, the same single resource under the same id, then after the retry the
+declared size, the same id, and a no-op second run. `delete-http503` marks the
+file `AIFORM-DELETE-*`, applies with the `DELETE` failed, and asserts
+`driver failed during delete`, the marker file still in place, state still
+tracking the resource; after the retry, the resource gone at the provider, the
+marker in trash, and a no-op second run. Neither carries a marker: what they
+show is decided by the first live run.
+
+A cell names no provider: the requests come from `ProviderProfile.create`,
+`.poll`, `.resize` (method, URL pattern, body pattern) and `.destroy`.
 
 ### UC-F
 
