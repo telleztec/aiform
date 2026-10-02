@@ -284,9 +284,12 @@ order, with these differences:
   the provider holds one resource and the error does not name it.
 - The id is checked against the error for `poll-*` only; no response was read
   for `create-*`.
-- Markers are provisional, set before the first live run: `create-*` (bar
-  429) `xfail(strict=True, raises=RetryDuplicatesResource)` against #253;
-  `poll-*` `xfail(strict=True, raises=ErrorOmitsResourceId)`.
+- Markers: `create-*` (bar 429) `xfail(strict=True,
+  raises=RetryDuplicatesResource)` against #253; `poll-*`
+  `xfail(strict=True, raises=ErrorOmitsResourceId)`. A `poll-*` cell stops at the
+  id assertion, so whether its retry also duplicates is not observed; once the
+  error carries the id the cell reaches that check and fails strictly until its
+  marker becomes the #253 one.
 
 `resize-http503` applies, then changes the declared size and applies with the
 resize request failed. It asserts a non-zero exit naming `driver failed during
@@ -295,8 +298,13 @@ declared size, the same id, and a no-op second run. `delete-http503` marks the
 file `AIFORM-DELETE-*`, applies with the `DELETE` failed, and asserts
 `driver failed during delete`, the marker file still in place, state still
 tracking the resource; after the retry, the resource gone at the provider, the
-marker in trash, and a no-op second run. Neither carries a marker: what they
-show is decided by the first live run.
+marker in trash, and a no-op second run. Neither carries a marker: both
+pass live.
+
+Live results, 2026-10-02, head `5eaaa75`: 3 passed (`create-http429`,
+`resize-http503`, `delete-http503`), 7 xfailed (`create-reset`, `create-http500`,
+`create-http503` against #253; the four `poll-*` on the missing id), no XPASS.
+No droplets or firewalls remained and only the `cloudaiform.com` zone.
 
 A cell names no provider: the requests come from `ProviderProfile.create`,
 `.poll`, `.resize` (method, URL pattern, body pattern) and `.destroy`.
