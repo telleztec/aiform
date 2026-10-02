@@ -205,11 +205,12 @@ live.
 
 ### Timeout stages
 
-`tests/system/test_cli_timeout.py`, three stages in one parametrized test
+`tests/system/test_cli_timeout.py`, four stages in one parametrized test
 (`-k T2` selects one). A real timeout cannot be waited for, so the caller
 loses a race: `fail_request(..., "timeout")` lets the real request reach the
-provider and raises `TimeoutError("timed out")` at the caller, the message
-urllib itself gives, so nothing from the request leaks into aiform's error.
+provider (T4 passes `provider_acts=False` and does not) and raises
+`TimeoutError("timed out")` at the caller, the message urllib itself gives, so
+nothing from the request leaks into aiform's error.
 Every stage asserts, in order:
 
 1. The faulted run exits non-zero and its stderr names the failed operation
@@ -219,11 +220,14 @@ Every stage asserts, in order:
    provider's response (read through `ProviderProfile.resource_id`) is that
    resource's id. State tracks nothing.
 3. T2 and T3 only: the error names that id. T1 asserts the operation name only,
-   because no response was ever read.
+   because no response was ever read. T4 is the control: in place of step 2's
+   provider assertions and of step 3, the provider holds nothing under the name,
+   because the request never reached it. State still tracks nothing.
 4. The retry exits 0 and leaves exactly one resource per declared name; the
    duplicate is raised as `RetryDuplicatesResource`, which is what the
    `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
-   accepts, so any other failed assertion is not hidden by it.
+   accepts, so any other failed assertion is not hidden by it. T4 carries no
+   marker and must pass outright.
 5. A second run is a no-op with zero Anthropic calls.
 
 | Stage | Where the caller loses | Helper |
@@ -231,6 +235,7 @@ Every stage asserts, in order:
 | T1 | the create `POST` | `fail_request` |
 | T2 | the first poll `GET` | `fail_request` |
 | T3 | every poll reports the resource not ready until the poll budget is spent | `rewrite_responses` + `skip_driver_sleeps` |
+| T4 | the create `POST`, which the provider never receives (`provider_acts=False`) | `fail_request` |
 
 `rewrite_responses(method, url_pattern, rewrite)` hands the real response body
 to `rewrite` and returns the result in its place; T3 passes the profile's
@@ -259,6 +264,11 @@ XPASS, no leaks):
   duplicate check, raises `RetryDuplicatesResource`, and fails strictly until
   its marker becomes the #253 one. The issue for the missing id is awaiting
   owner approval of its text.
+- T4 (live, 2026-10-02): passes. A create that times out without reaching the
+  provider leaves nothing there and nothing in state; the retry makes exactly
+  one droplet and the second run is a no-op. Against T1, which differs only in
+  that the provider does act, it shows the duplicate comes from the accepted
+  create and not from the timeout itself.
 
 ### URL failure stages
 
