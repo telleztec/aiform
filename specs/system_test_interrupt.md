@@ -193,8 +193,9 @@ live.
 `tests/system/test_cli_timeout.py`, four stages in one parametrized test
 (`-k T2` selects one). A real timeout cannot be waited for, so the caller
 loses a race: `fail_request(..., "timeout")` lets the real request reach the
-provider (T4 passes `provider_acts=False` and does not) and raises `TimeoutError("timed out")` at the caller, the message
-urllib itself gives, so nothing from the request leaks into aiform's error.
+provider (T4 passes `provider_acts=False` and does not) and raises
+`TimeoutError("timed out")` at the caller, the message urllib itself gives, so
+nothing from the request leaks into aiform's error.
 Every stage asserts, in order:
 
 1. The faulted run exits non-zero and its stderr names the failed operation
@@ -204,9 +205,9 @@ Every stage asserts, in order:
    provider's response (read through `ProviderProfile.resource_id`) is that
    resource's id. State tracks nothing.
 3. T2 and T3 only: the error names that id. T1 asserts the operation name only,
-   because no response was ever read. T4 is the control and replaces steps 2
-   and 3: the provider holds nothing under the name, because the request never
-   reached it.
+   because no response was ever read. T4 is the control: in place of step 2's
+   provider assertions and of step 3, the provider holds nothing under the name,
+   because the request never reached it. State still tracks nothing.
 4. The retry exits 0 and leaves exactly one resource per declared name; the
    duplicate is raised as `RetryDuplicatesResource`, which is what the
    `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
