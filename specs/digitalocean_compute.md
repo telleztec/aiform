@@ -322,8 +322,9 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     - **Exactly one, not `new` or `active`** → `RuntimeError`: `droplet
       <name>: droplet <id> carries the creation marker for it but is <status>,
       not new or active; power it on and re-run to adopt it, or delete it and
-      re-run to start fresh`. A powered-off or archived droplet is not adopted
-      silently.
+      re-run to start fresh`. For `off` only. For any other status (`archive`),
+      which DO cannot power back on, the message offers only `delete it and
+      re-run to start fresh`. Neither is adopted silently.
     - **Exactly one, `new` or `active`** → adopted: no POST. The droplet is polled to
       `status == "active"` with `create()`'s own budget, then returned
       through the same `_flatten()` path. `backups` and `monitoring` come from
@@ -348,6 +349,8 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     adopting it would have been right. The user must power it on and re-run,
     or delete it and re-run; either costs a manual step, because adoption
     cannot tell the two cases apart.
+    A droplet in status `archive` is refused the same way, but its message
+    offers only delete, since DO cannot power an archived droplet on.
   - Probed? No. Unverified against the live API: the `tag_name` filter's
     behaviour for a tag that does not exist yet (handled as empty on a `404`),
     how soon a just-created droplet appears in a tag listing, whether the tags
@@ -529,9 +532,9 @@ the observed total is a few hundred milliseconds.
   expected, not shown, to drop the droplet by then. A non-`404` poll error
   counts as "not gone yet". If the bound expires, `delete()` still succeeds
   and logs a `warning`, `droplet still present after delete was accepted`,
-  with `id`, `attempts_used` and `last_error` (the last non-`404` error's
-  text, or `none (the droplet was still returned)`), so a `401` or `429` is
-  visible as the cause.
+  with `id`, `attempts_used` and `last_error` (the last attempt's non-`404`
+  error, or `none (the droplet was still returned)` if the last attempt
+  returned the droplet), so a `401` or `429` is visible as the cause.
 - After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
   "known_hosts")` if an IP was resolved — best-effort, never raises (see
   `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete

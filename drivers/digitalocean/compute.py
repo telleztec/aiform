@@ -401,10 +401,16 @@ class Driver(ResourceDriver):
                 f"(ids {ids}); delete the extras and re-run"
             )
         if matches and matches[0]["status"] not in _ADOPTABLE_STATUSES:
+            status = matches[0]["status"]
+            # DO cannot power an archived droplet back on, so only deletion applies.
+            remedy = (
+                "power it on and re-run to adopt it, or delete it and re-run to start fresh"
+                if status == "off"
+                else "delete it and re-run to start fresh"
+            )
             raise RuntimeError(
                 f"droplet {name}: droplet {matches[0]['id']} carries the creation marker "
-                f"for it but is {matches[0]['status']}, not new or active; power it on "
-                f"and re-run to adopt it, or delete it and re-run to start fresh"
+                f"for it but is {status}, not new or active; {remedy}"
             )
         return matches[0] if matches else None
 
