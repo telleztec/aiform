@@ -42,7 +42,7 @@ a second vocabulary is not invented.
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
-| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. Verified live (#239): interrupted after the provider delete, after the state save, and mid multi-resource destroy all converge on re-run. The create-side counterpart does not: an interrupted droplet create is duplicated on retry (#253) |
+| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. Verified live (#239): interrupted after the provider delete, after the state save, and mid multi-resource destroy all converge on re-run. The create-side counterpart did not: an interrupted droplet create was duplicated on retry (#253). PR 4b makes the compute driver tag each droplet with a per-name marker and adopt a marked droplet on retry; the live cells that decide it have not run yet |
 | **UC2 — Declare a dependency by hand** | A user can state a relationship `aiform` cannot see, and have it honoured. Uniquely expresses ordering with **no** value flow. | **P1** | delivered |
 | **UC-D — Know what a failure touches** | When a resource fails or degrades, an operator can learn what else is affected without reading the configuration by hand. | **P2** | **not delivered** — no implementation |
 | **UC3 — Parallel execution** | Resources with no dependency between them are applied concurrently, so N independent resources do not take N times as long as one. | **P2** | not delivered — Phase 6 |
@@ -489,6 +489,17 @@ landing first does not mean the other two are done. See
 `specs/resource_dependencies.md` for the mechanism and its escape hatch,
 and `specs/dependency_detection.md` for whether this changes that spec's
 own destroy-ordering argument (it does not, for reasons recorded there).
+
+**Phase 4, PR 4b (#253, #229, part of #235).** A failed apply or destroy now
+reports what it applied, what failed and what did not run, as a greppable
+block with exit 2 (`specs/cli.md`, `specs/orchestrator.md`). A destroy plan
+that removes a firewall together with the droplet it protects warns about the
+exposure window. `plan destroy --all --yes` retries a transient
+failed delete (429, 5xx, connection or timeout; 4 attempts, 5/15/45 s), and a forced re-run converges. The compute driver's
+`create()` tags each droplet with a per-name marker and adopts a marked
+droplet instead of creating a second (`specs/digitalocean_compute.md`).
+Orphan removal inside `--all`, and modelling the operational direction (#235
+option 3), are not delivered.
 
 **Phase 5 — Concurrency-safe state (R1, and the R4 decision).** Make
 state reads/writes safe under concurrent mutation within one process, and

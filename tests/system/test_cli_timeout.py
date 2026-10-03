@@ -57,22 +57,16 @@ class ErrorOmitsResourceId(AssertionError):
     """The provider returned a resource id before the failure; the error does not name it."""
 
 
-# `raises=` keeps the marker honest: only the duplicate counts as the expected
-# failure. Any other assertion that fails, an error that omits the resource id
-# for one, is a different finding and must not be hidden behind #253.
-_RETRY_DUPLICATES_RESOURCE = pytest.mark.xfail(
-    strict=True,
-    raises=RetryDuplicatesResource,
-    reason="#253: a retry after a create the provider accepted makes a second resource",
-)
-
-# Once the error carries the id, T2 reaches the duplicate check and fails with
-# RetryDuplicatesResource, which this marker does not accept: swap it for the
-# #253 marker then.
+# `raises=` keeps the marker honest: only the missing id counts as the expected
+# failure. Any other assertion that fails, a duplicate for one, is a different
+# finding and must not be hidden behind #264. Once the error carries the id, T2
+# reaches the duplicate check, which #253's marker adoption should pass: remove
+# this marker then.
 _ERROR_OMITS_RESOURCE_ID = pytest.mark.xfail(
     strict=True,
     raises=ErrorOmitsResourceId,
-    reason="a timed-out poll after an accepted create says only 'timed out', not which resource",
+    reason="#264: a timed-out poll after an accepted create says only 'timed out', "
+    "not which resource",
 )
 
 
@@ -122,9 +116,9 @@ class TestTimedOutCreate:
     @pytest.mark.parametrize(
         "stage",
         [
-            pytest.param("T1", marks=_RETRY_DUPLICATES_RESOURCE),
+            "T1",
             pytest.param("T2", marks=_ERROR_OMITS_RESOURCE_ID),
-            pytest.param("T3", marks=_RETRY_DUPLICATES_RESOURCE),
+            "T3",
             pytest.param("T4"),
         ],
     )
