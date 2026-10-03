@@ -1508,6 +1508,16 @@ def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     live, gone = refresh_resource(driver, dependent, credentials)
     attributes = live
     now = datetime.now(UTC)
+    if not gone:
+        for target, droplet_id in zip(pr.repairs, destroyed_ids, strict=True):
+            if _rule_names_droplet(live, droplet_id):
+                raise PlanBlockedError(
+                    f"cannot destroy: {pr.entry.resource_key} has a rule naming {target!r} "
+                    f"(id {droplet_id}) in its sources or destinations, which removing it "
+                    "from droplet_ids would leave behind (read live just now; the plan was "
+                    "made from recorded state); destroy it with `aiform plan destroy <file> "
+                    "--force` to drop the edge"
+                )
     if not gone and any(droplet_id in destroyed_ids for droplet_id in live.get(field, [])):
         properties = driver.PARAM_SCHEMA.get("properties", {})
         desired = {key: value for key, value in live.items() if key in properties}

@@ -4325,6 +4325,33 @@ class TestApplyingARepair:
         assert ("delete", "droplet") not in repair_world.mutations()
         assert repair_world.state_path.read_text() == before
 
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    @pytest.mark.parametrize("top_level", [(DROPLET_ID,), ()], ids=["also-top-level", "rule-only"])
+    def test_a_rule_naming_the_droplet_added_out_of_band_is_refused_before_any_write(
+        self, repair_world: RepairWorld, marker: bool, top_level: tuple
+    ):
+        nested = [
+            {
+                "protocol": "tcp",
+                "ports": "22",
+                "action": "allow",
+                "sources": {"droplet_ids": [DROPLET_ID]},
+            }
+        ]
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live(top_level, inbound_rules=nested)
+        before = repair_world.state_path.read_text()
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            apply_with_confirms(planned, repair_world, yes=True)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+        assert "plan destroy" in exc_info.value.reason
+        assert "--force" in exc_info.value.reason
+        assert repair_world.mutations() == []
+        assert repair_world.state_path.read_text() == before
+
     def test_the_droplets_file_is_trashed_and_the_firewall_file_is_left_alone(
         self, repair_world: RepairWorld
     ):
