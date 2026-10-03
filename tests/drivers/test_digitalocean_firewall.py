@@ -907,7 +907,7 @@ class TestNestedTargetListOrder:
         params = minimal_params()
         params["inbound_rules"][0]["sources"] = {"addresses": ["10.0.0.0/8", "0.0.0.0/0"]}
 
-        driver._validate_params(params)
+        assert driver._validate_params(params) is None
 
 
 class TestTwoDropletsAdmittedByReference:

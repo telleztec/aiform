@@ -3318,6 +3318,10 @@ class TestBuildDestroyPlan:
             "digitalocean.compute.a-01 -> digitalocean.compute.b-01 -> digitalocean.compute.a-01"
             in warnings[0]
         )
+        assert (
+            "so digitalocean.compute.a-01 is destroyed after digitalocean.compute.b-01, "
+            "which it depends on" in warnings[0]
+        )
 
     def test_a_self_dependency_in_state_is_dropped_with_a_warning(self, tmp_path: Path):
         tracked_file = tmp_path / "tracked.aiform.md"
@@ -5597,6 +5601,34 @@ class TestDestroyWithTheTrackedFileMissing:
             orchestrator.apply_plan(
                 [pr], state_path=state_path, yes=True, client=client, deployment="default"
             )
+
+    def test_a_file_that_vanishes_between_the_check_and_the_trash_move_is_not_an_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def vanishing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise FileNotFoundError(str(path))
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", vanishing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(aiform_md) in caplog.text
 
     def test_destroy_all_plan_names_a_tracked_file_that_is_missing(self, tmp_path: Path):
         missing = tmp_path / "moved-away.aiform.md"

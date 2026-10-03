@@ -176,7 +176,7 @@ def _new_state_entry(
         last_refreshed_at=now,
         aiform_md_path=str(pr.aiform_md_path),
         aiform_md_sha256=pr.current_aiform_md_sha256,
-        depends_on=pr.depends_on,
+        depends_on=list(pr.depends_on),
         reference_edges=copy.deepcopy(pr.reference_edges),
     )
 
@@ -473,7 +473,8 @@ def _reverse_topological_breaking_cycles(
             edges[dependent].discard(target)
             warnings.append(
                 f"dependency cycle in state: {' -> '.join(exc.path)}; dropping the edge from "
-                f"{dependent} to {target} so the destroy can proceed"
+                f"{dependent} to {target}, so {dependent} is destroyed after {target}, "
+                "which it depends on"
             )
 
 
@@ -1422,9 +1423,11 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         del st.resources[pr.entry.resource_key]
     _prune_dependents_on(st, pr.entry.resource_key, pr.dropped_dependents)
     state.save(st, state_path)
-    if pr.aiform_md_path.exists():
+    try:
+        if not pr.aiform_md_path.exists():
+            raise FileNotFoundError(str(pr.aiform_md_path))
         move_to_trash(pr.aiform_md_path)
-    else:
+    except FileNotFoundError:
         logger.warning(
             "%s: tracked file %s is missing; skipping the trash move",
             pr.entry.resource_key,
