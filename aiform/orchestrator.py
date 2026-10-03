@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import dataclasses
 import hashlib
 import importlib.util
@@ -176,6 +177,7 @@ def _new_state_entry(
         aiform_md_path=str(pr.aiform_md_path),
         aiform_md_sha256=pr.current_aiform_md_sha256,
         depends_on=pr.depends_on,
+        reference_edges=copy.deepcopy(pr.reference_edges),
     )
 
 
@@ -326,6 +328,7 @@ class PlannedResource:
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
     depends_on: list[str] = dataclasses.field(default_factory=list)
+    reference_edges: dict[str, list[str]] = dataclasses.field(default_factory=dict)
     # desired_params is resolved as far as plan time could manage and is what
     # the diff and the plan display read. raw_params keeps the references
     # intact, because apply re-resolves from scratch against state as it
@@ -409,6 +412,14 @@ def _dependency_targets(spec: ResourceSpec, key: str) -> list[str]:
     except references.ReferenceResolutionError as exc:
         raise PlanBlockedError(f"{key}: {exc}") from exc
     return declared + sorted(referenced - set(declared))
+
+
+def _reference_edges(params: dict[str, Any]) -> dict[str, list[str]]:
+    attributes: dict[str, set[str]] = {}
+    for found in references.find_references(params).values():
+        for reference in found:
+            attributes.setdefault(reference.target_key, set()).add(reference.attribute)
+    return {target: sorted(names) for target, names in sorted(attributes.items())}
 
 
 def _resolve_dependency_edges(discovered: list[_DiscoveredFile], st: State) -> dict[str, set[str]]:
@@ -607,6 +618,7 @@ def _plan_one(
         llm_config=llm_config,
     )
     depends_on = _dependency_targets(resource_spec, key)
+    reference_edges = _reference_edges(resource_spec.params)
 
     # depends_on is ordering metadata, not resource config, so it is kept
     # in sync with the file on every plan run regardless of the action
@@ -624,6 +636,7 @@ def _plan_one(
     # down before the resource pointing at it.
     if state_entry is not None:
         state_entry.depends_on = list(depends_on)
+        state_entry.reference_edges = copy.deepcopy(reference_edges)
 
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
@@ -657,6 +670,7 @@ def _plan_one(
         credentials=credentials,
         state_entry=state_entry,
         depends_on=depends_on,
+        reference_edges=reference_edges,
         raw_params=resource_spec.params,
         unresolved_references=unresolved,
     )
@@ -1359,6 +1373,7 @@ def _record_update(
         existing.last_refreshed_at = now
         existing.aiform_md_sha256 = pr.current_aiform_md_sha256
         existing.depends_on = list(pr.depends_on)
+        existing.reference_edges = copy.deepcopy(pr.reference_edges)
     # entry.likely_replace reflects the plan-time prediction; report what
     # actually happened instead, in both directions -- a predicted replace that
     # update() handled in place must not be reported as a replace just because
@@ -1379,8 +1394,11 @@ def _record_update(
 def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -> None:
     for dependent in dependents:
         entry = st.resources.get(dependent)
-        if entry is not None and destroyed_key in entry.depends_on:
+        if entry is None:
+            continue
+        if destroyed_key in entry.depends_on:
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
+        entry.reference_edges.pop(destroyed_key, None)
 
 
 def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:

@@ -2877,6 +2877,204 @@ class TestReferenceResolutionAtApplyTime:
         assert "${" not in str(saved.resources["digitalocean.domain.example.com"].attributes)
 
 
+@pytest.mark.usefixtures("fake_do_token")
+class TestReferenceEdgesAreKept:
+    """#234: the edge type is kept in StateEntry.reference_edges, beside
+    depends_on, with no behaviour change."""
+
+    TARGET = "digitalocean.compute.zzz-01"
+    DEPENDENT = "digitalocean.compute.aaa-01"
+
+    def _apply(self, tmp_path: Path, drivers_dir: Path, params: dict, **kwargs):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(dependent, name="aaa-01", params=params, **kwargs)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        return planned, state.load(state_path, deployment="default")
+
+    def test_a_reference_records_its_target_and_attribute(self, tmp_path, drivers_dir):
+        planned, saved = self._apply(
+            tmp_path, drivers_dir, {"data": "${digitalocean.compute.zzz-01:ipv4_address}"}
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_explicit_only_edge_is_in_depends_on_but_not_reference_edges(
+        self, tmp_path, drivers_dir
+    ):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"}, depends_on=[self.TARGET])
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {}
+
+    def test_a_target_both_declared_and_referenced_is_a_reference_edge(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+            depends_on=[self.TARGET],
+        )
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_several_attributes_of_one_target_are_sorted_and_unique(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {
+                "a": "${digitalocean.compute.zzz-01:ipv4_address}",
+                "b": "${digitalocean.compute.zzz-01:id}",
+                "c": "${digitalocean.compute.zzz-01:ipv4_address}",
+            },
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {
+            self.TARGET: ["id", "ipv4_address"]
+        }
+
+    def test_a_resource_with_no_edges_has_empty_reference_edges(self, tmp_path, drivers_dir):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"})
+
+        assert saved.resources[self.TARGET].reference_edges == {}
+
+    def test_planning_a_tracked_resource_that_gained_a_reference_records_it(
+        self, tmp_path, drivers_dir
+    ):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(
+            dependent,
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        tracked = state.load(state_path, deployment="default")
+        tracked.resources[self.DEPENDENT].reference_edges = {}
+        state.save(tracked, state_path)
+
+        orchestrator.build_create_plan(
+            [dependent, target],
+            state_path=state_path,
+            client=FakeClient([categorization_response(action="no-op")] * 3),
+            deployment="default",
+        )
+
+        saved = state.load(state_path, deployment="default")
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_update_rewrites_reference_edges(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.dep-01", "digitalocean.compute.dep-02"],
+            reference_edges={"digitalocean.compute.dep-02": ["id"]},
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="dropped a reference",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=["digitalocean.compute.dep-01"],
+            reference_edges={},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
+
+        saved = state.load(state_path, deployment="default")
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.dep-01"]
+        assert entry.reference_edges == {}
+
+    def test_destroying_a_target_prunes_it_from_reference_edges_too(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01", "digitalocean.compute.other"],
+                    reference_edges={
+                        "digitalocean.compute.droplet-01": ["provider_id"],
+                        "digitalocean.compute.other": ["id"],
+                    },
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True, deployment="default"
+        )
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+            deployment="default",
+        )
+
+        entry = state.load(state_path, deployment="default").resources[
+            "digitalocean.firewall.fw-01"
+        ]
+        assert entry.depends_on == ["digitalocean.compute.other"]
+        assert entry.reference_edges == {"digitalocean.compute.other": ["id"]}
+
+    def test_reference_edges_change_no_destroy_order(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        save_state(
+            state_path,
+            **{
+                self.TARGET: make_state_entry(name="zzz-01", aiform_md_path=str(tracked_file)),
+                self.DEPENDENT: make_state_entry(
+                    name="aaa-01",
+                    aiform_md_path=str(tracked_file),
+                    depends_on=[self.TARGET],
+                    reference_edges={self.TARGET: ["ipv4_address"]},
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == [self.DEPENDENT, self.TARGET]
+        assert warnings == []
+
+
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"

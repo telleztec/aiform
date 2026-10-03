@@ -227,3 +227,4 @@ class StateEntry(BaseModel):
     aiform_md_path: str
     aiform_md_sha256: str
     depends_on: list[str] = Field(default_factory=list)
+    reference_edges: dict[str, list[str]] = Field(default_factory=dict)

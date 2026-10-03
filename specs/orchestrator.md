@@ -1471,6 +1471,13 @@ changed and which deliberately did not.
   `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.
+- **`PlannedResource.reference_edges`** (#234) carries `_reference_edges(params)`
+  (`{target_key: sorted attributes}` from `references.find_references()`) from
+  `_plan_one()`, defaulted empty. `_plan_one()`'s retrofit, `_new_state_entry()`
+  and `_record_update()`'s in-place branch write it to
+  `StateEntry.reference_edges` beside `depends_on`, and `_prune_dependents_on()`
+  removes the destroyed target from both. Nothing reads it: the edge type is kept,
+  not used, so no plan, order or refusal changes.
 - **`apply_plan()` is unchanged.** It applies the list in the order it is
   given and has no notion of a graph. Everything about ordering lives in the
   two plan builders.
