@@ -791,7 +791,11 @@ Mechanism A. `state = state.load(state_path, deployment=deployment)`.
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
 - `paths` falsy (`plan destroy --all`; `cli.py` refuses no files without `--all`, so
   this branch is reached only by an explicit `--all`, `specs/cli.md`): one target per `state.resources` entry, `aiform_md_path =
-  Path(state_entry.aiform_md_path)`.
+  Path(state_entry.aiform_md_path)`. An entry whose recorded `aiform_md_path`
+  does not exist on disk gets one warning, `<key>: tracked file <path> is
+  missing; destroying from state and skipping the trash move` (#183). The
+  plan is otherwise unchanged: a destroy needs the state entry's `id`, not
+  the file.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
 (naming either the file or "no files given: destroying all tracked
@@ -1037,7 +1041,12 @@ for its caller.
      `driver.delete()` entirely — nothing tracked, nothing to remove from
      state, per `PLAN.md`'s "already satisfied without a wasted API
      call." Either way, once the CSP-side delete (if any) is verified:
-     `move_to_trash(pr.aiform_md_path)`.
+     `move_to_trash(pr.aiform_md_path)`, **unless `pr.aiform_md_path` no
+     longer exists** (removed or renamed out of band, #183): then the move
+     is skipped and one WARNING is logged naming the path. The destroy
+     itself has already succeeded and the state write has already been
+     saved, so a missing file changes nothing about the outcome and must not
+     turn it into an error.
    - After each non-`NO_OP` entry completes: `state.save(state,
      state_path)` — **per-resource**, not batched (`PLAN.md` §5 apply
      step 4), unlike `build_create_plan()`/`refresh_state()`'s
@@ -1227,25 +1236,18 @@ Returns the destination path.
   the same UTC second never overwrite each other, closing the gap a
   plain timestamp alone would have left and matching `PLAN.md`'s literal
   "never collide" framing for the trash directory.
-- `move_to_trash()` itself (`shutil.move`) can raise a raw, unwrapped
-  filesystem exception (e.g. `FileNotFoundError` if the source
-  `.aiform.md` was removed or renamed out-of-band between `plan` and
-  `apply`) — reached in `apply_plan()`'s `DESTROY` branch *after* the
-  CSP-side `driver.delete()` and the state removal/save have both
-  already durably committed. A resource in this state is correctly
-  destroyed and correctly untracked — "verified" per `PLAN.md`'s own
-  definition, which covers exactly those two things and nothing about
-  trash archival — but the caller gets an uncaught exception instead of
-  a clean `ApplyResult` for what is, substantively, a successful destroy
-  whose purely cosmetic cleanup step failed. Deliberately not wrapped in
-  a new exception type or given a recovery path here: this is a raw
-  filesystem operation, not a driver call (`DriverExecutionError` doesn't
-  fit) or a policy decision (`PlanBlockedError` doesn't either), and
-  `state.save()`'s own filesystem writes are equally unwrapped elsewhere
-  in this module — inventing a bespoke exception type for this one call
-  site would be exactly the premature abstraction `CLAUDE.md` warns
-  against for a case this narrow. Accepted as a known, low-probability
-  edge case rather than designed around.
+- `move_to_trash()` itself still raises on a missing source (`shutil.move`'s
+  `FileNotFoundError`); it is the `DESTROY` branch's caller that guards it.
+  A tracked `.aiform.md` can be gone because someone moved or deleted it
+  outside `aiform` (#183, found live while reproducing #164). By then the
+  CSP-side `driver.delete()` and the state removal/save have both committed,
+  so the resource is correctly destroyed and untracked and only the trash
+  archival has nothing to archive. `apply_plan()` therefore checks
+  `pr.aiform_md_path.exists()` first and, when it is gone, logs a WARNING and
+  continues; the entry is reported as executed. Any *other* filesystem error
+  from the move is still raised raw: it is a real failure of a step that had
+  something to do, and `state.save()`'s own writes are equally unwrapped in
+  this module.
 - `driver_info_for()` reads the driver file (`path.read_bytes()` for
   hashing) independently of `load_driver()`'s own read via `importlib`
   moments earlier — two reads of the same small file per driver

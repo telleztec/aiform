@@ -3215,11 +3215,14 @@ class TestBuildDestroyPlan:
         assert "digitalocean.compute.ghost-02" in reason
 
     def test_force_drops_dangling_edge_and_warns_per_pair(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=[
                         "digitalocean.compute.ghost-01",
@@ -3239,12 +3242,17 @@ class TestBuildDestroyPlan:
         assert any("digitalocean.compute.ghost-02" in w for w in warnings)
 
     def test_force_drops_only_the_dangling_edge_and_keeps_real_ordering(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.db-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="db-01"
+                ),
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=["digitalocean.compute.db-01", "digitalocean.compute.ghost-01"],
                 ),
@@ -3419,12 +3427,17 @@ class TestReverseDependentDestroyRefusal:
         # everything tracked, so a dependent can never be left outside the
         # run. This pins that the new check, which only the paths-driven
         # producer calls, does not creep into the other one.
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="droplet-01"
+                ),
                 "digitalocean.firewall.fw-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     resource_type="firewall",
                     name="fw-01",
                     depends_on=["digitalocean.compute.droplet-01"],
@@ -5164,6 +5177,141 @@ class TestMoveToTrash:
         assert dest.exists()
         assert (trash_dir / colliding_name).read_text() == "already here"
         assert dest.read_text() == "new content"
+
+
+class TestDestroyWithTheTrackedFileMissing:
+    KEY = "digitalocean.compute.telleztec-app-01"
+
+    def _destroy_pr(self, existing, aiform_md: Path) -> "orchestrator.PlannedResource":
+        return orchestrator.PlannedResource(
+            entry=PlanEntry(
+                resource_key=self.KEY, action=PlanAction.DESTROY, rationale="explicit destroy"
+            ),
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+
+    def test_apply_completes_when_the_recorded_file_is_gone(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        missing = tmp_path / "moved-away.aiform.md"
+        existing = make_state_entry(id="123", aiform_md_path=str(missing))
+        pr = self._destroy_pr(existing, missing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(missing) in caplog.text
+        assert not (tmp_path / ".aiform" / "trash").exists()
+
+    def test_apply_still_moves_a_file_that_exists_to_trash(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert not aiform_md.exists()
+        assert any((tmp_path / ".aiform" / "trash").iterdir())
+
+    def test_apply_of_an_untracked_delete_marked_file_that_vanished_also_completes(
+        self, tmp_path: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        vanished = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        pr = self._destroy_pr(None, vanished)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert result.executed == [pr.entry]
+
+    def test_other_filesystem_errors_from_the_trash_move_still_raise(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def failing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise PermissionError("simulated")
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", failing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with pytest.raises(PermissionError):
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+    def test_destroy_all_plan_names_a_tracked_file_that_is_missing(self, tmp_path: Path):
+        missing = tmp_path / "moved-away.aiform.md"
+        present = tmp_path / "here.aiform.md"
+        write_aiform_md(present, name="here-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.gone-01": make_state_entry(
+                    name="gone-01", aiform_md_path=str(missing)
+                ),
+                "digitalocean.compute.here-01": make_state_entry(
+                    name="here-01", aiform_md_path=str(present)
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.gone-01",
+            "digitalocean.compute.here-01",
+        }
+        assert len(warnings) == 1
+        assert "digitalocean.compute.gone-01" in warnings[0]
+        assert str(missing) in warnings[0]
+        assert "here-01" not in warnings[0]
 
 
 # Reproducing #163 faithfully needs a real terminal: the keystroke has to sit

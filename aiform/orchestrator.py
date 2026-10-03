@@ -984,6 +984,11 @@ def _build_destroy_plan_from_state(
     planned: list[PlannedResource] = []
     for key in order:
         state_entry = st.resources[key]
+        if not Path(state_entry.aiform_md_path).exists():
+            warnings.append(
+                f"{key}: tracked file {state_entry.aiform_md_path} is missing; destroying "
+                "from state and skipping the trash move"
+            )
         entry = planner.destroy_entry(
             key,
             rationale="explicit destroy requested: no files given, destroying all tracked "
@@ -1381,7 +1386,14 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         del st.resources[pr.entry.resource_key]
     _prune_dependents_on(st, pr.entry.resource_key, pr.dropped_dependents)
     state.save(st, state_path)
-    move_to_trash(pr.aiform_md_path)
+    if pr.aiform_md_path.exists():
+        move_to_trash(pr.aiform_md_path)
+    else:
+        logger.warning(
+            "%s: tracked file %s is missing; skipping the trash move",
+            pr.entry.resource_key,
+            pr.aiform_md_path,
+        )
 
 
 def _split_aiform_md_suffix(name: str) -> tuple[str, str]:
