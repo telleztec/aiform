@@ -12,7 +12,10 @@ exercises (`specs/MULTI_RESOURCE_PRD.md`, UC-F and UC-G):
   orphan, and a run after that must be a no-op.
 - **UC-F, refuse to orphan a dependent.** Removing a resource another one
   still references is refused before anything is deleted, and the
-  referenced resource is still there afterwards.
+  referenced resource is still there afterwards. This holds for a dependent
+  in the same run as the marker; since Phase 4a (#226/#227) a firewall
+  outside the run is repaired instead, and other outside dependents are
+  refused (`tests/system/test_cli_references.py`).
 
 Until now both were established by reading the code. A mock cannot settle
 either, because the mock encodes the same ordering assumption the
@@ -330,11 +333,16 @@ the resized size (`size_slug`) straight from the listing.
   via the provider and by the recorded id, the droplet still exists; state
   still tracks both.
 - **Marker path alone** (#226). Handing `plan apply` only the marker path
-  skips the dependency check, because that check reads the other file. The
-  desired refusal is `xfail(strict=True, reason="#226")`. A separate test
-  pins the recovery that works today: after the droplet is gone, `plan create`
-  refuses and names both keys; removing the dead reference from the firewall's
-  file lets `plan apply` converge; and a following run is a no-op.
+  leaves the firewall's file out of the run, so the destroy is not refused: it
+  repairs the firewall first (#226/#227, `specs/resource_dependencies.md`).
+  The test applies the marker alone and asserts the droplet is gone and the live
+  firewall's `droplet_ids` is `[]` (polled with `wait_until_firewall_droplet_ids()`); `plan create` then refuses and names both keys,
+  because the firewall's file still names the dead droplet; removing the dead
+  reference from the firewall's file lets `plan apply` converge; and a following
+  run is a no-op. The old `xfail(strict=True, reason="#226")` test of a refusal
+  was deleted, not rewritten: the requirement it pinned was abandoned, and
+  `tests/system/test_cli_references.py`'s `TestDestroyRepairsFirewallLive`
+  already covers the marker-alone repair.
 
 ### Teardown
 

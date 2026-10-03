@@ -809,6 +809,50 @@ def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
     return (payload or {}).get("firewall")
 
 
+def wait_until_firewall_droplet_ids(
+    token: str,
+    firewall_id: str,
+    expected: list,
+    *,
+    timeout_seconds: int = 120,
+    poll_seconds: int = 3,
+) -> dict | None:
+    """Poll until the firewall's `droplet_ids` equals `expected` (order
+    ignored). Returns the last firewall read, or None if it 404s, so the
+    caller asserts on it and `token` stays out of assertion output.
+
+    Same contract as wait_until_domain_gone(): a suite that reads a
+    provider's object straight after a write races its convergence.
+    Transient errors do not end the poll.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    last_firewall: dict | None = None
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            firewall = get_firewall_or_none(token, firewall_id)
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            http.client.HTTPException,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            last_error = exc
+        else:
+            if firewall is None or sorted(firewall["droplet_ids"]) == sorted(expected):
+                return firewall
+            last_firewall, last_error = firewall, None
+
+        if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise last_error
+            return last_firewall
+
+        time.sleep(poll_seconds)
+
+
 def list_firewalls(token: str) -> list[dict]:
     return _list_all(token, "firewalls")
 

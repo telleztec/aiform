@@ -2231,7 +2231,9 @@ class TestPlanDestroy:
         reloaded = state.load(state_file, deployment="default")
         assert reloaded.resources == {}
 
-    def test_destroy_by_path_blocked_by_reverse_dependent_without_force(self, project_dir, capsys):
+    def test_destroy_by_path_blocked_by_unrepairable_reverse_dependent_without_force(
+        self, project_dir, capsys
+    ):
         droplet_path = project_dir / "droplet.aiform.md"
         write_aiform_md(droplet_path, name="droplet-01")
         state_file = project_dir / ".aiform" / "state.json"
@@ -2249,14 +2251,14 @@ class TestPlanDestroy:
         )
         firewall_entry = StateEntry(
             provider="digitalocean",
-            resource_type="firewall",
-            name="fw-01",
+            resource_type="domain",
+            name="dom-01",
             id="456",
             attributes={},
             driver=make_driver_info("def"),
             last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
             last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(project_dir / "fw.aiform.md"),
+            aiform_md_path=str(project_dir / "dom.aiform.md"),
             aiform_md_sha256="def456",
             depends_on=["digitalocean.compute.droplet-01"],
         )
@@ -2265,7 +2267,7 @@ class TestPlanDestroy:
                 deployment="default",
                 resources={
                     "digitalocean.compute.droplet-01": droplet_entry,
-                    "digitalocean.firewall.fw-01": firewall_entry,
+                    "digitalocean.domain.dom-01": firewall_entry,
                 },
             ),
             state_file,
@@ -2278,12 +2280,12 @@ class TestPlanDestroy:
         err = capsys.readouterr().err
         assert code == 2
         assert "Error:" in err
-        assert "digitalocean.firewall.fw-01" in err
+        assert "digitalocean.domain.dom-01" in err
         reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.droplet-01" in reloaded.resources
-        assert "digitalocean.firewall.fw-01" in reloaded.resources
+        assert "digitalocean.domain.dom-01" in reloaded.resources
 
-    def test_destroy_by_path_with_force_drops_reverse_dependent_and_warns(
+    def test_destroy_by_path_with_force_drops_unrepairable_reverse_dependent_and_warns(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
         monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
@@ -2306,14 +2308,14 @@ class TestPlanDestroy:
         )
         firewall_entry = StateEntry(
             provider="digitalocean",
-            resource_type="firewall",
-            name="fw-01",
+            resource_type="domain",
+            name="dom-01",
             id="456",
             attributes={},
             driver=make_driver_info("def"),
             last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
             last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
-            aiform_md_path=str(project_dir / "fw.aiform.md"),
+            aiform_md_path=str(project_dir / "dom.aiform.md"),
             aiform_md_sha256="def456",
             depends_on=["digitalocean.compute.droplet-01"],
         )
@@ -2322,7 +2324,7 @@ class TestPlanDestroy:
                 deployment="default",
                 resources={
                     "digitalocean.compute.droplet-01": droplet_entry,
-                    "digitalocean.firewall.fw-01": firewall_entry,
+                    "digitalocean.domain.dom-01": firewall_entry,
                 },
             ),
             state_file,
@@ -2344,10 +2346,163 @@ class TestPlanDestroy:
         out = capsys.readouterr().out
         assert code == 0
         assert "Warning:" in out
-        assert "digitalocean.firewall.fw-01" in out
+        assert "digitalocean.domain.dom-01" in out
         reloaded = state.load(state_file, deployment="default")
         assert "digitalocean.compute.droplet-01" not in reloaded.resources
-        assert "digitalocean.firewall.fw-01" in reloaded.resources
+        assert "digitalocean.domain.dom-01" in reloaded.resources
+        assert reloaded.resources["digitalocean.domain.dom-01"].depends_on == []
+
+
+FAKE_FIREWALL_SOURCE = """\
+import json
+from pathlib import Path
+
+from aiform.driver import ResourceDriver
+
+
+LIVE = Path({live!r})
+
+
+class Driver(ResourceDriver):
+    PARAM_SCHEMA = {{"type": "object", "properties": {{"droplet_ids": {{"type": "array"}}}}}}
+    LIKELY_REPLACE_FIELDS = []
+
+    def create(self, name, params, credentials):
+        raise AssertionError("create is not part of a repair")
+
+    def read(self, id, credentials):
+        return {{"id": id, "name": "fw-01", **json.loads(LIVE.read_text())}}
+
+    def update(self, id, current, desired, credentials):
+        LIVE.write_text(json.dumps({{"droplet_ids": desired["droplet_ids"]}}))
+        return {{"id": id, "name": "fw-01", **desired}}
+
+    def delete(self, id, credentials):
+        pass
+"""
+
+
+class TestPlanDestroyRepairsFirewall:
+    def _world(self, project_dir, drivers_dir, monkeypatch, tmp_path):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.chdir(project_dir)
+        live = tmp_path / "live-firewall.json"
+        live.write_text(json.dumps({"droplet_ids": [123, 789]}))
+        write_driver(drivers_dir, "digitalocean", "compute")
+        fw_driver = drivers_dir / "digitalocean" / "firewall.py"
+        fw_driver.write_text(FAKE_FIREWALL_SOURCE.format(live=str(live)))
+        droplet_path = project_dir / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_file = project_dir / ".aiform" / "state.json"
+        stamp = datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC)
+        compute_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        fw_hash = orchestrator.hashlib.sha256(fw_driver.read_bytes()).hexdigest()
+        droplet_entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="droplet-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(compute_hash),
+            last_applied_at=stamp,
+            last_refreshed_at=stamp,
+            aiform_md_path=str(droplet_path),
+            aiform_md_sha256="abc123",
+        )
+        firewall_entry = StateEntry(
+            provider="digitalocean",
+            resource_type="firewall",
+            name="fw-01",
+            id="456",
+            attributes={"droplet_ids": [123, 789]},
+            driver=make_driver_info(fw_hash),
+            last_applied_at=stamp,
+            last_refreshed_at=stamp,
+            aiform_md_path=str(project_dir / "fw.aiform.md"),
+            aiform_md_sha256="def456",
+            depends_on=["digitalocean.compute.droplet-01"],
+        )
+        state.save(
+            state.State(
+                deployment="default",
+                resources={
+                    "digitalocean.compute.droplet-01": droplet_entry,
+                    "digitalocean.firewall.fw-01": firewall_entry,
+                },
+            ),
+            state_file,
+        )
+        return droplet_path, state_file, live
+
+    def test_yes_repairs_the_firewall_then_destroys_the_droplet(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, tmp_path, capsys
+    ):
+        droplet_path, state_file, live = self._world(
+            project_dir, drivers_dir, monkeypatch, tmp_path
+        )
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(
+            ["plan", "destroy", str(droplet_path), "--yes", "--state-file", str(state_file)]
+        )
+
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "digitalocean.firewall.fw-01: update" in out
+        assert "still names digitalocean.compute.droplet-01" in out
+        assert json.loads(live.read_text()) == {"droplet_ids": [789]}
+        reloaded = state.load(state_file, deployment="default")
+        assert "digitalocean.compute.droplet-01" not in reloaded.resources
+        assert reloaded.resources["digitalocean.firewall.fw-01"].depends_on == []
+
+    def test_declining_the_repair_prompt_changes_and_destroys_nothing(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, tmp_path, capsys
+    ):
+        droplet_path, state_file, live = self._world(
+            project_dir, drivers_dir, monkeypatch, tmp_path
+        )
+        patch_client(monkeypatch, [plan_review_response()])
+        monkeypatch.setattr(cli.sys, "stdin", FakeStdinTTY())
+        prompts: list[str] = []
+
+        def fake_input(prompt=""):
+            prompts.append(prompt)
+            return "y" if prompt.startswith("Apply this plan") else "n"
+
+        monkeypatch.setattr("builtins.input", fake_input)
+
+        code = cli.main(["plan", "destroy", str(droplet_path), "--state-file", str(state_file)])
+
+        assert code != 2
+        assert any(
+            "digitalocean.firewall.fw-01" in p and "digitalocean.compute.droplet-01" in p
+            for p in prompts
+        )
+        assert json.loads(live.read_text()) == {"droplet_ids": [123, 789]}
+        reloaded = state.load(state_file, deployment="default")
+        assert "digitalocean.compute.droplet-01" in reloaded.resources
+        assert reloaded.resources["digitalocean.firewall.fw-01"].depends_on == [
+            "digitalocean.compute.droplet-01"
+        ]
+
+    def test_marker_route_repairs_the_firewall_before_destroying(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, tmp_path, capsys
+    ):
+        droplet_path, state_file, live = self._world(
+            project_dir, drivers_dir, monkeypatch, tmp_path
+        )
+        marker = project_dir / "AIFORM-DELETE-droplet-01.aiform.md"
+        droplet_path.rename(marker)
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(["plan", "apply", str(marker), "--yes", "--state-file", str(state_file)])
+
+        assert code == 0
+        assert json.loads(live.read_text()) == {"droplet_ids": [789]}
+        reloaded = state.load(state_file, deployment="default")
+        assert "digitalocean.compute.droplet-01" not in reloaded.resources
         assert reloaded.resources["digitalocean.firewall.fw-01"].depends_on == []
 
 

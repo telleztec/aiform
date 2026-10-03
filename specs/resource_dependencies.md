@@ -252,8 +252,8 @@ Each is a property a test can assert, and each traces to a use case in
 |---|---|---|---|
 | **D1** | A resource is created only after every resource it depends on exists. | UC-A | met — `_topological()` |
 | **D2** | A create ordering failure is refused at plan time, before any provider mutation, rather than surfacing as an apply error. | UC-A | met — cycles and unresolvable targets raise in `_order_files()` |
-| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused. | UC-B | met within one run; met across runs for the paths-driven route (#225: refused unless `--force`); **not** met across runs for the delete-marker route — a dependent outside the run is not consulted (#226) |
-| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **not met** — verified: a firewall lists a deleted droplet's id while reporting itself converged, so nothing the provider says surfaces the break |
+| **D3** | A resource is destroyed only after every resource that depends on it is destroyed, or the destroy is refused, or (for a firewall's `droplet_ids`) the dependent is repaired first. | UC-B | met within one run; met across runs on both routes: a firewall listing the droplet is repaired first (#226, #227), any other outside dependent is refused (paths route: unless `--force`, #225) |
+| **D4** | No destroy leaves a surviving resource holding a reference to something that no longer exists, without telling the user. | UC-B | **met for a firewall's `droplet_ids` on both destroy routes** (#226, #227: repaired before the delete, and the notice says the file still names the droplet). **Not met** for the case the repair does not reach: a firewall that lists a deleted droplet's id while reporting itself converged, so nothing the provider says surfaces the break (a droplet destroyed outside aiform, an unrepairable dependent forced past with `--force`, a nested rule) |
 | **D5** | A plan that changes a value another resource consumes reports the consumer as changing. | UC-C | met, but **over-reports**: any change to a target marks every dependent as changing, whether the consumed value moved or not |
 | **D6** | A plan does not report a consumer as changing when the value it consumes is unaffected. | UC-C | **not met** — the converse of D5, and the reason D5's "met" is qualified |
 | **D7** | Given a resource that has failed, aiform can name the resources affected by that failure. | UC-D | **not met** — `observability.py` never reads `depends_on` |
@@ -975,17 +975,67 @@ of the file, not forced past. Pruning removes the stale ordering edge from
 state; it does not, and is not meant to, remove the user's obligation to
 update their own `.aiform.md`.
 
-**Every other destroy prunes nothing.** `_plan_delete_marked()`
-(`build_create_plan()`'s `AIFORM-DELETE-` route) and
-`_build_destroy_plan_from_state()` leave `dropped_dependents` empty, so a
-survivor's persisted `depends_on` keeps naming the destroyed key. The edge
-staying put is what makes the next state-driven `plan destroy` refuse with
-the dangling-target reason (`--force` to proceed) rather than silently
-forgetting the survivor was orphaned. The delete-marker route still classifies
-edges only out of the nodes it processes and has no reverse check, so it can
-still orphan a dependent silently at destroy time. Filed separately as
-**#226**, `priority: P1-correctness` — not fixed here, and not to be read as
-covered by this section.
+**Every other destroy prunes nothing.** `_build_destroy_plan_from_state()`
+has no outside dependents, and `_plan_delete_marked()` (`build_create_plan()`'s
+`AIFORM-DELETE-` route) now refuses an unrepairable one rather than forcing
+past it (#226), so `dropped_dependents` stays empty on both. The edge staying
+put is what makes the next state-driven `plan destroy` refuse with the
+dangling-target reason (`--force` to proceed) rather than silently forgetting
+the survivor was orphaned.
+
+### Repair before destroy, on both routes (#226, #227)
+
+#225's refusal was deliberately a placeholder: `specs/dependency_detection.md`
+records, owner-reported, that a firewall does not break when a droplet in it
+is removed, so every refusal the check could produce for the one edge with a
+driver at both ends was a false one. Phase 4a replaces it, for that edge, with
+a repair.
+
+When a destroy would remove a droplet that a tracked firewall (outside the
+run) depends on, the plan gains an **UPDATE of that firewall**, ahead of every
+destroy: the firewall's live `droplet_ids` minus the destroyed droplet's id,
+written through the firewall driver's existing `update()`. Both producers use
+it, so `aiform plan destroy <file>` and the `AIFORM-DELETE-` marker route via
+`plan apply` behave the same:
+
+| | Interactive | `--yes` | Declined |
+|---|---|---|---|
+| Repairable dependent | `(y/n)` naming the firewall and the id | repairs without asking | nothing changed, nothing destroyed |
+| Unrepairable dependent, paths route | refused (#225), or warned with `--force` | same | n/a |
+| Unrepairable dependent, marker route | refused (#226); `plan destroy --force` is the way past | same | n/a |
+| Dependent whose rule names the droplet, found live at apply time | refused before any provider write, naming `plan destroy <file> --force` | same | n/a |
+
+Order is repair, then delete: a failure part-way never leaves a firewall
+holding a dead id *for the firewall being repaired*. If the delete is what
+fails, the droplet is still running with a repaired firewall. With several
+repairs in one plan the guarantee is per firewall, not per plan: an earlier
+firewall is already repaired when a later one is refused at apply time (the
+live check below), and no destroy has run by then.
+
+Repairable at plan time means the dependent is a `digitalocean/firewall`, the
+target a `digitalocean/compute`, the target's id is ASCII digits only, and the id is
+not named in a rule's `sources`/`destinations` `droplet_ids` in the firewall's
+**recorded** attributes. The last condition keeps a half-repair from happening
+silently; nested references (#224) stay a refusal. Recorded state can be stale,
+so `_apply_repair()` repeats the rule check against the firewall read **live**
+just before the update, ahead of any provider write: a rule added out-of-band
+since the last refresh is refused there (`PlanBlockedError` pointing at
+`aiform plan destroy <file> --force`) rather than half-repaired. A firewall that
+is gone, or no longer lists the id, needs no update: only its state edge is
+pruned.
+
+The repair's `update` coerces only the top-level `droplet_ids` of the live read
+(a digit string becomes an int); rules are copied verbatim. A surviving droplet
+named by a string id inside a rule would fail the driver's own validation with
+`DriverExecutionError`, before any destroy, so nothing is orphaned. DigitalOcean
+returning string ids is unobserved (the #216 probe covers the top-level int
+round-trip only), so this is a defensive case.
+
+**The dependent's `.aiform.md` is not edited.** The plan prints a notice that
+the file still names the destroyed droplet; the next `plan` that reads it hits
+the same unresolved-target block as after a forced destroy until the user
+edits it. `--force` keeps its #225 meaning (drop the edge of an unrepairable
+dependent, and for dangling targets).
 
 ### `StateEntry.depends_on`
 
@@ -1241,9 +1291,10 @@ one.
   into a node being destroyed — the mirror image of a dangling target, not
   covered by that section. See `specs/orchestrator.md`'s
   `resource_dependencies` addendum for the mechanism. The delete-marker
-  producer has no equivalent check yet (**#226**, `priority:
-  P1-correctness`); partial-failure recovery and restartability remain
-  entirely undelivered.
+  producer got the same check in Phase 4a (#226), and for a firewall naming
+  the destroyed droplet both producers now repair instead of refusing (#227;
+  see "Repair before destroy, on both routes"). Partial-failure recovery and
+  restartability are Phase 4b.
 - **Concurrency-safe state** (Phase 5) and **parallel execution** (Phase 6).
   Phase 1's order is total and strictly sequential.
 - **Graphical visualization** (UX2). Phase 7.
@@ -1321,7 +1372,7 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | **#232** | P0-safety | A recreated droplet comes back unprotected and the plan reports the firewall as `no-op` | **Decisive.** It is the literal half of **D9**; the implicit half already self-heals. See "Drift" |
 | **#201** | P0-safety | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
 | **#225** | P1-correctness | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
-| **#226** | P1-correctness | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
+| **#226** | P1-correctness | The same hazard via the `AIFORM-DELETE-` route | **Partly.** Phase 4a built the missing call site (#226) and chose repair for a firewall's `droplet_ids`; the kind still decides repair versus refuse for any other dependent |
 | **#224** | P1-correctness | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
 | **#235** | P1-correctness | A destroy that fails on the droplet leaves it running with its firewall already deleted | **Decisive.** The `Protects` row is the unmodelled operational direction that causes it; expressing it is what would let a plan warn |
 | **#206** | P1-correctness | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |
