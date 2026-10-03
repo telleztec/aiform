@@ -2903,7 +2903,7 @@ class TestAdoptionRefusesNonRunningStatus:
 
         assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
 
-    def test_the_error_offers_both_ways_out(self, tagged_driver, fake_urlopen):
+    def test_the_error_for_an_off_droplet_offers_both_ways_out(self, tagged_driver, fake_urlopen):
         stale = make_droplet(id=777, status="off")["droplet"]
         fake_urlopen.script(
             "GET",
@@ -2915,8 +2915,31 @@ class TestAdoptionRefusesNonRunningStatus:
             tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         message = str(excinfo.value)
+        assert NAME in message
+        assert "777" in message
+        assert "off" in message
         assert "power it on and re-run" in message
         assert "or delete it and re-run" in message
+
+    def test_the_error_for_an_archived_droplet_offers_only_delete(
+        self, tagged_driver, fake_urlopen
+    ):
+        stale = make_droplet(id=777, status="archive")["droplet"]
+        fake_urlopen.script(
+            "GET",
+            marker_listing_url(self.MARKER),
+            FakeHTTPResponse(200, {"droplets": [stale], "links": {}}),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert NAME in message
+        assert "777" in message
+        assert "archive" in message
+        assert "power it on" not in message
+        assert "delete it and re-run to start fresh" in message
 
 
 class TestCreateMarkerAdoption:
