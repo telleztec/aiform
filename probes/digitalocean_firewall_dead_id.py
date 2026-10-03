@@ -113,7 +113,13 @@ def _created_id(result, key, name):
             f"{key} {name!r} was created ({result.status}) but its body did not parse, so no "
             f"cleanup could be registered -- it is LIVE and untracked. Destroy it by hand NOW."
         )
-    return result.body[key]["id"]
+    created = result.body.get(key)
+    if not isinstance(created, dict) or "id" not in created:
+        raise SystemExit(
+            f"{key} {name!r} was created ({result.status}) but its body carried no id, so no "
+            f"cleanup could be registered -- it is LIVE and untracked. Destroy it by hand NOW."
+        )
+    return created["id"]
 
 
 def _now() -> datetime.datetime:
