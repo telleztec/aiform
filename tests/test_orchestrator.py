@@ -3781,6 +3781,19 @@ RULES = [
 ]
 
 
+NESTED_RULE_PLACEMENTS = [
+    ("inbound_rules", "sources"),
+    ("inbound_rules", "destinations"),
+    ("outbound_rules", "destinations"),
+]
+
+
+def rule_naming(side: str, droplet_id) -> list:
+    return [
+        {"protocol": "tcp", "ports": "22", "action": "allow", side: {"droplet_ids": [droplet_id]}}
+    ]
+
+
 def firewall_attributes(droplet_ids, **overrides) -> dict:
     return {
         "name": "fw-01",
@@ -3969,21 +3982,14 @@ class TestRepairInsteadOfRefusingOnThePathsRoute:
         assert all(pr.repairs == [] for pr in planned)
         assert warnings == []
 
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
     def test_a_firewall_naming_the_droplet_only_inside_a_rule_is_still_refused(
-        self, repair_world: RepairWorld
+        self, repair_world: RepairWorld, rules_key: str, side: str
     ):
-        nested = [
-            {
-                "protocol": "tcp",
-                "ports": "22",
-                "action": "allow",
-                "sources": {"droplet_ids": [DROPLET_ID]},
-            }
-        ]
         repair_world.save(
             **{
                 DROPLET_KEY: droplet_entry(),
-                FIREWALL_KEY: firewall_entry((), inbound_rules=nested),
+                FIREWALL_KEY: firewall_entry((), **{rules_key: rule_naming(side, DROPLET_ID)}),
             }
         )
 
@@ -4327,19 +4333,12 @@ class TestApplyingARepair:
 
     @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
     @pytest.mark.parametrize("top_level", [(DROPLET_ID,), ()], ids=["also-top-level", "rule-only"])
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
     def test_a_rule_naming_the_droplet_added_out_of_band_is_refused_before_any_write(
-        self, repair_world: RepairWorld, marker: bool, top_level: tuple
+        self, repair_world: RepairWorld, marker: bool, top_level: tuple, rules_key: str, side: str
     ):
-        nested = [
-            {
-                "protocol": "tcp",
-                "ports": "22",
-                "action": "allow",
-                "sources": {"droplet_ids": [DROPLET_ID]},
-            }
-        ]
         repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
-        repair_world.set_live(top_level, inbound_rules=nested)
+        repair_world.set_live(top_level, **{rules_key: rule_naming(side, DROPLET_ID)})
         before = repair_world.state_path.read_text()
         planned = self.build(repair_world, marker=marker)
 
@@ -4351,6 +4350,34 @@ class TestApplyingARepair:
         assert "--force" in exc_info.value.reason
         assert repair_world.mutations() == []
         assert repair_world.state_path.read_text() == before
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
+    def test_a_rule_naming_the_droplet_as_a_string_is_refused_before_any_write(
+        self, repair_world: RepairWorld, marker: bool, rules_key: str, side: str
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((), **{rules_key: rule_naming(side, str(DROPLET_ID))})
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(PlanBlockedError):
+            apply_with_confirms(planned, repair_world, yes=True)
+
+        assert repair_world.mutations() == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_a_droplet_id_read_back_as_a_string_is_still_repaired(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((str(DROPLET_ID), OTHER_DROPLET_ID))
+        planned = self.build(repair_world, marker=marker)
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["droplet_ids"] == [OTHER_DROPLET_ID]
+        assert repair_world.mutations() == [("update", "firewall"), ("delete", "droplet")]
 
     def test_the_droplets_file_is_trashed_and_the_firewall_file_is_left_alone(
         self, repair_world: RepairWorld
