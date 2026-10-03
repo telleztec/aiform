@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import http.client
 import json
 import logging
@@ -182,6 +183,13 @@ class Driver(ResourceDriver):
     NON_DIFFABLE_FIELDS = ["ssh_keys"]
     UNORDERED_FIELDS = ["tags"]
 
+    def __init__(self, reserved_tags=()):
+        super().__init__(reserved_tags)
+        # DELETE only starts the teardown, so a droplet this instance has
+        # deleted stays in tag listings for a while; create()'s marker
+        # lookup must not adopt it during a replace.
+        self._deleted_ids: set[str] = set()
+
     def _request(self, method, url, credentials, body=None, timeout=REQUEST_TIMEOUT_SECONDS):
         data = None
         headers = {"Authorization": f"Bearer {credentials['DIGITALOCEAN_TOKEN']}"}
@@ -331,6 +339,77 @@ class Driver(ResourceDriver):
                 time.sleep(_KEY_PROPAGATION_RETRY_DELAY_SECONDS)
         raise AssertionError("unreachable")  # the loop always returns or raises
 
+    def _poll_until_created(self, id, credentials):
+        # _poll_until's default budget (75 attempts * 2s = 150s) is tuned for
+        # update()'s power-off/resize/power-on actions against an already-
+        # existing droplet -- full provisioning from scratch commonly takes
+        # longer than that per DO's own docs, so this uses a wider budget
+        # (60 * 3s = 180s) to avoid spuriously timing out a create that
+        # would have converged moments later. The default itself was
+        # raised three times now: 20->30 attempts (40s->60s) after an
+        # earlier live run hit a power-off slowdown at the old edge, then
+        # 30->45 attempts (60s->90s, see issue #152) after three
+        # consecutive live runs all timed out on the same power-off step
+        # within a second of each other (~72-73s), then 45->75 attempts
+        # (90s->150s, see issue #168) after two more consecutive runs both
+        # timed out at ~108.4-108.6s -- tight enough clustering each time
+        # that it reads as DO's power-off latency having shifted again,
+        # not tail-latency noise. create()'s own override is left
+        # untouched by #168: nothing observed suggests create's
+        # provisioning latency has drifted, and 180s remains comfortably
+        # above the new 150s default. Real, observed timing adjustments
+        # per PLAN.md's own "guesses tuned against one CSP's observed
+        # behavior, not a real policy" framing for these two constants,
+        # not a fix for a code defect.
+        return self._poll_until(
+            id,
+            credentials,
+            lambda d: d["status"] == "active",
+            "create",
+            max_attempts=60,
+            delay_seconds=3,
+        )
+
+    def _creation_marker(self, name):
+        if self._deployment_tag is None:
+            return None
+        digest = hashlib.sha256(name.encode()).hexdigest()
+        return f"{self._deployment_tag}:name:{digest}"
+
+    def _find_marked_droplet(self, name, marker, credentials):
+        def fetch(url):
+            try:
+                return self._request("GET", url, credentials)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return None
+                raise
+
+        url = f"{BASE_URL}/droplets?{urllib.parse.urlencode({'tag_name': marker})}"
+        matches = [
+            d
+            for d in fetch_all_pages(fetch, url, "droplets")
+            if str(d["id"]) not in self._deleted_ids
+        ]
+        if len(matches) > 1:
+            ids = ", ".join(str(d["id"]) for d in matches)
+            raise RuntimeError(
+                f"droplet {name}: {len(matches)} droplets carry the creation marker for it "
+                f"(ids {ids}); delete the extras and re-run"
+            )
+        return matches[0] if matches else None
+
+    def _adopt_droplet(self, existing, params, credentials):
+        id = str(existing["id"])
+        logger.info("", extra={"id": id, "step": "create", "adopted": True})
+        droplet = self._poll_until_created(id, credentials)
+        features = droplet.get("features", [])
+        attrs = self._flatten(droplet)
+        attrs["ssh_keys"] = params.get("ssh_keys", [])
+        attrs["backups"] = "backups" in features
+        attrs["monitoring"] = "monitoring" in features
+        return attrs
+
     def create(self, name, params, credentials):
         requested_tags = params.get("tags", [])
         if not isinstance(requested_tags, list):
@@ -340,7 +419,15 @@ class Driver(ResourceDriver):
                 f"droplet {name}: params 'tags' must be a list of strings, got {requested_tags!r}"
             )
         tags = self._tags_for_create(requested_tags)
+        marker = self._creation_marker(name)
+        if marker is not None:
+            tags.append(marker)
         managed_key_id, _ = self._ensure_do_key_registered(credentials)
+
+        if marker is not None:
+            existing = self._find_marked_droplet(name, marker, credentials)
+            if existing is not None:
+                return self._adopt_droplet(existing, params, credentials)
 
         body = {
             "name": name,
@@ -364,35 +451,7 @@ class Driver(ResourceDriver):
 
         payload = self._create_droplet(body, credentials)
         new_id = payload["droplet"]["id"]
-        # _poll_until's default budget (75 attempts * 2s = 150s) is tuned for
-        # update()'s power-off/resize/power-on actions against an already-
-        # existing droplet -- full provisioning from scratch commonly takes
-        # longer than that per DO's own docs, so this uses a wider budget
-        # (60 * 3s = 180s) to avoid spuriously timing out a create that
-        # would have converged moments later. The default itself was
-        # raised three times now: 20->30 attempts (40s->60s) after an
-        # earlier live run hit a power-off slowdown at the old edge, then
-        # 30->45 attempts (60s->90s, see issue #152) after three
-        # consecutive live runs all timed out on the same power-off step
-        # within a second of each other (~72-73s), then 45->75 attempts
-        # (90s->150s, see issue #168) after two more consecutive runs both
-        # timed out at ~108.4-108.6s -- tight enough clustering each time
-        # that it reads as DO's power-off latency having shifted again,
-        # not tail-latency noise. create()'s own override is left
-        # untouched by #168: nothing observed suggests create's
-        # provisioning latency has drifted, and 180s remains comfortably
-        # above the new 150s default. Real, observed timing adjustments
-        # per PLAN.md's own "guesses tuned against one CSP's observed
-        # behavior, not a real policy" framing for these two constants,
-        # not a fix for a code defect.
-        droplet = self._poll_until(
-            new_id,
-            credentials,
-            lambda d: d["status"] == "active",
-            "create",
-            max_attempts=60,
-            delay_seconds=3,
-        )
+        droplet = self._poll_until_created(new_id, credentials)
         attrs = self._flatten(droplet)
         attrs["ssh_keys"] = params.get("ssh_keys", [])
         attrs["backups"] = params.get("backups", False)
@@ -882,8 +941,10 @@ class Driver(ResourceDriver):
             self._request("DELETE", f"{BASE_URL}/droplets/{id}", credentials)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
+                self._deleted_ids.add(str(id))
                 return None
             raise
+        self._deleted_ids.add(str(id))
 
         if ip:
             ssh.forget_host(ip, ssh.DEFAULT_SSH_DIR / _KNOWN_HOSTS_NAME)
