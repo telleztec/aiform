@@ -98,7 +98,12 @@ is the corrected session.
 
 ## Not probed, deliberately
 
-- **How long a stale `droplet_ids` entry survives.** The session's own read at
+- How long a stale `droplet_ids` entry survives. Probed since by #265: one run saw the
+  id still listed at 12s after the droplet `DELETE`, gone at 42s, and still gone at 72s
+  (`14`, `17`, `18`; dead-id `PUT` untested). Transcripts in
+  `probes/transcripts/digitalocean_firewall_dead_id/`; record in
+  `knowledge/drivers/digitalocean_firewall_dead_id/FINDINGS.md` and `AUDIT.log`.
+  The original reasoning stays below for the record. The session's own read at
   `13` cannot answer it, for the timing reasons above. A probe that would narrow
   it: create a droplet and **wait for `active`**; attach a firewall and **wait for
   its `status` to reach `succeeded` with `pending_changes: []` on a live

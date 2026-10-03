@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 826,
+ "note": "delete the droplet the firewall lists",
+ "prediction": {
+  "notes": "asynchronous",
+  "status": 204
+ },
+ "prediction_matched": true,
+ "probed_at": "2026-10-03T15:01:46.076367+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "DELETE",
+  "url": "https://api.digitalocean.com/v2/droplets/605827309"
+ },
+ "response": {
+  "body": null,
+  "status": 204
+ },
+ "seq": 10
+}

@@ -1,0 +1,44 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 0,
+ "note": "verify: nothing of this session remains",
+ "prediction": null,
+ "prediction_matched": null,
+ "probed_at": "2026-10-03T15:03:00.756658+00:00",
+ "request": {
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/{droplets,firewalls,domains}?per_page=200"
+ },
+ "response": {
+  "body": {
+   "clean": true,
+   "domains": {
+    "named_aiform_probe_265": 0,
+    "names": [
+     "cloudaiform.com"
+    ],
+    "status": 200,
+    "tagged_aiform_probe_265": 0,
+    "total": 1
+   },
+   "droplets": {
+    "named_aiform_probe_265": 0,
+    "status": 200,
+    "tagged_aiform_probe_265": 0,
+    "total": 0
+   },
+   "firewalls": {
+    "named_aiform_probe_265": 0,
+    "status": 200,
+    "tagged_aiform_probe_265": 0,
+    "total": 0
+   },
+   "tag_lookup_status": 404
+  },
+  "status": 200
+ },
+ "seq": 27
+}
