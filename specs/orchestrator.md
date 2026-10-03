@@ -1487,7 +1487,8 @@ changed and which deliberately did not.
   prunes the `depends_on` edge from state (the entry stays tracked); otherwise it calls the
   driver's `update(id, live, desired, credentials)` through `_call_driver()`
   where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
-  the destroyed ids removed from the repair field, and records the returned
+  the destroyed ids removed from the repair field (surviving digit-string ids
+  are written back as ints, which the driver requires), and records the returned
   attributes and `last_applied_at`/`last_refreshed_at`, and removes the
   destroyed keys from the dependent's `depends_on`. It leaves
   `aiform_md_sha256` and `driver` alone, which is why it is not `_record_update()`:

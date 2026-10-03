@@ -919,7 +919,9 @@ def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
     if edge is None or target is None:
         return False
     target_type, _field = edge
-    if (target.provider, target.resource_type) != target_type or not target.id.isdigit():
+    if (target.provider, target.resource_type) != target_type or not (
+        target.id.isascii() and target.id.isdigit()
+    ):
         return False
     return not _rule_names_droplet(dependent.attributes, int(target.id))
 
@@ -1494,6 +1496,13 @@ def _repair_prompt(pr: PlannedResource, st: State) -> str:
     return f"Repair {pr.entry.resource_key}: remove {removed} from its {field} before destroying?"
 
 
+def _as_int_id(listed: Any) -> Any:
+    # The driver validates droplet_ids as ints, but a live read may return digit strings.
+    if isinstance(listed, str) and listed.isascii() and listed.isdigit():
+        return int(listed)
+    return listed
+
+
 # The repair is a state-and-provider edit only. It deliberately leaves the
 # dependent's aiform_md_sha256 and driver alone, unlike _record_update(): the
 # user's file did not change, and stamping its hash here would tell the next
@@ -1524,7 +1533,7 @@ def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     if not gone and any(str(listed) in destroyed_forms for listed in live.get(field, [])):
         properties = driver.PARAM_SCHEMA.get("properties", {})
         desired = {key: value for key, value in live.items() if key in properties}
-        desired[field] = [i for i in live[field] if str(i) not in destroyed_forms]
+        desired[field] = [_as_int_id(i) for i in live[field] if str(i) not in destroyed_forms]
         raw = _call_driver(
             driver.update,
             pr.provider,
