@@ -1297,8 +1297,8 @@ Returns the destination path.
   addenda below. What
   remains true is that this module applies `planned` one resource at a
   time, in the literal order the list carries — it is the plan
-  *builders* that now decide that order, and `apply_plan()` is unchanged
-  and unaware of the graph.
+  *builders* that now decide that order, and `apply_plan()` is unaware of
+  the graph (it gained only the repair step, Phase 4a).
 - **Orphan repair — Phase 4a, in scope now.** Destroying a resource that a
   tracked dependent outside the run depends on is no longer refused when the
   dependent is a firewall naming the destroyed droplet in its `droplet_ids`:
@@ -1406,7 +1406,9 @@ changed and which deliberately did not.
   something resolving nowhere. This is the mirror image: `_reverse_dependents()`
   scans every entry in `st.resources` that is **not** one of this run's own
   nodes, and for each one whose persisted `StateEntry.depends_on` names a
-  node that *is* being destroyed, records the pair. Without `--force`,
+  node that *is* being destroyed, records the pair (since Phase 4a, pairs a
+  repair covers are split out first -- see "Repair before destroy" below --
+  and only the rest reach this refusal). Without `--force`,
   `_resolve_reverse_dependents()` raises `PlanBlockedError` naming every
   such pair; with it, each drops to a warning instead — same shape as
   `_resolve_dangling_targets()`, deliberately not folded into it, since the
