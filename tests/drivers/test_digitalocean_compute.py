@@ -2836,6 +2836,33 @@ class TestDeleteWaitsForTeardown:
         assert record.id == "777"
         assert "still" in record.getMessage()
 
+    def test_an_expired_wait_names_the_last_error_it_saw(self, driver, fake_urlopen, caplog):
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            *[http_error(droplet_url("777"), 429) for _ in range(40)],
+        )
+
+        driver.delete("777", CREDENTIALS)
+
+        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert "429" in record.last_error
+
+    def test_an_expired_wait_with_no_error_reports_the_droplet_still_listed(
+        self, driver, fake_urlopen, caplog
+    ):
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+
+        driver.delete("777", CREDENTIALS)
+
+        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert record.last_error == "none (the droplet was still returned)"
+
     def test_a_poll_error_does_not_fail_the_delete(self, driver, fake_urlopen):
         fake_urlopen.script(
             "GET",
@@ -2875,6 +2902,21 @@ class TestAdoptionRefusesNonRunningStatus:
             tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
         assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+
+    def test_the_error_offers_both_ways_out(self, tagged_driver, fake_urlopen):
+        stale = make_droplet(id=777, status="off")["droplet"]
+        fake_urlopen.script(
+            "GET",
+            marker_listing_url(self.MARKER),
+            FakeHTTPResponse(200, {"droplets": [stale], "links": {}}),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert "power it on and re-run" in message
+        assert "or delete it and re-run" in message
 
 
 class TestCreateMarkerAdoption:
