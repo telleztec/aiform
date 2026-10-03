@@ -3319,8 +3319,8 @@ class TestBuildDestroyPlan:
             in warnings[0]
         )
         assert (
-            "so digitalocean.compute.a-01 is destroyed after digitalocean.compute.b-01, "
-            "which it depends on" in warnings[0]
+            "so the destroy order no longer guarantees that digitalocean.compute.a-01 "
+            "is destroyed before digitalocean.compute.b-01, which it depends on" in warnings[0]
         )
 
     def test_a_self_dependency_in_state_is_dropped_with_a_warning(self, tmp_path: Path):

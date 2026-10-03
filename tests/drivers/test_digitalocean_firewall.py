@@ -903,11 +903,16 @@ class TestNestedTargetListOrder:
 
         assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
 
-    def test_an_unsorted_nested_list_is_accepted_as_written(self, driver):
+    def test_an_unsorted_nested_list_is_posted_as_written(self, driver, fake_urlopen):
         params = minimal_params()
         params["inbound_rules"][0]["sources"] = {"addresses": ["10.0.0.0/8", "0.0.0.0/0"]}
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
 
-        assert driver._validate_params(params) is None
+        driver.create(NAME, params, CREDENTIALS)
+
+        posted = fake_urlopen.calls[0]["body"]
+        assert posted["inbound_rules"][0]["sources"]["addresses"] == ["10.0.0.0/8", "0.0.0.0/0"]
 
 
 class TestTwoDropletsAdmittedByReference:

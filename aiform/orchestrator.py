@@ -473,8 +473,8 @@ def _reverse_topological_breaking_cycles(
             edges[dependent].discard(target)
             warnings.append(
                 f"dependency cycle in state: {' -> '.join(exc.path)}; dropping the edge from "
-                f"{dependent} to {target}, so {dependent} is destroyed after {target}, "
-                "which it depends on"
+                f"{dependent} to {target}, so the destroy order no longer guarantees that "
+                f"{dependent} is destroyed before {target}, which it depends on"
             )
 
 

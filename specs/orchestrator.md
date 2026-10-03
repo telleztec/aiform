@@ -837,8 +837,9 @@ it). Instead, after classifying edges, it orders them with
 raises `CycleError`, it drops the reported path's first edge
 (`path[0]` depending on `path[1]`) and retries, adding one warning per dropped
 edge: `dependency cycle in state: a -> b -> a; dropping the edge from a to b,
-so a is destroyed after b, which it depends on`. The path is `CycleError`'s deterministic one, so
-the same state always drops the same edges and yields the same order. The loop
+so the destroy order no longer guarantees that a is destroyed before b, which
+it depends on`. The path is `CycleError`'s deterministic one, so the same state
+always drops the same edges and yields the same order. The loop
 terminates because each pass removes one edge. A self-edge is a length-1 cycle
 and is dropped the same way. No flag is needed: this producer destroys every
 tracked resource, so the only thing an edge decides is the order, and the
@@ -1266,10 +1267,15 @@ Returns the destination path.
   archival has nothing to archive. `apply_plan()` therefore checks
   `pr.aiform_md_path.exists()` first and also catches `FileNotFoundError` from
   the move itself (the file can vanish between the two); either way it logs a
-  WARNING and continues; the entry is reported as executed. Any *other* filesystem error
-  from the move is still raised raw: it is a real failure of a step that had
-  something to do, and `state.save()`'s own writes are equally unwrapped in
-  this module.
+  WARNING and continues; the entry is reported as executed. The `except
+  FileNotFoundError` wraps the whole `move_to_trash()` call, so *any*
+  `FileNotFoundError` from the move is treated as the tracked file being gone,
+  including one that is not about that file (the trash directory removed
+  between its `mkdir` and `shutil.move`, or a cwd that no longer exists, since
+  `TRASH_DIR` is relative); the WARNING then says the tracked file is missing
+  while it may still be on disk. Other `OSError` subclasses from the move are
+  still raised raw: they are real failures of a step that had something to do,
+  and `state.save()`'s own writes are equally unwrapped in this module.
 - `driver_info_for()` reads the driver file (`path.read_bytes()` for
   hashing) independently of `load_driver()`'s own read via `importlib`
   moments earlier — two reads of the same small file per driver

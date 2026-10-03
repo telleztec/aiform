@@ -870,7 +870,8 @@ three are covered:
   nobody uses.
   A cycle recorded in state does not block it (#206): the reported cycle is
   named in a warning, its first edge is dropped (the warning says the
-  dependent is now destroyed after the target it depends on), and ordering is
+  destroy order no longer guarantees the dependent is destroyed before the
+  target it depends on), and ordering is
   retried until the remainder is acyclic. See `specs/orchestrator.md`'s
   `build_destroy_plan()` for the rule. The file-driven destroy path and every
   create path still refuse a cycle with `PlanBlockedError`.
