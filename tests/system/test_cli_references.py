@@ -30,6 +30,10 @@ What this settles that no unit test can:
   reference resolves to for `droplet_ids`, and hands that same integer back
   rather than a stringified copy of it. A mock can only assert the value
   aiform sent; it cannot show what DigitalOcean does with it.
+- (#224) that a rule admitting TWO droplets by reference inside `sources`
+  applies, with the ids resolved in descending order (the order the old
+  sorted-list check refused), and that the second plan is a zero-call no-op:
+  the unsorted desired list and DigitalOcean's read-back must compare equal.
 
 Deliberately NOT re-proved here: ordering. Phase 1 orders by resource *key*,
 and `digitalocean.compute.*` sorts before both `digitalocean.domain.*` and
@@ -279,6 +283,75 @@ class TestCrossResourceReferenceLive:
         assert verbose_call_count(second_plan) == 0
 
         # Step 4: destroy both.
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
+        assert_cli_ok(code, capsys.readouterr(), "plan destroy")
+
+
+class TestTwoDropletsInOneRuleLive:
+    """#224: `sources.droplet_ids` inside a rule, filled by two references.
+
+    Droplets are created in key order and DigitalOcean's ids ascend, so
+    referencing the later-keyed droplet first resolves the list to
+    [higher, lower] -- unsorted, deterministically, which is the shape the
+    removed sorted-list check used to refuse partway through apply.
+    """
+
+    def test_two_references_in_one_rule_apply_and_replan_clean(
+        self, project_dir, teardown_tracked_resources, capsys
+    ):
+        token = live_token()
+        _skip_without_firewall_scope(token)
+        ensure_system_test_tag(token)
+
+        first, second = sorted(
+            [unique_droplet_name("nestedref-a"), unique_droplet_name("nestedref-b")]
+        )
+        firewall_name = unique_firewall_name("nestedref")
+        first_key = f"digitalocean.compute.{first}"
+        second_key = f"digitalocean.compute.{second}"
+        firewall_key = _resource_key(firewall_name)
+
+        write_aiform_md(project_dir, name=first, filename="droplet-a.aiform.md")
+        write_aiform_md(project_dir, name=second, filename="droplet-b.aiform.md")
+        write_firewall_aiform_md(
+            project_dir,
+            name=firewall_name,
+            inbound_rules=[
+                {
+                    "protocol": "tcp",
+                    "ports": "22",
+                    "action": "allow",
+                    "sources": {
+                        "droplet_ids": [
+                            f"${{digitalocean.compute.{second}:provider_id}}",
+                            f"${{digitalocean.compute.{first}:provider_id}}",
+                        ]
+                    },
+                }
+            ],
+        )
+
+        code = cli.main(["plan", "create"])
+        assert_cli_ok(code, capsys.readouterr(), "plan create")
+        code = cli.main(["plan", "apply", "--yes"])
+        assert_cli_ok(code, capsys.readouterr(), "plan apply")
+
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
+        first_id = tracked.resources[first_key].attributes["provider_id"]
+        second_id = tracked.resources[second_key].attributes["provider_id"]
+        live = get_firewall_or_none(token, tracked.resources[firewall_key].id)
+        assert live is not None
+        assert sorted(live["inbound_rules"][0]["sources"]["droplet_ids"]) == sorted(
+            [first_id, second_id]
+        )
+
+        code = cli.main(["plan", "create", "--verbose"])
+        replan = capsys.readouterr()
+        assert_cli_ok(code, replan, "second plan create")
+        for key in (first_key, second_key, firewall_key):
+            assert f"= {key}: no-op" in replan.out
+        assert verbose_call_count(replan) == 0
+
         code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
         assert_cli_ok(code, capsys.readouterr(), "plan destroy")
 

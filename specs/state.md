@@ -218,6 +218,9 @@ site cannot forget it. Every caller in `cli.py`, `orchestrator.py` and
   back. Recovering from a corrupted primary file using the backup is a
   manual, human-driven action (per `PLAN.md` §10), not an `aiform`
   command.
+- A `state.json` written **before `StateEntry.reference_edges` existed** (#234)
+  loads unchanged: the field defaults to `{}`, and the next plan that touches the
+  entry fills it in. Nothing reads it, so `{}` behaves exactly as before.
 - A `state.json` written **before `StateEntry.depends_on` existed**
   loads unchanged: the field is `Field(default_factory=list)`, so an
   entry lacking it validates and comes back with `[]`.

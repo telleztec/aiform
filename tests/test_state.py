@@ -141,6 +141,34 @@ class TestLoad:
 
         assert loaded.resources["digitalocean.compute.telleztec-app-01"].depends_on == []
 
+    def test_state_json_written_without_reference_edges_still_loads(self, tmp_path: Path):
+        entry = make_state_entry(depends_on=["digitalocean.compute.db-01"])
+        raw_entry = entry.model_dump(mode="json")
+        del raw_entry["reference_edges"]
+        raw = {
+            "aiform_state_version": 1,
+            "deployment": DEPLOYMENT,
+            "resources": {"digitalocean.compute.telleztec-app-01": raw_entry},
+        }
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps(raw))
+
+        loaded = load(path, deployment=DEPLOYMENT)
+
+        loaded_entry = loaded.resources["digitalocean.compute.telleztec-app-01"]
+        assert loaded_entry.reference_edges == {}
+        assert loaded_entry.depends_on == ["digitalocean.compute.db-01"]
+
+    def test_reference_edges_round_trip_through_save_and_load(self, tmp_path: Path):
+        edges = {"digitalocean.compute.db-01": ["id", "ipv4_address"]}
+        entry = make_state_entry(depends_on=["digitalocean.compute.db-01"], reference_edges=edges)
+        path = tmp_path / "state.json"
+        save(make_state(**{"digitalocean.compute.telleztec-app-01": entry}), path)
+
+        loaded = load(path, deployment=DEPLOYMENT)
+
+        assert loaded.resources["digitalocean.compute.telleztec-app-01"].reference_edges == edges
+
 
 class TestValidateDeploymentName:
     @pytest.mark.parametrize("name", ["a", "prod", "prod-1", "my_dep", "0abc", "x" * 63])

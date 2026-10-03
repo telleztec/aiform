@@ -532,8 +532,10 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
 - `--json`: prints `{"plan": [...], "warnings": [...]}` instead, one
   `{"resource_key", "action", "rationale", "likely_replace",
   "depends_on"}` object per planned resource, `warnings` as given by
-  `build_create_plan`. `depends_on` is the declared list verbatim, in
-  declared order, `[]` when there are none. The **array order of
+  `build_create_plan`. `depends_on` is the union of the declared list (declared order) and the
+  reference-derived targets not already declared (sorted), `[]` when there are
+  none. It does not say which targets came from a reference; the state entry's
+  `reference_edges` records that (#234) and is not printed. The **array order of
   `plan` itself is execution order** — that is documented rather than
   duplicated into a second key, so a consumer reads the list in order
   rather than reconstructing a sort from the edges.

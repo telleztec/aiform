@@ -102,6 +102,14 @@ def canonical_key(value: Any) -> str:
     return json.dumps(_canonical(value), separators=(",", ":"))
 
 
+def _deep_unordered(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _deep_unordered(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return sorted((_deep_unordered(item) for item in value), key=canonical_key)
+    return value
+
+
 def unordered_equal(a: Any, b: Any) -> bool:
     """Multiset equality for two lists; falls back to == otherwise.
 
@@ -121,11 +129,15 @@ def unordered_equal(a: Any, b: Any) -> bool:
     because accepting tuples here would make ["a"] equal ("a",) and
     that is the diff-hiding direction.
 
-    Only the top level is unordered: elements are compared via
-    canonical_key(), which serializes any list nested inside an element
-    positionally. A declared field's own order never matters; what's
-    inside its elements still does.
+    Unordered all the way down (#224): a list nested inside an element is
+    compared as a multiset too. A firewall rule's sources.droplet_ids is
+    filled by references whose resolved order nobody can predict when the
+    file is written, so requiring the nested order to match is what made
+    two references fail the apply. Each level is still a multiset, so a
+    duplicated or missing member is still a difference.
     """
     if not isinstance(a, list) or not isinstance(b, list):
         return a == b
-    return sorted(map(canonical_key, a)) == sorted(map(canonical_key, b))
+    return sorted(canonical_key(_deep_unordered(item)) for item in a) == sorted(
+        canonical_key(_deep_unordered(item)) for item in b
+    )
