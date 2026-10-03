@@ -8,9 +8,10 @@ merged 2026-09-25 as `6c5b2bd`, closing #200, spec at
 `specs/resource_references.md`), with one known limitation tracked as #216.
 **#216 is fixed** (commit `0c71be6`, `plans/fix-216-reference-into-integer-field.md`).
 **Phase 3 is paused by decision** (issue #220,
-`specs/dependency_detection.md`) and keeps its number. **Next:** reassess
-Phase 3 from what fixing #216 taught — `specs/dependency_detection.md`'s
-call, not decided here. This
+`specs/dependency_detection.md`) and keeps its number. **Next:** Phase 4
+as PRs 4a, 4b and 4c (`plans/phase-4.md`), then reassess Phase 3 from what
+fixing #216 taught — `specs/dependency_detection.md`'s call, not decided
+here. This
 document is the durable record of what multi-resource support must do and
 the order it gets built in. `PLAN.md` remains the architecture spec —
 §10's "No dependency graph" entry points here, and each phase reconciles
@@ -294,7 +295,12 @@ PRs.
 
 - **One phase per PR. One PR in flight at a time.** No stacked PRs, no
   parallel branches, no concurrent implementation agents working
-  different phases.
+  different phases. **Exception, Phase 4 only** (owner decision 2026-10-03,
+  `plans/phase-4.md`): the phase is cut into PRs 4a, 4b and 4c, which may
+  be developed in parallel on separate branches because they address
+  different concerns. Merges stay serial, each PR needs its own green live
+  `system-test` on its own head, and the later merge is rebased onto
+  `main` and re-tested.
 - **A phase is done when it's merged**, not when its code is written: full
   `PROCESS.md` loop per phase (spec in `specs/` → tests red → green →
   `/code-review` on Opus 5 or newer → human merge approval).
