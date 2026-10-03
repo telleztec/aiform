@@ -403,8 +403,8 @@ class Driver(ResourceDriver):
         if matches and matches[0]["status"] not in _ADOPTABLE_STATUSES:
             raise RuntimeError(
                 f"droplet {name}: droplet {matches[0]['id']} carries the creation marker "
-                f"for it but is {matches[0]['status']}, not new or active; delete it "
-                f"and re-run"
+                f"for it but is {matches[0]['status']}, not new or active; power it on "
+                f"and re-run to adopt it, or delete it and re-run to start fresh"
             )
         return matches[0] if matches else None
 
@@ -963,19 +963,26 @@ class Driver(ResourceDriver):
     def _wait_until_gone(self, id, credentials):
         # DELETE only starts the teardown; returning before the droplet is
         # gone lets a re-run in a new process adopt it by its marker.
+        last_error = "none (the droplet was still returned)"
         for attempt in range(_DELETE_WAIT_MAX_ATTEMPTS):
             try:
                 self._get_droplet(id, credentials)
+                last_error = "none (the droplet was still returned)"
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
                     return
-            except Exception:
-                pass
+                last_error = str(exc)
+            except Exception as exc:
+                last_error = str(exc)
             if attempt < _DELETE_WAIT_MAX_ATTEMPTS - 1:
                 time.sleep(_DELETE_WAIT_DELAY_SECONDS)
         logger.warning(
             "droplet still present after delete was accepted",
-            extra={"id": id, "attempts_used": _DELETE_WAIT_MAX_ATTEMPTS},
+            extra={
+                "id": id,
+                "attempts_used": _DELETE_WAIT_MAX_ATTEMPTS,
+                "last_error": last_error,
+            },
         )
 
     def health(self, id, credentials):

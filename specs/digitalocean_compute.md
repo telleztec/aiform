@@ -315,12 +315,15 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       (see `delete()`): DigitalOcean's `DELETE` is asynchronous, so a replace
       (delete then create of the same name) would otherwise adopt the droplet
       it has just asked to destroy. This is the same-process guard; across
-      processes `delete()` itself waits for the droplet to be gone.
+      processes `delete()` itself waits for the droplet's by-id `GET` to
+      `404`, which narrows the window but is not shown to close it (see
+      "Probed? No").
     - **Zero matches** → the normal create, with the marker in the body.
     - **Exactly one, not `new` or `active`** → `RuntimeError`: `droplet
       <name>: droplet <id> carries the creation marker for it but is <status>,
-      not new or active; delete it and re-run`. A powered-off or archived
-      droplet is not adopted silently.
+      not new or active; power it on and re-run to adopt it, or delete it and
+      re-run to start fresh`. A powered-off or archived droplet is not adopted
+      silently.
     - **Exactly one, `new` or `active`** → adopted: no POST. The droplet is polled to
       `status == "active"` with `create()`'s own budget, then returned
       through the same `_flatten()` path. `backups` and `monitoring` come from
@@ -334,15 +337,25 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       re-run`. Nothing is created or adopted.
   - **Not covered**: a droplet created by an aiform before this change has no
     marker and is never adopted. `delete()` waits up to about two minutes for
-    the droplet to be gone (below); if DigitalOcean is slower than that, the
-    wait gives up with a warning, and a later process whose lookup still finds
-    the droplet `active` can adopt it while it finishes dying. A droplet
-    deleted outside aiform entirely is subject to the same window.
+    the droplet's by-id `GET` to `404` (below); if DigitalOcean is slower than
+    that, the wait gives up with a warning, and a later process whose lookup
+    still finds the droplet `active` can adopt it while it finishes dying. A
+    droplet deleted outside aiform entirely is subject to the same window.
+    The tag listing may also keep returning a droplet after its by-id `GET`
+    already `404`s; that lag is unprobed (below).
+  - **Not covered, status `off`**: a marked droplet that is powered off is
+    refused, not adopted, even when the user or a crash powered it off and
+    adopting it would have been right. The user must power it on and re-run,
+    or delete it and re-run; either costs a manual step, because adoption
+    cannot tell the two cases apart.
   - Probed? No. Unverified against the live API: the `tag_name` filter's
     behaviour for a tag that does not exist yet (handled as empty on a `404`),
-    how soon a just-created droplet appears in a tag listing, and whether the
-    tags in a create body are applied atomically. The live `RetryDuplicates`
-    cells decide these; see `specs/system_test_interrupt.md`.
+    how soon a just-created droplet appears in a tag listing, whether the tags
+    in a create body are applied atomically, and, on the deletion side, how
+    long a deleted droplet stays in a `tag_name` listing after its by-id `GET`
+    returns `404`. The live `RetryDuplicates` cells decide the creation-side
+    ones, see `specs/system_test_interrupt.md`; the deletion-side lag has no
+    cell yet.
 
   `ssh_keys`/`backups`/`monitoring`: `create()` additionally echoes back
   whatever was in `params` for these three keys, **preserving each
@@ -511,10 +524,14 @@ the observed total is a few hundred milliseconds.
   teardown, and the droplet stays listed for a while.
 - After a `204` (not after a `404`, which means it is already gone), polls
   `GET /v2/droplets/{id}` until it returns `404`: 40 attempts, 3 s apart (about
-  two minutes), so a later process's marker lookup does not find the dying
-  droplet. A non-`404` poll error counts as "not gone yet". If the bound
-  expires, `delete()` still succeeds and logs a `warning`, `droplet still
-  present after delete was accepted`, with `id` and `attempts_used`.
+  two minutes), so that the by-id `GET` has `404`ed before `delete()` returns.
+  A later process's marker lookup reads the `tag_name` listing, which is
+  expected, not shown, to drop the droplet by then. A non-`404` poll error
+  counts as "not gone yet". If the bound expires, `delete()` still succeeds
+  and logs a `warning`, `droplet still present after delete was accepted`,
+  with `id`, `attempts_used` and `last_error` (the last non-`404` error's
+  text, or `none (the droplet was still returned)`), so a `401` or `429` is
+  visible as the cause.
 - After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
   "known_hosts")` if an IP was resolved — best-effort, never raises (see
   `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete

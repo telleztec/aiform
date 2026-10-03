@@ -2768,8 +2768,8 @@ class TestReservedTags:
 
 
 class TestDeleteWaitsForTeardown:
-    """F1 of the #269 review: DELETE is asynchronous, so a later process
-    must not find the dying droplet by its marker."""
+    """F1 of the #269 review: DELETE is asynchronous, so delete() waits for
+    the by-id GET to 404 before a later process looks the droplet up."""
 
     MARKER = marker_for(NAME)
 
@@ -2848,7 +2848,7 @@ class TestDeleteWaitsForTeardown:
 
         driver.delete("777", CREDENTIALS)
 
-        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        record = next(r for r in caplog.records if "still present" in r.getMessage())
         assert "429" in record.last_error
 
     def test_an_expired_wait_with_no_error_reports_the_droplet_still_listed(
