@@ -47,6 +47,7 @@ from tests.system.conftest import (
     assert_cli_ok,
     ensure_system_test_tag,
     get_domain_or_none,
+    get_droplet_or_none,
     get_firewall_or_none,
     list_domain_records,
     live_token,
@@ -379,3 +380,79 @@ class TestDestroyRepairsFirewallLive:
             assert f"{firewall_key}: update" in applied.out
             remaining = [key_b] if key == key_a else []
             self._assert_repaired_then_gone(token, firewall_key, firewall_id, key, remaining, ids)
+
+
+class TestUnrepairableDependentDestroyLive:
+    """#225, kept live after #226/#227 replaced the firewall refusal: a
+    dependent aiform cannot repair (a DNS zone whose record references the
+    droplet's address) still refuses a paths-driven destroy of that droplet
+    without --force, and --force really drops the edge from the zone's
+    persisted state. The last step, a state-driven cleanup destroy run without
+    --force, pins the F14/F15 bug: an edge the warning claimed to drop but did
+    not blocked that cleanup and left the zone and the droplet live.
+    """
+
+    def test_destroying_the_droplet_is_refused_until_forced_and_force_prunes_the_edge(
+        self, project_dir, teardown_tracked_resources, capsys
+    ):
+        token = live_token()
+        _skip_without_domain_scope(token)
+
+        droplet_name = unique_droplet_name("revdom")
+        zone = unique_zone_name("revdom")
+        droplet_key = f"digitalocean.compute.{droplet_name}"
+        zone_key = f"digitalocean.domain.{zone}"
+        droplet_path = project_dir / "droplet.aiform.md"
+
+        write_aiform_md(project_dir, name=droplet_name, filename="droplet.aiform.md")
+        write_domain_aiform_md(
+            project_dir,
+            name=zone,
+            records=[
+                {
+                    "type": "A",
+                    "name": RECORD_NAME,
+                    "ttl": TTL,
+                    "data": f"${{digitalocean.compute.{droplet_name}:ipv4_address}}",
+                }
+            ],
+            filename="zone.aiform.md",
+        )
+        code = cli.main(["plan", "create"])
+        assert_cli_ok(code, capsys.readouterr(), "plan create")
+        code = cli.main(["plan", "apply", "--yes"])
+        assert_cli_ok(code, capsys.readouterr(), "plan apply")
+
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
+        provider_id = tracked.resources[droplet_key].attributes["provider_id"]
+        assert tracked.resources[zone_key].depends_on == [droplet_key]
+
+        code = cli.main(["plan", "destroy", str(droplet_path), "--yes"])
+        blocked = capsys.readouterr()
+        assert code == 2
+        assert "Error:" in blocked.err
+        assert zone_key in blocked.err
+        assert droplet_key in blocked.err
+
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
+        assert droplet_key in tracked.resources
+        assert zone_key in tracked.resources
+        assert get_droplet_or_none(token, str(provider_id)) is not None
+        assert get_domain_or_none(token, zone) is not None
+
+        code = cli.main(["plan", "destroy", str(droplet_path), "--yes", "--force"])
+        forced = capsys.readouterr()
+        assert_cli_ok(code, forced, "plan destroy --force")
+        assert "Warning:" in forced.out
+        assert zone_key in forced.out
+
+        tracked = state.load(state.DEFAULT_STATE_PATH, deployment="default")
+        assert droplet_key not in tracked.resources
+        assert zone_key in tracked.resources
+        leftover = wait_until_droplet_gone(token, str(provider_id))
+        assert leftover is None, f"droplet {provider_id} still live: {leftover}"
+        assert tracked.resources[zone_key].depends_on == []
+
+        code = cli.main(["plan", "destroy", "--all", "--deployment", "default", "--yes"])
+        assert_cli_ok(code, capsys.readouterr(), "plan destroy (cleanup)")
+        assert wait_until_domain_gone(token, zone) is None

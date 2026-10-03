@@ -16,11 +16,13 @@ actually gave — two cases, one test each:
 2. (#216) A droplet's `provider_id` flowing into a firewall's `droplet_ids`,
    the first **integer**-typed reference target Phase 2's syntax reaches.
 
-Two further tests prove a related but distinct claim against the same real
+Three further tests prove related but distinct claims against the same real
 API: (#226/#227) that destroying a droplet a tracked firewall lists repairs
 the firewall first and then deletes the droplet, on both routes — `aiform
 plan destroy <file>` and an `AIFORM-DELETE-` marker file through `plan
-apply`. This replaces #225's refusal for a firewall.
+apply`. This replaces #225's refusal for a firewall. A third test keeps the
+refusal and `--force` pruning of #225 under live coverage for a dependent
+aiform cannot repair: a DNS zone whose record references the droplet's address.
 `specs/resource_dependencies.md`'s "Reverse dependents on a paths-driven
 destroy" section is the mechanism; this is its only live coverage.
 
@@ -89,6 +91,15 @@ cost discipline applies — never on a `pull_request`/`push` trigger.
   cannot show DigitalOcean accepts the shorter whole-object PUT, including
   the empty list. Both routes are covered because they build the repair in
   different places.
+
+- (#225, kept) That a dependent aiform cannot repair, a zone whose A record
+  references the droplet, is genuinely refused on `plan destroy <file>` without
+  `--force` (`code == 2`, both live and tracked afterward), that `--force`
+  proceeds with a warning naming the zone and prunes the zone's persisted
+  `depends_on` to `[]`, and that a following state-driven `plan destroy --all`
+  without `--force` succeeds. A unit test can assert `_prune_dependents_on()`
+  rewrote the list; only the cleanup destroy shows it is not cosmetic (F14/F15:
+  an unpruned edge once blocked that cleanup and left the zone and droplet live).
 
 ## What it deliberately does NOT test
 
@@ -173,6 +184,20 @@ referencing both:
 3. Marker route: the same two steps, but each droplet file is renamed to
    `AIFORM-DELETE-<file>` and run through `plan apply <marker> --yes`, with
    only the marker file in the run so the firewall file is not part of it.
+
+`TestUnrepairableDependentDestroyLive` (#225) — skipped unless the token has
+`domain` scope and the account owns the zone parent; a droplet and a zone whose
+A record references its `ipv4_address`:
+
+1. `plan create`, `plan apply`; assert the zone's persisted `depends_on` is the
+   droplet's key.
+2. `plan destroy <droplet file> --yes`, no `--force`: `code == 2`, `Error:` on
+   stderr naming the zone and the droplet, both still tracked and live.
+3. The same with `--force`: success, `Warning:` on stdout naming the zone, the
+   droplet gone from state and DigitalOcean, the zone still tracked with
+   `depends_on == []`.
+4. `plan destroy --all --deployment default --yes`, no `--force`: succeeds and
+   the zone is gone.
 
 ## Cleanup
 
