@@ -1013,7 +1013,7 @@ firewall is already repaired when a later one is refused at apply time (the
 live check below), and no destroy has run by then.
 
 Repairable at plan time means the dependent is a `digitalocean/firewall`, the
-target a `digitalocean/compute`, the target's id is all digits, and the id is
+target a `digitalocean/compute`, the target's id is ASCII digits only, and the id is
 not named in a rule's `sources`/`destinations` `droplet_ids` in the firewall's
 **recorded** attributes. The last condition keeps a half-repair from happening
 silently; nested references (#224) stay a refusal. Recorded state can be stale,
@@ -1023,6 +1023,13 @@ since the last refresh is refused there (`PlanBlockedError` pointing at
 `aiform plan destroy <file> --force`) rather than half-repaired. A firewall that
 is gone, or no longer lists the id, needs no update: only its state edge is
 pruned.
+
+The repair's `update` coerces only the top-level `droplet_ids` of the live read
+(a digit string becomes an int); rules are copied verbatim. A surviving droplet
+named by a string id inside a rule would fail the driver's own validation with
+`DriverExecutionError`, before any destroy, so nothing is orphaned. DigitalOcean
+returning string ids is unobserved (the #216 probe covers the top-level int
+round-trip only), so this is a defensive case.
 
 **The dependent's `.aiform.md` is not edited.** The plan prints a notice that
 the file still names the destroyed droplet; the next `plan` that reads it hits

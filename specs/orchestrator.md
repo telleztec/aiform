@@ -1445,7 +1445,7 @@ changed and which deliberately did not.
   (`_resolve_reverse_dependents()`). A pair is repairable when the dependent's
   `(provider, resource_type)` is a key of `_REPAIRABLE_EDGES`, the destroyed
   target's `(provider, resource_type)` is the one recorded for it, the target is
-  tracked with an all-digit id, and no rule of the dependent's recorded
+  tracked with an id of ASCII digits only, and no rule of the dependent's recorded
   attributes names that id under `sources`/`destinations` `droplet_ids` (a
   nested reference is not repaired -- doing a partial repair would leave the
   dead id behind silently). This plan-time check reads **recorded** state, so it
@@ -1481,14 +1481,20 @@ changed and which deliberately did not.
   `PlanBlockedError` **before any provider write** (a message naming the
   firewall, the target and `aiform plan destroy <file> --force`), whatever the
   top-level list holds, because stripping only the top-level id would leave the
-  dead id behind (ids compare as strings, so a live read returning them as
-  strings is still caught and still repaired); if the firewall is gone or no
+  dead id behind (the rule check compares ids as strings, so a live read returning them as
+  strings is still caught); if the firewall is gone or no
   longer lists the id, it only
   prunes the `depends_on` edge from state (the entry stays tracked); otherwise it calls the
   driver's `update(id, live, desired, credentials)` through `_call_driver()`
   where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
-  the destroyed ids removed from the repair field (surviving digit-string ids
-  are written back as ints, which the driver requires), and records the returned
+  the destroyed ids removed from the repair field (surviving top-level
+  digit-string ids are written back as ints, which the driver requires; ids
+  nested in `inbound_rules`/`outbound_rules` are copied verbatim and **not**
+  coerced, so a live read naming another droplet by a string id there makes the
+  driver's own validation raise `DriverExecutionError` from this `update`,
+  before any destroy and so with no orphan -- DigitalOcean returning string ids
+  is unobserved, and the top-level int round-trip is the only one probed, #216),
+  and records the returned
   attributes and `last_applied_at`/`last_refreshed_at`, and removes the
   destroyed keys from the dependent's `depends_on`. It leaves
   `aiform_md_sha256` and `driver` alone, which is why it is not `_record_update()`:
