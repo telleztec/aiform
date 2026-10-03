@@ -1,0 +1,50 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 382,
+ "note": "firewall list 0s after the droplet 404'd",
+ "prediction": null,
+ "prediction_matched": null,
+ "probed_at": "2026-10-03T15:01:58.748120+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/firewalls?per_page=200"
+ },
+ "response": {
+  "body": {
+   "filtered_to": "this probe's firewall only",
+   "firewalls": [
+    {
+     "created_at": "2026-10-03T15:01:34Z",
+     "droplet_ids": [
+      605827309
+     ],
+     "id": "4531c861-c72d-4b26-92db-64f1b65bc56d",
+     "inbound_rules": [
+      {
+       "action": "allow",
+       "ports": "22",
+       "protocol": "tcp",
+       "sources": {
+        "addresses": [
+         "0.0.0.0/0"
+        ]
+       }
+      }
+     ],
+     "name": "aiform-probe-265-fw-20261003T150134Z-c67909",
+     "outbound_rules": [],
+     "pending_changes": [],
+     "status": "succeeded",
+     "tags": []
+    }
+   ],
+   "total_firewalls_on_account": 1
+  },
+  "status": 200
+ },
+ "seq": 16
+}
