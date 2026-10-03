@@ -3167,6 +3167,29 @@ class TestCreateMarkerAdoption:
 
         assert tagged_driver.read("123", CREDENTIALS)["tags"] == ["web"]
 
+    def test_a_tags_update_leaves_the_marker_on_the_droplet(self, tagged_driver, fake_urlopen):
+        current = make_attrs(tags=["web", "retired"])
+        desired = make_attrs(tags=["web", "fresh"])
+        fake_urlopen.script("GET", tag_url("fresh"), FakeHTTPResponse(200, {"tag": {}}))
+        fake_urlopen.script("POST", tag_resources_url("fresh"), FakeHTTPResponse(204, None))
+        fake_urlopen.script("DELETE", tag_resources_url("retired"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(tags=["web", "fresh", *RESERVED, self.MARKER])),
+        )
+
+        result = tagged_driver.update("123", current, desired, CREDENTIALS)
+
+        assert [(c["method"], c["url"]) for c in fake_urlopen.calls] == [
+            ("GET", tag_url("fresh")),
+            ("POST", tag_resources_url("fresh")),
+            ("DELETE", tag_resources_url("retired")),
+            ("GET", droplet_url("123")),
+        ]
+        assert not [c for c in fake_urlopen.calls if self.MARKER in c["url"]]
+        assert result["tags"] == ["web", "fresh"]
+
     def test_the_lookup_follows_the_managed_key_registration(
         self, tagged_driver, fake_urlopen, ssh_env
     ):
