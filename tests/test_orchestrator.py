@@ -3756,6 +3756,9 @@ class Driver(ResourceDriver):
 
     def update(self, id, current, desired, credentials):
         _log("update", KIND, id, current, desired)
+        for listed in desired.get("droplet_ids", []):
+            if type(listed) is not int:
+                raise ValueError(f"droplet_ids must hold ints, got {{listed!r}}")
         if "broken" in desired.get("tags", []):
             raise RuntimeError("simulated CSP update failure")
         with open(LIVE, "w") as handle:
@@ -4370,7 +4373,7 @@ class TestApplyingARepair:
         self, repair_world: RepairWorld, marker: bool
     ):
         repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
-        repair_world.set_live((str(DROPLET_ID), OTHER_DROPLET_ID))
+        repair_world.set_live((str(DROPLET_ID), str(OTHER_DROPLET_ID)))
         planned = self.build(repair_world, marker=marker)
 
         apply_with_confirms(planned, repair_world, yes=True)
@@ -4378,6 +4381,18 @@ class TestApplyingARepair:
         update_call = next(c for c in repair_world.calls() if c[0] == "update")
         assert update_call[4]["droplet_ids"] == [OTHER_DROPLET_ID]
         assert repair_world.mutations() == [("update", "firewall"), ("delete", "droplet")]
+
+    @pytest.mark.parametrize("odd_id", ["\u00b2", "\u0661\u0662\u0663"])
+    def test_a_non_ascii_digit_target_id_is_not_repairable_and_does_not_raise(self, odd_id):
+        st = state.State(
+            deployment="default",
+            resources={
+                DROPLET_KEY: droplet_entry(id=odd_id),
+                FIREWALL_KEY: firewall_entry(),
+            },
+        )
+
+        assert not orchestrator._is_repairable(st.resources[FIREWALL_KEY], DROPLET_KEY, st)
 
     def test_the_droplets_file_is_trashed_and_the_firewall_file_is_left_alone(
         self, repair_world: RepairWorld
