@@ -861,6 +861,11 @@ three are covered:
   invocation a user actually types (`aiform plan destroy --all`), so
   leaving it unordered would mean the feature ordered only the invocation
   nobody uses.
+  A cycle recorded in state does not block it (#206): the reported cycle is
+  named in a warning, its first edge is dropped, and ordering is retried until
+  the remainder is acyclic. See `specs/orchestrator.md`'s
+  `build_destroy_plan()` for the rule. The file-driven destroy path and every
+  create path still refuse a cycle with `PlanBlockedError`.
 
 ### Dangling dependency targets on a destroy path, and `--force`
 

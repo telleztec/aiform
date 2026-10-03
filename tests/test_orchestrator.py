@@ -3086,22 +3086,139 @@ class TestBuildDestroyPlan:
         )
         assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
 
-    def test_state_driven_cycle_raises_plan_blocked_error(self, tmp_path: Path):
+    def test_state_driven_cycle_is_named_and_broken_so_destroy_all_proceeds(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.a-01": make_state_entry(
-                    name="a-01", depends_on=["digitalocean.compute.b-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
                 ),
                 "digitalocean.compute.b-01": make_state_entry(
-                    name="b-01", depends_on=["digitalocean.compute.a-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
                 ),
             },
         )
 
-        with pytest.raises(PlanBlockedError):
-            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.a-01",
+            "digitalocean.compute.b-01",
+        }
+        assert len(warnings) == 1
+        assert "dependency cycle in state" in warnings[0]
+        assert (
+            "digitalocean.compute.a-01 -> digitalocean.compute.b-01 -> digitalocean.compute.a-01"
+            in warnings[0]
+        )
+
+    def test_a_self_dependency_in_state_is_dropped_with_a_warning(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.a-01"]
+        assert len(warnings) == 1
+        assert "digitalocean.compute.a-01 -> digitalocean.compute.a-01" in warnings[0]
+
+    def test_two_separate_cycles_each_get_a_warning_and_the_rest_keeps_its_order(
+        self, tmp_path: Path
+    ):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+
+        def entry(name, *targets):
+            return make_state_entry(
+                aiform_md_path=str(tracked_file),
+                name=name,
+                depends_on=[f"digitalocean.compute.{t}" for t in targets],
+            )
+
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": entry("a-01", "b-01"),
+                "digitalocean.compute.b-01": entry("b-01", "a-01"),
+                "digitalocean.compute.c-01": entry("c-01", "d-01"),
+                "digitalocean.compute.d-01": entry("d-01", "c-01"),
+                "digitalocean.compute.e-01": entry("e-01", "f-01"),
+                "digitalocean.compute.f-01": entry("f-01"),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert len(keys) == 6
+        assert len(warnings) == 2
+        assert keys.index("digitalocean.compute.e-01") < keys.index("digitalocean.compute.f-01")
+
+    def test_cycle_handling_is_deterministic(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
+                ),
+                "digitalocean.compute.b-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        first = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        second = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+
+        assert [pr.entry.resource_key for pr in first[0]] == [
+            pr.entry.resource_key for pr in second[0]
+        ]
+        assert first[1] == second[1]
+
+    def test_a_cycle_through_the_file_driven_destroy_still_blocks(self, tmp_path: Path):
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
+        write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path)
+
+        with pytest.raises(PlanBlockedError, match="dependency cycle"):
+            orchestrator.build_destroy_plan(
+                [a_path, b_path], state_path=state_path, deployment="default"
+            )
 
     def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
         # Pins that with no depends_on anywhere, destroy order inverts the

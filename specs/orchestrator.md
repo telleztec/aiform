@@ -828,6 +828,25 @@ had to widen its return type to match `build_create_plan()`'s
 `specs/resource_dependencies.md`'s "Dangling dependency targets on a
 destroy path, and `--force`" for the full rule.
 
+**A cycle recorded in state (#206).** `_build_destroy_plan_from_state()` does
+not refuse a deployment whose `StateEntry.depends_on` edges form a cycle
+(state can hold one when the files that declared it were hand-edited or
+removed, so the plan-time cycle check that guards `plan create` never ran on
+it). Instead, after classifying edges, it orders them with
+`_reverse_topological_breaking_cycles()`: while `graph.topological_order()`
+raises `CycleError`, it drops the reported path's first edge
+(`path[0]` depending on `path[1]`) and retries, adding one warning per dropped
+edge: `dependency cycle in state: a -> b -> a; dropping the edge from a to b
+so the destroy can proceed`. The path is `CycleError`'s deterministic one, so
+the same state always drops the same edges and yields the same order. The loop
+terminates because each pass removes one edge. A self-edge is a length-1 cycle
+and is dropped the same way. No flag is needed: this producer destroys every
+tracked resource, so the only thing an edge decides is the order, and the
+warning names exactly what was overridden. `_build_destroy_plan_from_paths()`
+and the create route keep raising `PlanBlockedError` on a cycle, since a cycle
+there comes from files the user can edit and `plan create` should refuse it
+before any resource exists.
+
 ### `build_plan_summary(planned) -> str`
 
 `json.dumps([{"resource_key": pr.entry.resource_key, "action":

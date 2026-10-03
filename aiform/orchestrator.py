@@ -449,6 +449,23 @@ def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str
     return list(reversed(_topological(keys, edges)))
 
 
+def _reverse_topological_breaking_cycles(
+    keys: set[str], edges: dict[str, set[str]]
+) -> tuple[list[str], list[str]]:
+    edges = {key: set(targets) for key, targets in edges.items()}
+    warnings: list[str] = []
+    while True:
+        try:
+            return list(reversed(graph.topological_order(keys, edges))), warnings
+        except graph.CycleError as exc:
+            dependent, target = exc.path[0], exc.path[1]
+            edges[dependent].discard(target)
+            warnings.append(
+                f"dependency cycle in state: {' -> '.join(exc.path)}; dropping the edge from "
+                f"{dependent} to {target} so the destroy can proceed"
+            )
+
+
 def _order_files(files: list[Path], st: State) -> list[Path]:
     files = _dedupe_normalized_paths(files)
     discovered = [_discover_one(path) for path in files]
@@ -979,7 +996,8 @@ def _build_destroy_plan_from_state(
     edges, dangling = _classify_destroy_edges(raw_edges, node_keys, resolvable_elsewhere=set())
     warnings = _resolve_dangling_targets(dangling, force=force)
 
-    order = _reverse_topological(node_keys, edges)
+    order, cycle_warnings = _reverse_topological_breaking_cycles(node_keys, edges)
+    warnings.extend(cycle_warnings)
 
     planned: list[PlannedResource] = []
     for key in order:
