@@ -1003,17 +1003,26 @@ it, so `aiform plan destroy <file>` and the `AIFORM-DELETE-` marker route via
 | Repairable dependent | `(y/n)` naming the firewall and the id | repairs without asking | nothing changed, nothing destroyed |
 | Unrepairable dependent, paths route | refused (#225), or warned with `--force` | same | n/a |
 | Unrepairable dependent, marker route | refused (#226); `plan destroy --force` is the way past | same | n/a |
+| Dependent whose rule names the droplet, found live at apply time | refused before any provider write, naming `plan destroy <file> --force` | same | n/a |
 
 Order is repair, then delete: a failure part-way never leaves a firewall
-holding a dead id. If the delete is what fails, the droplet is still running
-with a repaired firewall.
+holding a dead id *for the firewall being repaired*. If the delete is what
+fails, the droplet is still running with a repaired firewall. With several
+repairs in one plan the guarantee is per firewall, not per plan: an earlier
+firewall is already repaired when a later one is refused at apply time (the
+live check below), and no destroy has run by then.
 
-Repairable means the dependent is a `digitalocean/firewall`, the target a
-`digitalocean/compute`, the target's id is all digits, and the id is not named
-in a rule's `sources`/`destinations` `droplet_ids` in the firewall's recorded
-attributes. The last condition keeps a half-repair from happening silently;
-nested references (#224) stay a refusal. A firewall that is gone, or no longer
-lists the id, needs no update: only its state edge is pruned.
+Repairable at plan time means the dependent is a `digitalocean/firewall`, the
+target a `digitalocean/compute`, the target's id is all digits, and the id is
+not named in a rule's `sources`/`destinations` `droplet_ids` in the firewall's
+**recorded** attributes. The last condition keeps a half-repair from happening
+silently; nested references (#224) stay a refusal. Recorded state can be stale,
+so `_apply_repair()` repeats the rule check against the firewall read **live**
+just before the update, ahead of any provider write: a rule added out-of-band
+since the last refresh is refused there (`PlanBlockedError` pointing at
+`aiform plan destroy <file> --force`) rather than half-repaired. A firewall that
+is gone, or no longer lists the id, needs no update: only its state edge is
+pruned.
 
 **The dependent's `.aiform.md` is not edited.** The plan prints a notice that
 the file still names the destroyed droplet; the next `plan` that reads it hits

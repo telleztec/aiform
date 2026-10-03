@@ -9,6 +9,10 @@ the answer is matched by id and timestamp (published 05:09, answered 05:12).
 
 Pairing: Sonnet 5 authors, Opus 5 reviews. Depends on #246, which is merged.
 
+Superseded in part by `plans/phase-4.md` section 4a: the UC-F step 2
+`xfail(strict=True, reason="#226")` test below was deleted when #226 was fixed
+by repair instead of refusal.
+
 ## Problem
 
 Nothing proves against a real provider that aiform tells the user before it

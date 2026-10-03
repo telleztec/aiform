@@ -926,12 +926,14 @@ def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
 
 # A rule's own sources/destinations can name a droplet too. Dropping the id from
 # the top-level list alone would leave that one behind, so such a firewall is not
-# repaired at all.
+# repaired at all. Ids compare as strings because a live read need not
+# return them as ints.
 def _rule_names_droplet(attributes: dict[str, Any], droplet_id: int) -> bool:
     for rules_key in ("inbound_rules", "outbound_rules"):
         for rule in attributes.get(rules_key) or []:
             for side in ("sources", "destinations"):
-                if droplet_id in (rule.get(side) or {}).get("droplet_ids", []):
+                listed = (rule.get(side) or {}).get("droplet_ids", [])
+                if str(droplet_id) in map(str, listed):
                     return True
     return False
 
@@ -1518,10 +1520,11 @@ def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
                     "made from recorded state); destroy it with `aiform plan destroy <file> "
                     "--force` to drop the edge"
                 )
-    if not gone and any(droplet_id in destroyed_ids for droplet_id in live.get(field, [])):
+    destroyed_forms = {str(droplet_id) for droplet_id in destroyed_ids}
+    if not gone and any(str(listed) in destroyed_forms for listed in live.get(field, [])):
         properties = driver.PARAM_SCHEMA.get("properties", {})
         desired = {key: value for key, value in live.items() if key in properties}
-        desired[field] = [i for i in live[field] if i not in destroyed_ids]
+        desired[field] = [i for i in live[field] if str(i) not in destroyed_forms]
         raw = _call_driver(
             driver.update,
             pr.provider,

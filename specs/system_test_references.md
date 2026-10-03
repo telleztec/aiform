@@ -85,7 +85,9 @@ cost discipline applies — never on a `pull_request`/`push` trigger.
 - (#226/#227) That destroying a droplet a real, tracked firewall lists
   repairs the firewall and then deletes the droplet — `code == 0`, the live
   firewall's `droplet_ids` read back from DigitalOcean (not from state) is the
-  survivor's id after 2 -> 1 and `[]` after 1 -> 0, the droplet is gone, the
+  survivor's id after 2 -> 1 and `[]` after 1 -> 0 (polled with
+  `wait_until_firewall_droplet_ids()`, which mirrors `wait_until_domain_gone()`,
+  not checked once), the droplet is gone, the
   firewall stays tracked, and its persisted `depends_on` shrinks. A unit test
   can assert the repair ran before the delete against a fake driver; it
   cannot show DigitalOcean accepts the shorter whole-object PUT, including

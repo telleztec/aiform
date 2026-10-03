@@ -494,7 +494,9 @@ firewall driver's `update()`), applied before the delete, behind a `(y/n)`
 that `--yes` skips and a decline that changes nothing. Both routes behave the
 same: `aiform plan destroy <file>` and the `AIFORM-DELETE-` marker route via
 `plan apply`, which had no check at all (#226) and now repairs or refuses.
-Any other outside dependent is still refused (`--force` on the paths route).
+Any other outside dependent, and a firewall whose rule names the droplet
+(checked against recorded state at plan time and the live firewall at apply
+time), is still refused (`--force` on the paths route).
 The firewall's own `.aiform.md` is not edited; the plan prints a notice. Not
 delivered in 4a: partial-failure reporting and restartability (4b), bad-state
 destroy (4c), orphan cleanup by tag (4d).

@@ -54,6 +54,7 @@ from tests.system.conftest import (
     unique_droplet_name,
     unique_firewall_name,
     wait_until_droplet_gone,
+    wait_until_firewall_droplet_ids,
     write_aiform_md,
     write_firewall_aiform_md,
 )
@@ -462,7 +463,7 @@ class TestRefuseToOrphanADependent:
         runner.ok(["plan", "apply", str(marker), "--yes"], "plan apply <marker> (repairs)")
         leftover = wait_until_droplet_gone(token, pair.droplet_id)
         assert leftover is None, f"droplet {pair.droplet_id} is still live"
-        repaired = get_firewall_or_none(token, pair.firewall_id)
+        repaired = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
         assert repaired is not None
         assert repaired["droplet_ids"] == []
 
@@ -478,7 +479,7 @@ class TestRefuseToOrphanADependent:
         )
         runner.ok(APPLY, "plan apply after dropping the dead reference")
 
-        firewall = get_firewall_or_none(token, pair.firewall_id)
+        firewall = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
         assert firewall is not None
         assert firewall["droplet_ids"] == []
         assert len(firewalls_named(token, pair.firewall_name)) == 1

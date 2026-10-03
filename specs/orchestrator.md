@@ -1481,7 +1481,9 @@ changed and which deliberately did not.
   `PlanBlockedError` **before any provider write** (a message naming the
   firewall, the target and `aiform plan destroy <file> --force`), whatever the
   top-level list holds, because stripping only the top-level id would leave the
-  dead id behind; if the firewall is gone or no longer lists the id, it only
+  dead id behind (ids compare as strings, so a live read returning them as
+  strings is still caught and still repaired); if the firewall is gone or no
+  longer lists the id, it only
   prunes the `depends_on` edge from state (the entry stays tracked); otherwise it calls the
   driver's `update(id, live, desired, credentials)` through `_call_driver()`
   where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
