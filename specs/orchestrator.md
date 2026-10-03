@@ -327,6 +327,17 @@ class ApplyResult:
     aborted: bool
 
 
+@dataclass(frozen=True)
+class ApplyProgress:
+    applied: list[PlanEntry]
+    failed: PlanEntry
+    not_run: list[PlanEntry]
+
+
+DESTROY_RETRY_ATTEMPTS = 4
+DESTROY_RETRY_DELAYS_SECONDS = (5, 15, 45)
+
+
 def build_plan_summary(planned: list[PlannedResource]) -> str: ...
 
 
@@ -340,6 +351,7 @@ def apply_plan(
     on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
+    retry_destroy: bool = False,
 ) -> ApplyResult: ...
 
 
@@ -824,6 +836,22 @@ had to widen its return type to match `build_create_plan()`'s
 `specs/resource_dependencies.md`'s "Dangling dependency targets on a
 destroy path, and `--force`" for the full rule.
 
+**Exposure warning (#235).** After either producer, `build_destroy_plan()`
+appends one warning per firewall that the plan destroys and that has a droplet
+target also destroyed in the same plan. The firewall's `depends_on` names the
+droplet, so the reverse-topological order deletes the firewall first, and the
+droplet runs unfiltered from then until its own delete succeeds. The warning
+names both keys and the window: `<firewall> protects <droplet>, and the plan
+destroys both: the firewall goes first, so <droplet> runs unfiltered until its
+own delete succeeds (indefinitely if that delete fails)`. A firewall whose
+droplet is not in the plan (or is not being destroyed) produces nothing: the
+droplet stays, and the existing reverse-dependent rules already govern that.
+The pair is a fixed table, `("digitalocean", "firewall")` protects
+`("digitalocean", "compute")`, a stand-in for the operational direction the
+dependency model does not express (`specs/resource_dependencies.md`, the
+`Protects` row; modelling it is #235 option 3, out of scope here). It is
+advisory, never blocks, and is not suppressed by `--force`.
+
 ### `build_plan_summary(planned) -> str`
 
 `json.dumps([{"resource_key": pr.entry.resource_key, "action":
@@ -832,7 +860,7 @@ pr.entry.likely_replace} for pr in planned])` — the `plan_summary` string
 `llm.review_plan()` (`PLAN.md` §5 apply step 2) takes as its sole
 argument.
 
-### `apply_plan(planned, *, state_path=..., deployment=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None) -> ApplyResult`
+### `apply_plan(planned, *, state_path=..., deployment=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None, retry_destroy=False) -> ApplyResult`
 
 `PLAN.md` §5 "aiform plan apply" steps 2-4 (step 1, re-running `plan` in
 full, is the caller's job — see Behavior below), shared verbatim by
@@ -1053,6 +1081,49 @@ for its caller.
    where it's the `likely_replace: True`-corrected copy described above>,
    review_flags=<accumulated non-blocking flags>, aborted=False)`.
 
+**The failure path (#229, #235).** The executed set is always a dependency-closed
+prefix of `planned`, because the loop stops at the first failure and saves per
+resource. That prefix used to die with the stack frame: `apply_plan()` raises
+on a failure and only returns `ApplyResult` on success or a declined
+confirmation. So step 3's loop runs inside one `try`, and an `Exception`
+escaping it gets one attribute, `apply_progress`, an `ApplyProgress`, and is
+re-raised unchanged:
+
+- `applied` is `executed` as it stood when the exception was raised (the
+  entries `apply_plan()` would have returned, with the same `likely_replace`
+  correction).
+- `failed` is the `pr.entry` being processed. If a replace's `delete()` had
+  already succeeded and its `create()` then failed, the entry is still
+  `failed` and not in `applied`: state no longer tracks the old resource, which
+  is the checkpoint described under the UPDATE arm.
+- `not_run` is every later `pr.entry` in `planned` that is not `NO_OP`, in
+  order.
+
+The exception type, its message and its `__cause__` are untouched, so every
+handler that catches `DriverExecutionError` or `PlanBlockedError` keeps working.
+This is the smaller of the two designs considered (the other was a new
+`ApplyFailedError` wrapping the original): it changes no `raises` contract and
+no existing `pytest.raises`. Not covered: an exception raised before the loop
+(the gate #2 `PlanBlockedError` from step 1, a decline) carries no
+`apply_progress`, since nothing ran; and `KeyboardInterrupt`/`SystemExit` are
+not `Exception`s, so an interrupted run is not reported.
+
+`cli.py` reads the attribute and prints the report block; see `specs/cli.md`.
+
+**Destroy retry (`retry_destroy=True`, `plan destroy --all --yes` only).**
+`_apply_destroy()` calls `driver.delete()` up to `DESTROY_RETRY_ATTEMPTS` (4)
+times in total, sleeping `DESTROY_RETRY_DELAYS_SECONDS` (5, 15, 45 seconds)
+between attempts, so a stubborn failure costs 65 seconds of waiting at most.
+Any `DriverExecutionError` from the `delete()` call is retried; each retry logs
+at WARNING (`step: "delete"`, `retry`, `attempt`, `error`). When every attempt
+fails, the last `DriverExecutionError` is raised as before. Nothing else
+retries: `retry_destroy` defaults to `False`, so a replace's `delete()` and a
+plain `plan destroy <file>` fail on the first error, as before. The constants
+are module-level, not configuration. A run that failed after its retries
+leaves the failed resource tracked in state and every earlier one removed, so a
+forced re-run (`plan destroy --all --yes --force`) builds its plan from what
+is left, destroys only that, and reports only that.
+
 ### `move_to_trash(path, *, trash_dir=TRASH_DIR) -> Path`
 
 `trash_dir.mkdir(parents=True, exist_ok=True)`; base destination
@@ -1222,6 +1293,10 @@ Returns the destination path.
   contract as the top-level decline in step 2, just computed over a
   prefix of `planned` instead of the empty list, so `cli.py` can report
   exactly what was and wasn't applied.
+- Any exception raised inside the execute loop reaches the caller carrying
+  `apply_progress` (see "The failure path" under `apply_plan()`), including the
+  `PlanBlockedError` a mid-loop replace review can raise, so `cli.py` can report
+  what ran, what failed and what did not run.
 - `move_to_trash()`'s numeric-suffix collision handling (see its own
   Interface entry above) means two destroys of same-named files within
   the same UTC second never overwrite each other, closing the gap a

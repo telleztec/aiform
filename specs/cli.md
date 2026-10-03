@@ -600,6 +600,34 @@ takes an already-built plan):
    would duplicate that output and was the ordering bug issue #166
    describes (flags only ever appeared here, after the prompt they were
    meant to inform).
+- **A failed apply reports where it got to (#229, #235).** When `apply_plan`
+  raises, `_dispatch()`'s handler reads the exception's `apply_progress`
+  (`specs/orchestrator.md`, "The failure path") and, if present, prints this
+  block to **stderr**, then the usual `Error: <message>` line, then exits 2:
+
+  ```
+  Apply incomplete: <a> applied, <f> failed, <n> not run
+  applied: <resource key> (<action>)
+  failed: <resource key> (<action>)
+  not run: <resource key> (<action>)
+  ```
+
+  The first line is always printed, with all three counts, including `0`.
+  Each following line is one resource, `applied:`/`failed:`/`not run:` at the
+  start of the line and the key as the next token, in plan order; a category
+  with none prints no lines. `<action>` is the label `_print_apply_result`
+  uses (`create`, `update`, `update (replaced)`, `destroy`). The prefixes and
+  the header's wording are the stable part a script greps. When the failed
+  entry is an `update` whose `DriverExecutionError.operation` is `create`, the
+  replace had already deleted the old resource, so the `failed:` line ends
+  ` -- the old resource was deleted and the new one was not created`.
+  The block is printed for `plan apply` and `plan destroy` alike, whether
+  the exception is a `DriverExecutionError`, a mid-loop `PlanBlockedError` or
+  any other handled type. An exception without `apply_progress` (a failure
+  while planning, the gate #2 block, a declined confirmation, which is exit 1
+  and prints `Apply aborted.`) prints no block. Exit stays 2. Not covered: Ctrl-C
+  during the loop is a `KeyboardInterrupt`, not a handled exception, and prints
+  no block; the state file is the record of what completed.
 - Exit 0 if `apply_plan` returns `aborted=False`. Exit 1 if
   `aborted=True` (the user declined, or a mid-loop replace confirmation
   declined — a legitimate, non-exceptional outcome, but not "success"
@@ -712,6 +740,17 @@ errors, so all of them behave and are tested the same way:
 - Same exit-code convention as `plan apply` (0 / 1 aborted / 2 error). A wrong
   or empty typed name (step 2a) is an abort, exit 1; every refusal in the
   table above is a usage error, exit 2.
+- **Retry and re-run.** `--all` together with `--yes` passes
+  `retry_destroy=True` to `apply_plan` (`specs/orchestrator.md`, "Destroy
+  retry"): a failed delete is retried up to 4 attempts in all, waiting 5, 15
+  then 45 seconds. `--all` without `--yes` and the file-argument form do not
+  retry. When the run still fails, the failure block above names what was
+  destroyed, what failed and what did not run; state holds only what is left,
+  so `plan destroy --all --yes --force` run again converges and its block and
+  output cover only the remainder. Orphan removal is not part of `--all`.
+- A destroy plan that removes a firewall together with a droplet it protects
+  prints the exposure `Warning:` from `build_destroy_plan`
+  (`specs/orchestrator.md`, "Exposure warning") with the other warnings.
 - Help string: `plan destroy` lists `--all` and its `--deployment DEPLOYMENT`;
   `--all`'s help says it destroys every resource tracked in the deployment.
 

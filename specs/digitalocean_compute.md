@@ -273,6 +273,64 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
   update never removes a reserved tag, because `current["tags"]` is already
   stripped. No backfill: a droplet created before this change has no
   reserved tag, and `update()` does not add them.
+  **Create marker and adoption (#253).** A create whose response never
+  reached aiform (a timeout, a reset, a 5xx after DigitalOcean accepted it)
+  leaves a droplet aiform holds no id for; a retried `create()` would post a
+  second one. So `create()` carries a per-resource marker and looks for it
+  before it posts.
+
+  - **Marker tag**: `aiform:<deployment>:name:<sha256 hex of the droplet
+    name, UTF-8>`, built as `f"{self._deployment_tag}:name:{digest}"`. It
+    fits DigitalOcean's tag alphabet (letters, digits, `:`, `-`, `_`): the
+    digest is lowercase hex, and a droplet name's dots (resource keys
+    contain them) never appear in the tag. It is collision-safe: a deployment
+    name is `[a-z0-9][a-z0-9_-]{0,62}` and so never contains `:`, which makes
+    the `:name:` separator unambiguous; two names collide only on a SHA-256
+    collision; the longest possible marker is 7 + 63 + 6 + 64 = 140
+    characters, under DigitalOcean's 255. It is lowercase end to end, so it is
+    safe whether or not a tag's case is folded.
+  - **Reserved already**: it begins `aiform:`, so `is_reserved_tag()` rejects
+    it in `params["tags"]` (a user cannot forge or collide with a marker),
+    `_tags_for_attributes()` strips it from every attribute dict, and
+    `update()` can never remove it. No change to `aiform/driver.py`.
+  - **Only with a deployment tag.** A driver built without reserved tags (an
+    observability caller, a bare test) has no `_deployment_tag`: it adds no
+    marker and does no lookup, exactly as before.
+  - **Tagged at creation**: the POST body's `tags` is the user's tags, the two
+    reserved tags and the marker, in that order. DigitalOcean applies tags
+    atomically with the create, which is why a droplet whose response was
+    lost still carries the marker.
+  - **Lookup before the POST**, after the managed-key registration (a failure
+    there posts nothing, so it needs no lookup): `GET
+    /v2/droplets?tag_name=<marker>`, every page, via `fetch_all_pages`. A
+    `404` from the filter is an empty result.
+    - Droplets whose id this driver instance has already deleted are ignored
+      (see `delete()`): DigitalOcean's `DELETE` is asynchronous, so a replace
+      (delete then create of the same name) would otherwise adopt the droplet
+      it has just asked to destroy.
+    - **Zero matches** → the normal create, with the marker in the body.
+    - **Exactly one** → adopted: no POST. The droplet is polled to
+      `status == "active"` with `create()`'s own budget, then returned
+      through the same `_flatten()` path. `backups` and `monitoring` come from
+      the live droplet's `features`, `ssh_keys` from `params` (a read cannot
+      recover it). The log line carries `step: "create"`, `adopted: true`,
+      `id`. Adoption does not compare size, region or image: a droplet that
+      differs from `params` shows as an ordinary `update` or replace on the
+      next plan.
+    - **More than one** → `RuntimeError`: `droplet <name>: <n> droplets carry
+      the creation marker for it (ids <id>, <id>); delete the extras and
+      re-run`. Nothing is created or adopted.
+  - **Not covered**: a droplet created by an aiform before this change has no
+    marker and is never adopted. A droplet being destroyed by a different
+    process (a separate `destroy` run, then `apply`) can still be adopted
+    while DigitalOcean finishes deleting it; the later `read()` reports it
+    missing and the run after that recreates it.
+  - Probed? No. Unverified against the live API: the `tag_name` filter's
+    behaviour for a tag that does not exist yet (handled as empty on a `404`),
+    how soon a just-created droplet appears in a tag listing, and whether the
+    tags in a create body are applied atomically. The live `RetryDuplicates`
+    cells decide these; see `specs/system_test_interrupt.md`.
+
   `ssh_keys`/`backups`/`monitoring`: `create()` additionally echoes back
   whatever was in `params` for these three keys, **preserving each
   field's own type** — `"ssh_keys": params.get("ssh_keys", [])`,
@@ -435,6 +493,9 @@ the observed total is a few hundred milliseconds.
   hard requirement (`aiform/driver.py`'s own docstring: "a 404 from the
   CSP ... is treated as success, not an error"). This is the single
   most important behavior this spec's test suite checks.
+- A `204` or a `404` records the id in the instance's set of deleted droplet
+  ids, which `create()`'s marker lookup skips (#253): `DELETE` only starts the
+  teardown, and the droplet stays listed for a while.
 - After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
   "known_hosts")` if an IP was resolved — best-effort, never raises (see
   `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete
