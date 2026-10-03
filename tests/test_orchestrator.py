@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import dataclasses
 import hashlib
+import io
 import json
 import logging
 import os
@@ -10,6 +12,7 @@ import pty
 import subprocess
 import sys
 import types
+import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -5378,6 +5381,27 @@ class TestApplyFailureProgress:
         assert progress.failed == second.entry
         assert progress.not_run == [third.entry]
 
+    def test_a_state_save_failure_reports_the_resource_as_failed_only(
+        self, tmp_path: Path, monkeypatch
+    ):
+        first, second = _create_pr("a"), _create_pr("b")
+        state_path = self._state(tmp_path)
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(state, "save", boom)
+
+        with pytest.raises(OSError) as exc_info:
+            orchestrator.apply_plan(
+                [first, second], state_path=state_path, yes=True, deployment="default"
+            )
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed == first.entry
+        assert progress.not_run == [second.entry]
+
     def test_the_exception_type_and_message_are_unchanged(self, tmp_path: Path):
         with pytest.raises(DriverExecutionError) as exc_info:
             orchestrator.apply_plan(
@@ -5562,6 +5586,10 @@ def _destroy_pr(tmp_path: Path, name: str, *, depends_on: list[str] | None = Non
     return pr, key, existing
 
 
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://api.example/v2/x", code, "error", {}, io.BytesIO(b""))
+
+
 class TestDestroyRetry:
     def _setup(self, tmp_path: Path, monkeypatch, *, failures: int):
         monkeypatch.chdir(tmp_path)
@@ -5575,7 +5603,7 @@ class TestDestroyRetry:
             driver.calls.append(("delete", id, credentials))
             if remaining["failures"] > 0:
                 remaining["failures"] -= 1
-                raise RuntimeError("503 service unavailable")
+                raise _http_error(503)
 
         driver.delete = flaky_delete
         monkeypatch.setattr(orchestrator, "load_driver", lambda *a, **kw: driver)
@@ -5660,6 +5688,99 @@ class TestDestroyRetry:
         assert retries[0].levelno == logging.WARNING
         assert retries[0].attempt == 1
 
+    @pytest.mark.parametrize("code", [422, 400, 403, 404])
+    def test_a_non_retryable_status_is_not_retried(self, tmp_path: Path, monkeypatch, code):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+
+        def refuse(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            raise _http_error(code)
+
+        driver.delete = refuse
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [pr],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+                retry_destroy=True,
+            )
+
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 1
+        assert sleeps == []
+
+    @pytest.mark.parametrize(
+        "error",
+        [_http_error(429), _http_error(503), TimeoutError("timed out"), ConnectionResetError()],
+        ids=["429", "503", "timeout", "reset"],
+    )
+    def test_a_transient_error_is_retried(self, tmp_path: Path, monkeypatch, error):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+        outcomes = [error, None]
+
+        def flaky(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        driver.delete = flaky
+
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 2
+        assert sleeps == [5]
+
+    def test_a_non_http_programming_error_is_not_retried(self, tmp_path: Path, monkeypatch):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+
+        def broken(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            raise KeyError("id")
+
+        driver.delete = broken
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [pr],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+                retry_destroy=True,
+            )
+
+        assert sleeps == []
+
+    def test_the_retry_notice_reaches_the_default_stderr_stream_as_a_message(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from aiform import log
+
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=1)
+        stream = io.StringIO()
+        log.configure(verbose=False, stream=stream, log_dir=tmp_path / "logs")
+
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert f"retrying delete of {key} in 5s" in stream.getvalue()
+
     def test_a_forced_rerun_after_a_partial_failure_destroys_only_the_remainder(
         self, tmp_path: Path, monkeypatch
     ):
@@ -5672,7 +5793,7 @@ class TestDestroyRetry:
         class Flaky(FakeDriver):
             def delete(self, id, credentials):
                 if id in failing:
-                    raise RuntimeError("503 service unavailable")
+                    raise _http_error(503)
                 deleted.append(id)
 
         monkeypatch.setattr(orchestrator, "load_driver", lambda *a, **kw: Flaky())
@@ -5717,6 +5838,46 @@ class TestDestroyRetry:
         assert [e.resource_key for e in result.executed] == [web_key, db_key]
         assert deleted == ["id-web", "id-db"]
         assert state.load(state_path, deployment="default").resources == {}
+
+
+def _protector_and_target(tmp_path: Path, *, protector_type: str, depends_on: list[str]):
+    target, target_key, _ = _destroy_pr(tmp_path, "web")
+    protector, protector_key, _ = _destroy_pr(tmp_path, "guard", depends_on=depends_on)
+    protector = dataclasses.replace(
+        protector,
+        resource_type=protector_type,
+        entry=protector.entry.model_copy(
+            update={"resource_key": f"digitalocean.{protector_type}.guard"}
+        ),
+    )
+    return [target, protector], target_key, protector.entry.resource_key
+
+
+class TestExposureWarningWording:
+    def test_the_wording_comes_from_the_table_entry_not_a_hardcoded_firewall(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setitem(
+            orchestrator._PROTECTS,
+            ("digitalocean", "waf"),
+            ({("digitalocean", "compute")}, "unscreened"),
+        )
+        planned, target_key, protector_key = _protector_and_target(
+            tmp_path, protector_type="waf", depends_on=["digitalocean.compute.web"]
+        )
+
+        (warning,) = orchestrator._exposure_warnings(planned)
+
+        assert f"{protector_key} goes first" in warning
+        assert f"{target_key} runs unscreened" in warning
+        assert "firewall" not in warning
+
+    def test_a_protector_with_no_edge_to_the_target_gets_no_warning(self, tmp_path: Path):
+        # Documented false negative: a firewall naming droplet_ids literally,
+        # with no reference and no depends_on, has no edge to find.
+        planned, _, _ = _protector_and_target(tmp_path, protector_type="firewall", depends_on=[])
+
+        assert orchestrator._exposure_warnings(planned) == []
 
 
 class TestDestroyExposureWarning:
