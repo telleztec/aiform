@@ -666,8 +666,9 @@ cleanup discipline.
   Resolution here stays deliberately driver-agnostic either way.
 - **Orphan refusal and partial-failure recovery** (Phase 4, **partially
   shipped since** — #225, `1ed84bf`, added a paths-driven destroy refusal
-  for a reference-derived edge same as a declared one; the delete-marker
-  route still orphans silently, **#226**; partial-failure recovery and
+  for a reference-derived edge same as a declared one; Phase 4a then made
+  both destroy routes repair a firewall's `droplet_ids` instead of
+  refusing, #226/#227; partial-failure recovery and
   restartability are untouched — see `specs/resource_dependencies.md`),
   **concurrency-safe state** (Phase 5), **parallel execution** (Phase 6),
   **graphical visualization** (Phase 7). Execution here stays strictly

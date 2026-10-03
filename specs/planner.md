@@ -67,6 +67,9 @@ neither.
 def destroy_entry(resource_key: str, rationale: str) -> PlanEntry: ...
 
 
+def repair_entry(resource_key: str, destroyed_keys: Sequence[str]) -> PlanEntry: ...
+
+
 def diff_attributes(
     current: dict[str, Any],
     desired: dict[str, Any],
@@ -156,6 +159,17 @@ CSP": a resource that exists but was never tracked is still planned as a
 (`specs/digitalocean_domain.md`'s zone-already-exists case). That is
 unchanged behavior — the plan is what it always was, just reached without
 a model call.
+
+### `repair_entry(resource_key, destroyed_keys) -> PlanEntry`
+
+Deterministic, zero-LLM, like `destroy_entry()`. Returns
+`PlanEntry(resource_key=resource_key, action=PlanAction.UPDATE,
+rationale=..., likely_replace=False)`, where the rationale names the
+destroyed resources whose ids the update removes from the tracked resource
+(`repair: removing <keys> before they are destroyed`). Called by
+`orchestrator.py` for a tracked firewall that depends on a resource this
+destroy removes (#226, #227). `likely_replace` is `False`: the update is a
+whole-object PUT that cannot turn into a replace.
 
 ### `diff_attributes(current, desired, *, unordered_fields=()) -> dict[str, dict[str, Any]]`
 

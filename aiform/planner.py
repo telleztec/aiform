@@ -45,6 +45,15 @@ def destroy_entry(resource_key: str, rationale: str) -> PlanEntry:
     )
 
 
+def repair_entry(resource_key: str, destroyed_keys: Sequence[str]) -> PlanEntry:
+    return PlanEntry(
+        resource_key=resource_key,
+        action=PlanAction.UPDATE,
+        rationale=f"repair: removing {', '.join(destroyed_keys)} before they are destroyed",
+        likely_replace=False,
+    )
+
+
 def create_entry(resource_key: str, rationale: str) -> PlanEntry:
     # The mirror of destroy_entry(), for the case where no state entry is
     # tracked. "Does this resource exist yet" is answered by

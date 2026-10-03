@@ -333,6 +333,7 @@ class PlannedResource:
     raw_params: dict[str, Any] = dataclasses.field(default_factory=dict)
     unresolved_references: list[str] = dataclasses.field(default_factory=list)
     dropped_dependents: list[str] = dataclasses.field(default_factory=list)
+    repairs: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclass
@@ -478,6 +479,7 @@ def build_create_plan(
     st = state.load(state_path, deployment=deployment)
     files = discover_files(paths, cwd=cwd)
     ordered_files = _order_files(files, st)
+    repairs, repair_warnings = _plan_marker_repairs(ordered_files, st)
 
     driver_cache: dict[tuple[str, str], tuple[ResourceDriver, DriverInfo]] = {}
     credentials_cache: dict[str, dict[str, str]] = {}
@@ -512,7 +514,9 @@ def build_create_plan(
 
     state.save(st, state_path)
 
-    return planned, _warnings_for_uncovered(st, covered_keys, paths)
+    return _repairs_before_destroys(planned, repairs), (
+        _warnings_for_uncovered(st, covered_keys, paths) + repair_warnings
+    )
 
 
 def _plan_delete_marked(path: Path, st: State) -> PlannedResource:
@@ -885,14 +889,124 @@ def _reverse_dependents(node_keys: set[str], st: State) -> list[tuple[str, str]]
     return orphaned
 
 
-def _orphaned_dependents_reason(orphaned: list[tuple[str, str]]) -> str:
+_FORCE_HINT = "pass --force to drop these edges and destroy anyway"
+
+
+def _orphaned_dependents_reason(orphaned: list[tuple[str, str]], *, hint: str = _FORCE_HINT) -> str:
     pairs = "; ".join(
         f"{dependent} depends on {target!r}" for dependent, target in sorted(orphaned)
     )
     return (
         f"cannot destroy: {pairs} -- each dependent is not in this run and would be "
-        "orphaned (read from recorded state; run `aiform plan` first if this edge is "
-        "stale); pass --force to drop these edges and destroy anyway"
+        f"orphaned (read from recorded state; run `aiform plan` first if this edge is "
+        f"stale); {hint}"
+    )
+
+
+# A destroy of the target is repaired rather than refused when the dependent's
+# own driver can drop the target's id from a live field: dependent (provider,
+# type) -> (target (provider, type), the dependent's top-level param holding
+# the target's native id). DigitalOcean does not break a firewall when a
+# droplet in it is removed, so refusing was never protecting anything (#227).
+_REPAIRABLE_EDGES: dict[tuple[str, str], tuple[tuple[str, str], str]] = {
+    ("digitalocean", "firewall"): (("digitalocean", "compute"), "droplet_ids"),
+}
+
+
+def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
+    edge = _REPAIRABLE_EDGES.get((dependent.provider, dependent.resource_type))
+    target = st.resources.get(target_key)
+    if edge is None or target is None:
+        return False
+    target_type, _field = edge
+    if (target.provider, target.resource_type) != target_type or not target.id.isdigit():
+        return False
+    return not _rule_names_droplet(dependent.attributes, int(target.id))
+
+
+# A rule's own sources/destinations can name a droplet too. Dropping the id from
+# the top-level list alone would leave that one behind, so such a firewall is not
+# repaired at all.
+def _rule_names_droplet(attributes: dict[str, Any], droplet_id: int) -> bool:
+    for rules_key in ("inbound_rules", "outbound_rules"):
+        for rule in attributes.get(rules_key) or []:
+            for side in ("sources", "destinations"):
+                if droplet_id in (rule.get(side) or {}).get("droplet_ids", []):
+                    return True
+    return False
+
+
+def _split_reverse_dependents(
+    orphaned: list[tuple[str, str]], st: State
+) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+    repairs: dict[str, list[str]] = {}
+    unrepairable: list[tuple[str, str]] = []
+    for dependent, target in sorted(orphaned):
+        if _is_repairable(st.resources[dependent], target, st):
+            repairs.setdefault(dependent, []).append(target)
+        else:
+            unrepairable.append((dependent, target))
+    return repairs, unrepairable
+
+
+def _repair_planned(dependent_key: str, targets: list[str], st: State) -> PlannedResource:
+    entry = st.resources[dependent_key]
+    return PlannedResource(
+        entry=planner.repair_entry(dependent_key, targets),
+        provider=entry.provider,
+        resource_type=entry.resource_type,
+        name=entry.name,
+        desired_params={},
+        aiform_md_path=Path(entry.aiform_md_path),
+        current_aiform_md_sha256=None,
+        driver=None,
+        driver_info=None,
+        credentials=None,
+        state_entry=entry,
+        depends_on=list(entry.depends_on),
+        repairs=targets,
+    )
+
+
+def _repair_notice(dependent_key: str, targets: list[str]) -> str:
+    return (
+        f"{dependent_key}: repaired before the destroy -- its .aiform.md is not edited and "
+        f"still names {', '.join(targets)}, so the next `aiform plan` will flag it until "
+        "you remove the reference"
+    )
+
+
+def _repairs_before_destroys(
+    planned: list[PlannedResource], repairs: list[PlannedResource]
+) -> list[PlannedResource]:
+    first_destroy = next(
+        (i for i, pr in enumerate(planned) if pr.entry.action == PlanAction.DESTROY), len(planned)
+    )
+    return planned[:first_destroy] + repairs + planned[first_destroy:]
+
+
+def _plan_marker_repairs(
+    ordered_files: list[Path], st: State
+) -> tuple[list[PlannedResource], list[str]]:
+    discovered = [_discover_one(path) for path in ordered_files]
+    run_keys = {entry.key for entry in discovered}
+    marked = {entry.key for entry in discovered if entry.delete_marked}
+    orphaned = [
+        (dependent, target)
+        for dependent, target in _reverse_dependents(marked, st)
+        if dependent not in run_keys
+    ]
+    repairs, unrepairable = _split_reverse_dependents(orphaned, st)
+    if unrepairable:
+        raise PlanBlockedError(
+            _orphaned_dependents_reason(
+                unrepairable,
+                hint="destroy it with `aiform plan destroy <file> --force` to drop these edges",
+            )
+        )
+    return (
+        [_repair_planned(dependent, targets, st) for dependent, targets in repairs.items()],
+        [_repair_notice(dependent, targets) for dependent, targets in repairs.items()],
     )
 
 
@@ -938,8 +1052,9 @@ def _build_destroy_plan_from_paths(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
     warnings = _resolve_dangling_targets(dangling, force=force)
-    orphaned = _reverse_dependents(node_keys, st)
+    repairs, orphaned = _split_reverse_dependents(_reverse_dependents(node_keys, st), st)
     warnings += _resolve_reverse_dependents(orphaned, force=force)
+    warnings += [_repair_notice(dependent, targets) for dependent, targets in repairs.items()]
 
     order = _reverse_topological(node_keys, edges)
     by_key = {entry.key: (entry.path, entry.spec) for entry in discovered}
@@ -968,7 +1083,8 @@ def _build_destroy_plan_from_paths(
                 ),
             )
         )
-    return planned, warnings
+    repair_prs = [_repair_planned(dependent, targets, st) for dependent, targets in repairs.items()]
+    return _repairs_before_destroys(planned, repair_prs), warnings
 
 
 def _build_destroy_plan_from_state(
@@ -1111,10 +1227,20 @@ def apply_plan(
     if not yes and not confirm_fn("Apply this plan?"):
         return ApplyResult(executed=[], review_flags=review_flags, aborted=True)
 
+    if not yes:
+        for pr in planned:
+            if pr.repairs and not confirm_fn(_repair_prompt(pr, st)):
+                return ApplyResult(executed=[], review_flags=review_flags, aborted=True)
+
     executed: list[PlanEntry] = []
 
     for pr in planned:
         if pr.entry.action == PlanAction.NO_OP:
+            continue
+
+        if pr.repairs:
+            _apply_repair(pr, st, state_path=state_path)
+            executed.append(pr.entry)
             continue
 
         if pr.entry.action == PlanAction.CREATE:
@@ -1358,6 +1484,51 @@ def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -
         entry = st.resources.get(dependent)
         if entry is not None and destroyed_key in entry.depends_on:
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
+
+
+def _repair_prompt(pr: PlannedResource, st: State) -> str:
+    _target_type, field = _REPAIRABLE_EDGES[(pr.provider, pr.resource_type)]
+    removed = ", ".join(f"{target} (id {_require_tracked(st, target).id})" for target in pr.repairs)
+    return f"Repair {pr.entry.resource_key}: remove {removed} from its {field} before destroying?"
+
+
+# The repair is a state-and-provider edit only. It deliberately leaves the
+# dependent's aiform_md_sha256 and driver alone, unlike _record_update(): the
+# user's file did not change, and stamping its hash here would tell the next
+# plan it had already seen the file as it now reads.
+def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
+    dependent = _require_tracked(st, pr.entry.resource_key)
+    _target_type, field = _REPAIRABLE_EDGES[(pr.provider, pr.resource_type)]
+    destroyed_ids = [int(_require_tracked(st, target).id) for target in pr.repairs]
+    driver = load_driver(
+        pr.provider, pr.resource_type, reserved_tags=deployment_tags(st.deployment)
+    )
+    credentials = _credentials_for(pr.provider, {})
+
+    live, gone = refresh_resource(driver, dependent, credentials)
+    attributes = live
+    now = datetime.now(UTC)
+    if not gone and any(droplet_id in destroyed_ids for droplet_id in live.get(field, [])):
+        properties = driver.PARAM_SCHEMA.get("properties", {})
+        desired = {key: value for key, value in live.items() if key in properties}
+        desired[field] = [i for i in live[field] if i not in destroyed_ids]
+        raw = _call_driver(
+            driver.update,
+            pr.provider,
+            pr.resource_type,
+            "update",
+            dependent.id,
+            live,
+            desired,
+            credentials,
+        )
+        dependent.id, attributes = _pop_id(raw, pr.provider, pr.resource_type, "update")
+        dependent.last_applied_at = now
+    if not gone:
+        dependent.attributes = attributes
+        dependent.last_refreshed_at = now
+    dependent.depends_on = [target for target in dependent.depends_on if target not in pr.repairs]
+    state.save(st, state_path)
 
 
 def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:

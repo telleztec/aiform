@@ -38,8 +38,8 @@ a second vocabulary is not invented.
 
 | Use case | What must be true | Priority | State |
 |---|---|---|---|
-| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run; across runs only for the paths-driven route (#225), not the delete-marker route (#226) |
-| **UC-F — Forget a dependent when deleting** | A user marks a resource for deletion but forgets to update another resource that still references it. `aiform` refuses before deleting, names the dependent, and the user can recover by editing that resource; it does not delete the referenced resource out from under it. | **P0** | partial — refused up front when the dependent's file is in the same run as the marker; **not** refused when the marker is given by path alone (#226). Verified live (#239): the refusal, the orphaning, and the recovery by editing the firewall's file |
+| **UC-B — Delete in dependency order** | Destroying a set of resources produces no error caused by removing something another resource still references, and leaves nothing silently pointing at what is gone. | **P0** | partial — within one run; across runs on both routes (Phase 4a, #226/#227): a firewall listing the droplet is repaired first, any other outside dependent is refused (paths route: unless `--force`, #225) |
+| **UC-F — Forget a dependent when deleting** | A user marks a resource for deletion but forgets to update another resource that still references it. `aiform` refuses before deleting, names the dependent, and the user can recover by editing that resource; it does not delete the referenced resource out from under it. | **P0** | delivered for the dependent's file in the same run as the marker (refused). A dependent outside the run is, since Phase 4a (#226/#227), repaired when it is a firewall listing the droplet (its live `droplet_ids` loses the id before the delete; the file still names the droplet and the next plan flags it) and refused otherwise. Verified live before 4a (#239): the refusal, the orphaning, and the recovery by editing the firewall's file |
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
@@ -158,8 +158,8 @@ that gap alongside UX2's original graphical scope.
   error on a cycle — never a silent wrong-order apply.
 - **Destroy-order semantics.** Destroy runs in reverse dependency order.
   Refusing a destroy that would orphan a still-tracked dependent is a
-  separate, harder problem — see Phase 4, **partially delivered** for the
-  paths-driven destroy producer (#225).
+  separate, harder problem — see Phase 4, **partially delivered**: #225
+  (paths-driven refusal), then 4a (repair a firewall's `droplet_ids`, both routes).
 - **Partial-failure semantics for a graph apply.** If resource B fails
   after resource A succeeded, what does state look like, what does the
   user see, and how does a re-run recover cleanly (ties directly to R3)?
@@ -477,24 +477,34 @@ rather than creating them.
 
 What shipped, and what did not: `_build_destroy_plan_from_paths()` — the
 **paths-driven** destroy producer, i.e. `aiform plan destroy
-<file.aiform.md>` — now refuses unless `--force` when a tracked resource
+<file.aiform.md>` — refuses unless `--force` when a tracked resource
 outside the run has a persisted `depends_on` naming a resource inside it
 (`_reverse_dependents()`/`_resolve_reverse_dependents()`,
-`specs/orchestrator.md`). A forced destroy also has `_apply_destroy()`
+`specs/orchestrator.md`, #225). A forced destroy also has `_apply_destroy()`
 prune the destroyed key out of exactly the dependents the `--force` warning
 named (`_prune_dependents_on()`) — `state.json` only, and only for those
 entries; a survivor's own `.aiform.md` frontmatter is left as the user wrote
-it, and the delete-marker and state-driven destroys prune nothing. The
-**delete-marker** destroy route
-(`AIFORM-DELETE-`, `specs/resource_dependencies.md`'s Mechanism B) still
-orphans a dependent silently — filed as **#226**, `priority:
-P1-correctness`, not fixed here. Partial-failure recovery and
-restartability are untouched; this phase's number stays as the owner
-directed, since it "is a list of 3 different robustness tests" and #225
-landing first does not mean the other two are done. See
-`specs/resource_dependencies.md` for the mechanism and its escape hatch,
-and `specs/dependency_detection.md` for whether this changes that spec's
-own destroy-ordering argument (it does not, for reasons recorded there).
+it.
+
+**Phase 4a, delivered (#226, #227; `plans/phase-4.md`).** The refusal is
+replaced, for the one edge with a driver at both ends, by a repair: when a
+destroy would remove a droplet that a tracked firewall lists, the plan gains
+an UPDATE of that firewall (its live `droplet_ids` minus the id, through the
+firewall driver's `update()`), applied before the delete, behind a `(y/n)`
+that `--yes` skips and a decline that changes nothing. Both routes behave the
+same: `aiform plan destroy <file>` and the `AIFORM-DELETE-` marker route via
+`plan apply`, which had no check at all (#226) and now repairs or refuses.
+Any other outside dependent is still refused (`--force` on the paths route).
+The firewall's own `.aiform.md` is not edited; the plan prints a notice. Not
+delivered in 4a: partial-failure reporting and restartability (4b), bad-state
+destroy (4c), orphan cleanup by tag (4d).
+
+Partial-failure recovery and restartability are untouched by 4a; this phase's
+number stays as the owner directed, since it "is a list of 3 different
+robustness tests". See `specs/resource_dependencies.md` for the mechanism and
+its escape hatch, and `specs/dependency_detection.md` for whether this changes
+that spec's own destroy-ordering argument (it does not, for reasons recorded
+there).
 
 **Phase 5 — Concurrency-safe state (R1, and the R4 decision).** Make
 state reads/writes safe under concurrent mutation within one process, and
