@@ -283,12 +283,19 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     name, UTF-8>`, built as `f"{self._deployment_tag}:name:{digest}"`. It
     fits DigitalOcean's tag alphabet (letters, digits, `:`, `-`, `_`): the
     digest is lowercase hex, and a droplet name's dots (resource keys
-    contain them) never appear in the tag. It is collision-safe: a deployment
-    name is `[a-z0-9][a-z0-9_-]{0,62}` and so never contains `:`, which makes
-    the `:name:` separator unambiguous; two names collide only on a SHA-256
-    collision; the longest possible marker is 7 + 63 + 6 + 64 = 140
-    characters, under DigitalOcean's 255. It is lowercase end to end, so it is
-    safe whether or not a tag's case is folded.
+    contain them) never appear in the tag. Within one deployment it is
+    unambiguous: a deployment name is `[a-z0-9][a-z0-9_-]{0,62}` and so never
+    contains `:`, which makes the `:name:` separator unambiguous; two names
+    collide only on a SHA-256 collision; the longest possible marker is 7 + 63
+    + 6 + 64 = 140 characters, under DigitalOcean's 255. It is lowercase end to
+    end, so it is safe whether or not a tag's case is folded.
+  - **Known limit: the marker does not identify the state file.** It keys on
+    (deployment, name) only, and several state files can share a deployment
+    (`default` is the default). Two projects that both declare a droplet `web`
+    in the same deployment collide: the second project's apply adopts the
+    first's droplet, two state entries then hold one id, and destroying either
+    project's resource destroys the other's. Not guarded; give projects that
+    share a DigitalOcean account distinct deployment names.
   - **Reserved already**: it begins `aiform:`, so `is_reserved_tag()` rejects
     it in `params["tags"]` (a user cannot forge or collide with a marker),
     `_tags_for_attributes()` strips it from every attribute dict, and
@@ -307,9 +314,14 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     - Droplets whose id this driver instance has already deleted are ignored
       (see `delete()`): DigitalOcean's `DELETE` is asynchronous, so a replace
       (delete then create of the same name) would otherwise adopt the droplet
-      it has just asked to destroy.
+      it has just asked to destroy. This is the same-process guard; across
+      processes `delete()` itself waits for the droplet to be gone.
     - **Zero matches** → the normal create, with the marker in the body.
-    - **Exactly one** → adopted: no POST. The droplet is polled to
+    - **Exactly one, not `new` or `active`** → `RuntimeError`: `droplet
+      <name>: droplet <id> carries the creation marker for it but is <status>,
+      not new or active; delete it and re-run`. A powered-off or archived
+      droplet is not adopted silently.
+    - **Exactly one, `new` or `active`** → adopted: no POST. The droplet is polled to
       `status == "active"` with `create()`'s own budget, then returned
       through the same `_flatten()` path. `backups` and `monitoring` come from
       the live droplet's `features`, `ssh_keys` from `params` (a read cannot
@@ -321,10 +333,11 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
       the creation marker for it (ids <id>, <id>); delete the extras and
       re-run`. Nothing is created or adopted.
   - **Not covered**: a droplet created by an aiform before this change has no
-    marker and is never adopted. A droplet being destroyed by a different
-    process (a separate `destroy` run, then `apply`) can still be adopted
-    while DigitalOcean finishes deleting it; the later `read()` reports it
-    missing and the run after that recreates it.
+    marker and is never adopted. `delete()` waits up to about two minutes for
+    the droplet to be gone (below); if DigitalOcean is slower than that, the
+    wait gives up with a warning, and a later process whose lookup still finds
+    the droplet `active` can adopt it while it finishes dying. A droplet
+    deleted outside aiform entirely is subject to the same window.
   - Probed? No. Unverified against the live API: the `tag_name` filter's
     behaviour for a tag that does not exist yet (handled as empty on a `404`),
     how soon a just-created droplet appears in a tag listing, and whether the
@@ -496,6 +509,12 @@ the observed total is a few hundred milliseconds.
 - A `204` or a `404` records the id in the instance's set of deleted droplet
   ids, which `create()`'s marker lookup skips (#253): `DELETE` only starts the
   teardown, and the droplet stays listed for a while.
+- After a `204` (not after a `404`, which means it is already gone), polls
+  `GET /v2/droplets/{id}` until it returns `404`: 40 attempts, 3 s apart (about
+  two minutes), so a later process's marker lookup does not find the dying
+  droplet. A non-`404` poll error counts as "not gone yet". If the bound
+  expires, `delete()` still succeeds and logs a `warning`, `droplet still
+  present after delete was accepted`, with `id` and `attempts_used`.
 - After a successful `204`, calls `aiform.ssh.forget_host(ip, ssh_dir /
   "known_hosts")` if an IP was resolved — best-effort, never raises (see
   `specs/ssh.md`'s `forget_host`), so it cannot turn a successful delete

@@ -148,6 +148,9 @@ _RESIZE_POLL_DELAY_SECONDS = 2  # 420s total
 # retrying anything close to indefinitely.
 _KEY_PROPAGATION_RETRY_ATTEMPTS = 12
 _KEY_PROPAGATION_RETRY_DELAY_SECONDS = 2.0
+_DELETE_WAIT_MAX_ATTEMPTS = 40
+_DELETE_WAIT_DELAY_SECONDS = 3
+_ADOPTABLE_STATUSES = ("new", "active")
 
 # Named explicitly rather than via logging.getLogger(__name__).
 # orchestrator.py's load_driver() execs this file as a module with a
@@ -396,6 +399,12 @@ class Driver(ResourceDriver):
             raise RuntimeError(
                 f"droplet {name}: {len(matches)} droplets carry the creation marker for it "
                 f"(ids {ids}); delete the extras and re-run"
+            )
+        if matches and matches[0]["status"] not in _ADOPTABLE_STATUSES:
+            raise RuntimeError(
+                f"droplet {name}: droplet {matches[0]['id']} carries the creation marker "
+                f"for it but is {matches[0]['status']}, not new or active; delete it "
+                f"and re-run"
             )
         return matches[0] if matches else None
 
@@ -945,10 +954,29 @@ class Driver(ResourceDriver):
                 return None
             raise
         self._deleted_ids.add(str(id))
+        self._wait_until_gone(id, credentials)
 
         if ip:
             ssh.forget_host(ip, ssh.DEFAULT_SSH_DIR / _KNOWN_HOSTS_NAME)
         return None
+
+    def _wait_until_gone(self, id, credentials):
+        # DELETE only starts the teardown; returning before the droplet is
+        # gone lets a re-run in a new process adopt it by its marker.
+        for attempt in range(_DELETE_WAIT_MAX_ATTEMPTS):
+            try:
+                self._get_droplet(id, credentials)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return
+            except Exception:
+                pass
+            if attempt < _DELETE_WAIT_MAX_ATTEMPTS - 1:
+                time.sleep(_DELETE_WAIT_DELAY_SECONDS)
+        logger.warning(
+            "droplet still present after delete was accepted",
+            extra={"id": id, "attempts_used": _DELETE_WAIT_MAX_ATTEMPTS},
+        )
 
     def health(self, id, credentials):
         # Deliberately not self.read(): read() projects the droplet down

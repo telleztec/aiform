@@ -799,13 +799,18 @@ class TestDelete:
 
         assert result is None
 
-    def test_makes_at_most_two_api_calls(self, driver, fake_urlopen):
-        fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(id=123)))
+    def test_makes_the_ip_lookup_the_delete_and_one_confirming_get(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(id=123)),
+            http_error(droplet_url("123"), 404),
+        )
         fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
 
         driver.delete("123", CREDENTIALS)
 
-        assert len(fake_urlopen.calls) == 2
+        assert [c["method"] for c in fake_urlopen.calls] == ["GET", "DELETE", "GET"]
 
     def test_prunes_the_known_hosts_entry_for_the_deleted_droplet(
         self, driver, fake_urlopen, ssh_env
