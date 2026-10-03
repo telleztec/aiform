@@ -606,13 +606,15 @@ takes an already-built plan):
   block to **stderr**, then the usual `Error: <message>` line, then exits 2:
 
   ```
-  Apply incomplete: <a> applied, <f> failed, <n> not run
+  Apply incomplete: <a> applied, 1 failed, <n> not run
   applied: <resource key> (<action>)
   failed: <resource key> (<action>)
   not run: <resource key> (<action>)
   ```
 
-  The first line is always printed, with all three counts, including `0`.
+  The first line is always printed, with all three counts, including `0`. The
+  failed count is always `1`: the loop stops at the first failure
+  (`ApplyProgress.failed` is a single entry), and the line is hardcoded.
   Each following line is one resource, `applied:`/`failed:`/`not run:` at the
   start of the line and the key as the next token, in plan order; a category
   with none prints no lines. `<action>` is the label `_print_apply_result`
@@ -623,7 +625,8 @@ takes an already-built plan):
   ` -- the old resource was deleted and the new one was not created`.
   The block is printed for `plan apply` and `plan destroy` alike, whether
   the exception is a `DriverExecutionError`, a mid-loop `PlanBlockedError` or
-  any other handled type. An exception without `apply_progress` (a failure
+  any other handled type. A resource whose action succeeded but whose state
+  save then failed prints one `failed:` line and no `applied:` line. An exception without `apply_progress` (a failure
   while planning, the gate #2 block, a declined confirmation, which is exit 1
   and prints `Apply aborted.`) prints no block. Exit stays 2. Not covered: Ctrl-C
   during the loop is a `KeyboardInterrupt`, not a handled exception, and prints
@@ -743,7 +746,8 @@ errors, so all of them behave and are tested the same way:
 - **Retry and re-run.** `--all` together with `--yes` passes
   `retry_destroy=True` to `apply_plan` (`specs/orchestrator.md`, "Destroy
   retry"): a failed delete is retried up to 4 attempts in all, waiting 5, 15
-  then 45 seconds. `--all` without `--yes` and the file-argument form do not
+  then 45 seconds, but only for 429, 5xx and connection or timeout errors; any
+  other failure is final at once. `--all` without `--yes` and the file-argument form do not
   retry. When the run still fails, the failure block above names what was
   destroyed, what failed and what did not run; state holds only what is left,
   so `plan destroy --all --yes --force` run again converges and its block and

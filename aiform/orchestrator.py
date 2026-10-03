@@ -11,6 +11,7 @@ import shutil
 import sys
 import termios
 import time
+import urllib.error
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -913,7 +914,7 @@ def _resolve_reverse_dependents(orphaned: list[tuple[str, str]], *, force: bool)
 # deletes the firewall first, but it is the droplet that depends on the
 # firewall for filtering. Until that direction is modelled, the one known
 # pairing is named here.
-_PROTECTS = {("digitalocean", "firewall"): {("digitalocean", "compute")}}
+_PROTECTS = {("digitalocean", "firewall"): ({("digitalocean", "compute")}, "unfiltered")}
 
 
 def _exposure_warnings(planned: list[PlannedResource]) -> list[str]:
@@ -922,13 +923,13 @@ def _exposure_warnings(planned: list[PlannedResource]) -> list[str]:
     }
     warnings: list[str] = []
     for key, pr in destroyed.items():
-        protected_types = _PROTECTS.get((pr.provider, pr.resource_type), set())
+        protected_types, lapse = _PROTECTS.get((pr.provider, pr.resource_type), (set(), ""))
         for target_key in pr.depends_on:
             target = destroyed.get(target_key)
             if target is not None and (target.provider, target.resource_type) in protected_types:
                 warnings.append(
-                    f"{key} protects {target_key}, and the plan destroys both: the "
-                    f"firewall goes first, so {target_key} runs unfiltered until its own "
+                    f"{key} protects {target_key}, and the plan destroys both: "
+                    f"{key} goes first, so {target_key} runs {lapse} until its own "
                     "delete succeeds (indefinitely if that delete fails)"
                 )
     return warnings
@@ -1234,9 +1235,12 @@ def apply_plan(
 def _progress_at(
     planned: list[PlannedResource], executed: list[PlanEntry], position: int
 ) -> ApplyProgress:
+    failed = planned[position].entry
     return ApplyProgress(
-        applied=list(executed),
-        failed=planned[position].entry,
+        # A resource whose action ran but whose state save then failed is in
+        # `executed` already; it must be reported once, as failed.
+        applied=[entry for entry in executed if entry.resource_key != failed.resource_key],
+        failed=failed,
         not_run=[pr.entry for pr in planned[position + 1 :] if pr.entry.action != PlanAction.NO_OP],
     )
 
@@ -1422,6 +1426,12 @@ def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
 
 
+def _is_retryable(error: Exception) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or error.code >= 500
+    return isinstance(error, urllib.error.URLError | TimeoutError | ConnectionError)
+
+
 def _delete_with_retry(
     driver: ResourceDriver, pr: PlannedResource, credentials: dict[str, str], *, retry: bool
 ) -> None:
@@ -1438,11 +1448,13 @@ def _delete_with_retry(
             )
             return
         except DriverExecutionError as exc:
-            if attempt == attempts:
+            if attempt == attempts or not _is_retryable(exc.original):
                 raise
             delay = DESTROY_RETRY_DELAYS_SECONDS[attempt - 1]
             logger.warning(
-                "",
+                f"delete of {pr.entry.resource_key} failed ({exc.original}); "
+                f"retrying delete of {pr.entry.resource_key} in {delay}s "
+                f"(attempt {attempt} of {attempts})",
                 extra={
                     "resource_key": pr.entry.resource_key,
                     "operation": "delete",

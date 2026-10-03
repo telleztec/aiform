@@ -494,8 +494,8 @@ own destroy-ordering argument (it does not, for reasons recorded there).
 reports what it applied, what failed and what did not run, as a greppable
 block with exit 2 (`specs/cli.md`, `specs/orchestrator.md`). A destroy plan
 that removes a firewall together with the droplet it protects warns about the
-exposure window. `plan destroy --all --yes` retries a failed delete (4
-attempts, 5/15/45 s), and a forced re-run converges. The compute driver's
+exposure window. `plan destroy --all --yes` retries a transient
+failed delete (429, 5xx, connection or timeout; 4 attempts, 5/15/45 s), and a forced re-run converges. The compute driver's
 `create()` tags each droplet with a per-name marker and adopts a marked
 droplet instead of creating a second (`specs/digitalocean_compute.md`).
 Orphan removal inside `--all`, and modelling the operational direction (#235

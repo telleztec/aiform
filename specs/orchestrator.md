@@ -841,16 +841,22 @@ appends one warning per firewall that the plan destroys and that has a droplet
 target also destroyed in the same plan. The firewall's `depends_on` names the
 droplet, so the reverse-topological order deletes the firewall first, and the
 droplet runs unfiltered from then until its own delete succeeds. The warning
-names both keys and the window: `<firewall> protects <droplet>, and the plan
-destroys both: the firewall goes first, so <droplet> runs unfiltered until its
-own delete succeeds (indefinitely if that delete fails)`. A firewall whose
+names both keys and the window: `<protector> protects <target>, and the plan
+destroys both: <protector> goes first, so <target> runs <lapse> until its own
+delete succeeds (indefinitely if that delete fails)`, where `<lapse>` is the
+word stored with the table entry (`unfiltered` for the firewall pair). A firewall whose
 droplet is not in the plan (or is not being destroyed) produces nothing: the
 droplet stays, and the existing reverse-dependent rules already govern that.
-The pair is a fixed table, `("digitalocean", "firewall")` protects
-`("digitalocean", "compute")`, a stand-in for the operational direction the
+The pair is a fixed table, `_PROTECTS`, mapping a protector type to
+`(protected types, lapse word)`: `("digitalocean", "firewall")` protects
+`("digitalocean", "compute")` with `"unfiltered"`, a stand-in for the operational direction the
 dependency model does not express (`specs/resource_dependencies.md`, the
 `Protects` row; modelling it is #235 option 3, out of scope here). It is
-advisory, never blocks, and is not suppressed by `--force`.
+advisory, never blocks, and is not suppressed by `--force`. **Known false
+negative:** the check follows the protector's `depends_on` edge to the target
+(declared, or implied by a `${...}` reference). A firewall that names droplets
+by a literal `droplet_ids` value, with no reference and no `depends_on`, has no
+edge, and gets no warning even when the plan destroys both.
 
 ### `build_plan_summary(planned) -> str`
 
@@ -1091,7 +1097,11 @@ re-raised unchanged:
 
 - `applied` is `executed` as it stood when the exception was raised (the
   entries `apply_plan()` would have returned, with the same `likely_replace`
-  correction).
+  correction), minus the entry being processed. A resource is in exactly one of
+  the three lists: if its action succeeded and the `state.save()` after it then
+  raised, it is reported as `failed`, not `applied`, even though the provider
+  change happened and state may not record it. A re-run reconciles that on its
+  refresh.
 - `failed` is the `pr.entry` being processed. If a replace's `delete()` had
   already succeeded and its `create()` then failed, the entry is still
   `failed` and not in `applied`: state no longer tracks the old resource, which
@@ -1114,9 +1124,17 @@ not `Exception`s, so an interrupted run is not reported.
 `_apply_destroy()` calls `driver.delete()` up to `DESTROY_RETRY_ATTEMPTS` (4)
 times in total, sleeping `DESTROY_RETRY_DELAYS_SECONDS` (5, 15, 45 seconds)
 between attempts, so a stubborn failure costs 65 seconds of waiting at most.
-Any `DriverExecutionError` from the `delete()` call is retried; each retry logs
-at WARNING (`step: "delete"`, `retry`, `attempt`, `error`). When every attempt
-fails, the last `DriverExecutionError` is raised as before. Nothing else
+Only a `DriverExecutionError` whose original exception can plausibly clear is
+retried: an `HTTPError` with status 429 or 5xx, or a `URLError`, `TimeoutError`
+or `ConnectionError`. Any other 4xx (422 in use, a bad id) and any other
+exception type is raised on the first failure, with no wait. Each retry logs at
+WARNING with a readable message (`delete of <key> failed (<error>); retrying
+delete of <key> in <delay>s (attempt <n> of <attempts>)`) and the fields
+`resource_key`, `operation: "delete"`, `retry: "destroy-all"`, `attempt`,
+`delay_seconds`, `error`. The default stderr handler shows WARNING, so the
+notice is visible without `--verbose`; the orchestrator has no stdout channel
+of its own and this uses the existing log stream. When every attempt fails, the
+last `DriverExecutionError` is raised as before. Nothing else
 retries: `retry_destroy` defaults to `False`, so a replace's `delete()` and a
 plain `plan destroy <file>` fail on the first error, as before. The constants
 are module-level, not configuration. A run that failed after its retries
