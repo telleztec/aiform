@@ -322,7 +322,7 @@ All request bodies are JSON; base URL `https://api.digitalocean.com/v2`.
     - **Exactly one, not `new` or `active`** → `RuntimeError`: `droplet
       <name>: droplet <id> carries the creation marker for it but is <status>,
       not new or active; power it on and re-run to adopt it, or delete it and
-      re-run to start fresh`. For `off` only. For any other status (`archive`),
+      re-run to start fresh` (the `off` message). For any other status (`archive`),
       which DO cannot power back on, the message offers only `delete it and
       re-run to start fresh`. Neither is adopted silently.
     - **Exactly one, `new` or `active`** → adopted: no POST. The droplet is polled to
