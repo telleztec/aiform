@@ -154,7 +154,9 @@ that gap alongside UX2's original graphical scope.
   another resource); Phase 2 delivers *value flow* (reading its
   attributes).
 - **Cycle detection.** A dependency graph needs an explicit plan-time
-  error on a cycle — never a silent wrong-order apply.
+  error on a cycle — never a silent wrong-order apply. The one exception is
+  `plan destroy --all` (#206), where a cycle recorded in state is broken
+  with one warning per dropped edge instead of an error.
 - **Destroy-order semantics.** Destroy runs in reverse dependency order.
   Refusing a destroy that would orphan a still-tracked dependent is a
   separate, harder problem — see Phase 4, **partially delivered** for the
