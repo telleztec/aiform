@@ -51,7 +51,8 @@ class Fault:
     fired: bool
     response: dict | None   # parsed JSON body of the faulted response
     seen: list[tuple[str, str]]   # every (METHOD, url) while installed
-    provider_errors: list[BaseException]   # errors the real call raised under fail_request
+    provider_errors: list[BaseException]   # errors the real call raised under the reset/http_500/http_503 kinds
+    provider_error_bodies: list[bytes | None]   # each HTTPError's body, parallel to provider_errors
 
 interrupt_after_request(method, url_pattern, *, occurrence=1, response_predicate=None)
 interrupt_before_request(method, url_pattern, *, occurrence=1)
@@ -112,6 +113,13 @@ still carry DigitalOcean words. Tested offline in
   A call whose method or URL does not match is passed through untouched.
 - `interrupt_before_request` raises on the `occurrence`th match *instead of*
   calling the provider.
+- `describe_provider_errors(fault)` renders `Fault.provider_errors` for a
+  failure message: each error's type and text, and for an `HTTPError` its URL
+  and body (cut to 500 characters), because `repr(HTTPError)` is only the
+  status and reason. Reading the body would consume it, and the driver reads
+  the same body to recognise a 422 retry, so the harness reads it once when
+  it records the error and gives the error a fresh stream over the same bytes
+  before it is re-raised: the caller still reads the whole body.
 - `interrupt_after_state_save` calls the real `state.save`, then raises on
   the `occurrence`th save whose state satisfies `predicate`.
 - `fail_request(..., "timeout")` is the race the client loses. On the
@@ -157,7 +165,8 @@ still carry DigitalOcean words. Tested offline in
   - A match whose real call raised still counts toward `occurrence`.
   - Only an error from the request call itself un-fires the fault. If the
     provider answered and reading or parsing the body then failed, the fault
-    stays fired, so the ledger is not left without the provider's response.
+    stays fired: the provider answered, so it acted, and firing again would
+    fault a duplicate request.
   - A real error on a match before the requested `occurrence` is not
     intercepted: it passes straight through and counts, so the un-fire applies
     only to the firing match.

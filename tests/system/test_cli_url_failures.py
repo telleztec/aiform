@@ -43,7 +43,7 @@ from tests.system.conftest import (
     unique_droplet_name,
     write_aiform_md,
 )
-from tests.system.fault_injection import Fault, fail_request
+from tests.system.fault_injection import Fault, describe_provider_errors, fail_request
 from tests.system.live_support import APPLY, Runner, teardown_provider
 from tests.system.provider_ledger import Ledger
 from tests.system.provider_profile import DIGITALOCEAN
@@ -130,7 +130,8 @@ def faulted_run(runner: Runner, injector: contextlib.AbstractContextManager[Faul
     code, captured, fault = runner.faulted_run(APPLY, injector, step)
     assert code != 0, (
         f"{step} exited 0\n--- stdout ---\n{captured.out}\n--- stderr ---\n{captured.err}"
-        f"\n--- calls seen ---\n{fault.seen}\n--- provider errors ---\n{fault.provider_errors!r}"
+        f"\n--- calls seen ---\n{fault.seen}"
+        f"\n--- provider errors ---\n{describe_provider_errors(fault)}"
     )
     return captured, fault
 

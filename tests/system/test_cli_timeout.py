@@ -38,7 +38,13 @@ from pathlib import Path
 import pytest
 
 from tests.system.conftest import live_token, unique_droplet_name, write_aiform_md
-from tests.system.fault_injection import Fault, fail_request, rewrite_responses, skip_driver_sleeps
+from tests.system.fault_injection import (
+    Fault,
+    describe_provider_errors,
+    fail_request,
+    rewrite_responses,
+    skip_driver_sleeps,
+)
 from tests.system.live_support import APPLY, Runner, teardown_provider
 from tests.system.provider_ledger import Ledger
 from tests.system.provider_profile import DIGITALOCEAN, ProviderProfile
@@ -143,7 +149,7 @@ class TestTimedOutCreate:
         assert code != 0, (
             f"the faulted run exited 0\n--- stdout ---\n{captured.out}"
             f"\n--- stderr ---\n{captured.err}\n--- calls seen ---\n{fault.seen}"
-            f"\n--- provider errors ---\n{fault.provider_errors!r}"
+            f"\n--- provider errors ---\n{describe_provider_errors(fault)}"
         )
         assert CREATE_FAILED in captured.err, (
             f"the error does not name the failed operation:\n{captured.err}"
