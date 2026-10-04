@@ -317,13 +317,14 @@ def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, k
     """Run the real request and keep its body, so the ledger learns any id the
     provider handed out even though the caller never sees the response."""
     try:
-        with real(request, *args, **kwargs) as response:
-            fault.response = _parse(response.read())
+        response = real(request, *args, **kwargs)
     except BaseException as error:
         # The provider's own error pre-empted the synthetic one, so the retry must meet it.
         fault.provider_errors.append(error)
         fault.fired = False
         raise
+    with response:
+        fault.response = _parse(response.read())
 
 
 def _reset(

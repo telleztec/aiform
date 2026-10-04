@@ -155,6 +155,12 @@ still carry DigitalOcean words. Tested offline in
     Example: DigitalOcean's 422 "invalid key identifiers" right after a managed
     key is uploaded.
   - A match whose real call raised still counts toward `occurrence`.
+  - Only an error from the request call itself un-fires the fault. If the
+    provider answered and reading or parsing the body then failed, the fault
+    stays fired, so the ledger is not left without the provider's response.
+  - A real error on a match before the requested `occurrence` is not
+    intercepted: it passes straight through and counts, so the un-fire applies
+    only to the firing match.
 - `fail_request(..., body_pattern=...)` matches the request body as well as the
   method and URL, for every kind. A request whose body does not match passes
   through and does not count toward `occurrence`. It exists because a provider
@@ -166,8 +172,8 @@ still carry DigitalOcean words. Tested offline in
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
-- A request that raises (an `HTTPError`) propagates unchanged and never
-  counts as a match.
+- Under the `interrupt_*` injectors, a request that raises (an `HTTPError`)
+  propagates unchanged and never counts as a match.
 - A request is described by `Request.get_method()` and `full_url`, or by the
   bare string for a `urlopen("https://...")` call.
 

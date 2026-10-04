@@ -781,6 +781,23 @@ class TestFailRequestWhenTheProviderItselfFails:
         assert fault.fired is True
         assert fault.provider_errors == []
 
+    def test_a_body_that_cannot_be_read_after_the_provider_answered_does_not_unfire(
+        self, monkeypatch, kind, is_synthetic
+    ):
+        broken = FakeResponse(b"{}")
+
+        def unreadable(*args):
+            raise OSError("body lost")
+
+        broken.read = unreadable
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: broken)
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(OSError, match="body lost"):
+                call("POST", DROPLETS)
+        assert fault.fired is True
+        assert fault.provider_errors == []
+        assert broken.closed is True
+
     def test_a_provider_that_does_not_act_records_no_provider_error(
         self, provider, kind, is_synthetic
     ):
