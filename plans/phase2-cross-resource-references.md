@@ -307,8 +307,6 @@ phantom drift. Scoped to the aiform tag with the usual cleanup;
   whole deployment. An open correctness bug in the graph this phase builds on,
   and references make a cycle easier to create by accident. Not fixed here; it
   owns a refuse-versus-degrade decision of its own. Called out in the spec.
-  (Since fixed for `plan destroy --all`, which degrades with a warning per
-  dropped edge, #206; this plan's statement is as of Phase 2.)
 - **Automatic edge detection** (Phase 3) — a driver class attribute declaring
   which `params` keys hold references would answer the PRD's open question 3,
   explicitly Phase 3's. Phase 2's resolution is driver-agnostic.
