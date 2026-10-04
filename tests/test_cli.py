@@ -2020,6 +2020,55 @@ class TestPlanDestroy:
         trash_dir = project_dir / ".aiform" / "trash"
         assert any(trash_dir.iterdir())
 
+    def test_destroy_all_with_the_tracked_file_missing_succeeds_and_names_it(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        missing = project_dir / "moved-away.aiform.md"
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(missing),
+            aiform_md_sha256="abc123",
+        )
+        state.save(
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
+        )
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert f"tracked file {missing} is missing" in captured.out
+        assert "Error" not in captured.err
+        assert state.load(state_file, deployment="default").resources == {}
+
     def test_destroy_with_yes_prints_auto_approved_marker(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):

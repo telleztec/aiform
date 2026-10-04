@@ -499,6 +499,7 @@ class TestStateEntry:
             "aiform_md_path",
             "aiform_md_sha256",
             "depends_on",
+            "reference_edges",
         }
         assert set(dumped["driver"].keys()) == {"path", "sha256", "generated_at"}
 

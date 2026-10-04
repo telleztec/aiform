@@ -803,7 +803,11 @@ Mechanism A. `state = state.load(state_path, deployment=deployment)`.
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
 - `paths` falsy (`plan destroy --all`; `cli.py` refuses no files without `--all`, so
   this branch is reached only by an explicit `--all`, `specs/cli.md`): one target per `state.resources` entry, `aiform_md_path =
-  Path(state_entry.aiform_md_path)`.
+  Path(state_entry.aiform_md_path)`. An entry whose recorded `aiform_md_path`
+  does not exist on disk gets one warning, `<key>: tracked file <path> is
+  missing; destroying from state and skipping the trash move` (#183). The
+  plan is otherwise unchanged: a destroy needs the state entry's `id`, not
+  the file.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
 (naming either the file or "no files given: destroying all tracked
@@ -835,6 +839,26 @@ had to widen its return type to match `build_create_plan()`'s
 (previously hardcoded to `[]` at the one call site). See
 `specs/resource_dependencies.md`'s "Dangling dependency targets on a
 destroy path, and `--force`" for the full rule.
+
+**A cycle recorded in state (#206).** `_build_destroy_plan_from_state()` does
+not refuse a deployment whose `StateEntry.depends_on` edges form a cycle
+(state can hold one when the files that declared it were hand-edited or
+removed, so the plan-time cycle check that guards `plan create` never ran on
+it). Instead, after classifying edges, it orders them with
+`_reverse_topological_breaking_cycles()`: while `graph.topological_order()`
+raises `CycleError`, it drops the reported path's first edge
+(`path[0]` depending on `path[1]`) and retries, adding one warning per dropped
+edge: `dependency cycle in state: a -> b -> a; dropping the edge from a to b,
+so the destroy order no longer guarantees that a is destroyed before b, which
+it depends on`. The path is `CycleError`'s deterministic one, so the same state
+always drops the same edges and yields the same order. The loop
+terminates because each pass removes one edge. A self-edge is a length-1 cycle
+and is dropped the same way. No flag is needed: this producer destroys every
+tracked resource, so the only thing an edge decides is the order, and the
+warning names exactly what was overridden. `_build_destroy_plan_from_paths()`
+and the create route keep raising `PlanBlockedError` on a cycle, since a cycle
+there comes from files the user can edit and `plan create` should refuse it
+before any resource exists.
 
 **Exposure warning (#235).** After either producer, `build_destroy_plan()`
 appends one warning per firewall that the plan destroys and that has a droplet
@@ -1071,7 +1095,14 @@ for its caller.
      `driver.delete()` entirely — nothing tracked, nothing to remove from
      state, per `PLAN.md`'s "already satisfied without a wasted API
      call." Either way, once the CSP-side delete (if any) is verified:
-     `move_to_trash(pr.aiform_md_path)`.
+     `move_to_trash(pr.aiform_md_path)`, **unless `pr.aiform_md_path` no
+     longer exists** (removed or renamed out of band, #183): then the move
+     is skipped and one WARNING is logged naming the path. The same applies when
+     the file vanishes between that check and the move: `move_to_trash()`'s
+     `FileNotFoundError` is caught around the call. The destroy
+     itself has already succeeded and the state write has already been
+     saved, so a missing file changes nothing about the outcome and must not
+     turn it into an error.
    - After each non-`NO_OP` entry completes: `state.save(state,
      state_path)` — **per-resource**, not batched (`PLAN.md` §5 apply
      step 4), unlike `build_create_plan()`/`refresh_state()`'s
@@ -1320,25 +1351,24 @@ Returns the destination path.
   the same UTC second never overwrite each other, closing the gap a
   plain timestamp alone would have left and matching `PLAN.md`'s literal
   "never collide" framing for the trash directory.
-- `move_to_trash()` itself (`shutil.move`) can raise a raw, unwrapped
-  filesystem exception (e.g. `FileNotFoundError` if the source
-  `.aiform.md` was removed or renamed out-of-band between `plan` and
-  `apply`) — reached in `apply_plan()`'s `DESTROY` branch *after* the
-  CSP-side `driver.delete()` and the state removal/save have both
-  already durably committed. A resource in this state is correctly
-  destroyed and correctly untracked — "verified" per `PLAN.md`'s own
-  definition, which covers exactly those two things and nothing about
-  trash archival — but the caller gets an uncaught exception instead of
-  a clean `ApplyResult` for what is, substantively, a successful destroy
-  whose purely cosmetic cleanup step failed. Deliberately not wrapped in
-  a new exception type or given a recovery path here: this is a raw
-  filesystem operation, not a driver call (`DriverExecutionError` doesn't
-  fit) or a policy decision (`PlanBlockedError` doesn't either), and
-  `state.save()`'s own filesystem writes are equally unwrapped elsewhere
-  in this module — inventing a bespoke exception type for this one call
-  site would be exactly the premature abstraction `CLAUDE.md` warns
-  against for a case this narrow. Accepted as a known, low-probability
-  edge case rather than designed around.
+- `move_to_trash()` itself still raises on a missing source (`shutil.move`'s
+  `FileNotFoundError`); it is the `DESTROY` branch's caller that guards it.
+  A tracked `.aiform.md` can be gone because someone moved or deleted it
+  outside `aiform` (#183, found live while reproducing #164). By then the
+  CSP-side `driver.delete()` and the state removal/save have both committed,
+  so the resource is correctly destroyed and untracked and only the trash
+  archival has nothing to archive. `apply_plan()` therefore checks
+  `pr.aiform_md_path.exists()` first and also catches `FileNotFoundError` from
+  the move itself (the file can vanish between the two); either way it logs a
+  WARNING and continues; the entry is reported as executed. The `except
+  FileNotFoundError` wraps the whole `move_to_trash()` call, so *any*
+  `FileNotFoundError` from the move is treated as the tracked file being gone,
+  including one that is not about that file (the trash directory removed
+  between its `mkdir` and `shutil.move`, or a cwd that no longer exists, since
+  `TRASH_DIR` is relative); the WARNING then says the tracked file is missing
+  while it may still be on disk. Other `OSError` subclasses from the move are
+  still raised raw: they are real failures of a step that had something to do,
+  and `state.save()`'s own writes are equally unwrapped in this module.
 - `driver_info_for()` reads the driver file (`path.read_bytes()` for
   hashing) independently of `load_driver()`'s own read via `importlib`
   moments earlier — two reads of the same small file per driver
@@ -1543,6 +1573,13 @@ changed and which deliberately did not.
   `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.
+- **`PlannedResource.reference_edges`** (#234) carries `_reference_edges(params)`
+  (`{target_key: sorted attributes}` from `references.find_references()`) from
+  `_plan_one()`, defaulted empty. `_plan_one()`'s retrofit, `_new_state_entry()`
+  and `_record_update()`'s in-place branch write it to
+  `StateEntry.reference_edges` beside `depends_on`, and `_prune_dependents_on()`
+  removes the destroyed target from both. Nothing reads it: the edge type is kept,
+  not used, so no plan, order or refusal changes.
 - **`apply_plan()` is unchanged.** It applies the list in the order it is
   given and has no notion of a graph. Everything about ordering lives in the
   two plan builders.

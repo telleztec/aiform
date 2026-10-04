@@ -2880,6 +2880,204 @@ class TestReferenceResolutionAtApplyTime:
         assert "${" not in str(saved.resources["digitalocean.domain.example.com"].attributes)
 
 
+@pytest.mark.usefixtures("fake_do_token")
+class TestReferenceEdgesAreKept:
+    """#234: the edge type is kept in StateEntry.reference_edges, beside
+    depends_on, with no behaviour change."""
+
+    TARGET = "digitalocean.compute.zzz-01"
+    DEPENDENT = "digitalocean.compute.aaa-01"
+
+    def _apply(self, tmp_path: Path, drivers_dir: Path, params: dict, **kwargs):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(dependent, name="aaa-01", params=params, **kwargs)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        return planned, state.load(state_path, deployment="default")
+
+    def test_a_reference_records_its_target_and_attribute(self, tmp_path, drivers_dir):
+        planned, saved = self._apply(
+            tmp_path, drivers_dir, {"data": "${digitalocean.compute.zzz-01:ipv4_address}"}
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_explicit_only_edge_is_in_depends_on_but_not_reference_edges(
+        self, tmp_path, drivers_dir
+    ):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"}, depends_on=[self.TARGET])
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {}
+
+    def test_a_target_both_declared_and_referenced_is_a_reference_edge(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+            depends_on=[self.TARGET],
+        )
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_several_attributes_of_one_target_are_sorted_and_unique(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {
+                "a": "${digitalocean.compute.zzz-01:ipv4_address}",
+                "b": "${digitalocean.compute.zzz-01:id}",
+                "c": "${digitalocean.compute.zzz-01:ipv4_address}",
+            },
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {
+            self.TARGET: ["id", "ipv4_address"]
+        }
+
+    def test_a_resource_with_no_edges_has_empty_reference_edges(self, tmp_path, drivers_dir):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"})
+
+        assert saved.resources[self.TARGET].reference_edges == {}
+
+    def test_planning_a_tracked_resource_that_gained_a_reference_records_it(
+        self, tmp_path, drivers_dir
+    ):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(
+            dependent,
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        tracked = state.load(state_path, deployment="default")
+        tracked.resources[self.DEPENDENT].reference_edges = {}
+        state.save(tracked, state_path)
+
+        orchestrator.build_create_plan(
+            [dependent, target],
+            state_path=state_path,
+            client=FakeClient([categorization_response(action="no-op")] * 3),
+            deployment="default",
+        )
+
+        saved = state.load(state_path, deployment="default")
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_update_rewrites_reference_edges(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.dep-01", "digitalocean.compute.dep-02"],
+            reference_edges={"digitalocean.compute.dep-02": ["id"]},
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="dropped a reference",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=["digitalocean.compute.dep-01"],
+            reference_edges={},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
+
+        saved = state.load(state_path, deployment="default")
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.dep-01"]
+        assert entry.reference_edges == {}
+
+    def test_destroying_a_target_prunes_it_from_reference_edges_too(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.firewall.fw-01": make_state_entry(
+                    resource_type="firewall",
+                    name="fw-01",
+                    depends_on=["digitalocean.compute.droplet-01", "digitalocean.compute.other"],
+                    reference_edges={
+                        "digitalocean.compute.droplet-01": ["provider_id"],
+                        "digitalocean.compute.other": ["id"],
+                    },
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True, deployment="default"
+        )
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+            deployment="default",
+        )
+
+        entry = state.load(state_path, deployment="default").resources[
+            "digitalocean.firewall.fw-01"
+        ]
+        assert entry.depends_on == ["digitalocean.compute.other"]
+        assert entry.reference_edges == {"digitalocean.compute.other": ["id"]}
+
+    def test_reference_edges_change_no_destroy_order(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        save_state(
+            state_path,
+            **{
+                self.TARGET: make_state_entry(name="zzz-01", aiform_md_path=str(tracked_file)),
+                self.DEPENDENT: make_state_entry(
+                    name="aaa-01",
+                    aiform_md_path=str(tracked_file),
+                    depends_on=[self.TARGET],
+                    reference_edges={self.TARGET: ["ipv4_address"]},
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == [self.DEPENDENT, self.TARGET]
+        assert warnings == []
+
+
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
@@ -3089,22 +3287,143 @@ class TestBuildDestroyPlan:
         )
         assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
 
-    def test_state_driven_cycle_raises_plan_blocked_error(self, tmp_path: Path):
+    def test_state_driven_cycle_is_named_and_broken_so_destroy_all_proceeds(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.a-01": make_state_entry(
-                    name="a-01", depends_on=["digitalocean.compute.b-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
                 ),
                 "digitalocean.compute.b-01": make_state_entry(
-                    name="b-01", depends_on=["digitalocean.compute.a-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
                 ),
             },
         )
 
-        with pytest.raises(PlanBlockedError):
-            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.a-01",
+            "digitalocean.compute.b-01",
+        }
+        assert len(warnings) == 1
+        assert "dependency cycle in state" in warnings[0]
+        assert (
+            "digitalocean.compute.a-01 -> digitalocean.compute.b-01 -> digitalocean.compute.a-01"
+            in warnings[0]
+        )
+        assert (
+            "so the destroy order no longer guarantees that digitalocean.compute.a-01 "
+            "is destroyed before digitalocean.compute.b-01, which it depends on" in warnings[0]
+        )
+
+    def test_a_self_dependency_in_state_is_dropped_with_a_warning(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.a-01"]
+        assert len(warnings) == 1
+        assert "digitalocean.compute.a-01 -> digitalocean.compute.a-01" in warnings[0]
+
+    def test_two_separate_cycles_each_get_a_warning_and_the_rest_keeps_its_order(
+        self, tmp_path: Path
+    ):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+
+        def entry(name, *targets):
+            return make_state_entry(
+                aiform_md_path=str(tracked_file),
+                name=name,
+                depends_on=[f"digitalocean.compute.{t}" for t in targets],
+            )
+
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": entry("a-01", "b-01"),
+                "digitalocean.compute.b-01": entry("b-01", "a-01"),
+                "digitalocean.compute.c-01": entry("c-01", "d-01"),
+                "digitalocean.compute.d-01": entry("d-01", "c-01"),
+                "digitalocean.compute.e-01": entry("e-01", "f-01"),
+                "digitalocean.compute.f-01": entry("f-01"),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert len(keys) == 6
+        assert len(warnings) == 2
+        assert keys.index("digitalocean.compute.e-01") < keys.index("digitalocean.compute.f-01")
+
+    def test_cycle_handling_is_deterministic(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
+                ),
+                "digitalocean.compute.b-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        first = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        second = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+
+        assert [pr.entry.resource_key for pr in first[0]] == [
+            pr.entry.resource_key for pr in second[0]
+        ]
+        assert first[1] == second[1]
+
+    def test_a_cycle_through_the_file_driven_destroy_still_blocks(self, tmp_path: Path):
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
+        write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path)
+
+        with pytest.raises(PlanBlockedError, match="dependency cycle"):
+            orchestrator.build_destroy_plan(
+                [a_path, b_path], state_path=state_path, deployment="default"
+            )
 
     def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
         # Pins that with no depends_on anywhere, destroy order inverts the
@@ -3218,11 +3537,14 @@ class TestBuildDestroyPlan:
         assert "digitalocean.compute.ghost-02" in reason
 
     def test_force_drops_dangling_edge_and_warns_per_pair(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=[
                         "digitalocean.compute.ghost-01",
@@ -3242,12 +3564,17 @@ class TestBuildDestroyPlan:
         assert any("digitalocean.compute.ghost-02" in w for w in warnings)
 
     def test_force_drops_only_the_dangling_edge_and_keeps_real_ordering(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.db-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="db-01"
+                ),
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=["digitalocean.compute.db-01", "digitalocean.compute.ghost-01"],
                 ),
@@ -3423,12 +3750,17 @@ class TestReverseDependentDestroyRefusal:
         # everything tracked, so a dependent can never be left outside the
         # run. This pins that the new check, which only the paths-driven
         # producer calls, does not creep into the other one.
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="droplet-01"
+                ),
                 "digitalocean.firewall.fw-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     resource_type="firewall",
                     name="fw-01",
                     depends_on=["digitalocean.compute.droplet-01"],
@@ -5169,6 +5501,169 @@ class TestMoveToTrash:
         assert dest.exists()
         assert (trash_dir / colliding_name).read_text() == "already here"
         assert dest.read_text() == "new content"
+
+
+class TestDestroyWithTheTrackedFileMissing:
+    KEY = "digitalocean.compute.telleztec-app-01"
+
+    def _destroy_pr(self, existing, aiform_md: Path) -> "orchestrator.PlannedResource":
+        return orchestrator.PlannedResource(
+            entry=PlanEntry(
+                resource_key=self.KEY, action=PlanAction.DESTROY, rationale="explicit destroy"
+            ),
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+
+    def test_apply_completes_when_the_recorded_file_is_gone(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        missing = tmp_path / "moved-away.aiform.md"
+        existing = make_state_entry(id="123", aiform_md_path=str(missing))
+        pr = self._destroy_pr(existing, missing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(missing) in caplog.text
+        assert not (tmp_path / ".aiform" / "trash").exists()
+
+    def test_apply_still_moves_a_file_that_exists_to_trash(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert not aiform_md.exists()
+        assert any((tmp_path / ".aiform" / "trash").iterdir())
+
+    def test_apply_of_an_untracked_delete_marked_file_that_vanished_also_completes(
+        self, tmp_path: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        vanished = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        pr = self._destroy_pr(None, vanished)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert result.executed == [pr.entry]
+
+    def test_other_filesystem_errors_from_the_trash_move_still_raise(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def failing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise PermissionError("simulated")
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", failing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with pytest.raises(PermissionError):
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+    def test_a_file_that_vanishes_between_the_check_and_the_trash_move_is_not_an_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def vanishing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise FileNotFoundError(str(path))
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", vanishing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(aiform_md) in caplog.text
+
+    def test_destroy_all_plan_names_a_tracked_file_that_is_missing(self, tmp_path: Path):
+        missing = tmp_path / "moved-away.aiform.md"
+        present = tmp_path / "here.aiform.md"
+        write_aiform_md(present, name="here-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.gone-01": make_state_entry(
+                    name="gone-01", aiform_md_path=str(missing)
+                ),
+                "digitalocean.compute.here-01": make_state_entry(
+                    name="here-01", aiform_md_path=str(present)
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.gone-01",
+            "digitalocean.compute.here-01",
+        }
+        assert len(warnings) == 1
+        assert "digitalocean.compute.gone-01" in warnings[0]
+        assert str(missing) in warnings[0]
+        assert "here-01" not in warnings[0]
 
 
 # Reproducing #163 faithfully needs a real terminal: the keystroke has to sit

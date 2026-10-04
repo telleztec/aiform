@@ -428,9 +428,9 @@ because neither is implied by "references exist":
   instead gained a second, native-typed key, `provider_id`, so
   `${digitalocean.compute.web-01:provider_id}` resolves to the real `int`.
   The same reference nested inside a rule's `sources`/`destinations`
-  works too, but only one per list — a second one hits a sorted-list
-  requirement a reference can't generally satisfy (#224,
-  `specs/digitalocean_firewall.md`).
+  works too, any number per list since #224 removed the firewall driver's
+  sorted-list requirement and made the comparison order-insensitive
+  (`specs/digitalocean_firewall.md`).
 
 **Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
 `specs/dependency_detection.md`.** The mechanism is unchanged from what this
