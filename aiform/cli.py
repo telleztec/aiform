@@ -23,7 +23,7 @@ from aiform.exceptions import (
     PlanBlockedError,
     StateMissingDeploymentError,
 )
-from aiform.models import KeyCheck, KeyState, PlanAction
+from aiform.models import KeyCheck, KeyState, PlanAction, PlanEntry
 
 logger = logging.getLogger(__name__)
 
@@ -311,14 +311,53 @@ def _print_review_flags(flags: list[orchestrator.PlanReviewFlag]) -> None:
         print(f"{flag.resource_key}: {flag.concern} [{flag.severity.value}]")
 
 
+def _entry_label(entry: PlanEntry) -> str:
+    if entry.action == PlanAction.UPDATE and entry.likely_replace:
+        return "update (replaced)"
+    return entry.action.value
+
+
+def _print_failure_report(exc: Exception) -> None:
+    progress = getattr(exc, "apply_progress", None)
+    if progress is None:
+        return
+
+    def label(entry: PlanEntry) -> str:
+        return "repair" if entry.resource_key in progress.repairs else _entry_label(entry)
+
+    print(
+        f"Apply incomplete: {len(progress.applied)} applied, 1 failed, "
+        f"{len(progress.not_run)} not run",
+        file=sys.stderr,
+    )
+    for entry in progress.applied:
+        print(f"applied: {entry.resource_key} ({label(entry)})", file=sys.stderr)
+    failed = progress.failed
+    line = f"failed: {failed.resource_key} ({label(failed)})"
+    applied_keys = {entry.resource_key for entry in progress.applied}
+    repaired_by = [
+        dependent
+        for dependent, targets in progress.repairs.items()
+        if dependent in applied_keys and failed.resource_key in targets
+    ]
+    if (
+        failed.action == PlanAction.UPDATE
+        and isinstance(exc, DriverExecutionError)
+        and exc.operation == "create"
+    ):
+        line += " -- the old resource was deleted and the new one was not created"
+    elif repaired_by:
+        line += (
+            f" -- still tracked; {', '.join(repaired_by)} was already repaired to stop listing it"
+        )
+    print(line, file=sys.stderr)
+    for entry in progress.not_run:
+        print(f"not run: {entry.resource_key} ({label(entry)})", file=sys.stderr)
+
+
 def _print_apply_result(result: orchestrator.ApplyResult) -> None:
     for entry in result.executed:
-        label = (
-            "update (replaced)"
-            if entry.action == PlanAction.UPDATE and entry.likely_replace
-            else entry.action.value
-        )
-        print(f"{entry.resource_key}: {label}")
+        print(f"{entry.resource_key}: {_entry_label(entry)}")
     if result.aborted:
         print("Apply aborted.")
 
@@ -754,6 +793,7 @@ def _plan_apply_and_report(
     *,
     before_apply: Callable[[], int | None] | None = None,
     confirm: Callable[[str], bool] = _confirm,
+    retry_destroy: bool = False,
 ) -> int:
     _print_plan(planned, warnings, color=not args.no_color, yes=args.yes)
     if before_apply is not None:
@@ -768,6 +808,7 @@ def _plan_apply_and_report(
         confirm=confirm,
         on_review=_print_review_flags,
         client=client,
+        retry_destroy=retry_destroy,
     )
     _print_apply_result(result)
     return 1 if result.aborted else 0
@@ -807,6 +848,7 @@ def _cmd_plan_destroy(args: argparse.Namespace, client: _CountingClient) -> int:
             else lambda: _confirm_deployment_name(args, scope)
         ),
         confirm=lambda _prompt: _confirm(f"destroy {scope}?"),
+        retry_destroy=args.yes,
     )
 
 
@@ -1078,6 +1120,7 @@ def _dispatch(args: argparse.Namespace) -> int:
     except _HANDLED_EXCEPTIONS as exc:
         message = _format_error(exc)
         logger.error(message, extra={"exception_type": type(exc).__name__})
+        _print_failure_report(exc)
         print(f"Error: {message}", file=sys.stderr)
         return 2
 

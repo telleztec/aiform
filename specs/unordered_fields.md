@@ -162,7 +162,11 @@ UNORDERED_FIELDS = ["tags"]
     and `1` vs `1.0` as `1` vs `1.0`. The key must never merge values the CSP
     would treat differently.
 - **`unordered_equal(a, b)`** returns `a == b` unless **both** are lists;
-  otherwise `sorted(map(canonical_key, a)) == sorted(map(canonical_key, b))`.
+  otherwise it compares the two as multisets of elements, each element first
+  rewritten by `_deep_unordered()`, which sorts every list nested anywhere
+  inside it (by `canonical_key`, recursively) and leaves dict keys and
+  scalars alone. In other words, a declared field is unordered all the way
+  down: its own order, and the order of any list inside its elements (#224).
 - **Multiset, not set** — the deliberate answer to #110's open question. `set()`
   would report `["x", "x"]` equal to `["x"]`, silently swallowing a duplicated
   tag or record. Multiset never reports genuinely different inputs as equal, so
@@ -207,16 +211,22 @@ doesn't "simplify" the explicit declaration away.
   which is not a list, so the fallback `==` reports a diff. Correct — the field
   is genuinely not present live.
 - **Nested lists inside a declared field's elements** (a record dict holding a
-  list value) are compared **in order**, because `canonical_key` serializes them
-  positionally. Only the top level of a declared field is order-insensitive.
-  Deliberate — guessing at deep unordered semantics would make the rule
-  unpredictable — but it is *not* true that nothing needs them:
-  `drivers/digitalocean/firewall.py` has a rule's `sources.addresses` nested one
-  level down, and DigitalOcean does not promise the order it was written in. A
-  driver in that position closes the gap on its own side, by requiring the
-  nested list sorted and sorting what `read()` returns, rather than by widening
-  this rule. One driver is a special case; if a second needs the same
-  thing, that is the point to reconsider widening it here.
+  list value) are compared **without regard to order too** (#224). This was
+  first decided the other way: only the top level was unordered, and a driver
+  that had a nested list closed the gap by requiring the user to write it
+  sorted and sorting what `read()` returned. That failed for the one driver
+  that had such a list, `drivers/digitalocean/firewall.py`, where
+  `sources.droplet_ids` can be filled by references whose resolved values do
+  not exist, so cannot be sorted, when the file is written: the sorted
+  requirement rejected a valid file partway through apply. Sorting only the
+  driver's own writes would not have fixed it either, because
+  `diff_attributes()` compares the *resolved, unsorted* desired value with the
+  sorted read-back, and would report permanent drift. The nested list is
+  therefore unordered inside a declared field. Multiset semantics still hold at
+  every level (`[1, 1]` is not `[1]`), and an *undeclared* field is untouched,
+  so a driver whose nested order is meaningful keeps it by not declaring the
+  field. No other driver in the repo has a nested list inside a declared field,
+  so no existing comparison changes.
 - **A name in `UNORDERED_FIELDS` that isn't a `PARAM_SCHEMA` property** is not
   validated here. It is a driver-authoring mistake, and mechanically catching
   that class of error across all three field lists is #114's job, not this
@@ -248,8 +258,9 @@ doesn't "simplify" the explicit declaration away.
 - **Unit**: `tests/test_compare.py` for the two functions — list-of-strings
   reordered, list-of-dicts reordered (the case that makes `sorted()` raise),
   dicts with differing key order, duplicates (`["x","x"]` vs `["x"]` must be
-  **unequal**), `True`/`1` and `1`/`1.0` staying distinct, scalar fallback,
-  nested-list positional comparison.
+  **unequal**, at every nesting depth), `True`/`1` and `1`/`1.0` staying
+  distinct, scalar fallback, nested lists compared without regard to order
+  (#224).
 - **Unit**: `canonical_key`'s two hard-won properties, each of which shipped
   broken once and must stay pinned — a review found the fixes had no coverage
   at all, so the suite could not distinguish them from their own revert:

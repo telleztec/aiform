@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import dataclasses
 import hashlib
 import importlib.util
@@ -11,6 +12,7 @@ import shutil
 import sys
 import termios
 import time
+import urllib.error
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -175,7 +177,8 @@ def _new_state_entry(
         last_refreshed_at=now,
         aiform_md_path=str(pr.aiform_md_path),
         aiform_md_sha256=pr.current_aiform_md_sha256,
-        depends_on=pr.depends_on,
+        depends_on=list(pr.depends_on),
+        reference_edges=copy.deepcopy(pr.reference_edges),
     )
 
 
@@ -326,6 +329,7 @@ class PlannedResource:
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
     depends_on: list[str] = dataclasses.field(default_factory=list)
+    reference_edges: dict[str, list[str]] = dataclasses.field(default_factory=dict)
     # desired_params is resolved as far as plan time could manage and is what
     # the diff and the plan display read. raw_params keeps the references
     # intact, because apply re-resolves from scratch against state as it
@@ -412,6 +416,14 @@ def _dependency_targets(spec: ResourceSpec, key: str) -> list[str]:
     return declared + sorted(referenced - set(declared))
 
 
+def _reference_edges(params: dict[str, Any]) -> dict[str, list[str]]:
+    attributes: dict[str, set[str]] = {}
+    for found in references.find_references(params).values():
+        for reference in found:
+            attributes.setdefault(reference.target_key, set()).add(reference.attribute)
+    return {target: sorted(names) for target, names in sorted(attributes.items())}
+
+
 def _resolve_dependency_edges(discovered: list[_DiscoveredFile], st: State) -> dict[str, set[str]]:
     delete_marked_keys = {entry.key for entry in discovered if entry.delete_marked}
     live_keys = {entry.key for entry in discovered if not entry.delete_marked}
@@ -448,6 +460,24 @@ def _topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
 
 def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
     return list(reversed(_topological(keys, edges)))
+
+
+def _reverse_topological_breaking_cycles(
+    keys: set[str], edges: dict[str, set[str]]
+) -> tuple[list[str], list[str]]:
+    edges = {key: set(targets) for key, targets in edges.items()}
+    warnings: list[str] = []
+    while True:
+        try:
+            return list(reversed(graph.topological_order(keys, edges))), warnings
+        except graph.CycleError as exc:
+            dependent, target = exc.path[0], exc.path[1]
+            edges[dependent].discard(target)
+            warnings.append(
+                f"dependency cycle in state: {' -> '.join(exc.path)}; dropping the edge from "
+                f"{dependent} to {target}, so the destroy order no longer guarantees that "
+                f"{dependent} is destroyed before {target}, which it depends on"
+            )
 
 
 def _order_files(files: list[Path], st: State) -> list[Path]:
@@ -594,6 +624,7 @@ def _plan_one(
         llm_config=llm_config,
     )
     depends_on = _dependency_targets(resource_spec, key)
+    reference_edges = _reference_edges(resource_spec.params)
 
     # depends_on is ordering metadata, not resource config, so it is kept
     # in sync with the file on every plan run regardless of the action
@@ -611,6 +642,7 @@ def _plan_one(
     # down before the resource pointing at it.
     if state_entry is not None:
         state_entry.depends_on = list(depends_on)
+        state_entry.reference_edges = copy.deepcopy(reference_edges)
 
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
@@ -644,6 +676,7 @@ def _plan_one(
         credentials=credentials,
         state_entry=state_entry,
         depends_on=depends_on,
+        reference_edges=reference_edges,
         raw_params=resource_spec.params,
         unresolved_references=unresolved,
     )
@@ -1026,6 +1059,39 @@ def _resolve_reverse_dependents(orphaned: list[tuple[str, str]], *, force: bool)
     ]
 
 
+# The operational direction the dependency model cannot express (#235): the
+# configuration edge says a firewall depends on its droplet, so a destroy
+# deletes the firewall first, but it is the droplet that depends on the
+# firewall for filtering. Until that direction is modelled, the one known
+# pairing is named here.
+_PROTECTS = {("digitalocean", "firewall"): ({("digitalocean", "compute")}, "unfiltered")}
+
+
+def _exposure_warnings(planned: list[PlannedResource]) -> list[str]:
+    destroyed = {
+        pr.entry.resource_key: pr for pr in planned if pr.entry.action == PlanAction.DESTROY
+    }
+    position = {key: index for index, key in enumerate(destroyed)}
+    warnings: list[str] = []
+    for key, pr in destroyed.items():
+        protected_types, lapse = _PROTECTS.get((pr.provider, pr.resource_type), (set(), ""))
+        for target_key in pr.depends_on:
+            target = destroyed.get(target_key)
+            # A cycle broken in state drops an edge from the order but not from
+            # depends_on, so the protector can end up after its target.
+            if (
+                target is not None
+                and (target.provider, target.resource_type) in protected_types
+                and position[key] < position[target_key]
+            ):
+                warnings.append(
+                    f"{key} protects {target_key}, and the plan destroys both: "
+                    f"{key} goes first, so {target_key} runs {lapse} until its own "
+                    "delete succeeds (indefinitely if that delete fails)"
+                )
+    return warnings
+
+
 def build_destroy_plan(
     paths: list[Path] | None = None,
     *,
@@ -1035,8 +1101,10 @@ def build_destroy_plan(
 ) -> tuple[list[PlannedResource], list[str]]:
     st = state.load(state_path, deployment=deployment)
     if paths:
-        return _build_destroy_plan_from_paths(paths, st, force=force)
-    return _build_destroy_plan_from_state(st, force=force)
+        planned, warnings = _build_destroy_plan_from_paths(paths, st, force=force)
+    else:
+        planned, warnings = _build_destroy_plan_from_state(st, force=force)
+    return planned, [*warnings, *_exposure_warnings(planned)]
 
 
 def _build_destroy_plan_from_paths(
@@ -1099,11 +1167,17 @@ def _build_destroy_plan_from_state(
     edges, dangling = _classify_destroy_edges(raw_edges, node_keys, resolvable_elsewhere=set())
     warnings = _resolve_dangling_targets(dangling, force=force)
 
-    order = _reverse_topological(node_keys, edges)
+    order, cycle_warnings = _reverse_topological_breaking_cycles(node_keys, edges)
+    warnings.extend(cycle_warnings)
 
     planned: list[PlannedResource] = []
     for key in order:
         state_entry = st.resources[key]
+        if not Path(state_entry.aiform_md_path).exists():
+            warnings.append(
+                f"{key}: tracked file {state_entry.aiform_md_path} is missing; destroying "
+                "from state and skipping the trash move"
+            )
         entry = planner.destroy_entry(
             key,
             rationale="explicit destroy requested: no files given, destroying all tracked "
@@ -1137,6 +1211,23 @@ class ApplyResult:
     executed: list[PlanEntry]
     review_flags: list[PlanReviewFlag]
     aborted: bool
+
+
+# Attached to an exception escaping apply_plan()'s execute loop as
+# `apply_progress`, instead of wrapping it in a new type: every handler and
+# test that catches DriverExecutionError/PlanBlockedError keeps working.
+@dataclass(frozen=True)
+class ApplyProgress:
+    applied: list[PlanEntry]
+    failed: PlanEntry
+    not_run: list[PlanEntry]
+    repairs: dict[str, list[str]] = dataclasses.field(default_factory=dict)
+
+
+# Persistent enough to ride out a rate limit or a 5xx blip, bounded so a
+# resource that will never delete does not hang a script. 65s of waiting.
+DESTROY_RETRY_ATTEMPTS = 4
+DESTROY_RETRY_DELAYS_SECONDS = (5, 15, 45)
 
 
 def _read_input(prompt: str) -> str:
@@ -1220,6 +1311,7 @@ def apply_plan(
     on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
+    retry_destroy: bool = False,
 ) -> ApplyResult:
     st = state.load(state_path, deployment=deployment)
     confirm_fn = confirm or default_confirm
@@ -1238,75 +1330,96 @@ def apply_plan(
 
     executed: list[PlanEntry] = []
 
-    for pr in planned:
-        if pr.entry.action == PlanAction.NO_OP:
-            continue
+    position = 0
+    try:
+        for position, pr in enumerate(planned):  # noqa: B007 -- read by the except below
+            if pr.entry.action == PlanAction.NO_OP:
+                continue
 
-        if pr.repairs:
-            _apply_repair(pr, st, state_path=state_path)
-            executed.append(pr.entry)
-            continue
+            if pr.repairs:
+                _apply_repair(pr, st, state_path=state_path)
+                executed.append(pr.entry)
+                continue
 
-        if pr.entry.action == PlanAction.CREATE:
-            _apply_create(pr, st)
-            executed.append(pr.entry)
+            if pr.entry.action == PlanAction.CREATE:
+                _apply_create(pr, st)
+                executed.append(pr.entry)
 
-        elif pr.entry.action == PlanAction.UPDATE:
-            # The two handlers below are siblings on purpose. Python never
-            # re-enters a sibling handler, so the delete()/create() calls
-            # _replace_resource() makes from inside the first one are NOT
-            # covered by `except Exception` -- they surface as "delete"/
-            # "create" rather than being relabelled "update". Flattening
-            # these, or moving those calls under a broader try, changes
-            # which exceptions get wrapped; see the two
-            # test_replace_*_failure_reports_* tests.
-            replaced = False
-            update_start = time.monotonic()
-            desired = _apply_params(pr, st)
-            try:
-                raw = pr.driver.update(
-                    pr.state_entry.id, pr.state_entry.attributes, desired, pr.credentials
-                )
-            except DriverUpdateNotSupported:
-                replaced = True
-                if not pr.entry.likely_replace:
-                    _replace_review(
-                        pr, review_flags, on_review_fn, client=client, llm_config=llm_config
+            elif pr.entry.action == PlanAction.UPDATE:
+                # The two handlers below are siblings on purpose. Python never
+                # re-enters a sibling handler, so the delete()/create() calls
+                # _replace_resource() makes from inside the first one are NOT
+                # covered by `except Exception` -- they surface as "delete"/
+                # "create" rather than being relabelled "update". Flattening
+                # these, or moving those calls under a broader try, changes
+                # which exceptions get wrapped; see the two
+                # test_replace_*_failure_reports_* tests.
+                replaced = False
+                update_start = time.monotonic()
+                desired = _apply_params(pr, st)
+                try:
+                    raw = pr.driver.update(
+                        pr.state_entry.id, pr.state_entry.attributes, desired, pr.credentials
                     )
-                    if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
-                        return ApplyResult(
-                            executed=executed, review_flags=review_flags, aborted=True
+                except DriverUpdateNotSupported:
+                    replaced = True
+                    if not pr.entry.likely_replace:
+                        _replace_review(
+                            pr, review_flags, on_review_fn, client=client, llm_config=llm_config
                         )
-                raw = _replace_resource(pr, st, state_path=state_path, desired=desired)
-            except Exception as exc:
-                _log_driver_outcome(
-                    pr.provider,
-                    pr.resource_type,
-                    "update",
-                    log.elapsed_ms(update_start),
-                    outcome="error",
-                )
-                raise DriverExecutionError(pr.provider, pr.resource_type, "update", exc) from exc
+                        if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
+                            return ApplyResult(
+                                executed=executed, review_flags=review_flags, aborted=True
+                            )
+                    raw = _replace_resource(pr, st, state_path=state_path, desired=desired)
+                except Exception as exc:
+                    _log_driver_outcome(
+                        pr.provider,
+                        pr.resource_type,
+                        "update",
+                        log.elapsed_ms(update_start),
+                        outcome="error",
+                    )
+                    raise DriverExecutionError(
+                        pr.provider, pr.resource_type, "update", exc
+                    ) from exc
 
-            if not replaced:
-                _log_driver_outcome(
-                    pr.provider,
-                    pr.resource_type,
-                    "update",
-                    log.elapsed_ms(update_start),
-                    outcome="success",
-                )
+                if not replaced:
+                    _log_driver_outcome(
+                        pr.provider,
+                        pr.resource_type,
+                        "update",
+                        log.elapsed_ms(update_start),
+                        outcome="success",
+                    )
 
-            executed.append(_record_update(pr, st, raw, replaced=replaced))
+                executed.append(_record_update(pr, st, raw, replaced=replaced))
 
-        elif pr.entry.action == PlanAction.DESTROY:
-            _apply_destroy(pr, st, state_path=state_path)
-            executed.append(pr.entry)
-            continue
+            elif pr.entry.action == PlanAction.DESTROY:
+                _apply_destroy(pr, st, state_path=state_path, retry=retry_destroy)
+                executed.append(pr.entry)
+                continue
 
-        state.save(st, state_path)
+            state.save(st, state_path)
+    except Exception as exc:
+        exc.apply_progress = _progress_at(planned, executed, position)
+        raise
 
     return ApplyResult(executed=executed, review_flags=review_flags, aborted=False)
+
+
+def _progress_at(
+    planned: list[PlannedResource], executed: list[PlanEntry], position: int
+) -> ApplyProgress:
+    failed = planned[position].entry
+    return ApplyProgress(
+        # A resource whose action ran but whose state save then failed is in
+        # `executed` already; it must be reported once, as failed.
+        applied=[entry for entry in executed if entry.resource_key != failed.resource_key],
+        failed=failed,
+        not_run=[pr.entry for pr in planned[position + 1 :] if pr.entry.action != PlanAction.NO_OP],
+        repairs={pr.entry.resource_key: pr.repairs for pr in planned if pr.repairs},
+    )
 
 
 def _batch_plan_review(
@@ -1466,6 +1579,7 @@ def _record_update(
         existing.last_refreshed_at = now
         existing.aiform_md_sha256 = pr.current_aiform_md_sha256
         existing.depends_on = list(pr.depends_on)
+        existing.reference_edges = copy.deepcopy(pr.reference_edges)
     # entry.likely_replace reflects the plan-time prediction; report what
     # actually happened instead, in both directions -- a predicted replace that
     # update() handled in place must not be reported as a replace just because
@@ -1486,8 +1600,11 @@ def _record_update(
 def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -> None:
     for dependent in dependents:
         entry = st.resources.get(dependent)
-        if entry is not None and destroyed_key in entry.depends_on:
+        if entry is None:
+            continue
+        if destroyed_key in entry.depends_on:
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
+        entry.reference_edges.pop(destroyed_key, None)
 
 
 def _repair_prompt(pr: PlannedResource, st: State) -> str:
@@ -1550,10 +1667,55 @@ def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         dependent.attributes = attributes
         dependent.last_refreshed_at = now
     dependent.depends_on = [target for target in dependent.depends_on if target not in pr.repairs]
+    for target in pr.repairs:
+        dependent.reference_edges.pop(target, None)
     state.save(st, state_path)
 
 
-def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
+def _is_retryable(error: Exception) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code == 429 or error.code >= 500
+    return isinstance(error, urllib.error.URLError | TimeoutError | ConnectionError)
+
+
+def _delete_with_retry(
+    driver: ResourceDriver, pr: PlannedResource, credentials: dict[str, str], *, retry: bool
+) -> None:
+    attempts = DESTROY_RETRY_ATTEMPTS if retry else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            _call_driver(
+                driver.delete,
+                pr.provider,
+                pr.resource_type,
+                "delete",
+                pr.state_entry.id,
+                credentials,
+            )
+            return
+        except DriverExecutionError as exc:
+            if attempt == attempts or not _is_retryable(exc.original):
+                raise
+            delay = DESTROY_RETRY_DELAYS_SECONDS[attempt - 1]
+            logger.warning(
+                f"delete of {pr.entry.resource_key} failed ({exc.original}); "
+                f"retrying delete of {pr.entry.resource_key} in {delay}s "
+                f"(attempt {attempt} of {attempts})",
+                extra={
+                    "resource_key": pr.entry.resource_key,
+                    "operation": "delete",
+                    "retry": "destroy-all",
+                    "attempt": attempt,
+                    "delay_seconds": delay,
+                    "error": str(exc.original),
+                },
+            )
+            time.sleep(delay)
+
+
+def _apply_destroy(
+    pr: PlannedResource, st: State, *, state_path: Path, retry: bool = False
+) -> None:
     if pr.state_entry is not None:
         driver = load_driver(
             pr.provider, pr.resource_type, reserved_tags=deployment_tags(st.deployment)
@@ -1562,19 +1724,21 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
             credentials = config.resolve_credentials(pr.provider)
         except RuntimeError as exc:
             raise PlanBlockedError(str(exc)) from exc
-        _call_driver(
-            driver.delete,
-            pr.provider,
-            pr.resource_type,
-            "delete",
-            pr.state_entry.id,
-            credentials,
-        )
+        _delete_with_retry(driver, pr, credentials, retry=retry)
         _require_tracked(st, pr.entry.resource_key)
         del st.resources[pr.entry.resource_key]
     _prune_dependents_on(st, pr.entry.resource_key, pr.dropped_dependents)
     state.save(st, state_path)
-    move_to_trash(pr.aiform_md_path)
+    try:
+        if not pr.aiform_md_path.exists():
+            raise FileNotFoundError(str(pr.aiform_md_path))
+        move_to_trash(pr.aiform_md_path)
+    except FileNotFoundError:
+        logger.warning(
+            "%s: tracked file %s is missing; skipping the trash move",
+            pr.entry.resource_key,
+            pr.aiform_md_path,
+        )
 
 
 def _split_aiform_md_suffix(name: str) -> tuple[str, str]:

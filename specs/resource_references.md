@@ -668,16 +668,18 @@ cleanup discipline.
   shipped since** — #225, `1ed84bf`, added a paths-driven destroy refusal
   for a reference-derived edge same as a declared one; Phase 4a then made
   both destroy routes repair a firewall's `droplet_ids` instead of
-  refusing, #226/#227; partial-failure recovery and
-  restartability are untouched — see `specs/resource_dependencies.md`),
+  refusing, #226/#227; Phase 4b then added the partial-failure report and
+  restartable apply, #229/#253 — see `specs/resource_dependencies.md`),
   **concurrency-safe state** (Phase 5), **parallel execution** (Phase 6),
   **graphical visualization** (Phase 7). Execution here stays strictly
   sequential and the order is total.
 - **Cross-run cycle detection**, issue **#206** — a cycle recorded in
-  `StateEntry.depends_on` across several runs is not caught at plan time and
-  then blocks `plan destroy` for the whole deployment. References make such a
-  cycle easier to create by accident, which strengthens that issue's case, but
-  it owns a refuse-versus-degrade decision of its own and is not decided here.
+  `StateEntry.depends_on` across several runs is not caught at plan time of
+  `plan create`/`plan apply`. `plan destroy --all` no longer blocks on it: it
+  breaks the cycle with one warning per dropped edge and proceeds (#206 chose
+  degrade over refuse for that path; the file-driven `plan destroy <file>`
+  still raises `PlanBlockedError`). References make such a cycle easier to
+  create by accident.
 - **Adding references to `build_plan_summary()`**, i.e. to gate #2's review
   prompt — same reasoning `specs/resource_dependencies.md` gives for
   `depends_on`: it would inject an unexplained key into that prompt. Phase 4.

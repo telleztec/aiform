@@ -327,6 +327,18 @@ class ApplyResult:
     aborted: bool
 
 
+@dataclass(frozen=True)
+class ApplyProgress:
+    applied: list[PlanEntry]
+    failed: PlanEntry
+    not_run: list[PlanEntry]
+    repairs: dict[str, list[str]]  # dependent key -> destroyed keys it was repaired for
+
+
+DESTROY_RETRY_ATTEMPTS = 4
+DESTROY_RETRY_DELAYS_SECONDS = (5, 15, 45)
+
+
 def build_plan_summary(planned: list[PlannedResource]) -> str: ...
 
 
@@ -340,6 +352,7 @@ def apply_plan(
     on_review: OnReviewFn | None = None,
     client: anthropic.Anthropic | None = None,
     llm_config: LLMConfig | None = None,
+    retry_destroy: bool = False,
 ) -> ApplyResult: ...
 
 
@@ -791,7 +804,11 @@ Mechanism A. `state = state.load(state_path, deployment=deployment)`.
   `key = resource_key(...)`, `state_entry = state.resources.get(key)`.
 - `paths` falsy (`plan destroy --all`; `cli.py` refuses no files without `--all`, so
   this branch is reached only by an explicit `--all`, `specs/cli.md`): one target per `state.resources` entry, `aiform_md_path =
-  Path(state_entry.aiform_md_path)`.
+  Path(state_entry.aiform_md_path)`. An entry whose recorded `aiform_md_path`
+  does not exist on disk gets one warning, `<key>: tracked file <path> is
+  missing; destroying from state and skipping the trash move` (#183). The
+  plan is otherwise unchanged: a destroy needs the state entry's `id`, not
+  the file.
 
 Either way: `entry = planner.destroy_entry(key, rationale=...)`
 (naming either the file or "no files given: destroying all tracked
@@ -824,6 +841,51 @@ had to widen its return type to match `build_create_plan()`'s
 `specs/resource_dependencies.md`'s "Dangling dependency targets on a
 destroy path, and `--force`" for the full rule.
 
+**A cycle recorded in state (#206).** `_build_destroy_plan_from_state()` does
+not refuse a deployment whose `StateEntry.depends_on` edges form a cycle
+(state can hold one when the files that declared it were hand-edited or
+removed, so the plan-time cycle check that guards `plan create` never ran on
+it). Instead, after classifying edges, it orders them with
+`_reverse_topological_breaking_cycles()`: while `graph.topological_order()`
+raises `CycleError`, it drops the reported path's first edge
+(`path[0]` depending on `path[1]`) and retries, adding one warning per dropped
+edge: `dependency cycle in state: a -> b -> a; dropping the edge from a to b,
+so the destroy order no longer guarantees that a is destroyed before b, which
+it depends on`. The path is `CycleError`'s deterministic one, so the same state
+always drops the same edges and yields the same order. The loop
+terminates because each pass removes one edge. A self-edge is a length-1 cycle
+and is dropped the same way. No flag is needed: this producer destroys every
+tracked resource, so the only thing an edge decides is the order, and the
+warning names exactly what was overridden. `_build_destroy_plan_from_paths()`
+and the create route keep raising `PlanBlockedError` on a cycle, since a cycle
+there comes from files the user can edit and `plan create` should refuse it
+before any resource exists.
+
+**Exposure warning (#235).** After either producer, `build_destroy_plan()`
+appends one warning per firewall that the plan destroys and that has a droplet
+target also destroyed in the same plan. The firewall's `depends_on` names the
+droplet, so the reverse-topological order deletes the firewall first, and the
+droplet runs unfiltered from then until its own delete succeeds. The warning
+names both keys and the window: `<protector> protects <target>, and the plan
+destroys both: <protector> goes first, so <target> runs <lapse> until its own
+delete succeeds (indefinitely if that delete fails)`, where `<lapse>` is the
+word stored with the table entry (`unfiltered` for the firewall pair). A firewall whose
+droplet is not in the plan (or is not being destroyed) produces nothing: the
+droplet stays, and the existing reverse-dependent rules already govern that.
+The pair is a fixed table, `_PROTECTS`, mapping a protector type to
+`(protected types, lapse word)`: `("digitalocean", "firewall")` protects
+`("digitalocean", "compute")` with `"unfiltered"`, a stand-in for the operational direction the
+dependency model does not express (`specs/resource_dependencies.md`, the
+`Protects` row; modelling it is #235 option 3, out of scope here). It is
+advisory, never blocks, and is not suppressed by `--force`. It is raised only
+when the firewall comes before its droplet in the plan's order: a cycle in state
+(above) drops an edge from the order but not from `depends_on`, and when that
+leaves the droplet first there is no window, so there is no warning. **Known false
+negative:** the check follows the protector's `depends_on` edge to the target
+(declared, or implied by a `${...}` reference). A firewall that names droplets
+by a literal `droplet_ids` value, with no reference and no `depends_on`, has no
+edge, and gets no warning even when the plan destroys both.
+
 ### `build_plan_summary(planned) -> str`
 
 `json.dumps([{"resource_key": pr.entry.resource_key, "action":
@@ -832,7 +894,7 @@ pr.entry.likely_replace} for pr in planned])` — the `plan_summary` string
 `llm.review_plan()` (`PLAN.md` §5 apply step 2) takes as its sole
 argument.
 
-### `apply_plan(planned, *, state_path=..., deployment=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None) -> ApplyResult`
+### `apply_plan(planned, *, state_path=..., deployment=..., yes=False, confirm=None, on_review=None, client=None, llm_config=None, retry_destroy=False) -> ApplyResult`
 
 `PLAN.md` §5 "aiform plan apply" steps 2-4 (step 1, re-running `plan` in
 full, is the caller's job — see Behavior below), shared verbatim by
@@ -1037,7 +1099,14 @@ for its caller.
      `driver.delete()` entirely — nothing tracked, nothing to remove from
      state, per `PLAN.md`'s "already satisfied without a wasted API
      call." Either way, once the CSP-side delete (if any) is verified:
-     `move_to_trash(pr.aiform_md_path)`.
+     `move_to_trash(pr.aiform_md_path)`, **unless `pr.aiform_md_path` no
+     longer exists** (removed or renamed out of band, #183): then the move
+     is skipped and one WARNING is logged naming the path. The same applies when
+     the file vanishes between that check and the move: `move_to_trash()`'s
+     `FileNotFoundError` is caught around the call. The destroy
+     itself has already succeeded and the state write has already been
+     saved, so a missing file changes nothing about the outcome and must not
+     turn it into an error.
    - After each non-`NO_OP` entry completes: `state.save(state,
      state_path)` — **per-resource**, not batched (`PLAN.md` §5 apply
      step 4), unlike `build_create_plan()`/`refresh_state()`'s
@@ -1052,6 +1121,69 @@ for its caller.
    `planned`, in order — `pr.entry` unchanged except on an actual replace,
    where it's the `likely_replace: True`-corrected copy described above>,
    review_flags=<accumulated non-blocking flags>, aborted=False)`.
+
+**The failure path (#229, #235).** The executed set is always a dependency-closed
+prefix of `planned`, because the loop stops at the first failure and saves per
+resource. That prefix used to die with the stack frame: `apply_plan()` raises
+on a failure and only returns `ApplyResult` on success or a declined
+confirmation. So step 3's loop runs inside one `try`, and an `Exception`
+escaping it gets one attribute, `apply_progress`, an `ApplyProgress`, and is
+re-raised unchanged:
+
+- `applied` is `executed` as it stood when the exception was raised (the
+  entries `apply_plan()` would have returned, with the same `likely_replace`
+  correction), minus the entry being processed. A resource is in exactly one of
+  the three lists: if its action succeeded and the `state.save()` after it then
+  raised, it is reported as `failed`, not `applied`, even though the provider
+  change happened and state may not record it. A re-run reconciles that on its
+  refresh.
+- `failed` is the `pr.entry` being processed. If a replace's `delete()` had
+  already succeeded and its `create()` then failed, the entry is still
+  `failed` and not in `applied`: state no longer tracks the old resource, which
+  is the checkpoint described under the UPDATE arm.
+- `not_run` is every later `pr.entry` in `planned` that is not `NO_OP`, in
+  order.
+- `repairs` maps each repaired firewall's key to the destroyed keys it was
+  repaired for, built from every `pr.repairs` in `planned`. A repair is an
+  executed UPDATE entry and is placed in `applied`, `failed` or `not_run` like
+  any other; `repairs` only lets the report call it a repair and tie a failed
+  delete to the repair that preceded it (Phase 4a, #226/#227, with 4b).
+  Repair-then-delete-fails leaves the droplet tracked and the firewall repaired,
+  both stated in the report; a failed repair is the `failed` entry with the
+  delete in `not_run`, nothing destroyed.
+
+The exception type, its message and its `__cause__` are untouched, so every
+handler that catches `DriverExecutionError` or `PlanBlockedError` keeps working.
+This is the smaller of the two designs considered (the other was a new
+`ApplyFailedError` wrapping the original): it changes no `raises` contract and
+no existing `pytest.raises`. Not covered: an exception raised before the loop
+(the gate #2 `PlanBlockedError` from step 1, a decline) carries no
+`apply_progress`, since nothing ran; and `KeyboardInterrupt`/`SystemExit` are
+not `Exception`s, so an interrupted run is not reported.
+
+`cli.py` reads the attribute and prints the report block; see `specs/cli.md`.
+
+**Destroy retry (`retry_destroy=True`, `plan destroy --all --yes` only).**
+`_apply_destroy()` calls `driver.delete()` up to `DESTROY_RETRY_ATTEMPTS` (4)
+times in total, sleeping `DESTROY_RETRY_DELAYS_SECONDS` (5, 15, 45 seconds)
+between attempts, so a stubborn failure costs 65 seconds of waiting at most.
+Only a `DriverExecutionError` whose original exception can plausibly clear is
+retried: an `HTTPError` with status 429 or 5xx, or a `URLError`, `TimeoutError`
+or `ConnectionError`. Any other 4xx (422 in use, a bad id) and any other
+exception type is raised on the first failure, with no wait. Each retry logs at
+WARNING with a readable message (`delete of <key> failed (<error>); retrying
+delete of <key> in <delay>s (attempt <n> of <attempts>)`) and the fields
+`resource_key`, `operation: "delete"`, `retry: "destroy-all"`, `attempt`,
+`delay_seconds`, `error`. The default stderr handler shows WARNING, so the
+notice is visible without `--verbose`; the orchestrator has no stdout channel
+of its own and this uses the existing log stream. When every attempt fails, the
+last `DriverExecutionError` is raised as before. Nothing else
+retries: `retry_destroy` defaults to `False`, so a replace's `delete()` and a
+plain `plan destroy <file>` fail on the first error, as before. The constants
+are module-level, not configuration. A run that failed after its retries
+leaves the failed resource tracked in state and every earlier one removed, so a
+forced re-run (`plan destroy --all --yes --force`) builds its plan from what
+is left, destroys only that, and reports only that.
 
 ### `move_to_trash(path, *, trash_dir=TRASH_DIR) -> Path`
 
@@ -1222,30 +1354,33 @@ Returns the destination path.
   contract as the top-level decline in step 2, just computed over a
   prefix of `planned` instead of the empty list, so `cli.py` can report
   exactly what was and wasn't applied.
+- Any exception raised inside the execute loop reaches the caller carrying
+  `apply_progress` (see "The failure path" under `apply_plan()`), including the
+  `PlanBlockedError` a mid-loop replace review can raise, so `cli.py` can report
+  what ran, what failed and what did not run.
 - `move_to_trash()`'s numeric-suffix collision handling (see its own
   Interface entry above) means two destroys of same-named files within
   the same UTC second never overwrite each other, closing the gap a
   plain timestamp alone would have left and matching `PLAN.md`'s literal
   "never collide" framing for the trash directory.
-- `move_to_trash()` itself (`shutil.move`) can raise a raw, unwrapped
-  filesystem exception (e.g. `FileNotFoundError` if the source
-  `.aiform.md` was removed or renamed out-of-band between `plan` and
-  `apply`) — reached in `apply_plan()`'s `DESTROY` branch *after* the
-  CSP-side `driver.delete()` and the state removal/save have both
-  already durably committed. A resource in this state is correctly
-  destroyed and correctly untracked — "verified" per `PLAN.md`'s own
-  definition, which covers exactly those two things and nothing about
-  trash archival — but the caller gets an uncaught exception instead of
-  a clean `ApplyResult` for what is, substantively, a successful destroy
-  whose purely cosmetic cleanup step failed. Deliberately not wrapped in
-  a new exception type or given a recovery path here: this is a raw
-  filesystem operation, not a driver call (`DriverExecutionError` doesn't
-  fit) or a policy decision (`PlanBlockedError` doesn't either), and
-  `state.save()`'s own filesystem writes are equally unwrapped elsewhere
-  in this module — inventing a bespoke exception type for this one call
-  site would be exactly the premature abstraction `CLAUDE.md` warns
-  against for a case this narrow. Accepted as a known, low-probability
-  edge case rather than designed around.
+- `move_to_trash()` itself still raises on a missing source (`shutil.move`'s
+  `FileNotFoundError`); it is the `DESTROY` branch's caller that guards it.
+  A tracked `.aiform.md` can be gone because someone moved or deleted it
+  outside `aiform` (#183, found live while reproducing #164). By then the
+  CSP-side `driver.delete()` and the state removal/save have both committed,
+  so the resource is correctly destroyed and untracked and only the trash
+  archival has nothing to archive. `apply_plan()` therefore checks
+  `pr.aiform_md_path.exists()` first and also catches `FileNotFoundError` from
+  the move itself (the file can vanish between the two); either way it logs a
+  WARNING and continues; the entry is reported as executed. The `except
+  FileNotFoundError` wraps the whole `move_to_trash()` call, so *any*
+  `FileNotFoundError` from the move is treated as the tracked file being gone,
+  including one that is not about that file (the trash directory removed
+  between its `mkdir` and `shutil.move`, or a cwd that no longer exists, since
+  `TRASH_DIR` is relative); the WARNING then says the tracked file is missing
+  while it may still be on disk. Other `OSError` subclasses from the move are
+  still raised raw: they are real failures of a step that had something to do,
+  and `state.save()`'s own writes are equally unwrapped in this module.
 - `driver_info_for()` reads the driver file (`path.read_bytes()` for
   hashing) independently of `load_driver()`'s own read via `importlib`
   moments earlier — two reads of the same small file per driver
@@ -1306,8 +1441,9 @@ Returns the destination path.
   `### Repair before destroy (#226, #227)` in the `resource_dependencies`
   addendum below). Every other outside dependent is still refused on the
   paths-driven route (`--force` drops the edge, #225) and, since #226, on the
-  `AIFORM-DELETE-` route too. Partial-failure recovery and restartability
-  remain out of scope here (Phase 4b).
+  `AIFORM-DELETE-` route too. A failure partway through a repair-then-delete
+  is reported and restartable through the same failure path as every other
+  step (Phase 4b; see "The failure path").
 
 ## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
 
@@ -1501,10 +1637,15 @@ changed and which deliberately did not.
   the user's file did not change, and rewriting the hash would make the next plan
   believe it had already seen the file as it now reads. State is saved after each
   repair. A driver failure is a `DriverExecutionError` (operation `update`), the
-  firewall unchanged, nothing destroyed. A successful repair appears in
-  `ApplyResult.executed` as an UPDATE only when `apply_plan()` returns: a delete
-  that fails after the repair raises out of `apply_plan()`, so no `ApplyResult`
-  names the repair (Phase 4b adds the failure report that does).
+  firewall unchanged, nothing destroyed. A successful repair is an executed
+  step like any other: it appears in `ApplyResult.executed` as an UPDATE when
+  `apply_plan()` returns, and in `ApplyProgress.applied` when a later delete
+  raises (see "The failure path"), with `ApplyProgress.repairs` marking it as a
+  repair so the report can say what it was. A re-run after a failed delete
+  does not repair again: the saved firewall no longer lists the id and no
+  longer has the edge, so the next destroy plan has nothing to repair; if the
+  repair's provider write succeeded and its state save did not, the apply
+  re-reads the firewall live, sees the id gone, and only prunes the edge.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working. **`PlannedResource.dropped_dependents`** and **`PlannedResource.repairs`** are likewise
@@ -1512,8 +1653,16 @@ changed and which deliberately did not.
   `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.
-- **`apply_plan()` has no notion of a graph** beyond the repair step above. It
-  applies the list in the order it is given. Everything about ordering lives in the
+- **`PlannedResource.reference_edges`** (#234) carries `_reference_edges(params)`
+  (`{target_key: sorted attributes}` from `references.find_references()`) from
+  `_plan_one()`, defaulted empty. `_plan_one()`'s retrofit, `_new_state_entry()`
+  and `_record_update()`'s in-place branch write it to
+  `StateEntry.reference_edges` beside `depends_on`, and `_prune_dependents_on()`
+  removes the destroyed target from both. Nothing reads it: the edge type is kept,
+  not used, so no plan, order or refusal changes.
+- **`apply_plan()` has no notion of a graph** beyond the repair step above and
+  the failure path's report of it. It applies the list in the order it is given.
+  Everything about ordering lives in the
   two plan builders.
 - **`build_plan_summary()` is deliberately unchanged.** Adding `depends_on`
   would inject an unexplained key into gate #2's review prompt with no

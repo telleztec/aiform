@@ -111,10 +111,9 @@ class Driver(ResourceDriver):
     # write, and plain != would then diff forever. Declared as an
     # assumption with its reasoning rather than measured -- a single live
     # observation cannot establish order-stability
-    # (specs/unordered_fields.md). This covers each field's own order
-    # only. A list nested inside a rule is compared positionally however
-    # this is declared, which is why _validate_target_items() requires
-    # one sorted and _project_rule() sorts what it reads back.
+    # (specs/unordered_fields.md). unordered_equal() applies this to lists
+    # nested inside a rule as well, so a target list's written order never
+    # diffs against the sorted read-back _project_rule() produces (#224).
     UNORDERED_FIELDS: list[str] = ["inbound_rules", "outbound_rules", "droplet_ids", "tags"]
 
     # --- HTTP -------------------------------------------------------
@@ -355,19 +354,6 @@ class Driver(ResourceDriver):
         # the same bug the top-level scalar checks prevent, one level down.
         expected = int if key == "droplet_ids" else str
         self._reject_wrong_scalars(f"{where}: {target_key}.{key}", value, expected)
-        # unordered_equal() is top-level only: a rule reaches it through
-        # canonical_key(), which serializes a list nested inside it
-        # positionally. UNORDERED_FIELDS therefore frees the order of
-        # inbound_rules but not the order of sources.addresses within a
-        # rule, and diff_attributes() reads params raw, so the driver
-        # cannot sort that side. Requiring it sorted and sorting the
-        # read side is what makes the two comparable at all.
-        if value != sorted(value):
-            raise ValueError(
-                f"{where}: {target_key}.{key} must be sorted -- DigitalOcean does not "
-                f"promise the order it was written in, and a rule's nested lists are "
-                f"compared positionally; write {sorted(value)!r}"
-            )
 
     # --- projection -------------------------------------------------
 

@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import dataclasses
 import hashlib
+import io
 import json
 import logging
 import os
@@ -10,6 +12,7 @@ import pty
 import subprocess
 import sys
 import types
+import urllib.error
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -2877,6 +2880,202 @@ class TestReferenceResolutionAtApplyTime:
         assert "${" not in str(saved.resources["digitalocean.domain.example.com"].attributes)
 
 
+@pytest.mark.usefixtures("fake_do_token")
+class TestReferenceEdgesAreKept:
+    """#234: the edge type is kept in StateEntry.reference_edges, beside
+    depends_on, with no behaviour change."""
+
+    TARGET = "digitalocean.compute.zzz-01"
+    DEPENDENT = "digitalocean.compute.aaa-01"
+
+    def _apply(self, tmp_path: Path, drivers_dir: Path, params: dict, **kwargs):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(dependent, name="aaa-01", params=params, **kwargs)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        return planned, state.load(state_path, deployment="default")
+
+    def test_a_reference_records_its_target_and_attribute(self, tmp_path, drivers_dir):
+        planned, saved = self._apply(
+            tmp_path, drivers_dir, {"data": "${digitalocean.compute.zzz-01:ipv4_address}"}
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        by_key = {pr.entry.resource_key: pr for pr in planned}
+        assert by_key[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_explicit_only_edge_is_in_depends_on_but_not_reference_edges(
+        self, tmp_path, drivers_dir
+    ):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"}, depends_on=[self.TARGET])
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {}
+
+    def test_a_target_both_declared_and_referenced_is_a_reference_edge(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+            depends_on=[self.TARGET],
+        )
+
+        assert saved.resources[self.DEPENDENT].depends_on == [self.TARGET]
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_several_attributes_of_one_target_are_sorted_and_unique(self, tmp_path, drivers_dir):
+        _, saved = self._apply(
+            tmp_path,
+            drivers_dir,
+            {
+                "a": "${digitalocean.compute.zzz-01:ipv4_address}",
+                "b": "${digitalocean.compute.zzz-01:id}",
+                "c": "${digitalocean.compute.zzz-01:ipv4_address}",
+            },
+        )
+
+        assert saved.resources[self.DEPENDENT].reference_edges == {
+            self.TARGET: ["id", "ipv4_address"]
+        }
+
+    def test_a_resource_with_no_edges_has_empty_reference_edges(self, tmp_path, drivers_dir):
+        _, saved = self._apply(tmp_path, drivers_dir, {"data": "x"})
+
+        assert saved.resources[self.TARGET].reference_edges == {}
+
+    def test_planning_a_tracked_resource_that_gained_a_reference_records_it(
+        self, tmp_path, drivers_dir
+    ):
+        write_ref_driver(drivers_dir)
+        target = tmp_path / "target.aiform.md"
+        dependent = tmp_path / "dependent.aiform.md"
+        write_aiform_md(target, name="zzz-01")
+        write_aiform_md(
+            dependent,
+            name="aaa-01",
+            params={"data": "${digitalocean.compute.zzz-01:ipv4_address}"},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        planned, _ = orchestrator.build_create_plan(
+            [dependent, target], state_path=state_path, client=FakeClient([]), deployment="default"
+        )
+        orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
+        tracked = state.load(state_path, deployment="default")
+        tracked.resources[self.DEPENDENT].reference_edges = {}
+        state.save(tracked, state_path)
+
+        orchestrator.build_create_plan(
+            [dependent, target],
+            state_path=state_path,
+            client=FakeClient([categorization_response(action="no-op")] * 3),
+            deployment="default",
+        )
+
+        saved = state.load(state_path, deployment="default")
+        assert saved.resources[self.DEPENDENT].reference_edges == {self.TARGET: ["ipv4_address"]}
+
+    def test_an_update_rewrites_reference_edges(self, tmp_path: Path):
+        driver = FakeDriver(update_result={"id": "123", "region": "sfo3", "size": "s-2vcpu-4gb"})
+        existing = make_state_entry(
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            depends_on=["digitalocean.compute.dep-01", "digitalocean.compute.dep-02"],
+            reference_edges={"digitalocean.compute.dep-02": ["id"]},
+        )
+        pr = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="dropped a reference",
+            ),
+            driver=driver,
+            state_entry=existing,
+            desired_params={"region": "sfo3", "size": "s-2vcpu-4gb"},
+            depends_on=["digitalocean.compute.dep-01"],
+            reference_edges={},
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+
+        orchestrator.apply_plan([pr], state_path=state_path, yes=True, deployment="default")
+
+        saved = state.load(state_path, deployment="default")
+        entry = saved.resources["digitalocean.compute.telleztec-app-01"]
+        assert entry.depends_on == ["digitalocean.compute.dep-01"]
+        assert entry.reference_edges == {}
+
+    def test_destroying_a_target_prunes_it_from_reference_edges_too(
+        self, tmp_path: Path, drivers_dir: Path
+    ):
+        write_driver(drivers_dir, "digitalocean", "compute")
+        droplet_path = tmp_path / "droplet.aiform.md"
+        write_aiform_md(droplet_path, name="droplet-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
+                    depends_on=["digitalocean.compute.droplet-01", "digitalocean.compute.other"],
+                    reference_edges={
+                        "digitalocean.compute.droplet-01": ["provider_id"],
+                        "digitalocean.compute.other": ["id"],
+                    },
+                ),
+            },
+        )
+
+        planned, _ = orchestrator.build_destroy_plan(
+            [droplet_path], state_path=state_path, force=True, deployment="default"
+        )
+        orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=FakeClient([plan_review_response()]),
+            deployment="default",
+        )
+
+        entry = state.load(state_path, deployment="default").resources["digitalocean.domain.dns-01"]
+        assert entry.depends_on == ["digitalocean.compute.other"]
+        assert entry.reference_edges == {"digitalocean.compute.other": ["id"]}
+
+    def test_reference_edges_change_no_destroy_order(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        save_state(
+            state_path,
+            **{
+                self.TARGET: make_state_entry(name="zzz-01", aiform_md_path=str(tracked_file)),
+                self.DEPENDENT: make_state_entry(
+                    name="aaa-01",
+                    aiform_md_path=str(tracked_file),
+                    depends_on=[self.TARGET],
+                    reference_edges={self.TARGET: ["ipv4_address"]},
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == [self.DEPENDENT, self.TARGET]
+        assert warnings == []
+
+
 class TestBuildDestroyPlan:
     def test_paths_given_targets_named_resources(self, tmp_path: Path):
         aiform_md = tmp_path / "app.aiform.md"
@@ -3086,22 +3285,143 @@ class TestBuildDestroyPlan:
         )
         assert all(pr.entry.action == PlanAction.DESTROY for pr in planned)
 
-    def test_state_driven_cycle_raises_plan_blocked_error(self, tmp_path: Path):
+    def test_state_driven_cycle_is_named_and_broken_so_destroy_all_proceeds(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.a-01": make_state_entry(
-                    name="a-01", depends_on=["digitalocean.compute.b-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
                 ),
                 "digitalocean.compute.b-01": make_state_entry(
-                    name="b-01", depends_on=["digitalocean.compute.a-01"]
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
                 ),
             },
         )
 
-        with pytest.raises(PlanBlockedError):
-            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.a-01",
+            "digitalocean.compute.b-01",
+        }
+        assert len(warnings) == 1
+        assert "dependency cycle in state" in warnings[0]
+        assert (
+            "digitalocean.compute.a-01 -> digitalocean.compute.b-01 -> digitalocean.compute.a-01"
+            in warnings[0]
+        )
+        assert (
+            "so the destroy order no longer guarantees that digitalocean.compute.a-01 "
+            "is destroyed before digitalocean.compute.b-01, which it depends on" in warnings[0]
+        )
+
+    def test_a_self_dependency_in_state_is_dropped_with_a_warning(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.a-01"]
+        assert len(warnings) == 1
+        assert "digitalocean.compute.a-01 -> digitalocean.compute.a-01" in warnings[0]
+
+    def test_two_separate_cycles_each_get_a_warning_and_the_rest_keeps_its_order(
+        self, tmp_path: Path
+    ):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+
+        def entry(name, *targets):
+            return make_state_entry(
+                aiform_md_path=str(tracked_file),
+                name=name,
+                depends_on=[f"digitalocean.compute.{t}" for t in targets],
+            )
+
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": entry("a-01", "b-01"),
+                "digitalocean.compute.b-01": entry("b-01", "a-01"),
+                "digitalocean.compute.c-01": entry("c-01", "d-01"),
+                "digitalocean.compute.d-01": entry("d-01", "c-01"),
+                "digitalocean.compute.e-01": entry("e-01", "f-01"),
+                "digitalocean.compute.f-01": entry("f-01"),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        keys = [pr.entry.resource_key for pr in planned]
+        assert len(keys) == 6
+        assert len(warnings) == 2
+        assert keys.index("digitalocean.compute.e-01") < keys.index("digitalocean.compute.f-01")
+
+    def test_cycle_handling_is_deterministic(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="a-01",
+                    depends_on=["digitalocean.compute.b-01"],
+                ),
+                "digitalocean.compute.b-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
+                    name="b-01",
+                    depends_on=["digitalocean.compute.a-01"],
+                ),
+            },
+        )
+
+        first = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+        second = orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
+
+        assert [pr.entry.resource_key for pr in first[0]] == [
+            pr.entry.resource_key for pr in second[0]
+        ]
+        assert first[1] == second[1]
+
+    def test_a_cycle_through_the_file_driven_destroy_still_blocks(self, tmp_path: Path):
+        a_path = tmp_path / "a.aiform.md"
+        b_path = tmp_path / "b.aiform.md"
+        write_aiform_md(a_path, name="a-01", depends_on=["digitalocean.compute.b-01"])
+        write_aiform_md(b_path, name="b-01", depends_on=["digitalocean.compute.a-01"])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path)
+
+        with pytest.raises(PlanBlockedError, match="dependency cycle"):
+            orchestrator.build_destroy_plan(
+                [a_path, b_path], state_path=state_path, deployment="default"
+            )
 
     def test_zero_edge_destroy_order_from_paths_is_reverse_alphabetical(self, tmp_path: Path):
         # Pins that with no depends_on anywhere, destroy order inverts the
@@ -3215,11 +3535,14 @@ class TestBuildDestroyPlan:
         assert "digitalocean.compute.ghost-02" in reason
 
     def test_force_drops_dangling_edge_and_warns_per_pair(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=[
                         "digitalocean.compute.ghost-01",
@@ -3239,12 +3562,17 @@ class TestBuildDestroyPlan:
         assert any("digitalocean.compute.ghost-02" in w for w in warnings)
 
     def test_force_drops_only_the_dangling_edge_and_keeps_real_ordering(self, tmp_path: Path):
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.db-01": make_state_entry(name="db-01"),
+                "digitalocean.compute.db-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="db-01"
+                ),
                 "digitalocean.compute.app-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     name="app-01",
                     depends_on=["digitalocean.compute.db-01", "digitalocean.compute.ghost-01"],
                 ),
@@ -3384,7 +3712,8 @@ class TestReverseDependentDestroyRefusal:
             [droplet_path, dns_path], state_path=state_path, deployment="default"
         )
 
-        assert warnings == []
+        # Only the exposure warning (#235) is expected: no refusal, no dropped-edge warning.
+        assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
             "digitalocean.domain.dns-01",
@@ -3419,12 +3748,17 @@ class TestReverseDependentDestroyRefusal:
         # everything tracked, so a dependent can never be left outside the
         # run. This pins that the new check, which only the paths-driven
         # producer calls, does not creep into the other one.
+        tracked_file = tmp_path / "tracked.aiform.md"
+        tracked_file.write_text("x")
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
             state_path,
             **{
-                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
+                "digitalocean.compute.droplet-01": make_state_entry(
+                    aiform_md_path=str(tracked_file), name="droplet-01"
+                ),
                 "digitalocean.domain.dns-01": make_state_entry(
+                    aiform_md_path=str(tracked_file),
                     resource_type="domain",
                     name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
@@ -3436,7 +3770,8 @@ class TestReverseDependentDestroyRefusal:
             None, state_path=state_path, deployment="default"
         )
 
-        assert warnings == []
+        # Only the exposure warning (#235) is expected: the reverse-dependent check adds none.
+        assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
             "digitalocean.domain.dns-01",
@@ -3716,6 +4051,7 @@ class TestStateDrivenDestroyPrunesNothing:
 
 LOGGING_DRIVER_SOURCE = """\
 import json
+import os
 
 from aiform.driver import ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
@@ -3723,6 +4059,7 @@ from aiform.exceptions import ResourceNotFoundError
 LOG = {log!r}
 LIVE = {live!r}
 KIND = {kind!r}
+FAIL_DELETE = {fail_delete!r}
 
 
 def _log(*entry):
@@ -3767,6 +4104,8 @@ class Driver(ResourceDriver):
 
     def delete(self, id, credentials):
         _log("delete", KIND, id)
+        if os.path.exists(FAIL_DELETE):
+            raise RuntimeError("simulated CSP delete failure")
 """
 
 DROPLET_ID = 123456789
@@ -3833,6 +4172,7 @@ class RepairWorld:
         self.tmp_path = tmp_path
         self.log_path = tmp_path / "calls.jsonl"
         self.live_path = tmp_path / "live-firewall.json"
+        self.fail_delete_path = tmp_path / "fail-delete"
         self.state_path = tmp_path / ".aiform" / "state.json"
         for provider, resource, kind in (
             ("digitalocean", "compute", "droplet"),
@@ -3843,9 +4183,18 @@ class RepairWorld:
                 provider,
                 resource,
                 LOGGING_DRIVER_SOURCE.format(
-                    log=str(self.log_path), live=str(self.live_path), kind=kind
+                    log=str(self.log_path),
+                    live=str(self.live_path),
+                    kind=kind,
+                    fail_delete=str(self.fail_delete_path),
                 ),
             )
+
+    def fail_deletes(self, failing: bool = True) -> None:
+        if failing:
+            self.fail_delete_path.write_text("")
+        else:
+            self.fail_delete_path.unlink(missing_ok=True)
 
     def set_live(self, droplet_ids=(DROPLET_ID,), **overrides) -> None:
         attributes = firewall_attributes(droplet_ids, **overrides)
@@ -3983,7 +4332,7 @@ class TestRepairInsteadOfRefusingOnThePathsRoute:
 
         assert [pr.entry.action for pr in planned] == [PlanAction.DESTROY] * 2
         assert all(pr.repairs == [] for pr in planned)
-        assert warnings == []
+        assert not any("repaired before the destroy" in warning for warning in warnings)
 
     @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
     def test_a_firewall_naming_the_droplet_only_inside_a_rule_is_still_refused(
@@ -4410,6 +4759,109 @@ class TestApplyingARepair:
 
         assert not droplet_path.exists()
         assert firewall_path.read_text() == firewall_text
+
+
+class TestRepairIsReportedAndRestartable:
+    """4a's repair is an executed step for 4b's failure report and restart."""
+
+    def build(self, world: RepairWorld, *, marker: bool = False):
+        return TestApplyingARepair().build(world, marker=marker)
+
+    def apply_yes(self, planned, world: RepairWorld):
+        return apply_with_confirms(planned, world, yes=True)
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_repair_then_a_failing_delete_reports_the_repair_applied_and_the_delete_failed(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        repair_world.fail_deletes()
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            self.apply_yes(planned, repair_world)
+
+        progress = exc_info.value.apply_progress
+        assert [e.resource_key for e in progress.applied] == [FIREWALL_KEY]
+        assert progress.failed.resource_key == DROPLET_KEY
+        assert progress.not_run == []
+        assert progress.repairs == {FIREWALL_KEY: [DROPLET_KEY]}
+        saved = repair_world.reload()
+        assert DROPLET_KEY in saved.resources
+        assert saved.resources[FIREWALL_KEY].attributes["droplet_ids"] == []
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_rerunning_after_the_failed_delete_converges_without_a_second_repair(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        repair_world.fail_deletes()
+        with pytest.raises(DriverExecutionError):
+            self.apply_yes(self.build(repair_world, marker=marker), repair_world)
+        repair_world.fail_deletes(False)
+
+        rerun = self.build(repair_world, marker=marker)
+        result, _prompts = self.apply_yes(rerun, repair_world)
+
+        assert [pr.repairs for pr in rerun] == [[]]
+        assert [(e.resource_key, e.action) for e in result.executed] == [
+            (DROPLET_KEY, PlanAction.DESTROY)
+        ]
+        assert repair_world.mutations() == [
+            ("update", "firewall"),
+            ("delete", "droplet"),
+            ("delete", "droplet"),
+        ]
+        saved = repair_world.reload()
+        assert DROPLET_KEY not in saved.resources
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_a_failed_repair_is_the_failed_entry_and_the_delete_is_not_run(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry(tags=["broken"])}
+        )
+        repair_world.set_live((DROPLET_ID,), tags=["broken"])
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            self.apply_yes(planned, repair_world)
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed.resource_key == FIREWALL_KEY
+        assert [e.resource_key for e in progress.not_run] == [DROPLET_KEY]
+        assert progress.repairs == {FIREWALL_KEY: [DROPLET_KEY]}
+        assert ("delete", "droplet") not in repair_world.mutations()
+        assert DROPLET_KEY in repair_world.reload().resources
+
+    def test_a_repair_drops_the_destroyed_target_from_the_firewalls_reference_edges(
+        self, repair_world: RepairWorld
+    ):
+        firewall = firewall_entry(depends_on=[DROPLET_KEY, OTHER_DROPLET_KEY])
+        firewall.reference_edges = {
+            DROPLET_KEY: ["provider_id"],
+            OTHER_DROPLET_KEY: ["provider_id"],
+        }
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                OTHER_DROPLET_KEY: droplet_entry("droplet-02", str(OTHER_DROPLET_ID)),
+                FIREWALL_KEY: firewall,
+            }
+        )
+        repair_world.set_live((DROPLET_ID, OTHER_DROPLET_ID))
+
+        self.apply_yes(self.build(repair_world), repair_world)
+
+        saved = repair_world.reload().resources[FIREWALL_KEY]
+        assert saved.depends_on == [OTHER_DROPLET_KEY]
+        assert saved.reference_edges == {OTHER_DROPLET_KEY: ["provider_id"]}
 
 
 class TestBuildPlanSummary:
@@ -5804,6 +6256,169 @@ class TestMoveToTrash:
         assert dest.read_text() == "new content"
 
 
+class TestDestroyWithTheTrackedFileMissing:
+    KEY = "digitalocean.compute.telleztec-app-01"
+
+    def _destroy_pr(self, existing, aiform_md: Path) -> "orchestrator.PlannedResource":
+        return orchestrator.PlannedResource(
+            entry=PlanEntry(
+                resource_key=self.KEY, action=PlanAction.DESTROY, rationale="explicit destroy"
+            ),
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            desired_params={},
+            aiform_md_path=aiform_md,
+            current_aiform_md_sha256=None,
+            driver=None,
+            driver_info=None,
+            credentials=None,
+            state_entry=existing,
+        )
+
+    def test_apply_completes_when_the_recorded_file_is_gone(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        missing = tmp_path / "moved-away.aiform.md"
+        existing = make_state_entry(id="123", aiform_md_path=str(missing))
+        pr = self._destroy_pr(existing, missing)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(missing) in caplog.text
+        assert not (tmp_path / ".aiform" / "trash").exists()
+
+    def test_apply_still_moves_a_file_that_exists_to_trash(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert not aiform_md.exists()
+        assert any((tmp_path / ".aiform" / "trash").iterdir())
+
+    def test_apply_of_an_untracked_delete_marked_file_that_vanished_also_completes(
+        self, tmp_path: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        vanished = tmp_path / "AIFORM-DELETE-app.aiform.md"
+        pr = self._destroy_pr(None, vanished)
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        result = orchestrator.apply_plan(
+            [pr], state_path=state_path, yes=True, client=client, deployment="default"
+        )
+
+        assert result.executed == [pr.entry]
+
+    def test_other_filesystem_errors_from_the_trash_move_still_raise(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def failing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise PermissionError("simulated")
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", failing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with pytest.raises(PermissionError):
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+    def test_a_file_that_vanishes_between_the_check_and_the_trash_move_is_not_an_error(
+        self, tmp_path: Path, drivers_dir: Path, prompts_dir: Path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        aiform_md = tmp_path / "app.aiform.md"
+        write_aiform_md(aiform_md)
+        existing = make_state_entry(id="123", aiform_md_path=str(aiform_md))
+        pr = self._destroy_pr(existing, aiform_md)
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{self.KEY: existing})
+
+        def vanishing_move_to_trash(path, *, trash_dir=orchestrator.TRASH_DIR):
+            raise FileNotFoundError(str(path))
+
+        monkeypatch.setattr(orchestrator, "move_to_trash", vanishing_move_to_trash)
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with caplog.at_level(logging.WARNING):
+            result = orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert result.executed == [pr.entry]
+        assert self.KEY not in state.load(state_path, deployment="default").resources
+        assert str(aiform_md) in caplog.text
+
+    def test_destroy_all_plan_names_a_tracked_file_that_is_missing(self, tmp_path: Path):
+        missing = tmp_path / "moved-away.aiform.md"
+        present = tmp_path / "here.aiform.md"
+        write_aiform_md(present, name="here-01")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.gone-01": make_state_entry(
+                    name="gone-01", aiform_md_path=str(missing)
+                ),
+                "digitalocean.compute.here-01": make_state_entry(
+                    name="here-01", aiform_md_path=str(present)
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert {pr.entry.resource_key for pr in planned} == {
+            "digitalocean.compute.gone-01",
+            "digitalocean.compute.here-01",
+        }
+        assert len(warnings) == 1
+        assert "digitalocean.compute.gone-01" in warnings[0]
+        assert str(missing) in warnings[0]
+        assert "here-01" not in warnings[0]
+
+
 # Reproducing #163 faithfully needs a real terminal: the keystroke has to sit
 # in the tty driver's input queue while the program is still busy, which no
 # in-process stdin double can imitate.
@@ -5968,3 +6583,661 @@ class TestDeploymentIsRequired:
     def test_omitting_deployment_is_a_type_error(self, tmp_path: Path, call):
         with pytest.raises(TypeError, match="deployment"):
             call(tmp_path / "state.json")
+
+
+def _create_pr(name: str, *, fails: bool = False):
+    driver = FakeDriver(create_result={"id": f"id-{name}", "region": "sfo3"})
+    if fails:
+
+        def boom(*args, **kwargs):
+            raise RuntimeError(f"CSP refused {name}")
+
+        driver.create = boom
+    return make_planned_resource(
+        driver=driver,
+        state_entry=None,
+        name=name,
+        entry=PlanEntry(
+            resource_key=f"digitalocean.compute.{name}",
+            action=PlanAction.CREATE,
+            rationale="new resource",
+        ),
+    )
+
+
+class TestApplyFailureProgress:
+    """#229/#235: the executed prefix survives the raise path."""
+
+    def _state(self, tmp_path: Path) -> Path:
+        state_path = tmp_path / ".aiform" / "state.json"
+        state.save(state.State(deployment="default"), state_path)
+        return state_path
+
+    def test_a_mid_plan_failure_carries_applied_failed_and_not_run(self, tmp_path: Path):
+        first, second, third = _create_pr("a"), _create_pr("b", fails=True), _create_pr("c")
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [first, second, third],
+                state_path=self._state(tmp_path),
+                yes=True,
+                deployment="default",
+            )
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == [first.entry]
+        assert progress.failed == second.entry
+        assert progress.not_run == [third.entry]
+
+    def test_a_state_save_failure_reports_the_resource_as_failed_only(
+        self, tmp_path: Path, monkeypatch
+    ):
+        first, second = _create_pr("a"), _create_pr("b")
+        state_path = self._state(tmp_path)
+
+        def boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(state, "save", boom)
+
+        with pytest.raises(OSError) as exc_info:
+            orchestrator.apply_plan(
+                [first, second], state_path=state_path, yes=True, deployment="default"
+            )
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed == first.entry
+        assert progress.not_run == [second.entry]
+
+    def test_the_exception_type_and_message_are_unchanged(self, tmp_path: Path):
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [_create_pr("a", fails=True)],
+                state_path=self._state(tmp_path),
+                yes=True,
+                deployment="default",
+            )
+
+        assert exc_info.value.operation == "create"
+        assert "CSP refused a" in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+    def test_a_failure_on_the_first_entry_has_nothing_applied(self, tmp_path: Path):
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [_create_pr("a", fails=True), _create_pr("b")],
+                state_path=self._state(tmp_path),
+                yes=True,
+                deployment="default",
+            )
+
+        assert exc_info.value.apply_progress.applied == []
+        assert len(exc_info.value.apply_progress.not_run) == 1
+
+    def test_no_op_entries_are_never_listed_as_not_run(self, tmp_path: Path):
+        no_op = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.quiet",
+                action=PlanAction.NO_OP,
+                rationale="no changes",
+            )
+        )
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [_create_pr("a", fails=True), no_op, _create_pr("c")],
+                state_path=self._state(tmp_path),
+                yes=True,
+                deployment="default",
+            )
+
+        assert [e.resource_key for e in exc_info.value.apply_progress.not_run] == [
+            "digitalocean.compute.c"
+        ]
+
+    def test_the_applied_prefix_is_already_saved_to_state(self, tmp_path: Path):
+        state_path = self._state(tmp_path)
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [_create_pr("a"), _create_pr("b", fails=True)],
+                state_path=state_path,
+                yes=True,
+                deployment="default",
+            )
+
+        saved = state.load(state_path, deployment="default")
+        assert list(saved.resources) == ["digitalocean.compute.a"]
+
+    def test_a_failed_replace_is_failed_not_applied(self, tmp_path: Path):
+        driver = FakeDriver(update_exception=DriverUpdateNotSupported("image change"))
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("CSP create quota exceeded")
+
+        driver.create = boom
+        existing = make_state_entry(id="123")
+        replace = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="image change",
+                likely_replace=True,
+            ),
+            driver=driver,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [replace, _create_pr("later")],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+            )
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed == replace.entry
+        assert [e.resource_key for e in progress.not_run] == ["digitalocean.compute.later"]
+
+    def test_a_mid_loop_plan_blocked_error_carries_progress_too(self, tmp_path: Path):
+        driver = FakeDriver(update_exception=DriverUpdateNotSupported("image change"))
+        existing = make_state_entry(id="123")
+        replace = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.UPDATE,
+                rationale="image change",
+                likely_replace=False,
+            ),
+            driver=driver,
+            state_entry=existing,
+        )
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{"digitalocean.compute.telleztec-app-01": existing})
+        block_flag = {
+            "resource_key": replace.entry.resource_key,
+            "concern": "prod",
+            "severity": "block",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[block_flag])])
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.apply_plan(
+                [_create_pr("first"), replace],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+            )
+
+        progress = exc_info.value.apply_progress
+        assert [e.resource_key for e in progress.applied] == ["digitalocean.compute.first"]
+        assert progress.failed == replace.entry
+
+    def test_a_block_before_anything_runs_carries_no_progress(self, tmp_path: Path):
+        destroy = make_planned_resource(
+            entry=PlanEntry(
+                resource_key="digitalocean.compute.telleztec-app-01",
+                action=PlanAction.DESTROY,
+                rationale="explicit destroy",
+            ),
+            driver=None,
+            state_entry=make_state_entry(),
+        )
+        block_flag = {
+            "resource_key": destroy.entry.resource_key,
+            "concern": "prod",
+            "severity": "block",
+        }
+        client = FakeClient([plan_review_response(safe_to_proceed=False, flags=[block_flag])])
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.apply_plan(
+                [destroy],
+                state_path=self._state(tmp_path),
+                yes=True,
+                client=client,
+                deployment="default",
+            )
+
+        assert not hasattr(exc_info.value, "apply_progress")
+
+
+def _destroy_pr(tmp_path: Path, name: str, *, depends_on: list[str] | None = None):
+    aiform_md = tmp_path / f"{name}.aiform.md"
+    write_aiform_md(aiform_md, name=name)
+    existing = make_state_entry(
+        name=name, id=f"id-{name}", aiform_md_path=str(aiform_md), depends_on=depends_on or []
+    )
+    key = f"digitalocean.compute.{name}"
+    pr = orchestrator.PlannedResource(
+        entry=PlanEntry(resource_key=key, action=PlanAction.DESTROY, rationale="explicit destroy"),
+        provider="digitalocean",
+        resource_type="compute",
+        name=name,
+        desired_params={},
+        aiform_md_path=aiform_md,
+        current_aiform_md_sha256=None,
+        driver=None,
+        driver_info=None,
+        credentials=None,
+        state_entry=existing,
+        depends_on=depends_on or [],
+    )
+    return pr, key, existing
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("https://api.example/v2/x", code, "error", {}, io.BytesIO(b""))
+
+
+class TestDestroyRetry:
+    def _setup(self, tmp_path: Path, monkeypatch, *, failures: int):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        sleeps: list[float] = []
+        monkeypatch.setattr(orchestrator.time, "sleep", sleeps.append)
+        driver = FakeDriver()
+        remaining = {"failures": failures}
+
+        def flaky_delete(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            if remaining["failures"] > 0:
+                remaining["failures"] -= 1
+                raise _http_error(503)
+
+        driver.delete = flaky_delete
+        monkeypatch.setattr(orchestrator, "load_driver", lambda *a, **kw: driver)
+        pr, key, existing = _destroy_pr(tmp_path, "app")
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{key: existing})
+        client = FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+        return pr, key, state_path, client, driver, sleeps
+
+    def test_the_bounds_are_four_attempts_with_5_15_45_second_waits(self):
+        assert orchestrator.DESTROY_RETRY_ATTEMPTS == 4
+        assert orchestrator.DESTROY_RETRY_DELAYS_SECONDS == (5, 15, 45)
+
+    def test_a_delete_that_fails_twice_then_succeeds_is_destroyed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=2)
+
+        result = orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert result.executed == [pr.entry]
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 3
+        assert sleeps == [5, 15]
+        assert key not in state.load(state_path, deployment="default").resources
+
+    def test_a_delete_that_always_fails_gives_up_after_four_attempts(
+        self, tmp_path: Path, monkeypatch
+    ):
+        pr, key, state_path, client, driver, sleeps = self._setup(
+            tmp_path, monkeypatch, failures=99
+        )
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                [pr],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+                retry_destroy=True,
+            )
+
+        assert exc_info.value.operation == "delete"
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 4
+        assert sleeps == [5, 15, 45]
+        assert key in state.load(state_path, deployment="default").resources
+        assert exc_info.value.apply_progress.failed == pr.entry
+
+    def test_without_retry_destroy_the_first_failure_is_final(self, tmp_path: Path, monkeypatch):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=1)
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [pr], state_path=state_path, yes=True, client=client, deployment="default"
+            )
+
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 1
+        assert sleeps == []
+
+    def test_each_retry_logs_a_warning(self, tmp_path: Path, monkeypatch, caplog):
+        caplog.set_level("WARNING", logger="aiform.orchestrator")
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=1)
+
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        retries = [r for r in caplog.records if getattr(r, "retry", None)]
+        assert len(retries) == 1
+        assert retries[0].levelno == logging.WARNING
+        assert retries[0].attempt == 1
+
+    @pytest.mark.parametrize("code", [422, 400, 403, 404])
+    def test_a_non_retryable_status_is_not_retried(self, tmp_path: Path, monkeypatch, code):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+
+        def refuse(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            raise _http_error(code)
+
+        driver.delete = refuse
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [pr],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+                retry_destroy=True,
+            )
+
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 1
+        assert sleeps == []
+
+    @pytest.mark.parametrize(
+        "error",
+        [_http_error(429), _http_error(503), TimeoutError("timed out"), ConnectionResetError()],
+        ids=["429", "503", "timeout", "reset"],
+    )
+    def test_a_transient_error_is_retried(self, tmp_path: Path, monkeypatch, error):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+        outcomes = [error, None]
+
+        def flaky(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            outcome = outcomes.pop(0)
+            if outcome is not None:
+                raise outcome
+
+        driver.delete = flaky
+
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert len([c for c in driver.calls if c[0] == "delete"]) == 2
+        assert sleeps == [5]
+
+    def test_a_non_http_programming_error_is_not_retried(self, tmp_path: Path, monkeypatch):
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=0)
+
+        def broken(id, credentials):
+            driver.calls.append(("delete", id, credentials))
+            raise KeyError("id")
+
+        driver.delete = broken
+
+        with pytest.raises(DriverExecutionError):
+            orchestrator.apply_plan(
+                [pr],
+                state_path=state_path,
+                yes=True,
+                client=client,
+                deployment="default",
+                retry_destroy=True,
+            )
+
+        assert sleeps == []
+
+    def test_the_retry_notice_reaches_the_default_stderr_stream_as_a_message(
+        self, tmp_path: Path, monkeypatch
+    ):
+        from aiform import log
+
+        pr, key, state_path, client, driver, sleeps = self._setup(tmp_path, monkeypatch, failures=1)
+        stream = io.StringIO()
+        log.configure(verbose=False, stream=stream, log_dir=tmp_path / "logs")
+
+        orchestrator.apply_plan(
+            [pr],
+            state_path=state_path,
+            yes=True,
+            client=client,
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert f"retrying delete of {key} in 5s" in stream.getvalue()
+
+    def test_a_forced_rerun_after_a_partial_failure_destroys_only_the_remainder(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.setattr(orchestrator.time, "sleep", lambda s: None)
+        deleted: list[str] = []
+        failing = {"id-web"}
+
+        class Flaky(FakeDriver):
+            def delete(self, id, credentials):
+                if id in failing:
+                    raise _http_error(503)
+                deleted.append(id)
+
+        monkeypatch.setattr(orchestrator, "load_driver", lambda *a, **kw: Flaky())
+        db_pr, db_key, db_entry = _destroy_pr(tmp_path, "db")
+        web_pr, web_key, web_entry = _destroy_pr(tmp_path, "web", depends_on=[db_key])
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **{db_key: db_entry, web_key: web_entry})
+
+        def client():
+            return FakeClient([plan_review_response(safe_to_proceed=True, flags=[])])
+
+        planned, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+        with pytest.raises(DriverExecutionError) as exc_info:
+            orchestrator.apply_plan(
+                planned,
+                state_path=state_path,
+                yes=True,
+                client=client(),
+                deployment="default",
+                retry_destroy=True,
+            )
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed.resource_key == web_key
+        assert [e.resource_key for e in progress.not_run] == [db_key]
+
+        failing.clear()
+        planned, _ = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default", force=True
+        )
+        result = orchestrator.apply_plan(
+            planned,
+            state_path=state_path,
+            yes=True,
+            client=client(),
+            deployment="default",
+            retry_destroy=True,
+        )
+
+        assert [e.resource_key for e in result.executed] == [web_key, db_key]
+        assert deleted == ["id-web", "id-db"]
+        assert state.load(state_path, deployment="default").resources == {}
+
+
+def _protector_and_target(tmp_path: Path, *, protector_type: str, depends_on: list[str]):
+    target, target_key, _ = _destroy_pr(tmp_path, "web")
+    protector, protector_key, _ = _destroy_pr(tmp_path, "guard", depends_on=depends_on)
+    protector = dataclasses.replace(
+        protector,
+        resource_type=protector_type,
+        entry=protector.entry.model_copy(
+            update={"resource_key": f"digitalocean.{protector_type}.guard"}
+        ),
+    )
+    return [protector, target], target_key, protector.entry.resource_key
+
+
+class TestExposureWarningWording:
+    def test_the_wording_comes_from_the_table_entry_not_a_hardcoded_firewall(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setitem(
+            orchestrator._PROTECTS,
+            ("digitalocean", "waf"),
+            ({("digitalocean", "compute")}, "unscreened"),
+        )
+        planned, target_key, protector_key = _protector_and_target(
+            tmp_path, protector_type="waf", depends_on=["digitalocean.compute.web"]
+        )
+
+        (warning,) = orchestrator._exposure_warnings(planned)
+
+        assert f"{protector_key} goes first" in warning
+        assert f"{target_key} runs unscreened" in warning
+        assert "firewall" not in warning
+
+    def test_a_protector_with_no_edge_to_the_target_gets_no_warning(self, tmp_path: Path):
+        # Documented false negative: a firewall naming droplet_ids literally,
+        # with no reference and no depends_on, has no edge to find.
+        planned, _, _ = _protector_and_target(tmp_path, protector_type="firewall", depends_on=[])
+
+        assert orchestrator._exposure_warnings(planned) == []
+
+
+class TestDestroyExposureWarning:
+    def _firewall_and_droplet(self, tmp_path: Path, *, droplet_in_state: bool = True):
+        droplet = make_state_entry(name="web", id="1")
+        firewall = make_state_entry(
+            resource_type="firewall",
+            name="fw",
+            id="fw-1",
+            depends_on=["digitalocean.compute.web"],
+        )
+        entries = {"digitalocean.firewall.fw": firewall}
+        if droplet_in_state:
+            entries["digitalocean.compute.web"] = droplet
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(state_path, **entries)
+        return state_path
+
+    def test_destroying_a_firewall_and_the_droplet_it_protects_warns_about_the_window(
+        self, tmp_path: Path
+    ):
+        state_path = self._firewall_and_droplet(tmp_path)
+
+        _, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        [warning] = [w for w in warnings if "unfiltered" in w]
+        assert "digitalocean.firewall.fw" in warning
+        assert "digitalocean.compute.web" in warning
+        assert "goes first" in warning
+        assert "indefinitely if that delete fails" in warning
+
+    def test_the_paths_driven_producer_warns_too(self, tmp_path: Path):
+        state_path = self._firewall_and_droplet(tmp_path)
+        fw_path = tmp_path / "fw.aiform.md"
+        droplet_path = tmp_path / "web.aiform.md"
+        write_aiform_md(
+            fw_path,
+            resource="firewall",
+            name="fw",
+            depends_on=["digitalocean.compute.web"],
+        )
+        write_aiform_md(droplet_path, name="web")
+
+        _, warnings = orchestrator.build_destroy_plan(
+            [fw_path, droplet_path], state_path=state_path, deployment="default"
+        )
+
+        assert any("unfiltered" in w for w in warnings)
+
+    def test_destroying_only_the_firewall_does_not_warn(self, tmp_path: Path):
+        state_path = self._firewall_and_droplet(tmp_path)
+        fw_path = tmp_path / "fw.aiform.md"
+        write_aiform_md(
+            fw_path,
+            resource="firewall",
+            name="fw",
+            depends_on=["digitalocean.compute.web"],
+        )
+
+        _, warnings = orchestrator.build_destroy_plan(
+            [fw_path], state_path=state_path, deployment="default"
+        )
+
+        assert not any("unfiltered" in w for w in warnings)
+
+    def test_no_warning_when_a_state_cycle_makes_the_droplet_go_first(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                # Load-bearing: it makes the dropped cycle edge fw -> web rather
+                # than web -> fw; without it the droplet is not left first.
+                "digitalocean.compute.a": make_state_entry(
+                    name="a", id="3", depends_on=["digitalocean.firewall.fw"]
+                ),
+                "digitalocean.compute.web": make_state_entry(
+                    name="web", id="1", depends_on=["digitalocean.firewall.fw"]
+                ),
+                "digitalocean.firewall.fw": make_state_entry(
+                    resource_type="firewall",
+                    name="fw",
+                    id="fw-1",
+                    depends_on=["digitalocean.compute.web"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        order = [pr.entry.resource_key for pr in planned]
+        assert order.index("digitalocean.compute.web") < order.index("digitalocean.firewall.fw")
+        assert any("dependency cycle in state" in w for w in warnings)
+        assert not any("unfiltered" in w for w in warnings)
+
+    def test_two_droplets_destroyed_together_do_not_warn(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.db": make_state_entry(name="db", id="1"),
+                "digitalocean.compute.web": make_state_entry(
+                    name="web", id="2", depends_on=["digitalocean.compute.db"]
+                ),
+            },
+        )
+
+        _, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        assert not any("unfiltered" in w for w in warnings)

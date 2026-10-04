@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import io
 import json
 import logging
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from email.message import Message
 
@@ -181,6 +183,8 @@ class FakeUrlopen:
         if not queue:
             raise AssertionError(f"unscripted request: {method} {url}")
         result = queue.pop(0) if len(queue) > 1 else queue[0]
+        if callable(result):
+            result = result()
         if isinstance(result, Exception):
             raise result
         return result
@@ -795,13 +799,18 @@ class TestDelete:
 
         assert result is None
 
-    def test_makes_at_most_two_api_calls(self, driver, fake_urlopen):
-        fake_urlopen.script("GET", droplet_url("123"), FakeHTTPResponse(200, make_droplet(id=123)))
+    def test_makes_the_ip_lookup_the_delete_and_one_confirming_get(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(id=123)),
+            http_error(droplet_url("123"), 404),
+        )
         fake_urlopen.script("DELETE", droplet_url("123"), FakeHTTPResponse(204, None))
 
         driver.delete("123", CREDENTIALS)
 
-        assert len(fake_urlopen.calls) == 2
+        assert [c["method"] for c in fake_urlopen.calls] == ["GET", "DELETE", "GET"]
 
     def test_prunes_the_known_hosts_entry_for_the_deleted_droplet(
         self, driver, fake_urlopen, ssh_env
@@ -2617,6 +2626,26 @@ class TestSshFirstPowerOff:
 RESERVED = ("aiform-managed", "aiform:prod")
 
 
+def marker_for(name: str, deployment: str = "prod") -> str:
+    return f"aiform:{deployment}:name:{hashlib.sha256(name.encode()).hexdigest()}"
+
+
+def marker_listing_url(marker: str) -> str:
+    return f"{droplets_url()}?tag_name={urllib.parse.quote(marker, safe='')}&per_page=200"
+
+
+def listing(*ids, next_url: str | None = None) -> FakeHTTPResponse:
+    droplets = [make_droplet(id=i, status="new")["droplet"] for i in ids]
+    links = {"pages": {"next": next_url}} if next_url else {}
+    return FakeHTTPResponse(200, {"droplets": droplets, "links": links})
+
+
+def post_body(fake: FakeUrlopen) -> dict:
+    return next(c for c in fake.calls if c["method"] == "POST" and c["url"] == droplets_url())[
+        "body"
+    ]
+
+
 @pytest.fixture
 def tagged_driver() -> Driver:
     return Driver(reserved_tags=RESERVED)
@@ -2626,6 +2655,7 @@ class TestReservedTags:
     """#249: specs/resource_tagging.md, droplet section."""
 
     def _script_create(self, fake, *, live_tags):
+        fake.script("GET", marker_listing_url(marker_for(NAME)), listing())
         fake.script(
             "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
         )
@@ -2636,25 +2666,25 @@ class TestReservedTags:
     def test_create_sends_both_reserved_tags_when_the_file_has_no_tags(
         self, tagged_driver, fake_urlopen
     ):
-        self._script_create(fake_urlopen, live_tags=list(RESERVED))
+        self._script_create(fake_urlopen, live_tags=[*RESERVED, marker_for(NAME)])
 
         tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
 
-        assert fake_urlopen.calls[0]["body"]["tags"] == list(RESERVED)
+        assert post_body(fake_urlopen)["tags"] == [*RESERVED, marker_for(NAME)]
 
     def test_create_appends_reserved_tags_after_the_users_tags(self, tagged_driver, fake_urlopen):
-        self._script_create(fake_urlopen, live_tags=["web", *RESERVED])
+        self._script_create(fake_urlopen, live_tags=["web", *RESERVED, marker_for(NAME)])
 
         tagged_driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
 
-        assert fake_urlopen.calls[0]["body"]["tags"] == ["web", *RESERVED]
+        assert post_body(fake_urlopen)["tags"] == ["web", *RESERVED, marker_for(NAME)]
 
     def test_create_without_reserved_tags_sends_only_the_users_tags(self, driver, fake_urlopen):
         self._script_create(fake_urlopen, live_tags=["web"])
 
         driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
 
-        assert fake_urlopen.calls[0]["body"]["tags"] == ["web"]
+        assert post_body(fake_urlopen)["tags"] == ["web"]
 
     @pytest.mark.parametrize("bad", ["aiform-managed", "aiform:other", "aiform:"])
     def test_create_rejects_a_reserved_tag_in_params_before_any_call(
@@ -2666,7 +2696,7 @@ class TestReservedTags:
         assert fake_urlopen.calls == []
 
     def test_create_result_omits_the_reserved_tags(self, tagged_driver, fake_urlopen):
-        self._script_create(fake_urlopen, live_tags=["web", *RESERVED])
+        self._script_create(fake_urlopen, live_tags=["web", *RESERVED, marker_for(NAME)])
 
         result = tagged_driver.create(NAME, {**BASE_PARAMS, "tags": ["web"]}, CREDENTIALS)
 
@@ -2735,3 +2765,446 @@ class TestReservedTags:
             tagged_driver.create(NAME, {**BASE_PARAMS, "tags": "web"}, CREDENTIALS)
 
         assert fake_urlopen.calls == []
+
+
+class TestDeleteWaitsForTeardown:
+    """F1 of the #269 review: DELETE is asynchronous, so delete() waits for
+    the by-id GET to 404 before a later process looks the droplet up."""
+
+    MARKER = marker_for(NAME)
+
+    def _script_teardown(self, fake, *, gets_before_404):
+        gets = [FakeHTTPResponse(200, make_droplet(id=777)) for _ in range(gets_before_404 + 1)]
+        gets.append(http_error(droplet_url("777"), 404))
+        fake.script("GET", droplet_url("777"), *gets)
+        fake.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+
+    def test_delete_returns_only_after_the_droplet_get_is_404(self, driver, fake_urlopen):
+        self._script_teardown(fake_urlopen, gets_before_404=2)
+
+        driver.delete("777", CREDENTIALS)
+
+        methods = [(c["method"], c["url"]) for c in fake_urlopen.calls]
+        gets_after_delete = methods[methods.index(("DELETE", droplet_url("777"))) + 1 :]
+        assert gets_after_delete == [("GET", droplet_url("777"))] * 3
+
+    def test_a_new_driver_instance_does_not_adopt_the_deleted_droplet(
+        self, tagged_driver, fake_urlopen
+    ):
+        gone = []
+
+        def now_gone():
+            gone.append(True)
+            return http_error(droplet_url("777"), 404)
+
+        def listed_until_gone():
+            return listing() if gone else listing(777)
+
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            FakeHTTPResponse(200, make_droplet(id=777)),
+            FakeHTTPResponse(200, make_droplet(id=777)),
+            FakeHTTPResponse(200, make_droplet(id=777)),
+            now_gone,
+        )
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listed_until_gone)
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake_urlopen.script(
+            "GET",
+            droplet_url("555"),
+            FakeHTTPResponse(200, make_droplet(id=555, tags=[*RESERVED, self.MARKER])),
+        )
+        tagged_driver.delete("777", CREDENTIALS)
+
+        result = Driver(reserved_tags=RESERVED).create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+
+    def test_an_expired_wait_warns_and_still_returns(self, driver, fake_urlopen, caplog):
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+
+        result = driver.delete("777", CREDENTIALS)
+
+        assert result is None
+        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert record.id == "777"
+        assert "still" in record.getMessage()
+
+    def test_an_expired_wait_names_the_last_error_it_saw(self, driver, fake_urlopen, caplog):
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            *[http_error(droplet_url("777"), 429) for _ in range(40)],
+        )
+
+        driver.delete("777", CREDENTIALS)
+
+        record = next(r for r in caplog.records if "still present" in r.getMessage())
+        assert "429" in record.last_error
+
+    def test_an_expired_wait_with_no_error_reports_the_droplet_still_listed(
+        self, driver, fake_urlopen, caplog
+    ):
+        caplog.set_level("WARNING", logger="aiform.driver.digitalocean.compute")
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+
+        driver.delete("777", CREDENTIALS)
+
+        record = next(r for r in caplog.records if r.levelname == "WARNING")
+        assert record.last_error == "none (the droplet was still returned)"
+
+    def test_a_poll_error_does_not_fail_the_delete(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            FakeHTTPResponse(200, make_droplet(id=777)),
+            http_error(droplet_url("777"), 503),
+            http_error(droplet_url("777"), 404),
+        )
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+
+        assert driver.delete("777", CREDENTIALS) is None
+
+    def test_a_404_on_the_delete_itself_does_not_poll(self, driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("777"), http_error(droplet_url("777"), 404))
+        fake_urlopen.script("DELETE", droplet_url("777"), http_error(droplet_url("777"), 404))
+
+        driver.delete("777", CREDENTIALS)
+
+        assert len(fake_urlopen.calls) == 2
+
+
+class TestAdoptionRefusesNonRunningStatus:
+    MARKER = marker_for(NAME)
+
+    @pytest.mark.parametrize("status", ["off", "archive"])
+    def test_a_marked_droplet_that_is_not_active_or_new_is_not_adopted(
+        self, tagged_driver, fake_urlopen, status
+    ):
+        stale = make_droplet(id=777, status=status)["droplet"]
+        fake_urlopen.script(
+            "GET",
+            marker_listing_url(self.MARKER),
+            FakeHTTPResponse(200, {"droplets": [stale], "links": {}}),
+        )
+
+        with pytest.raises(RuntimeError, match=f"777.*{status}"):
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+
+    def test_the_error_for_an_off_droplet_offers_both_ways_out(self, tagged_driver, fake_urlopen):
+        stale = make_droplet(id=777, status="off")["droplet"]
+        fake_urlopen.script(
+            "GET",
+            marker_listing_url(self.MARKER),
+            FakeHTTPResponse(200, {"droplets": [stale], "links": {}}),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert NAME in message
+        assert "777" in message
+        assert "off" in message
+        assert "power it on and re-run" in message
+        assert "or delete it and re-run" in message
+
+    def test_the_error_for_an_archived_droplet_offers_only_delete(
+        self, tagged_driver, fake_urlopen
+    ):
+        stale = make_droplet(id=777, status="archive")["droplet"]
+        fake_urlopen.script(
+            "GET",
+            marker_listing_url(self.MARKER),
+            FakeHTTPResponse(200, {"droplets": [stale], "links": {}}),
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert NAME in message
+        assert "777" in message
+        assert "archive" in message
+        assert "power it on" not in message
+        assert "delete it and re-run to start fresh" in message
+
+
+class TestCreateMarkerAdoption:
+    """#253: specs/digitalocean_compute.md, "Create marker and adoption"."""
+
+    MARKER = marker_for(NAME)
+
+    def _script_fresh_create(self, fake, listing_response=None):
+        fake.script("GET", marker_listing_url(self.MARKER), listing_response or listing())
+        fake.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake.script(
+            "GET",
+            droplet_url("555"),
+            FakeHTTPResponse(200, make_droplet(id=555, tags=[*RESERVED, self.MARKER])),
+        )
+
+    def test_the_marker_is_sha256_of_the_name_and_fits_do_tag_alphabet(self):
+        assert self.MARKER.startswith("aiform:prod:name:")
+        assert set(self.MARKER) <= set("abcdefghijklmnopqrstuvwxyz0123456789:-_")
+        assert len(self.MARKER) <= 255
+
+    def test_different_names_get_different_markers(self):
+        assert marker_for("a.b") != marker_for("a-b")
+
+    def test_the_lookup_is_issued_before_the_post(self, tagged_driver, fake_urlopen):
+        self._script_fresh_create(fake_urlopen)
+
+        tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        sequence = [(c["method"], c["url"]) for c in fake_urlopen.calls]
+        assert sequence[:2] == [
+            ("GET", marker_listing_url(self.MARKER)),
+            ("POST", droplets_url()),
+        ]
+
+    def test_the_lookup_follows_every_page(self, tagged_driver, fake_urlopen):
+        next_url = f"{droplets_url()}?page=2&per_page=200&tag_name=x"
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(next_url=next_url))
+        fake_urlopen.script("GET", next_url, listing(777))
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+
+        tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+
+    def test_no_match_creates_normally(self, tagged_driver, fake_urlopen):
+        self._script_fresh_create(fake_urlopen)
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+
+    def test_a_404_from_the_filter_means_no_match(self, tagged_driver, fake_urlopen):
+        url = marker_listing_url(self.MARKER)
+        self._script_fresh_create(fake_urlopen, http_error(url, 404))
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+
+    def test_a_non_404_lookup_failure_propagates_and_posts_nothing(
+        self, tagged_driver, fake_urlopen
+    ):
+        url = marker_listing_url(self.MARKER)
+        fake_urlopen.script("GET", url, http_error(url, 503))
+
+        with pytest.raises(urllib.error.HTTPError):
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+
+    def test_one_match_is_adopted_without_a_post(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            FakeHTTPResponse(200, make_droplet(id=777, tags=["web", *RESERVED, self.MARKER])),
+        )
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+        assert result["id"] == "777"
+        assert result["tags"] == ["web"]
+        assert result["region"] == "sfo3"
+
+    def test_an_adopted_droplet_is_polled_until_active(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            FakeHTTPResponse(200, make_droplet(id=777, status="new")),
+            FakeHTTPResponse(200, make_droplet(id=777, status="new")),
+            FakeHTTPResponse(200, make_droplet(id=777, status="active")),
+        )
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        polls = [c for c in fake_urlopen.calls if c["url"] == droplet_url("777")]
+        assert len(polls) == 3
+        assert result["status"] == "active"
+
+    def test_adoption_takes_backups_and_monitoring_from_the_live_droplet(
+        self, tagged_driver, fake_urlopen
+    ):
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("777"),
+            FakeHTTPResponse(
+                200, make_droplet(id=777, backups_enabled=True, monitoring_enabled=False)
+            ),
+        )
+
+        result = tagged_driver.create(
+            NAME,
+            {**BASE_PARAMS, "ssh_keys": ["key-1"], "backups": False, "monitoring": True},
+            CREDENTIALS,
+        )
+
+        assert result["backups"] is True
+        assert result["monitoring"] is False
+        assert result["ssh_keys"] == ["key-1"]
+
+    def test_adoption_is_logged_with_adopted_true(self, tagged_driver, fake_urlopen, caplog):
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777))
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+
+        with caplog.at_level(logging.INFO, logger="aiform.driver.digitalocean.compute"):
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        record = next(r for r in caplog.records if getattr(r, "adopted", False))
+        assert record.step == "create"
+        assert record.id == "777"
+
+    def test_more_than_one_match_raises_naming_the_ids(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777, 888))
+
+        with pytest.raises(RuntimeError) as excinfo:
+            tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        message = str(excinfo.value)
+        assert message == (
+            f"droplet {NAME}: 2 droplets carry the creation marker for it (ids 777, 888); "
+            "delete the extras and re-run"
+        )
+        assert not [c for c in fake_urlopen.calls if c["method"] == "POST"]
+
+    def test_a_driver_without_a_deployment_tag_adds_no_marker_and_does_no_lookup(
+        self, driver, fake_urlopen
+    ):
+        fake_urlopen.script(
+            "POST", droplets_url(), FakeHTTPResponse(202, make_droplet(id=555, status="new"))
+        )
+        fake_urlopen.script("GET", droplet_url("555"), FakeHTTPResponse(200, make_droplet(id=555)))
+
+        driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert [c["method"] for c in fake_urlopen.calls] == ["POST", "GET"]
+        assert post_body(fake_urlopen)["tags"] == []
+
+    def test_a_droplet_this_instance_deleted_is_not_adopted(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+        tagged_driver.delete("777", CREDENTIALS)
+        self._script_fresh_create(fake_urlopen, listing(777))
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+        assert len([c for c in fake_urlopen.calls if c["method"] == "POST"]) == 1
+
+    def test_a_droplet_deleted_as_already_gone_is_not_adopted_either(
+        self, tagged_driver, fake_urlopen
+    ):
+        fake_urlopen.script("GET", droplet_url("777"), http_error(droplet_url("777"), 404))
+        fake_urlopen.script("DELETE", droplet_url("777"), http_error(droplet_url("777"), 404))
+        tagged_driver.delete("777", CREDENTIALS)
+        self._script_fresh_create(fake_urlopen, listing(777))
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "555"
+
+    def test_a_deleted_id_does_not_count_toward_the_more_than_one_error(
+        self, tagged_driver, fake_urlopen
+    ):
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), FakeHTTPResponse(204, None))
+        tagged_driver.delete("777", CREDENTIALS)
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777, 888))
+        fake_urlopen.script("GET", droplet_url("888"), FakeHTTPResponse(200, make_droplet(id=888)))
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "888"
+
+    def test_a_failed_delete_does_not_exclude_the_droplet(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script("GET", droplet_url("777"), FakeHTTPResponse(200, make_droplet(id=777)))
+        fake_urlopen.script("DELETE", droplet_url("777"), http_error(droplet_url("777"), 500))
+        with pytest.raises(urllib.error.HTTPError):
+            tagged_driver.delete("777", CREDENTIALS)
+        fake_urlopen.script("GET", marker_listing_url(self.MARKER), listing(777))
+
+        result = tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        assert result["id"] == "777"
+
+    def test_a_user_supplied_marker_is_rejected_as_a_reserved_tag(
+        self, tagged_driver, fake_urlopen
+    ):
+        with pytest.raises(ValueError, match="reserved"):
+            tagged_driver.create(NAME, {**BASE_PARAMS, "tags": [self.MARKER]}, CREDENTIALS)
+
+        assert fake_urlopen.calls == []
+
+    def test_the_marker_is_stripped_from_read_attributes(self, tagged_driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(tags=["web", *RESERVED, self.MARKER])),
+        )
+
+        assert tagged_driver.read("123", CREDENTIALS)["tags"] == ["web"]
+
+    def test_a_tags_update_leaves_the_marker_on_the_droplet(self, tagged_driver, fake_urlopen):
+        current = make_attrs(tags=["web", "retired"])
+        desired = make_attrs(tags=["web", "fresh"])
+        fake_urlopen.script("GET", tag_url("fresh"), FakeHTTPResponse(200, {"tag": {}}))
+        fake_urlopen.script("POST", tag_resources_url("fresh"), FakeHTTPResponse(204, None))
+        fake_urlopen.script("DELETE", tag_resources_url("retired"), FakeHTTPResponse(204, None))
+        fake_urlopen.script(
+            "GET",
+            droplet_url("123"),
+            FakeHTTPResponse(200, make_droplet(tags=["web", "fresh", *RESERVED, self.MARKER])),
+        )
+
+        result = tagged_driver.update("123", current, desired, CREDENTIALS)
+
+        assert [(c["method"], c["url"]) for c in fake_urlopen.calls] == [
+            ("GET", tag_url("fresh")),
+            ("POST", tag_resources_url("fresh")),
+            ("DELETE", tag_resources_url("retired")),
+            ("GET", droplet_url("123")),
+        ]
+        assert not [c for c in fake_urlopen.calls if self.MARKER in c["url"]]
+        assert result["tags"] == ["web", "fresh"]
+
+    def test_the_lookup_follows_the_managed_key_registration(
+        self, tagged_driver, fake_urlopen, ssh_env
+    ):
+        (ssh_env / "aiform_managed_key.id").unlink()
+        fake_urlopen.script(
+            "GET", account_keys_list_url(), FakeHTTPResponse(200, {"ssh_keys": [], "links": {}})
+        )
+        fake_urlopen.script(
+            "POST",
+            account_keys_url(),
+            FakeHTTPResponse(201, {"ssh_key": {"id": 42424242, "fingerprint": "aa:bb"}}),
+        )
+        self._script_fresh_create(fake_urlopen)
+
+        tagged_driver.create(NAME, BASE_PARAMS, CREDENTIALS)
+
+        urls = [c["url"] for c in fake_urlopen.calls]
+        assert urls.index(account_keys_url()) < urls.index(marker_listing_url(self.MARKER))

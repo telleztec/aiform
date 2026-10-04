@@ -139,37 +139,26 @@ target object is.
 This guard is what a `${digitalocean.compute.<name>:provider_id}` reference
 has to clear (#216), and the fix works *with* it rather than around it: the
 reference resolves to a real `int`, which `isinstance(item, int)` accepts
-exactly like a hand-written literal. **This clears the type check only — a
-nested `droplet_ids` list of more than one reference then hits the sorted
-check below (#224), which a reference cannot generally satisfy.** See the
-addendum at the end of this file.
+exactly like a hand-written literal. A nested `droplet_ids` list of more than
+one reference also works since #224, because the order of a target list is
+not validated (below).
 
-An **unsorted** target list is rejected for a different reason, and it is
-not about rewriting on store. `unordered_equal()` is top-level only: a
-rule reaches it through `canonical_key()`, which serializes any list
-nested inside it positionally (`specs/unordered_fields.md`). So
-`UNORDERED_FIELDS` frees the order of `inbound_rules` but not the order
-of `sources.addresses` *within* a rule, and DigitalOcean does not promise
-to return one as written — its own Terraform provider models all five
-target keys as sets. Since `diff_attributes()` reads `params` raw, the
-driver cannot sort that side; it requires the written list sorted, naming
-the sorted spelling, and `_project_rule()` sorts what it reads back. Both
-sides canonical is what makes the comparison converge at all.
+The order of a target list is **not** validated (#224). DigitalOcean does
+not promise to return a list as written — its own Terraform provider models
+all five target keys as sets — so `_project_rule()` sorts what it reads
+back, and `unordered_equal()` compares a declared field's nested lists
+without regard to order (`specs/unordered_fields.md`), so the user's written
+order, whatever it is, does not diff against the sorted read-back.
 
-**This is why a nested `sources`/`destinations.droplet_ids` list of more
-than one `provider_id` reference does not work (#224).** The sorted check
-runs against the *resolved* value — after references substitute — and a
-provider-assigned id does not exist for the user to sort against when they
-write the file. A single reference is a single-element list, trivially
-sorted, so `droplet_ids: ["${…:provider_id}"]` inside a rule's `sources`
-works today; two or more resolve to whatever order DigitalOcean happened to
-assign the ids in, which is not reliably ascending, and the apply fails
-here — after both droplets have already been created —
-with `sources.droplet_ids must be sorted ...; write [800, 900]`, naming a
-literal the reference exists to avoid hardcoding. Top-level `droplet_ids` is
-unaffected: it is in this driver's own `UNORDERED_FIELDS` declaration and
-carries no sorted check at all. #224 tracks the driver-side fix; no
-direction is decided there yet.
+Until #224 the driver instead rejected an unsorted list with
+`sources.droplet_ids must be sorted ...; write [800, 900]`, on the grounds
+that the comparison was top-level only. That made a rule admitting two
+droplets by reference — `droplet_ids: ["${…:provider_id}", "${…:provider_id}"]`
+— plan clean and then fail partway through apply, after both droplets
+existed, naming a literal the reference exists to avoid hardcoding: the ids
+do not exist, so cannot be sorted, when the file is written. Removing the
+check, with the comparison widened to match, is the fix. The request body
+carries the list in the order written.
 
 Not rejected, because DigitalOcean stores them verbatim: a bare address
 `"1.2.3.4"` is **not** expanded to `/32` (`06-`), and an IPv6 range is
@@ -423,9 +412,9 @@ mechanism did not exist. Phase 2 added one
 **string-valued** edges — `tags`, `sources.tags`, `destinations.tags` — including
 nested ones, since resolution walks the whole params tree.
 
-**It now also works for top-level `droplet_ids`, via #216 — and for a
-*single-reference* nested `sources`/`destinations.droplet_ids`, but not yet
-for more than one (#224, see the sorted-list discussion above).** Those are
+**It now also works for top-level `droplet_ids`, via #216, and for nested
+`sources`/`destinations.droplet_ids` with any number of references, via
+#224 (see the target-list discussion above).** Those are
 `{"type": "integer"}` here, while `compute`'s `id` attribute is
 `str(droplet["id"])`, so `droplet_ids: ["${digitalocean.compute.web-01:id}"]`
 still resolves to a string that `_validate_scalar_list(params, "droplet_ids",
@@ -441,12 +430,9 @@ also now names `provider_id` in its error when it rejects an all-digits
 string in an int-typed field, whether that string came from a quoted YAML
 literal or a `:id` reference written by mistake.
 
-**The nested case is narrower.** `sources`/`destinations.droplet_ids` clears
-`_reject_wrong_scalars()` the same way, but then meets the separate sorted
-check `_validate_target_items()` requires for any list nested inside a rule
-(above). A single reference resolves to a single-element list, trivially
-sorted, so it works; two or more resolve to whatever order DigitalOcean
-assigned the ids in, which a user cannot pre-sort because the ids don't
-exist yet when the file is written — so the apply plans clean, creates both
-droplets, and only then fails on the firewall. #224 tracks the fix; which
-direction it takes is not decided.
+**The nested case was narrower until #224.** `sources`/`destinations.droplet_ids`
+cleared `_reject_wrong_scalars()` the same way, but then met a sorted-list
+check that two or more references could not satisfy, so the apply planned
+clean, created both droplets, and only then failed on the firewall. The
+check is gone and the comparison no longer depends on order; a live system
+test (`specs/system_test_references.md`, `TestTwoDropletsInOneRuleLive`) covers two references.

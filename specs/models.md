@@ -354,7 +354,13 @@ class StateEntry(BaseModel):
     aiform_md_path: str
     aiform_md_sha256: str
     depends_on: list[str] = Field(default_factory=list)
+    reference_edges: dict[str, list[str]] = Field(default_factory=dict)
 ```
+
+`reference_edges` (#234) keeps the type of each edge that `depends_on` flattens:
+`{target_key: [attribute, ...]}` for every target a `${...}` reference reaches,
+attributes sorted. A `depends_on` target absent from it is an explicit-only edge.
+Defaulted, so an older `state.json` loads with `{}`. Nothing reads it yet.
 
 `depends_on` is defaulted so a `state.json` written before this field
 existed loads unchanged. It records the dependencies **as of the last

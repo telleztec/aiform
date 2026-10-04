@@ -118,7 +118,7 @@ earlier draft of this table missed one row and misclassified another.
 
 | Field | Points at | Match kind | Verdict |
 |---|---|---|---|
-| `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Was the edge #216 blocked from being a reference; reachable now via `provider_id` (`compute.py:210`) for top-level `droplet_ids` unconditionally, and for the nested field only with a single reference — more than one hits a sorted-list check a reference can't generally satisfy (#224, `specs/digitalocean_firewall.md`) |
+| `droplet_ids` (`firewall.py:83`), `sources`/`destinations.droplet_ids` (`firewall.py:52`) | a droplet | **id**, integer vs. `StateEntry.id`'s string | **The one id-match edge.** Was the edge #216 blocked from being a reference; reachable now via `provider_id` (`compute.py:210`) for top-level `droplet_ids` and, since #224, for the nested field with any number of references (`specs/digitalocean_firewall.md`) |
 | `tags` (`firewall.py:84`), `sources`/`destinations.tags` (`firewall.py:53`), `compute.tags` (`compute.py:173`) | a droplet, via its `tags` attribute (`compute.py:215`) | **attribute** | A *user-chosen* value, writable before the droplet carrying it exists — though the **tag itself** must already exist, or the create 422s `"tag <name> does not exist"` (`specs/digitalocean_firewall.md:198-202`). `compute.py:215` declares `tags` referenceable, so Phase 2 references work here |
 | `addresses` (`firewall.py:51`) | a droplet, via `ipv4_address` (`compute.py:216`) | **attribute** | Same class as `records[].data`. Missed by this table's first draft |
 | `records[].data` (`domain.py:103`) | a droplet, via `ipv4_address` | **attribute** | Phase 2's canonical case; references work |
@@ -459,7 +459,8 @@ It remains **not** a decision gate. The pause holds either way.
   above, but did not choose among #216's candidate fixes or work out what
   the chosen one costs — that's #216's plan, not this file.
 - **Orphan refusal and partial-failure recovery.** Phase 4, **partially
-  shipped since** (#225, paths-driven destroy only — see
+  shipped since** (#225, paths-driven destroy only; then 4a's repair on both
+  destroy routes and 4b's failure report and restartable apply — see
   `specs/resource_dependencies.md` and `MULTI_RESOURCE_PRD.md`'s Phase 4
   entry). This spec takes a
   position on what an inferred edge would do to Phase 4, and none on Phase 4's

@@ -62,18 +62,13 @@ FAILURES = ("reset", "http_500", "http_503", "http_429")
 GONE_TIMEOUT_SECONDS = 300
 GONE_POLL_SECONDS = 5
 
-# The same provisional markers the timeout stages use: they record what the
-# first live run is expected to show, and `raises=` keeps any other failed
-# assertion from hiding behind them.
-_RETRY_DUPLICATES_RESOURCE = pytest.mark.xfail(
-    strict=True,
-    raises=RetryDuplicatesResource,
-    reason="#253: a retry after a create the provider accepted makes a second resource",
-)
+# The same provisional marker the timeout stages use: it records what the live
+# run is expected to show, and `raises=` keeps any other failed assertion from
+# hiding behind it.
 _ERROR_OMITS_RESOURCE_ID = pytest.mark.xfail(
     strict=True,
     raises=ErrorOmitsResourceId,
-    reason="a failed poll after an accepted create names no resource id",
+    reason="#264: a failed poll after an accepted create names no resource id",
 )
 
 
@@ -105,12 +100,9 @@ def failing(failure: str, method: str, url_pattern: str, **options):
 
 
 def create_cells():
-    for where, marker in (
-        ("create", _RETRY_DUPLICATES_RESOURCE),
-        ("poll", _ERROR_OMITS_RESOURCE_ID),
-    ):
+    for where, marker in (("create", None), ("poll", _ERROR_OMITS_RESOURCE_ID)):
         for failure in FAILURES:
-            marks = [] if (where, failure) == ("create", "http_429") else [marker]
+            marks = [marker] if marker else []
             yield pytest.param(
                 where, failure, id=f"{where}-{failure.replace('_', '')}", marks=marks
             )
