@@ -339,10 +339,9 @@ def _read_error_body(error: BaseException) -> bytes | None:
         body = error.read()
     except Exception:
         return None
-    # HTTPError caches the bound `read` of its original stream on first use, so
-    # `fp` and `file` are both replaced and the cached `read` dropped.
-    error.fp = error.file = io.BytesIO(body)
-    error.__dict__.pop("read", None)
+    stream = io.BytesIO(body)
+    error.fp = error.file = stream
+    error.read = stream.read
     return body
 
 
@@ -353,8 +352,9 @@ def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, k
         response = real(request, *args, **kwargs)
     except BaseException as error:
         # The provider's own error pre-empted the synthetic one, so the retry must meet it.
+        body = _read_error_body(error)
         fault.provider_errors.append(error)
-        fault.provider_error_bodies.append(_read_error_body(error))
+        fault.provider_error_bodies.append(body)
         fault.fired = False
         raise
     with response:

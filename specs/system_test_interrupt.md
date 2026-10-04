@@ -181,7 +181,7 @@ still carry DigitalOcean words. Tested offline in
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
-- Under the `interrupt_*` injectors, a request that raises (an `HTTPError`)
+- Under the `interrupt_*` injectors and `rewrite_responses`, a request that raises (an `HTTPError`)
   propagates unchanged and never counts as a match.
 - A request is described by `Request.get_method()` and `full_url`, or by the
   bare string for a `urlopen("https://...")` call.

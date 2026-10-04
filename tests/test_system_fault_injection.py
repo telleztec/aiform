@@ -865,6 +865,24 @@ class TestProviderErrorDiagnostics:
     def test_no_errors_is_said_plainly(self):
         assert describe_provider_errors(Fault()) == "none"
 
+    def test_a_body_read_cut_short_by_a_base_exception_leaves_the_ledgers_aligned(self, provider):
+        class Abort(BaseException):
+            pass
+
+        class Unreadable(io.BytesIO):
+            def read(self, *args):
+                raise Abort
+
+        provider.errors.append(
+            urllib.error.HTTPError(DROPLETS, 422, "U", email.message.Message(), Unreadable(b"x"))
+        )
+        with fail_request("POST", r"/v2/droplets$", "http_503") as fault:
+            with pytest.raises(Abort):
+                call("POST", DROPLETS)
+        assert fault.provider_errors == []
+        assert fault.provider_error_bodies == []
+        assert describe_provider_errors(fault) == "none"
+
 
 class TestFailRequestRateLimited:
     def test_the_caller_sees_a_429(self, provider):
@@ -970,6 +988,15 @@ class TestRewriteResponses:
                 call("GET", DROPLET_42)
 
         assert fault.fired is False
+
+    def test_a_request_that_raises_propagates_and_never_counts_as_a_match(self, provider):
+        provider.errors.append(urllib.error.HTTPError(DROPLET_42, 502, "Bad", None, None))
+        with rewrite_responses("GET", r"/v2/droplets/\d+$", reports_new) as fault:
+            with pytest.raises(urllib.error.HTTPError):
+                call("GET", DROPLET_42)
+
+        assert fault.fired is False
+        assert fault.response is None
 
     def test_urlopen_is_restored_afterwards(self, provider):
         installed = urllib.request.urlopen
