@@ -347,8 +347,10 @@ def _print_failure_report(exc: Exception) -> None:
     ):
         line += " -- the old resource was deleted and the new one was not created"
     elif repaired_by:
+        verb = "were" if len(repaired_by) > 1 else "was"
         line += (
-            f" -- still tracked; {', '.join(repaired_by)} was already repaired to stop listing it"
+            f" -- still tracked; {', '.join(repaired_by)} {verb} already repaired to stop "
+            "listing it"
         )
     print(line, file=sys.stderr)
     for entry in progress.not_run:

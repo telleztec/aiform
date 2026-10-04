@@ -2861,6 +2861,29 @@ class TestFailureReport:
             "digitalocean.firewall.fw was already repaired to stop listing it"
         )
 
+    def test_two_repaired_firewalls_are_named_with_a_plural_verb(
+        self, project_dir, monkeypatch, capsys
+    ):
+        progress = _progress(
+            applied=["digitalocean.firewall.fw-a", "digitalocean.firewall.fw-b"],
+            failed="digitalocean.compute.web",
+            repairs={
+                "digitalocean.firewall.fw-a": ["digitalocean.compute.web"],
+                "digitalocean.firewall.fw-b": ["digitalocean.compute.web"],
+            },
+        )
+
+        code, captured = self._run_with(
+            project_dir, monkeypatch, self._driver_error(progress=progress), capsys
+        )
+
+        assert code == 2
+        assert _printed(captured.err)[3] == (
+            "failed: digitalocean.compute.web (destroy) -- still tracked; "
+            "digitalocean.firewall.fw-a, digitalocean.firewall.fw-b were already "
+            "repaired to stop listing it"
+        )
+
     def test_a_repair_that_failed_is_labelled_repair_and_the_delete_is_not_run(
         self, project_dir, monkeypatch, capsys
     ):

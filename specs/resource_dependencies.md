@@ -1040,8 +1040,8 @@ so `_apply_repair()` repeats the rule check against the firewall read **live**
 just before the update, ahead of any provider write: a rule added out-of-band
 since the last refresh is refused there (`PlanBlockedError` pointing at
 `aiform plan destroy <file> --force`) rather than half-repaired. A firewall that
-is gone, or no longer lists the id, needs no update: only its state edge is
-pruned.
+is gone, or no longer lists the id, needs no update: only its state edges
+(`depends_on` and `reference_edges`) are pruned.
 
 The repair's `update` coerces only the top-level `droplet_ids` of the live read
 (a digit string becomes an int); rules are copied verbatim. A surviving droplet

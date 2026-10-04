@@ -1620,7 +1620,8 @@ changed and which deliberately did not.
   dead id behind (the rule check compares ids as strings, so a live read returning them as
   strings is still caught); if the firewall is gone or no
   longer lists the id, it only
-  prunes the `depends_on` edge from state (the entry stays tracked); otherwise it calls the
+  prunes the `depends_on` and `reference_edges` entries for the destroyed keys from
+  state (the entry stays tracked); otherwise it calls the
   driver's `update(id, live, desired, credentials)` through `_call_driver()`
   where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
   the destroyed ids removed from the repair field (surviving top-level
@@ -1632,7 +1633,7 @@ changed and which deliberately did not.
   is unobserved, and the top-level int round-trip is the only one probed, #216),
   and records the returned
   attributes and `last_applied_at`/`last_refreshed_at`, and removes the
-  destroyed keys from the dependent's `depends_on`. It leaves
+  destroyed keys from the dependent's `depends_on` and `reference_edges`. It leaves
   `aiform_md_sha256` and `driver` alone, which is why it is not `_record_update()`:
   the user's file did not change, and rewriting the hash would make the next plan
   believe it had already seen the file as it now reads. State is saved after each
@@ -1645,11 +1646,11 @@ changed and which deliberately did not.
   does not repair again: the saved firewall no longer lists the id and no
   longer has the edge, so the next destroy plan has nothing to repair; if the
   repair's provider write succeeded and its state save did not, the apply
-  re-reads the firewall live, sees the id gone, and only prunes the edge.
+  re-reads the firewall live, sees the id gone, and only prunes the edges.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
   helper keeps working. **`PlannedResource.dropped_dependents`** and **`PlannedResource.repairs`** are likewise
-  defaulted (empty list); they are in-memory only and is not part of
+  defaulted (empty list); they are in-memory only and are not part of
   `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.

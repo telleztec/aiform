@@ -630,7 +630,9 @@ takes an already-built plan):
   succeeded, `failed: <fw> (repair)` when it did not (the destroys behind it
   are then `not run:`). When the repair succeeded and the delete it preceded
   failed, that `failed:` line ends ` -- still tracked; <fw> was already
-  repaired to stop listing it`.
+  repaired to stop listing it` (several repaired firewalls are comma-joined and
+  the verb agrees in number: `<fw-a>, <fw-b> were already repaired to stop
+  listing it`).
   The block is printed for `plan apply` and `plan destroy` alike, whether
   the exception is a `DriverExecutionError`, a mid-loop `PlanBlockedError` or
   any other handled type. A resource whose action succeeded but whose state
