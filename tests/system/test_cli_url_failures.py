@@ -128,7 +128,10 @@ def wait_until_unowned(profile, token, name: str) -> list[dict]:
 
 def faulted_run(runner: Runner, injector: contextlib.AbstractContextManager[Fault], step: str):
     code, captured, fault = runner.faulted_run(APPLY, injector, step)
-    assert code != 0, f"{step} exited 0\n{captured.out}"
+    assert code != 0, (
+        f"{step} exited 0\n--- stdout ---\n{captured.out}\n--- stderr ---\n{captured.err}"
+        f"\n--- calls seen ---\n{fault.seen}\n--- provider errors ---\n{fault.provider_errors!r}"
+    )
     return captured, fault
 
 

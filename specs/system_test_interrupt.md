@@ -51,6 +51,7 @@ class Fault:
     fired: bool
     response: dict | None   # parsed JSON body of the faulted response
     seen: list[tuple[str, str]]   # every (METHOD, url) while installed
+    provider_errors: list[BaseException]   # errors the real call raised under fail_request
 
 interrupt_after_request(method, url_pattern, *, occurrence=1, response_predicate=None)
 interrupt_before_request(method, url_pattern, *, occurrence=1)
@@ -148,6 +149,12 @@ still carry DigitalOcean words. Tested offline in
     JSON body `{"id", "message"}`.
   - `http_429` is the provider refusing before it acts, so
     `provider_acts=True` for it raises `ValueError` at the call.
+  - When `provider_acts=True` and the real request itself raises, that error
+    reaches the caller unchanged and is appended to `Fault.provider_errors`.
+    The fault is not counted as fired and fires on the next match.
+    Example: DigitalOcean's 422 "invalid key identifiers" right after a managed
+    key is uploaded.
+  - A match whose real call raised still counts toward `occurrence`.
 - `fail_request(..., body_pattern=...)` matches the request body as well as the
   method and URL, for every kind. A request whose body does not match passes
   through and does not count toward `occurrence`. It exists because a provider
@@ -171,7 +178,7 @@ asserts, in this order:
 
 1. The faulted run raised `InjectedInterrupt`, and `Fault.fired` is true. A
    stage whose injection point was never reached fails with that message
-   rather than passing vacuously.
+   rather than passing vacuously. The message lists `Fault.provider_errors`.
 2. The provider, queried by ids the test recorded, shows what the stage
    allows (below).
 3. Re-running the same command exits 0 and the provider matches the declared

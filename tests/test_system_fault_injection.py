@@ -11,6 +11,7 @@ fires) or fire somewhere other than the spec says. Neither is visible from the
 live suite's own result, and the live suite is billable.
 """
 
+import email.message
 import io
 import json
 import threading
@@ -61,6 +62,7 @@ def provider(monkeypatch):
     reached: list[tuple[str, str]] = []
     bodies: dict[tuple[str, str], bytes] = {}
     responses: list[FakeResponse] = []
+    errors: list[BaseException] = []
 
     def fake_urlopen(request, *args, **kwargs):
         if isinstance(request, str):
@@ -68,13 +70,15 @@ def provider(monkeypatch):
         else:
             method, url = request.get_method(), request.full_url
         reached.append((method, url))
+        if errors:
+            raise errors.pop(0)
         body = bodies.get((method, url), b"{}")
         response = FakeResponse(body)
         responses.append(response)
         return response
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    return types.SimpleNamespace(reached=reached, bodies=bodies, responses=responses)
+    return types.SimpleNamespace(reached=reached, bodies=bodies, responses=responses, errors=errors)
 
 
 def blocked_until(release: threading.Event):
@@ -92,6 +96,13 @@ def call(method: str, url: str):
 
 
 DROPLETS = "https://api.digitalocean.com/v2/droplets"
+
+
+def invalid_key_identifiers(url: str) -> urllib.error.HTTPError:
+    body = b'{"id": "unprocessable_entity", "message": "are invalid key identifiers"}'
+    return urllib.error.HTTPError(
+        url, 422, "Unprocessable", email.message.Message(), io.BytesIO(body)
+    )
 
 
 class TestInterruptAfterRequest:
@@ -691,6 +702,92 @@ class TestFailRequestServerError:
                 call("GET", DROPLET_42)
             call("GET", DROPLET_42)
         assert provider.reached == [("GET", DROPLET_42)] * 3
+
+
+def _is_connection_reset(error: BaseException) -> bool:
+    return isinstance(error.reason, ConnectionResetError)
+
+
+@pytest.mark.parametrize(
+    ("kind", "is_synthetic"),
+    [
+        ("http_503", lambda error: isinstance(error, urllib.error.HTTPError) and error.code == 503),
+        ("http_500", lambda error: isinstance(error, urllib.error.HTTPError) and error.code == 500),
+        ("reset", _is_connection_reset),
+    ],
+    ids=["http_503", "http_500", "reset"],
+)
+class TestFailRequestWhenTheProviderItselfFails:
+    def test_the_real_error_reaches_the_caller_and_the_fault_is_not_counted_as_fired(
+        self, provider, kind, is_synthetic
+    ):
+        real = invalid_key_identifiers(DROPLETS)
+        provider.errors.append(real)
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("POST", DROPLETS)
+        assert raised.value is real
+        assert not is_synthetic(raised.value)
+        assert fault.fired is False
+        assert fault.provider_errors == [real]
+
+    def test_the_next_matching_call_gets_the_synthetic_failure_with_the_real_body(
+        self, provider, kind, is_synthetic
+    ):
+        provider.errors.append(invalid_key_identifiers(DROPLETS))
+        provider.bodies[("POST", DROPLETS)] = b'{"droplet": {"id": 4242}}'
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.HTTPError):
+                call("POST", DROPLETS)
+            with pytest.raises(urllib.error.URLError) as raised:
+                call("POST", DROPLETS)
+        assert is_synthetic(raised.value)
+        assert fault.fired is True
+        assert fault.response == {"droplet": {"id": 4242}}
+        assert len(fault.provider_errors) == 1
+
+    def test_it_still_fires_at_most_once_afterwards(self, provider, kind, is_synthetic):
+        provider.errors.append(invalid_key_identifiers(DROPLETS))
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.HTTPError):
+                call("POST", DROPLETS)
+            with pytest.raises(urllib.error.URLError):
+                call("POST", DROPLETS)
+            call("POST", DROPLETS)
+            call("POST", DROPLETS)
+        assert fault.fired is True
+        assert provider.reached == [("POST", DROPLETS)] * 4
+
+    def test_an_error_on_the_occurrence_does_not_use_it_up(self, provider, kind, is_synthetic):
+        with fail_request("GET", r"/v2/droplets/\d+$", kind, occurrence=2) as fault:
+            call("GET", DROPLET_42)
+            provider.errors.append(invalid_key_identifiers(DROPLET_42))
+            with pytest.raises(urllib.error.HTTPError) as raised:
+                call("GET", DROPLET_42)
+            assert not is_synthetic(raised.value)
+            assert fault.fired is False
+            with pytest.raises(urllib.error.URLError) as synthetic:
+                call("GET", DROPLET_42)
+            call("GET", DROPLET_42)
+        assert is_synthetic(synthetic.value)
+        assert fault.fired is True
+
+    def test_a_real_call_that_succeeds_leaves_provider_errors_empty(
+        self, provider, kind, is_synthetic
+    ):
+        with fail_request("POST", r"/v2/droplets$", kind) as fault:
+            with pytest.raises(urllib.error.URLError):
+                call("POST", DROPLETS)
+        assert fault.fired is True
+        assert fault.provider_errors == []
+
+    def test_a_provider_that_does_not_act_records_no_provider_error(
+        self, provider, kind, is_synthetic
+    ):
+        with fail_request("POST", r"/v2/droplets$", kind, provider_acts=False) as fault:
+            with pytest.raises(urllib.error.URLError):
+                call("POST", DROPLETS)
+        assert fault.provider_errors == []
 
 
 class TestFailRequestRateLimited:

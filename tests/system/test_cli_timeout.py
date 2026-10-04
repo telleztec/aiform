@@ -140,7 +140,11 @@ class TestTimedOutCreate:
             APPLY, stage_injector(stage, PROFILE)(), f"plan apply ({stage})"
         )
 
-        assert code != 0, f"the faulted run exited 0\n{captured.out}"
+        assert code != 0, (
+            f"the faulted run exited 0\n--- stdout ---\n{captured.out}"
+            f"\n--- stderr ---\n{captured.err}\n--- calls seen ---\n{fault.seen}"
+            f"\n--- provider errors ---\n{fault.provider_errors!r}"
+        )
         assert CREATE_FAILED in captured.err, (
             f"the error does not name the failed operation:\n{captured.err}"
         )

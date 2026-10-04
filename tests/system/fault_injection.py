@@ -43,6 +43,7 @@ class Fault:
     fired: bool = False
     response: dict | None = None
     seen: list[tuple[str, str]] = field(default_factory=list)
+    provider_errors: list[BaseException] = field(default_factory=list)
     worker_error: BaseException | None = None
     _workers: list[tuple[threading.Thread, str]] = field(default_factory=list, repr=False)
 
@@ -315,8 +316,14 @@ def _check_timeout_options(
 def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, kwargs: dict):
     """Run the real request and keep its body, so the ledger learns any id the
     provider handed out even though the caller never sees the response."""
-    with real(request, *args, **kwargs) as response:
-        fault.response = _parse(response.read())
+    try:
+        with real(request, *args, **kwargs) as response:
+            fault.response = _parse(response.read())
+    except BaseException as error:
+        # The provider's own error pre-empted the synthetic one, so the retry must meet it.
+        fault.provider_errors.append(error)
+        fault.fired = False
+        raise
 
 
 def _reset(

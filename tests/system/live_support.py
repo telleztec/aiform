@@ -104,6 +104,7 @@ class Runner:
                     f"{step}: the injection point was never reached, so nothing was "
                     f"tested (the run exited {code})\n--- stderr ---\n{captured.err}"
                     f"\n--- calls seen ---\n{fault.seen}"
+                    f"\n--- provider errors ---\n{fault.provider_errors!r}"
                 )
         self.capsys.readouterr()
         self.ledger.note_response(fault.response)
@@ -121,6 +122,7 @@ class Runner:
                 f"{step}: the injection point was never reached, so nothing was "
                 f"tested (the run exited {code})\n--- stderr ---\n{captured.err}"
                 f"\n--- calls seen ---\n{fault.seen}"
+                f"\n--- provider errors ---\n{fault.provider_errors!r}"
             )
         self.ledger.note_response(fault.response)
         self._note()
