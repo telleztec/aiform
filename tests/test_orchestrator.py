@@ -6445,6 +6445,8 @@ class TestDestroyExposureWarning:
         save_state(
             state_path,
             **{
+                # Load-bearing: it makes the dropped cycle edge fw -> web rather
+                # than web -> fw; without it the droplet is not left first.
                 "digitalocean.compute.a": make_state_entry(
                     name="a", id="3", depends_on=["digitalocean.firewall.fw"]
                 ),

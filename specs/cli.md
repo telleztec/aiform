@@ -754,8 +754,8 @@ errors, so all of them behave and are tested the same way:
   destroyed, what failed and what did not run; state holds only what is left,
   so `plan destroy --all --yes --force` run again converges and its block and
   output cover only the remainder. Orphan removal is not part of `--all`.
-- A destroy plan that removes a firewall together with a droplet it protects
-  prints the exposure `Warning:` from `build_destroy_plan`
+- A destroy plan that removes a firewall together with a droplet it protects,
+  firewall first, prints the exposure `Warning:` from `build_destroy_plan`
   (`specs/orchestrator.md`, "Exposure warning") with the other warnings.
 - Help string: `plan destroy` lists `--all` and its `--deployment DEPLOYMENT`;
   `--all`'s help says it destroys every resource tracked in the deployment.
