@@ -159,7 +159,9 @@ still carry DigitalOcean words. Tested offline in
     `provider_acts=True` for it raises `ValueError` at the call.
   - When `provider_acts=True` and the real request itself raises, that error
     reaches the caller unchanged and is appended to `Fault.provider_errors`.
-    The fault is not counted as fired and fires on the next match.
+    The fault is not counted as fired and fires on the next match. If an
+    interrupt cuts the read of an `HTTPError` body short, nothing is appended;
+    the fault is still not counted as fired.
     Example: DigitalOcean's 422 "invalid key identifiers" right after a managed
     key is uploaded.
   - A match whose real call raised still counts toward `occurrence`.
@@ -181,8 +183,8 @@ still carry DigitalOcean words. Tested offline in
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
-- Under the `interrupt_*` injectors and `rewrite_responses`, a request that raises (an `HTTPError`)
-  propagates unchanged and never counts as a match.
+- Under the `interrupt_*` injectors and `rewrite_responses`, a request that
+  raises (an `HTTPError`) propagates unchanged and never counts as a match.
 - A request is described by `Request.get_method()` and `full_url`, or by the
   bare string for a `urlopen("https://...")` call.
 

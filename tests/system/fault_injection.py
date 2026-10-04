@@ -333,7 +333,7 @@ def _check_timeout_options(
 
 
 def _read_error_body(error: BaseException) -> bytes | None:
-    if not isinstance(error, urllib.error.HTTPError) or error.fp is None:
+    if not isinstance(error, urllib.error.HTTPError):
         return None
     try:
         body = error.read()
@@ -352,10 +352,10 @@ def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, k
         response = real(request, *args, **kwargs)
     except BaseException as error:
         # The provider's own error pre-empted the synthetic one, so the retry must meet it.
+        fault.fired = False
         body = _read_error_body(error)
         fault.provider_errors.append(error)
         fault.provider_error_bodies.append(body)
-        fault.fired = False
         raise
     with response:
         fault.response = _parse(response.read())

@@ -881,6 +881,7 @@ class TestProviderErrorDiagnostics:
                 call("POST", DROPLETS)
         assert fault.provider_errors == []
         assert fault.provider_error_bodies == []
+        assert fault.fired is False
         assert describe_provider_errors(fault) == "none"
 
 
