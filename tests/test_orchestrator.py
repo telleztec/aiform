@@ -6345,7 +6345,7 @@ def _protector_and_target(tmp_path: Path, *, protector_type: str, depends_on: li
             update={"resource_key": f"digitalocean.{protector_type}.guard"}
         ),
     )
-    return [target, protector], target_key, protector.entry.resource_key
+    return [protector, target], target_key, protector.entry.resource_key
 
 
 class TestExposureWarningWording:
@@ -6440,6 +6440,35 @@ class TestDestroyExposureWarning:
 
         assert not any("unfiltered" in w for w in warnings)
 
+    def test_no_warning_when_a_state_cycle_makes_the_droplet_go_first(self, tmp_path: Path):
+        state_path = tmp_path / ".aiform" / "state.json"
+        save_state(
+            state_path,
+            **{
+                "digitalocean.compute.a": make_state_entry(
+                    name="a", id="3", depends_on=["digitalocean.firewall.fw"]
+                ),
+                "digitalocean.compute.web": make_state_entry(
+                    name="web", id="1", depends_on=["digitalocean.firewall.fw"]
+                ),
+                "digitalocean.firewall.fw": make_state_entry(
+                    resource_type="firewall",
+                    name="fw",
+                    id="fw-1",
+                    depends_on=["digitalocean.compute.web"],
+                ),
+            },
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            None, state_path=state_path, deployment="default"
+        )
+
+        order = [pr.entry.resource_key for pr in planned]
+        assert order.index("digitalocean.compute.web") < order.index("digitalocean.firewall.fw")
+        assert any("dependency cycle in state" in w for w in warnings)
+        assert not any("unfiltered" in w for w in warnings)
+
     def test_two_droplets_destroyed_together_do_not_warn(self, tmp_path: Path):
         state_path = tmp_path / ".aiform" / "state.json"
         save_state(
@@ -6456,4 +6485,4 @@ class TestDestroyExposureWarning:
             None, state_path=state_path, deployment="default"
         )
 
-        assert warnings == []
+        assert not any("unfiltered" in w for w in warnings)

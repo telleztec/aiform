@@ -953,12 +953,19 @@ def _exposure_warnings(planned: list[PlannedResource]) -> list[str]:
     destroyed = {
         pr.entry.resource_key: pr for pr in planned if pr.entry.action == PlanAction.DESTROY
     }
+    position = {key: index for index, key in enumerate(destroyed)}
     warnings: list[str] = []
     for key, pr in destroyed.items():
         protected_types, lapse = _PROTECTS.get((pr.provider, pr.resource_type), (set(), ""))
         for target_key in pr.depends_on:
             target = destroyed.get(target_key)
-            if target is not None and (target.provider, target.resource_type) in protected_types:
+            # A cycle broken in state drops an edge from the order but not from
+            # depends_on, so the protector can end up after its target.
+            if (
+                target is not None
+                and (target.provider, target.resource_type) in protected_types
+                and position[key] < position[target_key]
+            ):
                 warnings.append(
                     f"{key} protects {target_key}, and the plan destroys both: "
                     f"{key} goes first, so {target_key} runs {lapse} until its own "

@@ -876,7 +876,10 @@ The pair is a fixed table, `_PROTECTS`, mapping a protector type to
 `("digitalocean", "compute")` with `"unfiltered"`, a stand-in for the operational direction the
 dependency model does not express (`specs/resource_dependencies.md`, the
 `Protects` row; modelling it is #235 option 3, out of scope here). It is
-advisory, never blocks, and is not suppressed by `--force`. **Known false
+advisory, never blocks, and is not suppressed by `--force`. It is raised only
+when the firewall comes before its droplet in the plan's order: a cycle in state
+(above) drops an edge from the order but not from `depends_on`, and when that
+leaves the droplet first there is no window, so there is no warning. **Known false
 negative:** the check follows the protector's `depends_on` edge to the target
 (declared, or implied by a `${...}` reference). A firewall that names droplets
 by a literal `droplet_ids` value, with no reference and no `depends_on`, has no
