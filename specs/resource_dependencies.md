@@ -32,7 +32,8 @@ document is read:
 
 Phase 1 delivers the first slice of this: a user declares that one resource must
 exist before another, and `aiform` orders the plan accordingly — dependencies
-created before dependents, destroys in reverse, cycles refused at plan time. The
+created before dependents, destroys in reverse, cycles refused at plan time (`plan destroy --all` later
+became the exception for a cycle recorded in state, #206). The
 three effects those relationships have map onto the goals above: create and
 destroy ordering buy **efficiency and accuracy**, and failure impact is where
 **resiliency** would come from — which is the effect with no implementation.
