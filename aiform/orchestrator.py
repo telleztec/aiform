@@ -1333,72 +1333,73 @@ def apply_plan(
     position = 0
     try:
         for position, pr in enumerate(planned):  # noqa: B007 -- read by the except below
-            if pr.entry.action == PlanAction.NO_OP:
-                continue
-
             if pr.repairs:
                 _apply_repair(pr, st, state_path=state_path)
                 executed.append(pr.entry)
                 continue
 
-            if pr.entry.action == PlanAction.CREATE:
-                _apply_create(pr, st)
-                executed.append(pr.entry)
+            match pr.entry.action:
+                case PlanAction.NO_OP:
+                    continue
 
-            elif pr.entry.action == PlanAction.UPDATE:
-                # The two handlers below are siblings on purpose. Python never
-                # re-enters a sibling handler, so the delete()/create() calls
-                # _replace_resource() makes from inside the first one are NOT
-                # covered by `except Exception` -- they surface as "delete"/
-                # "create" rather than being relabelled "update". Flattening
-                # these, or moving those calls under a broader try, changes
-                # which exceptions get wrapped; see the two
-                # test_replace_*_failure_reports_* tests.
-                replaced = False
-                update_start = time.monotonic()
-                desired = _apply_params(pr, st)
-                try:
-                    raw = pr.driver.update(
-                        pr.state_entry.id, pr.state_entry.attributes, desired, pr.credentials
-                    )
-                except DriverUpdateNotSupported:
-                    replaced = True
-                    if not pr.entry.likely_replace:
-                        _replace_review(
-                            pr, review_flags, on_review_fn, client=client, llm_config=llm_config
+                case PlanAction.CREATE:
+                    _apply_create(pr, st)
+                    executed.append(pr.entry)
+
+                case PlanAction.UPDATE:
+                    # The two handlers below are siblings on purpose. Python never
+                    # re-enters a sibling handler, so the delete()/create() calls
+                    # _replace_resource() makes from inside the first one are NOT
+                    # covered by `except Exception` -- they surface as "delete"/
+                    # "create" rather than being relabelled "update". Flattening
+                    # these, or moving those calls under a broader try, changes
+                    # which exceptions get wrapped; see the two
+                    # test_replace_*_failure_reports_* tests.
+                    replaced = False
+                    update_start = time.monotonic()
+                    desired = _apply_params(pr, st)
+                    try:
+                        raw = pr.driver.update(
+                            pr.state_entry.id, pr.state_entry.attributes, desired, pr.credentials
                         )
-                        if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
-                            return ApplyResult(
-                                executed=executed, review_flags=review_flags, aborted=True
+                    except DriverUpdateNotSupported:
+                        replaced = True
+                        if not pr.entry.likely_replace:
+                            _replace_review(
+                                pr, review_flags, on_review_fn, client=client, llm_config=llm_config
                             )
-                    raw = _replace_resource(pr, st, state_path=state_path, desired=desired)
-                except Exception as exc:
-                    _log_driver_outcome(
-                        pr.provider,
-                        pr.resource_type,
-                        "update",
-                        log.elapsed_ms(update_start),
-                        outcome="error",
-                    )
-                    raise DriverExecutionError(
-                        pr.provider, pr.resource_type, "update", exc
-                    ) from exc
+                            if not confirm_fn(f"Replace {pr.entry.resource_key}?"):
+                                return ApplyResult(
+                                    executed=executed, review_flags=review_flags, aborted=True
+                                )
+                        raw = _replace_resource(pr, st, state_path=state_path, desired=desired)
+                    except Exception as exc:
+                        _log_driver_outcome(
+                            pr.provider,
+                            pr.resource_type,
+                            "update",
+                            log.elapsed_ms(update_start),
+                            outcome="error",
+                        )
+                        raise DriverExecutionError(
+                            pr.provider, pr.resource_type, "update", exc
+                        ) from exc
 
-                if not replaced:
-                    _log_driver_outcome(
-                        pr.provider,
-                        pr.resource_type,
-                        "update",
-                        log.elapsed_ms(update_start),
-                        outcome="success",
-                    )
+                    if not replaced:
+                        _log_driver_outcome(
+                            pr.provider,
+                            pr.resource_type,
+                            "update",
+                            log.elapsed_ms(update_start),
+                            outcome="success",
+                        )
 
-                executed.append(_record_update(pr, st, raw, replaced=replaced))
+                    executed.append(_record_update(pr, st, raw, replaced=replaced))
 
-            elif pr.entry.action == PlanAction.DESTROY:
-                _apply_destroy(pr, st, state_path=state_path, retry=retry_destroy)
-                executed.append(pr.entry)
-                continue
+                case PlanAction.DESTROY:
+                    _apply_destroy(pr, st, state_path=state_path, retry=retry_destroy)
+                    executed.append(pr.entry)
+                    continue
 
             state.save(st, state_path)
     except Exception as exc:
