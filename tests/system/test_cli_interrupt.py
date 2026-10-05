@@ -52,6 +52,7 @@ from tests.system.conftest import (
     unique_droplet_name,
     unique_firewall_name,
     wait_until_droplet_gone,
+    wait_until_firewall_droplet_ids,
     write_aiform_md,
     write_firewall_aiform_md,
 )
@@ -438,40 +439,28 @@ class TestRefuseToOrphanADependent:
             )
             assert get_firewall_or_none(token, pair.firewall_id) is not None
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#226: a marker path given alone skips the dependency check",
-    )
-    def test_a_marker_path_given_alone_is_refused_too(self, project_dir, ledger, runner):
-        token = live_token()
-        pair = apply_droplet_and_dependent_firewall(token, "ucf-alone", project_dir, ledger, runner)
-        marker = mark_for_deletion(pair.droplet_path)
-
-        code, captured = runner.run(["plan", "apply", str(marker), "--yes"])
-
-        assert_refused_naming_both(code, captured, pair, "plan apply <marker>")
-        assert get_droplet_or_none(token, pair.droplet_id) is not None
-
-    def test_an_orphaned_dependent_is_reported_and_a_rerun_after_editing_it_converges(
+    def test_a_marker_path_given_alone_repairs_the_firewall_and_editing_its_file_converges(
         self, project_dir, ledger, runner
     ):
-        # Pins what works TODAY while #226 is open, so the recovery is not lost
-        # when the refusal above lands: the orphaning itself is not refused, the
-        # next plan refuses with the dangling edge named, and dropping the dead
-        # reference from the firewall's own file repairs it. When #226 is
-        # fixed the first apply below exits 2 and this test needs rewriting.
+        # A marker path given alone leaves the firewall's file out of the run, so
+        # the apply repairs the firewall instead of orphaning it. The
+        # firewall's file still names the dead droplet, so the next plan refuses
+        # with both keys named until that reference is dropped from the file.
         token = live_token()
         pair = apply_droplet_and_dependent_firewall(
             token, "ucf-recover", project_dir, ledger, runner
         )
         marker = mark_for_deletion(pair.droplet_path)
 
-        runner.ok(["plan", "apply", str(marker), "--yes"], "plan apply <marker> (orphans)")
+        runner.ok(["plan", "apply", str(marker), "--yes"], "plan apply <marker> (repairs)")
         leftover = wait_until_droplet_gone(token, pair.droplet_id)
         assert leftover is None, f"droplet {pair.droplet_id} is still live"
+        repaired = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
+        assert repaired is not None
+        assert repaired["droplet_ids"] == []
 
         code, captured = runner.run(["plan", "create"])
-        assert_refused_naming_both(code, captured, pair, "plan create after the orphaning")
+        assert_refused_naming_both(code, captured, pair, "plan create after the repair")
         assert get_firewall_or_none(token, pair.firewall_id) is not None
 
         write_firewall_aiform_md(
@@ -482,7 +471,7 @@ class TestRefuseToOrphanADependent:
         )
         runner.ok(APPLY, "plan apply after dropping the dead reference")
 
-        firewall = get_firewall_or_none(token, pair.firewall_id)
+        firewall = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
         assert firewall is not None
         assert firewall["droplet_ids"] == []
         assert len(firewalls_named(token, pair.firewall_name)) == 1

@@ -459,7 +459,8 @@ It remains **not** a decision gate. The pause holds either way.
   above, but did not choose among #216's candidate fixes or work out what
   the chosen one costs — that's #216's plan, not this file.
 - **Orphan refusal and partial-failure recovery.** Phase 4, **partially
-  shipped since** (#225, paths-driven destroy only — see
+  shipped since** (#225, paths-driven destroy only; then 4a's repair on both
+  destroy routes and 4b's failure report and restartable apply — see
   `specs/resource_dependencies.md` and `MULTI_RESOURCE_PRD.md`'s Phase 4
   entry). This spec takes a
   position on what an inferred edge would do to Phase 4, and none on Phase 4's

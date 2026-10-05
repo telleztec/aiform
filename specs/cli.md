@@ -625,6 +625,14 @@ takes an already-built plan):
   entry is an `update` whose `DriverExecutionError.operation` is `create`, the
   replace had already deleted the old resource, so the `failed:` line ends
   ` -- the old resource was deleted and the new one was not created`.
+  A firewall repaired for a destroy (Phase 4a) is labelled `repair`, not
+  `update`, on whichever line it appears: `applied: <fw> (repair)` when it
+  succeeded, `failed: <fw> (repair)` when it did not (the destroys behind it
+  are then `not run:`). When the repair succeeded and the delete it preceded
+  failed, that `failed:` line ends ` -- still tracked; <fw> was already
+  repaired to stop listing it` (several repaired firewalls are comma-joined and
+  the verb agrees in number: `<fw-a>, <fw-b> were already repaired to stop
+  listing it`).
   The block is printed for `plan apply` and `plan destroy` alike, whether
   the exception is a `DriverExecutionError`, a mid-loop `PlanBlockedError` or
   any other handled type. A resource whose action succeeded but whose state
@@ -706,6 +714,18 @@ errors, so all of them behave and are tested the same way:
    passed before this — one `Warning:` line per dropped dangling edge,
    printed after the tally line, same rendering `plan create`'s
    uncovered-resource warnings already use.
+   **Repairs (#226, #227).** When a named file's droplet is listed by a tracked
+   firewall outside the run, step 1's plan starts with an UPDATE of that
+   firewall (printed like any other entry, before the destroys) and `warnings`
+   carries a notice that the firewall's `.aiform.md` still names the droplet and
+   the next plan will flag it. Step 3's `apply_plan` asks one extra `(y/n)` per
+   such firewall, through the same `_confirm`, naming the firewall and the id,
+   after the plan's own `(y/n)` and before anything runs; `--yes` skips it
+   and repairs. A `n` answers the whole run: exit 1, nothing changed or
+   destroyed. `plan apply` shows and confirms the same repair for an
+   `AIFORM-DELETE-` file, since both routes share `apply_plan`. `--force`
+   still only means what it meant before: it does not turn a repair off, and
+   it still drops the edge of a dependent aiform cannot repair.
    2a. **Typed deployment name** — `--all` only, only when no deployment was
    explicit, only when `planned` is non-empty. After the plan has printed and
    **before** `apply_plan` (so before gate #2's LLM call), `_confirm_deployment_name`

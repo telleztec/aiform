@@ -332,6 +332,7 @@ class ApplyProgress:
     applied: list[PlanEntry]
     failed: PlanEntry
     not_run: list[PlanEntry]
+    repairs: dict[str, list[str]]  # dependent key -> destroyed keys it was repaired for
 
 
 DESTROY_RETRY_ATTEMPTS = 4
@@ -1142,6 +1143,14 @@ re-raised unchanged:
   is the checkpoint described under the UPDATE arm.
 - `not_run` is every later `pr.entry` in `planned` that is not `NO_OP`, in
   order.
+- `repairs` maps each repaired firewall's key to the destroyed keys it was
+  repaired for, built from every `pr.repairs` in `planned`. A repair is an
+  executed UPDATE entry and is placed in `applied`, `failed` or `not_run` like
+  any other; `repairs` only lets the report call it a repair and tie a failed
+  delete to the repair that preceded it (Phase 4a, #226/#227, with 4b).
+  Repair-then-delete-fails leaves the droplet tracked and the firewall repaired,
+  both stated in the report; a failed repair is the `failed` entry with the
+  delete in `not_run`, nothing destroyed.
 
 The exception type, its message and its `__cause__` are untouched, so every
 handler that catches `DriverExecutionError` or `PlanBlockedError` keeps working.
@@ -1423,19 +1432,18 @@ Returns the destination path.
   addenda below. What
   remains true is that this module applies `planned` one resource at a
   time, in the literal order the list carries — it is the plan
-  *builders* that now decide that order, and `apply_plan()` is unchanged
-  and unaware of the graph.
-- **Orphan refusal — Phase 4, partly in scope now, not fully out of it.**
-  #225 (`1ed84bf`) added `_reverse_dependents()`/`_resolve_reverse_dependents()`
-  to `_build_destroy_plan_from_paths()` — the **paths-driven** destroy
-  producer only; see the `resource_dependencies` addendum below for the
-  mechanism. `_plan_delete_marked()` (the `AIFORM-DELETE-` route,
-  reached from `build_create_plan()`) still checks edges only *out of* the
-  nodes it processes, never a persisted edge pointing *into* one from
-  outside the run, so it still orphans a dependent silently — filed as
-  **#226**, `priority: P1-correctness`. The two destroy producers now differ
-  in this one respect; partial-failure recovery and restartability, the
-  rest of Phase 4, remain entirely out of scope here.
+  *builders* that now decide that order, and `apply_plan()` is unaware of
+  the graph (it gained only the repair step, Phase 4a).
+- **Orphan repair — Phase 4a, in scope now.** Destroying a resource that a
+  tracked dependent outside the run depends on is no longer refused when the
+  dependent is a firewall naming the destroyed droplet in its `droplet_ids`:
+  the plan gains an UPDATE of that firewall, applied before the delete (see
+  `### Repair before destroy (#226, #227)` in the `resource_dependencies`
+  addendum below). Every other outside dependent is still refused on the
+  paths-driven route (`--force` drops the edge, #225) and, since #226, on the
+  `AIFORM-DELETE-` route too. A failure partway through a repair-then-delete
+  is reported and restartable through the same failure path as every other
+  step (Phase 4b; see "The failure path").
 
 ## Addendum: `unordered_fields` (`specs/unordered_fields.md`)
 
@@ -1534,7 +1542,9 @@ changed and which deliberately did not.
   something resolving nowhere. This is the mirror image: `_reverse_dependents()`
   scans every entry in `st.resources` that is **not** one of this run's own
   nodes, and for each one whose persisted `StateEntry.depends_on` names a
-  node that *is* being destroyed, records the pair. Without `--force`,
+  node that *is* being destroyed, records the pair (since Phase 4a, pairs a
+  repair covers are split out first -- see "Repair before destroy" below --
+  and only the rest reach this refusal). Without `--force`,
   `_resolve_reverse_dependents()` raises `PlanBlockedError` naming every
   such pair; with it, each drops to a warning instead — same shape as
   `_resolve_dangling_targets()`, deliberately not folded into it, since the
@@ -1560,19 +1570,87 @@ changed and which deliberately did not.
   declaration and, since it now resolves nowhere, blocks (no `--force` escape
   on that particular check; see `specs/resource_dependencies.md`) until the
   user edits the file.
-  **Every other destroy prunes nothing.** The `AIFORM-DELETE-` route
-  (`_plan_delete_marked()`, reached from `build_create_plan()`) and the
-  state-driven `build_destroy_plan()` producer leave `dropped_dependents`
-  empty, so a survivor's persisted `depends_on` keeps naming the destroyed
-  key. That is deliberate: the edge staying put is what lets the next
-  state-driven `plan destroy` refuse with its dangling-target reason instead
-  of quietly losing the fact that the survivor was orphaned. The delete-marker
-  route still does not *refuse* to orphan a dependent outside the run, which
-  is **#226**, `priority: P1-correctness`, not fixed here.
+  **Every other destroy prunes nothing.** The state-driven
+  `build_destroy_plan()` producer leaves `dropped_dependents` empty (it has no
+  outside dependents: every tracked resource is a node), and the
+  `AIFORM-DELETE-` route leaves it empty too, because it refuses an
+  unrepairable outside dependent instead of forcing past it (#226).
+- **Repair before destroy (#226, #227).** `_split_reverse_dependents()`
+  divides `_reverse_dependents()`'s pairs into *repairable* ones, which become
+  repair entries, and the rest, which keep #225's refuse-or-`--force` behaviour
+  (`_resolve_reverse_dependents()`). A pair is repairable when the dependent's
+  `(provider, resource_type)` is a key of `_REPAIRABLE_EDGES`, the destroyed
+  target's `(provider, resource_type)` is the one recorded for it, the target is
+  tracked with an id of ASCII digits only, and no rule of the dependent's recorded
+  attributes names that id under `sources`/`destinations` `droplet_ids` (a
+  nested reference is not repaired -- doing a partial repair would leave the
+  dead id behind silently). This plan-time check reads **recorded** state, so it
+  cannot see a rule added out-of-band since the last refresh; `_apply_repair()`
+  repeats it against the **live** firewall (below). Today the table holds one row: `digitalocean/firewall`
+  -> `digitalocean/compute` via the top-level `droplet_ids` param.
+  `build_destroy_plan()` (paths route) and `build_create_plan()` (marker route)
+  both call it, so both routes plan identically. A repair is a
+  `PlannedResource` with `entry` from `planner.repair_entry()` (action UPDATE,
+  `likely_replace` False), `repairs` set to the destroyed target keys,
+  `state_entry` the dependent's, and no driver or credentials (loaded at apply
+  time, like a destroy). Repairs come **before every destroy** in the list, one
+  per dependent, covering all of that dependent's destroyed targets. Warnings
+  gain one line per repair: the dependent's `.aiform.md` is not edited and
+  still names the destroyed resource, so the next plan will flag it. On the
+  marker route the dependents considered are those whose key is not among the
+  discovered files (`run_keys` inside `_plan_marker_repairs()`, not
+  `covered_keys`); an in-run dependent is already handled by
+  `_resolve_dependency_edges()`. The marker route raises `PlanBlockedError`
+  for an unrepairable outside dependent, with the same reason as the paths
+  route but pointing at `aiform plan destroy <file> --force` instead of a
+  `--force` that `plan apply` does not have. The repairs are computed before
+  `build_create_plan()`'s trailing `state.save()`; they only read state.
+- **`apply_plan()` and repairs.** After gate #2 and the `Apply this plan?`
+  confirmation, and **before executing anything**, each repair entry is
+  confirmed through the same `confirm` callable unless `yes=True`:
+  `Repair <firewall>: remove <target> (id <n>) from its droplet_ids before
+  destroying?` (all targets of that firewall in one prompt). A decline
+  returns `ApplyResult(executed=[], aborted=True)`: nothing was changed or
+  destroyed. `_apply_repair()` then, in list order (so before any destroy):
+  reads the firewall live (`refresh_resource()`); if the live firewall has a rule
+  naming a destroyed id under `sources`/`destinations` `droplet_ids`, it raises
+  `PlanBlockedError` **before any provider write** (a message naming the
+  firewall, the target and `aiform plan destroy <file> --force`), whatever the
+  top-level list holds, because stripping only the top-level id would leave the
+  dead id behind (the rule check compares ids as strings, so a live read returning them as
+  strings is still caught); if the firewall is gone or no
+  longer lists the id, it only
+  prunes the `depends_on` and `reference_edges` entries for the destroyed keys from
+  state (the entry stays tracked); otherwise it calls the
+  driver's `update(id, live, desired, credentials)` through `_call_driver()`
+  where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
+  the destroyed ids removed from the repair field (surviving top-level
+  digit-string ids are written back as ints, which the driver requires; ids
+  nested in `inbound_rules`/`outbound_rules` are copied verbatim and **not**
+  coerced, so a live read naming another droplet by a string id there makes the
+  driver's own validation raise `DriverExecutionError` from this `update`,
+  before any destroy and so with no orphan -- DigitalOcean returning string ids
+  is unobserved, and the top-level int round-trip is the only one probed, #216),
+  and records the returned
+  attributes and `last_applied_at`/`last_refreshed_at`, and removes the
+  destroyed keys from the dependent's `depends_on` and `reference_edges`. It leaves
+  `aiform_md_sha256` and `driver` alone, which is why it is not `_record_update()`:
+  the user's file did not change, and rewriting the hash would make the next plan
+  believe it had already seen the file as it now reads. State is saved after each
+  repair. A driver failure is a `DriverExecutionError` (operation `update`), the
+  firewall unchanged, nothing destroyed. A successful repair is an executed
+  step like any other: it appears in `ApplyResult.executed` as an UPDATE when
+  `apply_plan()` returns, and in `ApplyProgress.applied` when a later delete
+  raises (see "The failure path"), with `ApplyProgress.repairs` marking it as a
+  repair so the report can say what it was. A re-run after a failed delete
+  does not repair again: the saved firewall no longer lists the id and no
+  longer has the edge, so the next destroy plan has nothing to repair; if the
+  repair's provider write succeeded and its state save did not, the apply
+  re-reads the firewall live, sees the id gone, and only prunes the edges.
 - **`PlannedResource.depends_on`** carries the declared list through to the
   CLI and into state, defaulted so every existing construction site and test
-  helper keeps working. **`PlannedResource.dropped_dependents`** is likewise
-  defaulted (empty list); it is in-memory only and is not part of
+  helper keeps working. **`PlannedResource.dropped_dependents`** and **`PlannedResource.repairs`** are likewise
+  defaulted (empty list); they are in-memory only and are not part of
   `build_plan_summary()`, the plan JSON, or the gate #2 payload.
 - **`_new_state_entry()`** and **`_record_update()`**'s in-place branch persist
   it, so a destroy-all can order by it later.
@@ -1583,8 +1661,9 @@ changed and which deliberately did not.
   `StateEntry.reference_edges` beside `depends_on`, and `_prune_dependents_on()`
   removes the destroyed target from both. Nothing reads it: the edge type is kept,
   not used, so no plan, order or refusal changes.
-- **`apply_plan()` is unchanged.** It applies the list in the order it is
-  given and has no notion of a graph. Everything about ordering lives in the
+- **`apply_plan()` has no notion of a graph** beyond the repair step above and
+  the failure path's report of it. It applies the list in the order it is given.
+  Everything about ordering lives in the
   two plan builders.
 - **`build_plan_summary()` is deliberately unchanged.** Adding `depends_on`
   would inject an unexplained key into gate #2's review prompt with no

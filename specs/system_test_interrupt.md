@@ -12,7 +12,10 @@ exercises (`specs/MULTI_RESOURCE_PRD.md`, UC-F and UC-G):
   orphan, and a run after that must be a no-op.
 - **UC-F, refuse to orphan a dependent.** Removing a resource another one
   still references is refused before anything is deleted, and the
-  referenced resource is still there afterwards.
+  referenced resource is still there afterwards. This holds for a dependent
+  in the same run as the marker; since Phase 4a (#226/#227) a firewall
+  outside the run is repaired instead, and other outside dependents are
+  refused (`tests/system/test_cli_references.py`).
 
 Until now both were established by reading the code. A mock cannot settle
 either, because the mock encodes the same ordering assumption the
@@ -48,6 +51,8 @@ class Fault:
     fired: bool
     response: dict | None   # parsed JSON body of the faulted response
     seen: list[tuple[str, str]]   # every (METHOD, url) while installed
+    provider_errors: list[BaseException]   # errors the real call raised under the reset/http_500/http_503 kinds
+    provider_error_bodies: list[bytes | None]   # each HTTPError's body, parallel to provider_errors
 
 interrupt_after_request(method, url_pattern, *, occurrence=1, response_predicate=None)
 interrupt_before_request(method, url_pattern, *, occurrence=1)
@@ -108,6 +113,13 @@ still carry DigitalOcean words. Tested offline in
   A call whose method or URL does not match is passed through untouched.
 - `interrupt_before_request` raises on the `occurrence`th match *instead of*
   calling the provider.
+- `describe_provider_errors(fault)` renders `Fault.provider_errors` for a
+  failure message: each error's type and text, and for an `HTTPError` its URL
+  and body (cut to 500 characters), because `repr(HTTPError)` is only the
+  status and reason. Reading the body would consume it, and the driver reads
+  the same body to recognise a 422 retry, so the harness reads it once when
+  it records the error and gives the error a fresh stream over the same bytes
+  before it is re-raised: the caller still reads the whole body.
 - `interrupt_after_state_save` calls the real `state.save`, then raises on
   the `occurrence`th save whose state satisfies `predicate`.
 - `fail_request(..., "timeout")` is the race the client loses. On the
@@ -145,6 +157,21 @@ still carry DigitalOcean words. Tested offline in
     JSON body `{"id", "message"}`.
   - `http_429` is the provider refusing before it acts, so
     `provider_acts=True` for it raises `ValueError` at the call.
+  - When `provider_acts=True` and the real request itself raises, that error
+    reaches the caller unchanged and is appended to `Fault.provider_errors`.
+    The fault is not counted as fired and fires on the next match. If an
+    interrupt cuts the read of an `HTTPError` body short, nothing is appended;
+    the fault is still not counted as fired.
+    Example: DigitalOcean's 422 "invalid key identifiers" right after a managed
+    key is uploaded.
+  - A match whose real call raised still counts toward `occurrence`.
+  - Only an error from the request call itself un-fires the fault. If the
+    provider answered and reading or parsing the body then failed, the fault
+    stays fired: the provider answered, so it acted, and firing again would
+    fault a duplicate request.
+  - A real error on a match before the requested `occurrence` is not
+    intercepted: it passes straight through and counts, so the un-fire applies
+    only to the firing match.
 - `fail_request(..., body_pattern=...)` matches the request body as well as the
   method and URL, for every kind. A request whose body does not match passes
   through and does not count toward `occurrence`. It exists because a provider
@@ -156,8 +183,8 @@ still carry DigitalOcean words. Tested offline in
 - Installing is scoped: the original `urlopen` and `save` are restored on
   exit, on every path, so the retry and the test's own provider queries run
   unpatched.
-- A request that raises (an `HTTPError`) propagates unchanged and never
-  counts as a match.
+- Under the `interrupt_*` injectors and `rewrite_responses`, a request that
+  raises (an `HTTPError`) propagates unchanged and never counts as a match.
 - A request is described by `Request.get_method()` and `full_url`, or by the
   bare string for a `urlopen("https://...")` call.
 
@@ -168,7 +195,7 @@ asserts, in this order:
 
 1. The faulted run raised `InjectedInterrupt`, and `Fault.fired` is true. A
    stage whose injection point was never reached fails with that message
-   rather than passing vacuously.
+   rather than passing vacuously. The message lists `Fault.provider_errors`.
 2. The provider, queried by ids the test recorded, shows what the stage
    allows (below).
 3. Re-running the same command exits 0 and the provider matches the declared
@@ -334,11 +361,16 @@ the resized size (`size_slug`) straight from the listing.
   via the provider and by the recorded id, the droplet still exists; state
   still tracks both.
 - **Marker path alone** (#226). Handing `plan apply` only the marker path
-  skips the dependency check, because that check reads the other file. The
-  desired refusal is `xfail(strict=True, reason="#226")`. A separate test
-  pins the recovery that works today: after the droplet is gone, `plan create`
-  refuses and names both keys; removing the dead reference from the firewall's
-  file lets `plan apply` converge; and a following run is a no-op.
+  leaves the firewall's file out of the run, so the destroy is not refused: it
+  repairs the firewall first (#226/#227, `specs/resource_dependencies.md`).
+  The test applies the marker alone and asserts the droplet is gone and the live
+  firewall's `droplet_ids` is `[]` (polled with `wait_until_firewall_droplet_ids()`); `plan create` then refuses and names both keys,
+  because the firewall's file still names the dead droplet; removing the dead
+  reference from the firewall's file lets `plan apply` converge; and a following
+  run is a no-op. The old `xfail(strict=True, reason="#226")` test of a refusal
+  was deleted, not rewritten: the requirement it pinned was abandoned, and
+  `tests/system/test_cli_references.py`'s `TestDestroyRepairsFirewallLive`
+  already covers the marker-alone repair.
 
 ### Teardown
 

@@ -22,7 +22,7 @@ from tests.system.conftest import (
     list_firewalls,
     verbose_call_count,
 )
-from tests.system.fault_injection import Fault, InjectedInterrupt
+from tests.system.fault_injection import Fault, InjectedInterrupt, describe_provider_errors
 from tests.system.provider_ledger import Ledger
 
 APPLY = ["plan", "apply", "--yes"]
@@ -104,6 +104,7 @@ class Runner:
                     f"{step}: the injection point was never reached, so nothing was "
                     f"tested (the run exited {code})\n--- stderr ---\n{captured.err}"
                     f"\n--- calls seen ---\n{fault.seen}"
+                    f"\n--- provider errors ---\n{describe_provider_errors(fault)}"
                 )
         self.capsys.readouterr()
         self.ledger.note_response(fault.response)
@@ -121,6 +122,7 @@ class Runner:
                 f"{step}: the injection point was never reached, so nothing was "
                 f"tested (the run exited {code})\n--- stderr ---\n{captured.err}"
                 f"\n--- calls seen ---\n{fault.seen}"
+                f"\n--- provider errors ---\n{describe_provider_errors(fault)}"
             )
         self.ledger.note_response(fault.response)
         self._note()

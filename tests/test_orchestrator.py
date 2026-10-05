@@ -3024,9 +3024,9 @@ class TestReferenceEdgesAreKept:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01", "digitalocean.compute.other"],
                     reference_edges={
                         "digitalocean.compute.droplet-01": ["provider_id"],
@@ -3047,9 +3047,7 @@ class TestReferenceEdgesAreKept:
             deployment="default",
         )
 
-        entry = state.load(state_path, deployment="default").resources[
-            "digitalocean.firewall.fw-01"
-        ]
+        entry = state.load(state_path, deployment="default").resources["digitalocean.domain.dns-01"]
         assert entry.depends_on == ["digitalocean.compute.other"]
         assert entry.reference_edges == {"digitalocean.compute.other": ["id"]}
 
@@ -3604,9 +3602,9 @@ class TestReverseDependentDestroyRefusal:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -3618,7 +3616,7 @@ class TestReverseDependentDestroyRefusal:
             )
 
         reason = exc_info.value.reason
-        assert "digitalocean.firewall.fw-01" in reason
+        assert "digitalocean.domain.dns-01" in reason
         assert "digitalocean.compute.droplet-01" in reason
 
     def test_reverse_dependent_error_names_every_orphaned_dependent(self, tmp_path: Path):
@@ -3629,14 +3627,14 @@ class TestReverseDependentDestroyRefusal:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
-                "digitalocean.firewall.fw-02": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-02",
+                "digitalocean.domain.dns-02": make_state_entry(
+                    resource_type="domain",
+                    name="dns-02",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -3648,8 +3646,8 @@ class TestReverseDependentDestroyRefusal:
             )
 
         reason = exc_info.value.reason
-        assert "digitalocean.firewall.fw-01" in reason
-        assert "digitalocean.firewall.fw-02" in reason
+        assert "digitalocean.domain.dns-01" in reason
+        assert "digitalocean.domain.dns-02" in reason
 
     def test_force_proceeds_past_reverse_dependent_edges_and_warns_per_pair(self, tmp_path: Path):
         # Only build_destroy_plan()'s own contract, at the planning level:
@@ -3665,14 +3663,14 @@ class TestReverseDependentDestroyRefusal:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
-                "digitalocean.firewall.fw-02": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-02",
+                "digitalocean.domain.dns-02": make_state_entry(
+                    resource_type="domain",
+                    name="dns-02",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -3684,17 +3682,17 @@ class TestReverseDependentDestroyRefusal:
 
         assert [pr.entry.resource_key for pr in planned] == ["digitalocean.compute.droplet-01"]
         assert len(warnings) == 2
-        assert any("digitalocean.firewall.fw-01" in w for w in warnings)
-        assert any("digitalocean.firewall.fw-02" in w for w in warnings)
+        assert any("digitalocean.domain.dns-01" in w for w in warnings)
+        assert any("digitalocean.domain.dns-02" in w for w in warnings)
 
     def test_dependent_also_in_the_run_does_not_trigger_the_refusal(self, tmp_path: Path):
         droplet_path = tmp_path / "droplet.aiform.md"
-        firewall_path = tmp_path / "fw.aiform.md"
+        dns_path = tmp_path / "dns.aiform.md"
         write_aiform_md(droplet_path, name="droplet-01")
         write_aiform_md(
-            firewall_path,
-            resource="firewall",
-            name="fw-01",
+            dns_path,
+            resource="domain",
+            name="dns-01",
             depends_on=["digitalocean.compute.droplet-01"],
         )
         state_path = tmp_path / ".aiform" / "state.json"
@@ -3702,23 +3700,23 @@ class TestReverseDependentDestroyRefusal:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
         )
 
         planned, warnings = orchestrator.build_destroy_plan(
-            [droplet_path, firewall_path], state_path=state_path, deployment="default"
+            [droplet_path, dns_path], state_path=state_path, deployment="default"
         )
 
         # Only the exposure warning is expected: no refusal, no dropped-edge warning.
         assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
-            "digitalocean.firewall.fw-01",
+            "digitalocean.domain.dns-01",
         }
 
     def test_dependent_not_naming_the_target_is_unaffected(self, tmp_path: Path):
@@ -3759,10 +3757,10 @@ class TestReverseDependentDestroyRefusal:
                 "digitalocean.compute.droplet-01": make_state_entry(
                     aiform_md_path=str(tracked_file), name="droplet-01"
                 ),
-                "digitalocean.firewall.fw-01": make_state_entry(
+                "digitalocean.domain.dns-01": make_state_entry(
                     aiform_md_path=str(tracked_file),
-                    resource_type="firewall",
-                    name="fw-01",
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -3776,7 +3774,7 @@ class TestReverseDependentDestroyRefusal:
         assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
-            "digitalocean.firewall.fw-01",
+            "digitalocean.domain.dns-01",
         }
 
     def test_declared_only_dependent_reaches_state_and_is_honoured(
@@ -3784,26 +3782,25 @@ class TestReverseDependentDestroyRefusal:
     ):
         # Every other test in this class hand-builds the dependent's
         # StateEntry, which pins the orchestrator mechanism but not that a
-        # firewall's `depends_on:` frontmatter -- with NO reference
-        # anywhere in its own params, e.g. a tag-targeted firewall --
-        # actually reaches StateEntry.depends_on via a real plan/apply, and
-        # is honoured from there. #225 F13.
+        # dependent's `depends_on:` frontmatter -- with NO reference
+        # anywhere in its own params -- actually reaches StateEntry.depends_on
+        # via a real plan/apply, and is honoured from there.
         write_driver(drivers_dir, "digitalocean", "compute")
-        write_driver(drivers_dir, "digitalocean", "firewall")
+        write_driver(drivers_dir, "digitalocean", "domain")
         droplet_path = tmp_path / "droplet.aiform.md"
-        firewall_path = tmp_path / "fw.aiform.md"
+        dns_path = tmp_path / "dns.aiform.md"
         write_aiform_md(droplet_path, name="droplet-01")
         write_aiform_md(
-            firewall_path,
-            resource="firewall",
-            name="fw-01",
+            dns_path,
+            resource="domain",
+            name="dns-01",
             depends_on=["digitalocean.compute.droplet-01"],
         )
         state_path = tmp_path / ".aiform" / "state.json"
         state.save(state.State(deployment="default"), state_path)
 
         planned, _ = orchestrator.build_create_plan(
-            [droplet_path, firewall_path],
+            [droplet_path, dns_path],
             state_path=state_path,
             client=FakeClient([]),
             deployment="default",
@@ -3811,7 +3808,7 @@ class TestReverseDependentDestroyRefusal:
         orchestrator.apply_plan(planned, state_path=state_path, yes=True, deployment="default")
 
         saved = state.load(state_path, deployment="default")
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == [
             "digitalocean.compute.droplet-01"
         ]
 
@@ -3821,7 +3818,7 @@ class TestReverseDependentDestroyRefusal:
             )
 
         reason = exc_info.value.reason
-        assert "digitalocean.firewall.fw-01" in reason
+        assert "digitalocean.domain.dns-01" in reason
         assert "digitalocean.compute.droplet-01" in reason
 
 
@@ -3843,9 +3840,9 @@ class TestForcedDestroyPrunesTheDroppedEdge:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -3865,7 +3862,7 @@ class TestForcedDestroyPrunesTheDroppedEdge:
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.droplet-01" not in saved.resources
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == []
 
     def test_pruning_leaves_unrelated_depends_on_entries_alone(
         self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
@@ -3879,14 +3876,14 @@ class TestForcedDestroyPrunesTheDroppedEdge:
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
                 "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
-                "digitalocean.firewall.fw-02": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-02",
+                "digitalocean.domain.dns-02": make_state_entry(
+                    resource_type="domain",
+                    name="dns-02",
                     depends_on=["digitalocean.compute.droplet-02"],
                 ),
             },
@@ -3904,8 +3901,8 @@ class TestForcedDestroyPrunesTheDroppedEdge:
         )
 
         saved = state.load(state_path, deployment="default")
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
-        assert saved.resources["digitalocean.firewall.fw-02"].depends_on == [
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == []
+        assert saved.resources["digitalocean.domain.dns-02"].depends_on == [
             "digitalocean.compute.droplet-02"
         ]
 
@@ -3921,9 +3918,9 @@ class TestForcedDestroyPrunesTheDroppedEdge:
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
                 "digitalocean.compute.droplet-02": make_state_entry(name="droplet-02"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-02"],
                 ),
             },
@@ -3942,7 +3939,7 @@ class TestForcedDestroyPrunesTheDroppedEdge:
         )
 
         saved = state.load(state_path, deployment="default")
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == [
             "digitalocean.compute.droplet-02"
         ]
 
@@ -3954,14 +3951,14 @@ class TestForcedDestroyPrunesTheDroppedEdge:
             state_path,
             **{
                 "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
-                "digitalocean.firewall.fw-02": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-02",
+                "digitalocean.domain.dns-02": make_state_entry(
+                    resource_type="domain",
+                    name="dns-02",
                     depends_on=["digitalocean.compute.droplet-02"],
                 ),
             },
@@ -3971,7 +3968,7 @@ class TestForcedDestroyPrunesTheDroppedEdge:
             [droplet_path], state_path=state_path, force=True, deployment="default"
         )
 
-        assert [pr.dropped_dependents for pr in planned] == [["digitalocean.firewall.fw-01"]]
+        assert [pr.dropped_dependents for pr in planned] == [["digitalocean.domain.dns-01"]]
 
     def test_untracked_target_under_force_still_drops_the_edges_the_warning_names(
         self, tmp_path: Path
@@ -3982,9 +3979,9 @@ class TestForcedDestroyPrunesTheDroppedEdge:
         save_state(
             state_path,
             **{
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -4004,72 +4001,13 @@ class TestForcedDestroyPrunesTheDroppedEdge:
         )
 
         saved = state.load(state_path, deployment="default")
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == []
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == []
 
 
-class TestDestroysThatNamedNoDependentsPruneNothing:
-    """The delete-marker route and the state-driven producer never emit the
-    "dropping the edge" warning, so they must not drop any edge: leaving it in
-    place is what makes the next plan refuse instead of forgetting the
-    survivor was orphaned."""
-
-    def test_delete_marker_destroy_leaves_the_survivors_edge_and_the_next_plan_refuses(
-        self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
-    ):
-        write_driver(drivers_dir, "digitalocean", "compute")
-        write_driver(drivers_dir, "digitalocean", "firewall")
-        marker_path = tmp_path / "AIFORM-DELETE-droplet.aiform.md"
-        write_aiform_md(marker_path, name="droplet-01")
-        firewall_path = tmp_path / "fw.aiform.md"
-        write_aiform_md(
-            firewall_path,
-            resource="firewall",
-            name="fw-01",
-            depends_on=["digitalocean.compute.droplet-01"],
-        )
-        state_path = tmp_path / ".aiform" / "state.json"
-        save_state(
-            state_path,
-            **{
-                "digitalocean.compute.droplet-01": make_state_entry(name="droplet-01"),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
-                    depends_on=["digitalocean.compute.droplet-01"],
-                ),
-            },
-        )
-
-        planned, _ = orchestrator.build_create_plan(
-            [marker_path], state_path=state_path, client=FakeClient([]), deployment="default"
-        )
-        assert [pr.dropped_dependents for pr in planned] == [[]]
-        orchestrator.apply_plan(
-            planned,
-            state_path=state_path,
-            yes=True,
-            client=FakeClient([plan_review_response()]),
-            deployment="default",
-        )
-
-        saved = state.load(state_path, deployment="default")
-        assert "digitalocean.compute.droplet-01" not in saved.resources
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
-            "digitalocean.compute.droplet-01"
-        ]
-
-        with pytest.raises(PlanBlockedError) as destroy_exc:
-            orchestrator.build_destroy_plan(None, state_path=state_path, deployment="default")
-        assert "neither in this run nor tracked in state" in destroy_exc.value.reason
-        assert "digitalocean.compute.droplet-01" in destroy_exc.value.reason
-
-        with pytest.raises(PlanBlockedError) as create_exc:
-            orchestrator.build_create_plan(
-                [firewall_path], state_path=state_path, client=FakeClient([]), deployment="default"
-            )
-        assert "neither a file in this run nor a resource tracked in state" in (
-            create_exc.value.reason
-        )
+class TestStateDrivenDestroyPrunesNothing:
+    """The state-driven producer never emits the "dropping the edge" warning,
+    so it must not drop any edge: leaving it in place is what makes the next
+    plan refuse instead of forgetting the survivor was orphaned."""
 
     def test_state_driven_plan_names_no_dependents_so_apply_keeps_the_survivors_edge(
         self, tmp_path: Path, drivers_dir: Path, fake_do_token: None
@@ -4082,9 +4020,9 @@ class TestDestroysThatNamedNoDependentsPruneNothing:
                 "digitalocean.compute.droplet-01": make_state_entry(
                     name="droplet-01", aiform_md_path=str(tmp_path / "droplet.aiform.md")
                 ),
-                "digitalocean.firewall.fw-01": make_state_entry(
-                    resource_type="firewall",
-                    name="fw-01",
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain",
+                    name="dns-01",
                     depends_on=["digitalocean.compute.droplet-01"],
                 ),
             },
@@ -4106,9 +4044,824 @@ class TestDestroysThatNamedNoDependentsPruneNothing:
 
         saved = state.load(state_path, deployment="default")
         assert "digitalocean.compute.droplet-01" not in saved.resources
-        assert saved.resources["digitalocean.firewall.fw-01"].depends_on == [
+        assert saved.resources["digitalocean.domain.dns-01"].depends_on == [
             "digitalocean.compute.droplet-01"
         ]
+
+
+LOGGING_DRIVER_SOURCE = """\
+import json
+import os
+
+from aiform.driver import ResourceDriver
+from aiform.exceptions import ResourceNotFoundError
+
+LOG = {log!r}
+LIVE = {live!r}
+KIND = {kind!r}
+FAIL_DELETE = {fail_delete!r}
+
+
+def _log(*entry):
+    with open(LOG, "a") as handle:
+        handle.write(json.dumps(entry) + "\\n")
+
+
+class Driver(ResourceDriver):
+    PARAM_SCHEMA = {{
+        "type": "object",
+        "properties": {{
+            "inbound_rules": {{}},
+            "outbound_rules": {{}},
+            "droplet_ids": {{}},
+            "tags": {{}},
+        }},
+    }}
+    LIKELY_REPLACE_FIELDS = []
+
+    def create(self, name, params, credentials):
+        raise AssertionError("not reached")
+
+    def read(self, id, credentials):
+        _log("read", KIND, id)
+        try:
+            with open(LIVE) as handle:
+                live = json.load(handle)
+        except FileNotFoundError:
+            raise ResourceNotFoundError(f"{{KIND}} {{id}} not found")
+        return {{"id": id, "name": "fw-01", **live}}
+
+    def update(self, id, current, desired, credentials):
+        _log("update", KIND, id, current, desired)
+        for listed in desired.get("droplet_ids", []):
+            if type(listed) is not int:
+                raise ValueError(f"droplet_ids must hold ints, got {{listed!r}}")
+        if "broken" in desired.get("tags", []):
+            raise RuntimeError("simulated CSP update failure")
+        with open(LIVE, "w") as handle:
+            json.dump(desired, handle)
+        return {{"id": id, "name": current["name"], **desired}}
+
+    def delete(self, id, credentials):
+        _log("delete", KIND, id)
+        if os.path.exists(FAIL_DELETE):
+            raise RuntimeError("simulated CSP delete failure")
+"""
+
+DROPLET_ID = 123456789
+OTHER_DROPLET_ID = 987654321
+FIREWALL_KEY = "digitalocean.firewall.fw-01"
+DROPLET_KEY = "digitalocean.compute.droplet-01"
+OTHER_DROPLET_KEY = "digitalocean.compute.droplet-02"
+RULES = [
+    {
+        "protocol": "tcp",
+        "ports": "22",
+        "action": "allow",
+        "sources": {"addresses": ["0.0.0.0/0"]},
+    }
+]
+
+
+NESTED_RULE_PLACEMENTS = [
+    ("inbound_rules", "sources"),
+    ("inbound_rules", "destinations"),
+    ("outbound_rules", "destinations"),
+]
+
+
+def rule_naming(side: str, droplet_id) -> list:
+    return [
+        {"protocol": "tcp", "ports": "22", "action": "allow", side: {"droplet_ids": [droplet_id]}}
+    ]
+
+
+def firewall_attributes(droplet_ids, **overrides) -> dict:
+    return {
+        "name": "fw-01",
+        "inbound_rules": RULES,
+        "outbound_rules": [],
+        "droplet_ids": list(droplet_ids),
+        "tags": ["aiform-system-test"],
+        **overrides,
+    }
+
+
+def firewall_entry(droplet_ids=(DROPLET_ID,), *, depends_on=None, **attribute_overrides):
+    return make_state_entry(
+        resource_type="firewall",
+        name="fw-01",
+        id="fw-id-1",
+        attributes=firewall_attributes(droplet_ids, **attribute_overrides),
+        aiform_md_path="fw.aiform.md",
+        aiform_md_sha256="firewall-sha",
+        depends_on=[DROPLET_KEY] if depends_on is None else depends_on,
+    )
+
+
+def droplet_entry(name="droplet-01", id=str(DROPLET_ID)) -> state.StateEntry:
+    return make_state_entry(name=name, id=id)
+
+
+class RepairWorld:
+    """A droplet, optionally a second one, and a firewall listing them, with
+    drivers on disk that log every call to one file in order and keep the
+    firewall's live object in another."""
+
+    def __init__(self, tmp_path: Path, drivers_dir: Path):
+        self.tmp_path = tmp_path
+        self.log_path = tmp_path / "calls.jsonl"
+        self.live_path = tmp_path / "live-firewall.json"
+        self.fail_delete_path = tmp_path / "fail-delete"
+        self.state_path = tmp_path / ".aiform" / "state.json"
+        for provider, resource, kind in (
+            ("digitalocean", "compute", "droplet"),
+            ("digitalocean", "firewall", "firewall"),
+        ):
+            write_driver(
+                drivers_dir,
+                provider,
+                resource,
+                LOGGING_DRIVER_SOURCE.format(
+                    log=str(self.log_path),
+                    live=str(self.live_path),
+                    kind=kind,
+                    fail_delete=str(self.fail_delete_path),
+                ),
+            )
+
+    def fail_deletes(self, failing: bool = True) -> None:
+        if failing:
+            self.fail_delete_path.write_text("")
+        else:
+            self.fail_delete_path.unlink(missing_ok=True)
+
+    def set_live(self, droplet_ids=(DROPLET_ID,), **overrides) -> None:
+        attributes = firewall_attributes(droplet_ids, **overrides)
+        del attributes["name"]
+        self.live_path.write_text(json.dumps(attributes))
+
+    def save(self, **entries) -> None:
+        save_state(self.state_path, **entries)
+
+    def droplet_file(self, name="droplet-01", *, marker=False) -> Path:
+        path = self.tmp_path / f"{'AIFORM-DELETE-' if marker else ''}{name}.aiform.md"
+        write_aiform_md(path, name=name)
+        return path
+
+    def calls(self) -> list[list]:
+        if not self.log_path.exists():
+            return []
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()]
+
+    def mutations(self) -> list[tuple]:
+        return [(c[0], c[1]) for c in self.calls() if c[0] in ("update", "delete")]
+
+    def reload(self) -> state.State:
+        return state.load(self.state_path, deployment="default")
+
+
+@pytest.fixture
+def repair_world(
+    tmp_path: Path, drivers_dir: Path, fake_do_token: None, monkeypatch
+) -> RepairWorld:
+    monkeypatch.chdir(tmp_path)
+    return RepairWorld(tmp_path, drivers_dir)
+
+
+def apply_with_confirms(planned, world: RepairWorld, answers=None, *, yes=False):
+    prompts: list[str] = []
+    remaining = list(answers or [])
+
+    def confirm(prompt: str) -> bool:
+        prompts.append(prompt)
+        return remaining.pop(0) if remaining else True
+
+    result = orchestrator.apply_plan(
+        planned,
+        state_path=world.state_path,
+        yes=yes,
+        confirm=confirm,
+        client=FakeClient([plan_review_response()]),
+        deployment="default",
+    )
+    return result, prompts
+
+
+class TestRepairInsteadOfRefusingOnThePathsRoute:
+    """Destroying a droplet a tracked firewall lists plans an UPDATE of that
+    firewall ahead of the destroy."""
+
+    def test_firewall_listing_the_droplet_gets_a_repair_entry_before_the_destroy(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()},
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [repair_world.droplet_file()],
+            state_path=repair_world.state_path,
+            deployment="default",
+        )
+
+        assert [(pr.entry.resource_key, pr.entry.action) for pr in planned] == [
+            (FIREWALL_KEY, PlanAction.UPDATE),
+            (DROPLET_KEY, PlanAction.DESTROY),
+        ]
+        repair = planned[0]
+        assert repair.repairs == [DROPLET_KEY]
+        assert repair.entry.likely_replace is False
+        assert DROPLET_KEY in repair.entry.rationale
+        assert repair.state_entry is not None and repair.state_entry.id == "fw-id-1"
+        assert planned[1].repairs == []
+        assert planned[1].dropped_dependents == []
+        assert len(warnings) == 1
+        assert FIREWALL_KEY in warnings[0]
+        assert DROPLET_KEY in warnings[0]
+        assert "still" in warnings[0]
+
+    def test_planning_a_repair_neither_mutates_nor_saves_state(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        before = repair_world.state_path.read_text()
+
+        orchestrator.build_destroy_plan(
+            [repair_world.droplet_file()],
+            state_path=repair_world.state_path,
+            deployment="default",
+        )
+
+        assert repair_world.state_path.read_text() == before
+        assert repair_world.calls() == []
+
+    def test_one_firewall_listing_two_destroyed_droplets_gets_one_repair_for_both(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                OTHER_DROPLET_KEY: droplet_entry("droplet-02", str(OTHER_DROPLET_ID)),
+                FIREWALL_KEY: firewall_entry(
+                    (DROPLET_ID, OTHER_DROPLET_ID), depends_on=[DROPLET_KEY, OTHER_DROPLET_KEY]
+                ),
+            }
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [repair_world.droplet_file(), repair_world.droplet_file("droplet-02")],
+            state_path=repair_world.state_path,
+            deployment="default",
+        )
+
+        assert planned[0].entry.resource_key == FIREWALL_KEY
+        assert planned[0].repairs == [DROPLET_KEY, OTHER_DROPLET_KEY]
+        assert [pr.entry.action for pr in planned[1:]] == [PlanAction.DESTROY] * 2
+        assert len(planned) == 3
+        assert len(warnings) == 1
+
+    def test_a_firewall_in_the_run_is_destroyed_not_repaired(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        firewall_path = repair_world.tmp_path / "fw.aiform.md"
+        write_aiform_md(firewall_path, resource="firewall", name="fw-01", depends_on=[DROPLET_KEY])
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [repair_world.droplet_file(), firewall_path],
+            state_path=repair_world.state_path,
+            deployment="default",
+        )
+
+        assert [pr.entry.action for pr in planned] == [PlanAction.DESTROY] * 2
+        assert all(pr.repairs == [] for pr in planned)
+        assert not any("repaired before the destroy" in warning for warning in warnings)
+
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
+    def test_a_firewall_naming_the_droplet_only_inside_a_rule_is_still_refused(
+        self, repair_world: RepairWorld, rules_key: str, side: str
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                FIREWALL_KEY: firewall_entry((), **{rules_key: rule_naming(side, DROPLET_ID)}),
+            }
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(
+                [repair_world.droplet_file()],
+                state_path=repair_world.state_path,
+                deployment="default",
+            )
+
+        assert FIREWALL_KEY in exc_info.value.reason
+
+    def test_a_droplet_id_that_is_not_all_digits_is_not_repaired(self, repair_world: RepairWorld):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(id="not-a-number"), FIREWALL_KEY: firewall_entry()}
+        )
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.build_destroy_plan(
+                [repair_world.droplet_file()],
+                state_path=repair_world.state_path,
+                deployment="default",
+            )
+
+    def test_an_unrepairable_dependent_alongside_a_firewall_is_refused_by_name(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                FIREWALL_KEY: firewall_entry(),
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain", name="dns-01", depends_on=[DROPLET_KEY]
+                ),
+            }
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_destroy_plan(
+                [repair_world.droplet_file()],
+                state_path=repair_world.state_path,
+                deployment="default",
+            )
+
+        assert "digitalocean.domain.dns-01" in exc_info.value.reason
+        assert FIREWALL_KEY not in exc_info.value.reason
+
+    def test_force_repairs_the_firewall_and_warns_for_the_unrepairable_dependent(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                FIREWALL_KEY: firewall_entry(),
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain", name="dns-01", depends_on=[DROPLET_KEY]
+                ),
+            }
+        )
+
+        planned, warnings = orchestrator.build_destroy_plan(
+            [repair_world.droplet_file()],
+            state_path=repair_world.state_path,
+            force=True,
+            deployment="default",
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == [FIREWALL_KEY, DROPLET_KEY]
+        assert planned[1].dropped_dependents == ["digitalocean.domain.dns-01"]
+        assert any("dropping the edge" in w for w in warnings)
+        assert any(FIREWALL_KEY in w and "still" in w for w in warnings)
+
+    def test_untracked_target_has_nothing_to_repair(self, repair_world: RepairWorld):
+        repair_world.save(**{FIREWALL_KEY: firewall_entry()})
+
+        with pytest.raises(PlanBlockedError):
+            orchestrator.build_destroy_plan(
+                [repair_world.droplet_file()],
+                state_path=repair_world.state_path,
+                deployment="default",
+            )
+
+
+class TestRepairInsteadOfRefusingOnTheMarkerRoute:
+    """The AIFORM-DELETE- route reaches the same repair, and the same refusal
+    for what cannot be repaired."""
+
+    def test_marker_for_a_droplet_a_firewall_lists_plans_repair_then_destroy(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+
+        planned, warnings = orchestrator.build_create_plan(
+            [repair_world.droplet_file(marker=True)],
+            state_path=repair_world.state_path,
+            client=FakeClient([]),
+            deployment="default",
+        )
+
+        assert [(pr.entry.resource_key, pr.entry.action) for pr in planned] == [
+            (FIREWALL_KEY, PlanAction.UPDATE),
+            (DROPLET_KEY, PlanAction.DESTROY),
+        ]
+        assert planned[0].repairs == [DROPLET_KEY]
+        assert any(FIREWALL_KEY in w and DROPLET_KEY in w for w in warnings)
+
+    def test_marker_route_repair_is_in_the_saved_state_untouched(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+
+        orchestrator.build_create_plan(
+            [repair_world.droplet_file(marker=True)],
+            state_path=repair_world.state_path,
+            client=FakeClient([]),
+            deployment="default",
+        )
+
+        saved = repair_world.reload()
+        assert saved.resources[FIREWALL_KEY].depends_on == [DROPLET_KEY]
+        assert saved.resources[FIREWALL_KEY].attributes["droplet_ids"] == [DROPLET_ID]
+
+    def test_marker_for_a_droplet_with_an_unrepairable_outside_dependent_is_refused(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain", name="dns-01", depends_on=[DROPLET_KEY]
+                ),
+            }
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [repair_world.droplet_file(marker=True)],
+                state_path=repair_world.state_path,
+                client=FakeClient([]),
+                deployment="default",
+            )
+
+        reason = exc_info.value.reason
+        assert "digitalocean.domain.dns-01" in reason
+        assert DROPLET_KEY in reason
+        assert "plan destroy" in reason
+
+    def test_marker_for_a_droplet_nothing_depends_on_plans_only_the_destroy(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry(depends_on=[])}
+        )
+
+        planned, warnings = orchestrator.build_create_plan(
+            [repair_world.droplet_file(marker=True)],
+            state_path=repair_world.state_path,
+            client=FakeClient([]),
+            deployment="default",
+        )
+
+        assert [pr.entry.resource_key for pr in planned] == [DROPLET_KEY]
+        assert warnings == []
+
+    def test_marker_for_a_firewall_and_its_droplet_together_needs_no_repair(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        firewall_marker = repair_world.tmp_path / "AIFORM-DELETE-fw.aiform.md"
+        write_aiform_md(
+            firewall_marker, resource="firewall", name="fw-01", depends_on=[DROPLET_KEY]
+        )
+
+        planned, warnings = orchestrator.build_create_plan(
+            [repair_world.droplet_file(marker=True), firewall_marker],
+            state_path=repair_world.state_path,
+            client=FakeClient([]),
+            deployment="default",
+        )
+
+        assert [pr.entry.action for pr in planned] == [PlanAction.DESTROY] * 2
+        assert all(pr.repairs == [] for pr in planned)
+        assert warnings == []
+
+
+class TestApplyingARepair:
+    """apply_plan(): confirm, then repair the firewall, then delete."""
+
+    def build(self, world: RepairWorld, *, marker: bool = False, files=None):
+        if marker:
+            planned, _ = orchestrator.build_create_plan(
+                files or [world.droplet_file(marker=True)],
+                state_path=world.state_path,
+                client=FakeClient([]),
+                deployment="default",
+            )
+        else:
+            planned, _ = orchestrator.build_destroy_plan(
+                files or [world.droplet_file()],
+                state_path=world.state_path,
+                deployment="default",
+            )
+        return planned
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_yes_repairs_the_firewall_then_deletes_without_asking(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        planned = self.build(repair_world, marker=marker)
+
+        result, prompts = apply_with_confirms(planned, repair_world, yes=True)
+
+        assert prompts == []
+        assert result.aborted is False
+        assert [(e.resource_key, e.action) for e in result.executed] == [
+            (FIREWALL_KEY, PlanAction.UPDATE),
+            (DROPLET_KEY, PlanAction.DESTROY),
+        ]
+        assert repair_world.mutations() == [
+            ("update", "firewall"),
+            ("delete", "droplet"),
+        ]
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        _op, _kind, firewall_id, current, desired = update_call
+        assert firewall_id == "fw-id-1"
+        assert current["name"] == "fw-01"
+        assert desired["droplet_ids"] == []
+        assert "name" not in desired
+        assert desired["inbound_rules"] == RULES
+        assert desired["tags"] == ["aiform-system-test"]
+        saved = repair_world.reload()
+        assert DROPLET_KEY not in saved.resources
+        firewall = saved.resources[FIREWALL_KEY]
+        assert firewall.attributes["droplet_ids"] == []
+        assert firewall.attributes["name"] == "fw-01"
+        assert firewall.depends_on == []
+        assert firewall.aiform_md_sha256 == "firewall-sha"
+        assert firewall.aiform_md_path == "fw.aiform.md"
+
+    def test_two_to_one_keeps_the_other_droplet(self, repair_world: RepairWorld):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                OTHER_DROPLET_KEY: droplet_entry("droplet-02", str(OTHER_DROPLET_ID)),
+                FIREWALL_KEY: firewall_entry(
+                    (DROPLET_ID, OTHER_DROPLET_ID), depends_on=[DROPLET_KEY, OTHER_DROPLET_KEY]
+                ),
+            }
+        )
+        repair_world.set_live((DROPLET_ID, OTHER_DROPLET_ID))
+        planned = self.build(repair_world)
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["droplet_ids"] == [OTHER_DROPLET_ID]
+        saved = repair_world.reload()
+        firewall = saved.resources[FIREWALL_KEY]
+        assert firewall.attributes["droplet_ids"] == [OTHER_DROPLET_ID]
+        assert firewall.depends_on == [OTHER_DROPLET_KEY]
+        assert OTHER_DROPLET_KEY in saved.resources
+
+    def test_interactive_asks_once_per_firewall_naming_the_firewall_and_the_id(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        planned = self.build(repair_world)
+
+        result, prompts = apply_with_confirms(planned, repair_world, [True, True])
+
+        assert result.aborted is False
+        assert len(prompts) == 2
+        assert prompts[0] == "Apply this plan?"
+        assert FIREWALL_KEY in prompts[1]
+        assert str(DROPLET_ID) in prompts[1]
+        assert DROPLET_KEY in prompts[1]
+        assert repair_world.mutations() == [("update", "firewall"), ("delete", "droplet")]
+
+    def test_declining_the_repair_changes_and_destroys_nothing(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        before = repair_world.state_path.read_text()
+        planned = self.build(repair_world)
+
+        result, prompts = apply_with_confirms(planned, repair_world, [True, False])
+
+        assert result.aborted is True
+        assert result.executed == []
+        assert len(prompts) == 2
+        assert repair_world.calls() == []
+        assert repair_world.state_path.read_text() == before
+
+    def test_a_firewall_that_no_longer_lists_the_id_only_has_its_edge_pruned(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live(())
+        planned = self.build(repair_world)
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        assert repair_world.mutations() == [("delete", "droplet")]
+        saved = repair_world.reload()
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+        assert saved.resources[FIREWALL_KEY].attributes["droplet_ids"] == []
+
+    def test_a_firewall_gone_from_the_provider_is_left_tracked_with_its_edge_pruned(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        planned = self.build(repair_world)
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        assert repair_world.mutations() == [("delete", "droplet")]
+        saved = repair_world.reload()
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+        assert DROPLET_KEY not in saved.resources
+
+    def test_a_failed_repair_destroys_nothing_and_leaves_state_alone(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                FIREWALL_KEY: firewall_entry(tags=["broken"]),
+            }
+        )
+        repair_world.set_live((DROPLET_ID,), tags=["broken"])
+        before = repair_world.state_path.read_text()
+        planned = self.build(repair_world)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            apply_with_confirms(planned, repair_world, yes=True)
+
+        assert exc_info.value.operation == "update"
+        assert exc_info.value.resource_type == "firewall"
+        assert ("delete", "droplet") not in repair_world.mutations()
+        assert repair_world.state_path.read_text() == before
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    @pytest.mark.parametrize("top_level", [(DROPLET_ID,), ()], ids=["also-top-level", "rule-only"])
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
+    def test_a_rule_naming_the_droplet_added_out_of_band_is_refused_before_any_write(
+        self, repair_world: RepairWorld, marker: bool, top_level: tuple, rules_key: str, side: str
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live(top_level, **{rules_key: rule_naming(side, DROPLET_ID)})
+        before = repair_world.state_path.read_text()
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            apply_with_confirms(planned, repair_world, yes=True)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+        assert "plan destroy" in exc_info.value.reason
+        assert "--force" in exc_info.value.reason
+        assert repair_world.mutations() == []
+        assert repair_world.state_path.read_text() == before
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    @pytest.mark.parametrize(("rules_key", "side"), NESTED_RULE_PLACEMENTS)
+    def test_a_rule_naming_the_droplet_as_a_string_is_refused_before_any_write(
+        self, repair_world: RepairWorld, marker: bool, rules_key: str, side: str
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((), **{rules_key: rule_naming(side, str(DROPLET_ID))})
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(PlanBlockedError):
+            apply_with_confirms(planned, repair_world, yes=True)
+
+        assert repair_world.mutations() == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_a_droplet_id_read_back_as_a_string_is_still_repaired(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((str(DROPLET_ID), str(OTHER_DROPLET_ID)))
+        planned = self.build(repair_world, marker=marker)
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["droplet_ids"] == [OTHER_DROPLET_ID]
+        assert repair_world.mutations() == [("update", "firewall"), ("delete", "droplet")]
+
+    @pytest.mark.parametrize("odd_id", ["\u00b2", "\u0661\u0662\u0663"])
+    def test_a_non_ascii_digit_target_id_is_not_repairable_and_does_not_raise(self, odd_id):
+        st = state.State(
+            deployment="default",
+            resources={
+                DROPLET_KEY: droplet_entry(id=odd_id),
+                FIREWALL_KEY: firewall_entry(),
+            },
+        )
+
+        assert not orchestrator._is_repairable(st.resources[FIREWALL_KEY], DROPLET_KEY, st)
+
+    def test_the_droplets_file_is_trashed_and_the_firewall_file_is_left_alone(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        firewall_path = repair_world.tmp_path / "fw.aiform.md"
+        firewall_text = write_aiform_md(
+            firewall_path, resource="firewall", name="fw-01", depends_on=[DROPLET_KEY]
+        )
+        droplet_path = repair_world.droplet_file()
+        planned = self.build(repair_world, files=[droplet_path])
+
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        assert not droplet_path.exists()
+        assert firewall_path.read_text() == firewall_text
+
+
+class TestRepairIsReportedAndRestartable:
+    """A repair counts as an executed step in the failure report and a restart."""
+
+    def build(self, world: RepairWorld, *, marker: bool = False):
+        return TestApplyingARepair().build(world, marker=marker)
+
+    def apply_yes(self, planned, world: RepairWorld):
+        return apply_with_confirms(planned, world, yes=True)
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_repair_then_a_failing_delete_reports_the_repair_applied_and_the_delete_failed(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        repair_world.fail_deletes()
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            self.apply_yes(planned, repair_world)
+
+        progress = exc_info.value.apply_progress
+        assert [e.resource_key for e in progress.applied] == [FIREWALL_KEY]
+        assert progress.failed.resource_key == DROPLET_KEY
+        assert progress.not_run == []
+        assert progress.repairs == {FIREWALL_KEY: [DROPLET_KEY]}
+        saved = repair_world.reload()
+        assert DROPLET_KEY in saved.resources
+        assert saved.resources[FIREWALL_KEY].attributes["droplet_ids"] == []
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_rerunning_after_the_failed_delete_converges_without_a_second_repair(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        repair_world.set_live((DROPLET_ID,))
+        repair_world.fail_deletes()
+        with pytest.raises(DriverExecutionError):
+            self.apply_yes(self.build(repair_world, marker=marker), repair_world)
+        repair_world.fail_deletes(False)
+
+        rerun = self.build(repair_world, marker=marker)
+        result, _prompts = self.apply_yes(rerun, repair_world)
+
+        assert [pr.repairs for pr in rerun] == [[]]
+        assert [(e.resource_key, e.action) for e in result.executed] == [
+            (DROPLET_KEY, PlanAction.DESTROY)
+        ]
+        assert repair_world.mutations() == [
+            ("update", "firewall"),
+            ("delete", "droplet"),
+            ("delete", "droplet"),
+        ]
+        saved = repair_world.reload()
+        assert DROPLET_KEY not in saved.resources
+        assert saved.resources[FIREWALL_KEY].depends_on == []
+
+    @pytest.mark.parametrize("marker", [False, True], ids=["paths-route", "marker-route"])
+    def test_a_failed_repair_is_the_failed_entry_and_the_delete_is_not_run(
+        self, repair_world: RepairWorld, marker: bool
+    ):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry(tags=["broken"])}
+        )
+        repair_world.set_live((DROPLET_ID,), tags=["broken"])
+        planned = self.build(repair_world, marker=marker)
+
+        with pytest.raises(DriverExecutionError) as exc_info:
+            self.apply_yes(planned, repair_world)
+
+        progress = exc_info.value.apply_progress
+        assert progress.applied == []
+        assert progress.failed.resource_key == FIREWALL_KEY
+        assert [e.resource_key for e in progress.not_run] == [DROPLET_KEY]
+        assert progress.repairs == {FIREWALL_KEY: [DROPLET_KEY]}
+        assert ("delete", "droplet") not in repair_world.mutations()
+        assert DROPLET_KEY in repair_world.reload().resources
+
+    def test_a_repair_drops_the_destroyed_target_from_the_firewalls_reference_edges(
+        self, repair_world: RepairWorld
+    ):
+        firewall = firewall_entry(depends_on=[DROPLET_KEY, OTHER_DROPLET_KEY])
+        firewall.reference_edges = {
+            DROPLET_KEY: ["provider_id"],
+            OTHER_DROPLET_KEY: ["provider_id"],
+        }
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                OTHER_DROPLET_KEY: droplet_entry("droplet-02", str(OTHER_DROPLET_ID)),
+                FIREWALL_KEY: firewall,
+            }
+        )
+        repair_world.set_live((DROPLET_ID, OTHER_DROPLET_ID))
+
+        self.apply_yes(self.build(repair_world), repair_world)
+
+        saved = repair_world.reload().resources[FIREWALL_KEY]
+        assert saved.depends_on == [OTHER_DROPLET_KEY]
+        assert saved.reference_edges == {OTHER_DROPLET_KEY: ["provider_id"]}
 
 
 class TestBuildPlanSummary:

@@ -321,24 +321,40 @@ def _print_failure_report(exc: Exception) -> None:
     progress = getattr(exc, "apply_progress", None)
     if progress is None:
         return
+
+    def label(entry: PlanEntry) -> str:
+        return "repair" if entry.resource_key in progress.repairs else _entry_label(entry)
+
     print(
         f"Apply incomplete: {len(progress.applied)} applied, 1 failed, "
         f"{len(progress.not_run)} not run",
         file=sys.stderr,
     )
     for entry in progress.applied:
-        print(f"applied: {entry.resource_key} ({_entry_label(entry)})", file=sys.stderr)
+        print(f"applied: {entry.resource_key} ({label(entry)})", file=sys.stderr)
     failed = progress.failed
-    line = f"failed: {failed.resource_key} ({_entry_label(failed)})"
+    line = f"failed: {failed.resource_key} ({label(failed)})"
+    applied_keys = {entry.resource_key for entry in progress.applied}
+    repaired_by = [
+        dependent
+        for dependent, targets in progress.repairs.items()
+        if dependent in applied_keys and failed.resource_key in targets
+    ]
     if (
         failed.action == PlanAction.UPDATE
         and isinstance(exc, DriverExecutionError)
         and exc.operation == "create"
     ):
         line += " -- the old resource was deleted and the new one was not created"
+    elif repaired_by:
+        verb = "were" if len(repaired_by) > 1 else "was"
+        line += (
+            f" -- still tracked; {', '.join(repaired_by)} {verb} already repaired to stop "
+            "listing it"
+        )
     print(line, file=sys.stderr)
     for entry in progress.not_run:
-        print(f"not run: {entry.resource_key} ({_entry_label(entry)})", file=sys.stderr)
+        print(f"not run: {entry.resource_key} ({label(entry)})", file=sys.stderr)
 
 
 def _print_apply_result(result: orchestrator.ApplyResult) -> None:

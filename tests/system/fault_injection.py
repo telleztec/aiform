@@ -43,6 +43,8 @@ class Fault:
     fired: bool = False
     response: dict | None = None
     seen: list[tuple[str, str]] = field(default_factory=list)
+    provider_errors: list[BaseException] = field(default_factory=list)
+    provider_error_bodies: list[bytes | None] = field(default_factory=list, repr=False)
     worker_error: BaseException | None = None
     _workers: list[tuple[threading.Thread, str]] = field(default_factory=list, repr=False)
 
@@ -102,6 +104,24 @@ def _describe(request: Any) -> tuple[str, str]:
 def _body_text(request: Any) -> str:
     data = getattr(request, "data", None)
     return data.decode(errors="replace") if isinstance(data, bytes) else ""
+
+
+_DESCRIBED_BODY_LIMIT = 500
+
+
+def describe_provider_errors(fault: Fault) -> str:
+    """The provider's own errors in words a failure message can carry: a bare
+    `repr(HTTPError)` is only the status and reason, with no URL and no body."""
+    if not fault.provider_errors:
+        return "none"
+    lines = []
+    for error, body in zip(fault.provider_errors, fault.provider_error_bodies, strict=True):
+        line = f"{type(error).__name__}: {error}"
+        if isinstance(error, urllib.error.HTTPError):
+            text = body.decode(errors="replace")[:_DESCRIBED_BODY_LIMIT] if body else ""
+            line += f" url={error.url} body={text}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _parse(body: bytes) -> dict | None:
@@ -312,10 +332,32 @@ def _check_timeout_options(
         raise ValueError(f"delay ({delay}s) must exceed deadline ({deadline}s)")
 
 
+def _read_error_body(error: BaseException) -> bytes | None:
+    if not isinstance(error, urllib.error.HTTPError):
+        return None
+    try:
+        body = error.read()
+    except Exception:
+        return None
+    stream = io.BytesIO(body)
+    error.fp = error.file = stream
+    error.read = stream.read
+    return body
+
+
 def _let_provider_act(fault: Fault, real: Callable, request: Any, args: tuple, kwargs: dict):
     """Run the real request and keep its body, so the ledger learns any id the
     provider handed out even though the caller never sees the response."""
-    with real(request, *args, **kwargs) as response:
+    try:
+        response = real(request, *args, **kwargs)
+    except BaseException as error:
+        # The provider's own error pre-empted the synthetic one, so the retry must meet it.
+        fault.fired = False
+        body = _read_error_body(error)
+        fault.provider_errors.append(error)
+        fault.provider_error_bodies.append(body)
+        raise
+    with response:
         fault.response = _parse(response.read())
 
 
