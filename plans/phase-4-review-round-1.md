@@ -7,7 +7,7 @@ Point-in-time record, per `plans/README.md`. Committed on PR 4a's branch (`phase
 The repo owner's review of #268 at 1fccdd8:
 
 1. Comments and docstrings describe what the code does, plus the minimum why. History ("was", "now", issue numbers as provenance) is removed from this PR's own lines, and from #269's lines in a separate commit on that branch. Strings, messages and behaviour are untouched.
-2. `apply_plan`'s `for position, pr in enumerate(planned)` loop dispatches on `PlanAction` with `match`/`case`. The `if pr.repairs:` block stays above the match (it is not an enum arm and takes precedence). Behaviour is identical; the existing suite is the proof, no tests added.
+2. `apply_plan`'s `for position, pr in enumerate(planned)` loop dispatches on `PlanAction` with `match`/`case`. The `if pr.repairs:` block moves above the match, ahead of the NO_OP check (it is not an enum arm and takes precedence). A repairing entry is always an UPDATE (`planner.repair_entry`), so the move changes no outcome. Behaviour is identical; the existing suite is the proof, no tests added.
 
 ## Deferred
 
