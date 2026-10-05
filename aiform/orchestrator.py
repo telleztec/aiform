@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import dataclasses
 import hashlib
 import importlib.util
@@ -175,7 +176,8 @@ def _new_state_entry(
         last_refreshed_at=now,
         aiform_md_path=str(pr.aiform_md_path),
         aiform_md_sha256=pr.current_aiform_md_sha256,
-        depends_on=pr.depends_on,
+        depends_on=list(pr.depends_on),
+        reference_edges=copy.deepcopy(pr.reference_edges),
     )
 
 
@@ -326,6 +328,7 @@ class PlannedResource:
     credentials: dict[str, str] | None
     state_entry: StateEntry | None
     depends_on: list[str] = dataclasses.field(default_factory=list)
+    reference_edges: dict[str, list[str]] = dataclasses.field(default_factory=dict)
     # desired_params is resolved as far as plan time could manage and is what
     # the diff and the plan display read. raw_params keeps the references
     # intact, because apply re-resolves from scratch against state as it
@@ -411,6 +414,14 @@ def _dependency_targets(spec: ResourceSpec, key: str) -> list[str]:
     return declared + sorted(referenced - set(declared))
 
 
+def _reference_edges(params: dict[str, Any]) -> dict[str, list[str]]:
+    attributes: dict[str, set[str]] = {}
+    for found in references.find_references(params).values():
+        for reference in found:
+            attributes.setdefault(reference.target_key, set()).add(reference.attribute)
+    return {target: sorted(names) for target, names in sorted(attributes.items())}
+
+
 def _resolve_dependency_edges(discovered: list[_DiscoveredFile], st: State) -> dict[str, set[str]]:
     delete_marked_keys = {entry.key for entry in discovered if entry.delete_marked}
     live_keys = {entry.key for entry in discovered if not entry.delete_marked}
@@ -447,6 +458,24 @@ def _topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
 
 def _reverse_topological(keys: set[str], edges: dict[str, set[str]]) -> list[str]:
     return list(reversed(_topological(keys, edges)))
+
+
+def _reverse_topological_breaking_cycles(
+    keys: set[str], edges: dict[str, set[str]]
+) -> tuple[list[str], list[str]]:
+    edges = {key: set(targets) for key, targets in edges.items()}
+    warnings: list[str] = []
+    while True:
+        try:
+            return list(reversed(graph.topological_order(keys, edges))), warnings
+        except graph.CycleError as exc:
+            dependent, target = exc.path[0], exc.path[1]
+            edges[dependent].discard(target)
+            warnings.append(
+                f"dependency cycle in state: {' -> '.join(exc.path)}; dropping the edge from "
+                f"{dependent} to {target}, so the destroy order no longer guarantees that "
+                f"{dependent} is destroyed before {target}, which it depends on"
+            )
 
 
 def _order_files(files: list[Path], st: State) -> list[Path]:
@@ -590,6 +619,7 @@ def _plan_one(
         llm_config=llm_config,
     )
     depends_on = _dependency_targets(resource_spec, key)
+    reference_edges = _reference_edges(resource_spec.params)
 
     # depends_on is ordering metadata, not resource config, so it is kept
     # in sync with the file on every plan run regardless of the action
@@ -607,6 +637,7 @@ def _plan_one(
     # down before the resource pointing at it.
     if state_entry is not None:
         state_entry.depends_on = list(depends_on)
+        state_entry.reference_edges = copy.deepcopy(reference_edges)
 
     # The toll for a text-only edit is spent by `plan`, so `plan` is
     # what clears it. apply_plan() skips NO_OP before any state write,
@@ -640,6 +671,7 @@ def _plan_one(
         credentials=credentials,
         state_entry=state_entry,
         depends_on=depends_on,
+        reference_edges=reference_edges,
         raw_params=resource_spec.params,
         unresolved_references=unresolved,
     )
@@ -979,11 +1011,17 @@ def _build_destroy_plan_from_state(
     edges, dangling = _classify_destroy_edges(raw_edges, node_keys, resolvable_elsewhere=set())
     warnings = _resolve_dangling_targets(dangling, force=force)
 
-    order = _reverse_topological(node_keys, edges)
+    order, cycle_warnings = _reverse_topological_breaking_cycles(node_keys, edges)
+    warnings.extend(cycle_warnings)
 
     planned: list[PlannedResource] = []
     for key in order:
         state_entry = st.resources[key]
+        if not Path(state_entry.aiform_md_path).exists():
+            warnings.append(
+                f"{key}: tracked file {state_entry.aiform_md_path} is missing; destroying "
+                "from state and skipping the trash move"
+            )
         entry = planner.destroy_entry(
             key,
             rationale="explicit destroy requested: no files given, destroying all tracked "
@@ -1336,6 +1374,7 @@ def _record_update(
         existing.last_refreshed_at = now
         existing.aiform_md_sha256 = pr.current_aiform_md_sha256
         existing.depends_on = list(pr.depends_on)
+        existing.reference_edges = copy.deepcopy(pr.reference_edges)
     # entry.likely_replace reflects the plan-time prediction; report what
     # actually happened instead, in both directions -- a predicted replace that
     # update() handled in place must not be reported as a replace just because
@@ -1356,8 +1395,11 @@ def _record_update(
 def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -> None:
     for dependent in dependents:
         entry = st.resources.get(dependent)
-        if entry is not None and destroyed_key in entry.depends_on:
+        if entry is None:
+            continue
+        if destroyed_key in entry.depends_on:
             entry.depends_on = [target for target in entry.depends_on if target != destroyed_key]
+        entry.reference_edges.pop(destroyed_key, None)
 
 
 def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
@@ -1381,7 +1423,16 @@ def _apply_destroy(pr: PlannedResource, st: State, *, state_path: Path) -> None:
         del st.resources[pr.entry.resource_key]
     _prune_dependents_on(st, pr.entry.resource_key, pr.dropped_dependents)
     state.save(st, state_path)
-    move_to_trash(pr.aiform_md_path)
+    try:
+        if not pr.aiform_md_path.exists():
+            raise FileNotFoundError(str(pr.aiform_md_path))
+        move_to_trash(pr.aiform_md_path)
+    except FileNotFoundError:
+        logger.warning(
+            "%s: tracked file %s is missing; skipping the trash move",
+            pr.entry.resource_key,
+            pr.aiform_md_path,
+        )
 
 
 def _split_aiform_md_suffix(name: str) -> tuple[str, str]:

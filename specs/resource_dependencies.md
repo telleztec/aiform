@@ -100,10 +100,16 @@ has to reckon with the shape — a resource that already exists, unmanaged and
 undeletable, as a dependency of things `aiform` does manage — and because the NOOP
 decision rests on DigitalOcean's properties, which another provider may not share.
 
-**The type is not retained.** `_dependency_targets()` computes it and
-`StateEntry.depends_on` persists only the union, so nothing downstream can tell an
-explicit edge from an implicit one. That is a design constraint rather than
-something this spec proposes to change — filed as **#234**.
+**The type is retained (#234), and nothing consumes it yet.** `StateEntry.depends_on`
+stays the union `_dependency_targets()` computes, and `StateEntry.reference_edges`
+records, beside it, which of those targets are implicit edges and which attributes
+flow along each: `{target_key: [attribute, ...]}`, attributes sorted and unique. A
+target in `depends_on` but not in `reference_edges` is an explicit-only edge. A
+target that is both declared and referenced appears in `reference_edges`: the
+value-flow fact is the one that cannot be re-derived from `depends_on`, and the
+file still says what was declared. No behaviour reads it: ordering, destroy,
+refusal and every plan are unchanged. It exists so a later per-edge behaviour does
+not have to re-parse `.aiform.md` files at a point where only state is loaded.
 
 ### Other Historical Terms
 
@@ -538,6 +544,7 @@ class ResourceSpec(BaseModel):
 class StateEntry(BaseModel):
     ...
     depends_on: list[str] = Field(default_factory=list)
+    reference_edges: dict[str, list[str]] = Field(default_factory=dict)  # #234
 
 
 def parse_dependency_key(key: str) -> tuple[str, str, str]:
@@ -861,6 +868,13 @@ three are covered:
   invocation a user actually types (`aiform plan destroy --all`), so
   leaving it unordered would mean the feature ordered only the invocation
   nobody uses.
+  A cycle recorded in state does not block it (#206): the reported cycle is
+  named in a warning, its first edge is dropped (the warning says the
+  destroy order no longer guarantees the dependent is destroyed before the
+  target it depends on), and ordering is
+  retried until the remainder is acyclic. See `specs/orchestrator.md`'s
+  `build_destroy_plan()` for the rule. The file-driven destroy path and every
+  create path still refuse a cycle with `PlanBlockedError`.
 
 ### Dangling dependency targets on a destroy path, and `--force`
 
@@ -987,9 +1001,16 @@ still orphan a dependent silently at destroy time. Filed separately as
 **#226**, `priority: P1-correctness` — not fixed here, and not to be read as
 covered by this section.
 
-### `StateEntry.depends_on`
+### `StateEntry.depends_on` and `StateEntry.reference_edges`
 
-Written at **three** sites, and all three are needed:
+`reference_edges` (#234) is written at exactly the same sites, from the same
+inputs, and pruned in the same place as `depends_on`, so the two cannot disagree:
+every key of `reference_edges` is also in `depends_on`. It is computed by
+`_reference_edges(params)` from `references.find_references()`: for each
+reference, `target_key -> sorted unique attributes`. `_prune_dependents_on()`
+removes the destroyed target from both.
+
+`depends_on` is written at **three** sites, and all three are needed:
 
 - `_new_state_entry()` and `_record_update()`'s in-place branch, at apply time,
   from `PlannedResource.depends_on`.
@@ -1322,7 +1343,7 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | **#201** | P0-safety | Nothing ties a state file to its deployment | **Indirectly.** Every team has a `default-<region>`, so a resource key carries no account component and collides by construction |
 | **#225** | P1-correctness | Destroying a droplet by file silently orphans a dependent firewall | **Decisive.** The relationship kind picks refuse-versus-repair |
 | **#226** | P1-correctness | The same hazard via the `AIFORM-DELETE-` route | **Partly.** The missing call site is mechanical; the kind decides what it should do once called |
-| **#224** | P1-correctness | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content |
+| **#224** | P1-correctness | A firewall rule admitting two droplets by reference fails partway through apply | **None.** A driver validation quirk with no dependency content. Fixed in the firewall driver and `compare.py`, with no change to edges |
 | **#235** | P1-correctness | A destroy that fails on the droplet leaves it running with its firewall already deleted | **Decisive.** The `Protects` row is the unmodelled operational direction that causes it; expressing it is what would let a plan warn |
 | **#206** | P1-correctness | A cycle recorded in state blocks `plan destroy` | **Possibly.** A cycle in a symmetric kind may be legal where one in `Hosts` is not — the one-graph-or-two question |
 | **#227** | P2-usability | Repair a firewall's live `droplet_ids` on force-destroy, and warn instead of refusing | **Decisive.** Needs the relationship kind for refuse-versus-repair, and transcript `13` shows there *is* something to repair — at least for as long as the provider keeps the dead id |
@@ -1330,7 +1351,7 @@ does not have to reconstruct it from prose. Two rows are honest "no"s.
 | **#223** | P2-usability | A reference to a drifted-missing target blocks the plan that would recreate it | **Little.** That is resolution order versus replacement, not typing |
 | **#220** | P3-cosmetic (closed) | Automatic detection, paused | **Mechanism yes, decision partly.** See "Phase 3" |
 | **#236** | P3-cosmetic | A malformed `depends_on` key is reported with pydantic's internals and a `pydantic.dev` URL | **None.** D12's refusal is correct; only its rendering is wrong |
-| **#234** | P3-cosmetic | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Named in "Definitions"; every per-edge behaviour this model describes would need it |
+| **#234** | P3-cosmetic | The edge type is computed and then discarded | **It is the constraint**, not a consumer. Now retained as `StateEntry.reference_edges` (see "Definitions"); every per-edge behaviour this model describes would need it |
 
 Priorities in this table are the issues' **actual labels**, read from GitHub
 rather than transcribed from memory — three were wrong before this was checked.
