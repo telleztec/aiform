@@ -936,11 +936,11 @@ def _orphaned_dependents_reason(orphaned: list[tuple[str, str]], *, hint: str = 
     )
 
 
-# A destroy of the target is repaired rather than refused when the dependent's
-# own driver can drop the target's id from a live field: dependent (provider,
+# Dependents repaired, not refused, when their target is destroyed: their own
+# driver can drop the target's id from a live field. Dependent (provider,
 # type) -> (target (provider, type), the dependent's top-level param holding
-# the target's native id). DigitalOcean does not break a firewall when a
-# droplet in it is removed, so refusing was never protecting anything (#227).
+# the target's native id). DigitalOcean leaves a firewall intact when a droplet
+# in it is removed.
 _REPAIRABLE_EDGES: dict[tuple[str, str], tuple[tuple[str, str], str]] = {
     ("digitalocean", "firewall"): (("digitalocean", "compute"), "droplet_ids"),
 }
@@ -1620,10 +1620,10 @@ def _as_int_id(listed: Any) -> Any:
     return listed
 
 
-# The repair is a state-and-provider edit only. It deliberately leaves the
-# dependent's aiform_md_sha256 and driver alone, unlike _record_update(): the
-# user's file did not change, and stamping its hash here would tell the next
-# plan it had already seen the file as it now reads.
+# The repair edits state and the provider only. It leaves the dependent's
+# aiform_md_sha256 and driver alone, unlike _record_update(): its file is
+# unchanged, and recording the hash would make the next plan treat that file as
+# already applied.
 def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     dependent = _require_tracked(st, pr.entry.resource_key)
     _target_type, field = _REPAIRABLE_EDGES[(pr.provider, pr.resource_type)]

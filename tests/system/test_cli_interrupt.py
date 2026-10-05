@@ -445,7 +445,7 @@ class TestRefuseToOrphanADependent:
         self, project_dir, ledger, runner
     ):
         # A marker path given alone leaves the firewall's file out of the run, so
-        # the apply repairs the firewall (#226) instead of orphaning it. The
+        # the apply repairs the firewall instead of orphaning it. The
         # firewall's file still names the dead droplet, so the next plan refuses
         # with both keys named until that reference is dropped from the file.
         token = live_token()

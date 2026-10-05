@@ -358,7 +358,7 @@ class TestTwoDropletsInOneRuleLive:
 
 
 class TestDestroyRepairsFirewallLive:
-    """#226/#227: destroying a droplet a tracked firewall lists repairs the
+    """Destroying a droplet a tracked firewall lists repairs the
     firewall first (a whole-object PUT carrying the shorter droplet_ids) and
     then deletes the droplet, on both routes: `plan destroy <file>` and the
     AIFORM-DELETE- marker file through `plan apply`. Each test runs 2 -> 1 and
@@ -457,13 +457,11 @@ class TestDestroyRepairsFirewallLive:
 
 
 class TestUnrepairableDependentDestroyLive:
-    """#225, kept live after #226/#227 replaced the firewall refusal: a
-    dependent aiform cannot repair (a DNS zone whose record references the
+    """A dependent aiform cannot repair (a DNS zone whose record references the
     droplet's address) still refuses a paths-driven destroy of that droplet
     without --force, and --force really drops the edge from the zone's
     persisted state. The last step, a state-driven cleanup destroy run without
-    --force, pins the F14/F15 bug: an edge the warning claimed to drop but did
-    not blocked that cleanup and left the zone and the droplet live.
+    --force, shows the dropped edge does not block removing the zone.
     """
 
     def test_destroying_the_droplet_is_refused_until_forced_and_force_prunes_the_edge(

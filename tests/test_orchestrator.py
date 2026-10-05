@@ -3784,7 +3784,7 @@ class TestReverseDependentDestroyRefusal:
         # StateEntry, which pins the orchestrator mechanism but not that a
         # dependent's `depends_on:` frontmatter -- with NO reference
         # anywhere in its own params -- actually reaches StateEntry.depends_on
-        # via a real plan/apply, and is honoured from there. #225 F13.
+        # via a real plan/apply, and is honoured from there.
         write_driver(drivers_dir, "digitalocean", "compute")
         write_driver(drivers_dir, "digitalocean", "domain")
         droplet_path = tmp_path / "droplet.aiform.md"
@@ -4249,8 +4249,8 @@ def apply_with_confirms(planned, world: RepairWorld, answers=None, *, yes=False)
 
 
 class TestRepairInsteadOfRefusingOnThePathsRoute:
-    """#227: destroying a droplet a tracked firewall lists plans an UPDATE of
-    that firewall ahead of the destroy, instead of #225's refusal."""
+    """Destroying a droplet a tracked firewall lists plans an UPDATE of that
+    firewall ahead of the destroy."""
 
     def test_firewall_listing_the_droplet_gets_a_repair_entry_before_the_destroy(
         self, repair_world: RepairWorld
@@ -4426,8 +4426,8 @@ class TestRepairInsteadOfRefusingOnThePathsRoute:
 
 
 class TestRepairInsteadOfRefusingOnTheMarkerRoute:
-    """#226: the AIFORM-DELETE- route reaches the same repair, and the same
-    refusal for what cannot be repaired."""
+    """The AIFORM-DELETE- route reaches the same repair, and the same refusal
+    for what cannot be repaired."""
 
     def test_marker_for_a_droplet_a_firewall_lists_plans_repair_then_destroy(
         self, repair_world: RepairWorld
@@ -4762,7 +4762,7 @@ class TestApplyingARepair:
 
 
 class TestRepairIsReportedAndRestartable:
-    """4a's repair is an executed step for 4b's failure report and restart."""
+    """A repair counts as an executed step in the failure report and a restart."""
 
     def build(self, world: RepairWorld, *, marker: bool = False):
         return TestApplyingARepair().build(world, marker=marker)
