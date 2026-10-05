@@ -14,15 +14,15 @@ Whoever adds the second provider expects the provider-neutral layers to read as 
 
 ## Inventory (grep, verified on `890c1da`)
 
-`grep -rn -i droplet aiform/` = **49** hits.
+`grep -rn -i droplet aiform/` = **49** hits. Unit throughout: matching lines (`grep -rn ... | wc -l`), never occurrences. Per-file rows below sum to the file's total; file totals sum to 49 (17 + 15 + 6 + 3 + 3 + 2 + 2 + 1).
 
 | File | Hits | Category | Disposition |
 |---|---|---|---|
 | `aiform/orchestrator.py` | 17 | 13 repair code: `_REPAIRABLE_EDGES` (942, 945), `_is_repairable` call (959), comment + `_rule_names_droplet` (962, 966, 970, 971), `_as_int_id` comment (1618), `_apply_repair` (1641, 1642, 1645, 1646, 1650) | **Move/rename.** Table and rule scan leave the file; remaining names become VM/target terms |
 | | | 4 neutral comments: 149, 150 (`_will_be_recreated`), 1063, 1064 (`_PROTECTS`) | **Rename** to VM |
 | `aiform/cli.py` | 15 | 1 DigitalOcean example scaffold, line 62 (`_EXAMPLE_COMPUTE_AIFORM_MD`, frontmatter `provider: digitalocean`) | **Stays**: provider-keyed example data |
-| | | 5 user-facing strings: 454, 455 (init key message), 615, 617, 652 (scope-check details) | **Rename** (owner question 2); no test asserts on the droplet wording (`tests/test_cli.py:859` asserts only `"unverified"`); `specs/cli.md:336-359` documents three of them |
-| | | 6 scope probe: `_check_droplet_scope` (552, 593, 596, 600), comment 550, comment 613, and `"droplets" not in body` (635), a DigitalOcean response key read in a neutral layer | **Rename**; 635 becomes data from the provider table (below) |
+| | | 5 lines of user-facing strings (4 strings): 454, 455 (init key message, one string), 615, 617, 652 (scope-check details) | **Rename** (owner question 2); no test asserts on the droplet wording (`tests/test_cli.py:859` asserts only `"unverified"`); `specs/cli.md:339, 359` document the `(droplet scope unverified)` string |
+| | | 7 scope probe: `_check_droplet_scope` call and def and docstring and `config` lookup (552, 593, 596, 600), comments 550 and 613, and `"droplets" not in body` (635), a DigitalOcean response key read in a neutral layer | **Rename**; 635 becomes data from the provider table (below). Siblings of the function name and the phrase "droplet scope" outside `aiform/` are listed under the sibling greps |
 | | | 2 comments: 467, 1158 | **Rename** |
 | `aiform/ssh.py` | 6 | all comments (85, 105, 108, 281, 284, 285) | **Rename** to VM |
 | `aiform/driver.py` | 3 | contract docstring examples (161, 198, 260); `PLAN.md:809`, `:845` carry the same wording | **Rename**; mirror in `PLAN.md` (wording only, owner question 5) |
@@ -31,20 +31,21 @@ Whoever adds the second provider expects the provider-neutral layers to read as 
 | `aiform/references.py` | 2 | comments (70, 260) | **Rename** |
 | `aiform/compare.py` | 1 | docstring (133) naming `sources.droplet_ids` | **Rename** to a neutral example |
 
-DigitalOcean field names beyond the word "droplet", in `aiform/` (greps `-w`):
+DigitalOcean field names beyond the word "droplet", in `aiform/` (`grep -rnw NAME aiform/ | wc -l`, lines; `droplet_id` and `droplet_ids` are distinct words under `-w`):
 
-| Name | Hits | Where | Disposition |
+| Name | Lines | Where | Disposition |
 |---|---|---|---|
-| `droplet_ids` | 5 | `compare.py:133`; `orchestrator.py:945, 970, 1618, 1646` | all move or rename (counted in the table above) |
-| `droplet_id` | 7 | `orchestrator.py:966, 971, 1641, 1642, 1645, 1650` | rename |
-| `inbound_rules`, `outbound_rules` | 1 each | `orchestrator.py:967` | move into the driver declaration |
-| `sources`, `destinations` | 3 and 2 | `orchestrator.py:405` (unrelated English "two sources"), `962, 969, 1645`; `compare.py:133` | move or rename; 405 stays (not a field) |
+| `droplet_ids` | 5 | `compare.py:133`; `orchestrator.py:945, 970, 1618, 1646` | all move or rename (already counted in the table above) |
+| `droplet_id` | 6 (7 occurrences: `:1650` holds two) | `orchestrator.py:966, 971, 1641, 1642, 1645, 1650` | rename |
+| `inbound_rules`, `outbound_rules` | 1 line, holding both | `orchestrator.py:967` | move into the driver declaration |
+| `sources` | 5 | `compare.py:133`; `orchestrator.py:405` (unrelated English "two sources"), `962, 969, 1645` | 4 move or rename; 405 stays (not a field) |
+| `destinations` | 3 | `orchestrator.py:962, 969, 1645` | move or rename |
 | `"digitalocean"` literals | 31 across 9 files | provider keys in tables, spec cross-references | **Out of scope** (not "droplet"); the orchestrator's `_PROTECTS` table keeps its provider keys and is **provider-keyed table data that stays** |
 
-`tests/system/conftest.py`: 129 droplet hits, 10 `droplet_ids` hits.
+`tests/system/conftest.py`: 129 lines match `droplet` (case-insensitive), 10 match `droplet_ids`.
 
-- **In scope: 1 symbol.** `wait_until_firewall_droplet_ids` (def `:812`, docstring `:820`, body `:844`). Callers: `tests/system/test_cli_interrupt.py:55` (import), `:458`, `:474`; `tests/system/test_cli_references.py:67` (import), `:417`. Specs naming it: `specs/system_test_references.md:93`, `specs/system_test_interrupt.md:367`. No offline test references it.
-- **Stays (DigitalOcean-specific by design, per the issue):** the other 128 hits, including `write_firewall_aiform_md(droplet_ids=...)`, whose keyword is the DigitalOcean `PARAM_SCHEMA` key it writes (owner question 4), and the callers' own `["droplet_ids"]` reads in DigitalOcean-specific test modules.
+- **In scope: 1 symbol.** `wait_until_firewall_droplet_ids` (def `:812-819`, parameters `token, firewall_id, expected`; docstring `:820`; body `:844`). The DigitalOcean field name is in the helper's name and body, not in its parameters. Callers: `tests/system/test_cli_interrupt.py:55` (import), `:458`, `:474`; `tests/system/test_cli_references.py:67` (import), `:417`. Specs naming it: `specs/system_test_references.md:93`, `specs/system_test_interrupt.md:367`. No offline test references it.
+- **Stays (DigitalOcean-specific by design, per the issue):** the other 128 lines, including `wait_until_droplet_gone(token, droplet_id, ...)` (`:431-432`, a helper for DigitalOcean's droplet endpoint, whose parameter is DigitalOcean's own id), and including `write_firewall_aiform_md(droplet_ids=...)`, whose keyword is the DigitalOcean `PARAM_SCHEMA` key it writes (owner question 4), and the callers' own `["droplet_ids"]` reads in DigitalOcean-specific test modules.
 
 ## Where the firewall's VM-reference knowledge lives
 
@@ -70,7 +71,7 @@ Both are facts about the firewall's schema. Today the orchestrator holds them.
 
 ### The declaration (concrete)
 
-In `aiform/driver.py`, beside the four existing declarative attributes (`:62`, `:73`, `:94`, `:112`):
+In `aiform/driver.py`, beside the four existing declarative attributes (`PARAM_SCHEMA` `:74`, `LIKELY_REPLACE_FIELDS` `:85`, `NON_DIFFABLE_FIELDS` `:106`, `UNORDERED_FIELDS` `:124`):
 
 ```python
 class ReferenceField(NamedTuple):
@@ -87,13 +88,13 @@ REFERENCE_FIELDS: list[ReferenceField] = []
 - Default is empty, same reassign-don't-mutate rule as the other four. `compute` and `domain` declare nothing.
 - A small `values_at(attributes, path)` walker in `aiform/driver.py` yields the values at a path; it is the one reader of the grammar.
 
-`drivers/digitalocean/firewall.py` declares three entries, all targeting `("digitalocean", "compute")`: `droplet_ids`, `inbound_rules[].sources.droplet_ids`, `outbound_rules[].destinations.droplet_ids`. Those are exactly the paths `PARAM_SCHEMA` allows (`firewall.py:36-52`, `_TARGET_KEY_FOR` `:36`; `additionalProperties: False`); `_project_rule` (`:360`) drops any other side, so the cross placements the old scan also checked cannot occur in state or in a live read.
+`drivers/digitalocean/firewall.py` declares three entries, all targeting `("digitalocean", "compute")`: `droplet_ids`, `inbound_rules[].sources.droplet_ids`, `outbound_rules[].destinations.droplet_ids`. Those are exactly the paths `PARAM_SCHEMA` allows (`PARAM_SCHEMA` `firewall.py:78-94`; nested target schema `_RULE_TARGET_SCHEMA` `:48-58`; `_TARGET_KEY_FOR` `:46`; `additionalProperties: False` at `:57` and `:93`). `_project_rule` (`:360`) keeps only the side `_TARGET_KEY_FOR` maps, so `inbound_rules[].destinations` and `outbound_rules[].sources`, which the old scan also checked, cannot occur in state or in a live read.
 
 Orchestrator rules, replacing `_REPAIRABLE_EDGES` and `_rule_names_droplet`:
 
 - A dependent is repairable for target `T` when its driver declares at least one top-level path (no `.`/`[]`) for `T`'s `(provider, resource_type)`, `T`'s id is ASCII digits, and no declared nested path for `T` holds that id (compared as strings, as today).
 - The repair strips the id from each declared top-level path; the prompt and the refusal message print the path from the declaration.
-- A dependent whose driver is missing on disk or declares nothing is not repairable (today's `_REPAIRABLE_EDGES.get(...) is None`), so `load_driver`'s `PlanBlockedError` is caught at that one call site and treated as "not repairable".
+- A dependent whose driver is missing on disk or declares nothing is not repairable (today's `_REPAIRABLE_EDGES.get(...) is None`), so a failed `load_driver` is treated as "not repairable" at that one call site (what is caught is decided under Risks).
 - Plan-time loads pass `reserved_tags=deployment_tags(st.deployment)`, the rule `TestReservedTagsReachDrivers` (`tests/test_orchestrator.py`) enforces.
 - The integer assumption (`int(target.id)`, `_as_int_id`) stays and its comments say "the declared field holds integer ids". It is the one neutral-layer assumption this plan leaves; owner question 3.
 
@@ -127,27 +128,27 @@ Both consumers share the declaration and the walker; neither needs a new schema 
 - `aiform/orchestrator.py`: delete `_REPAIRABLE_EDGES` and `_rule_names_droplet`; `_is_repairable`, `_repair_prompt`, `_apply_repair` read the driver's declaration; rename `droplet_id` locals to `target_id`; `_as_int_id` comment; comments at `149-150` and `1063-1064`.
 - `aiform/config.py` and `aiform/cli.py`: rename `PROVIDER_DROPLET_PROBES` to `PROVIDER_SCOPE_PROBES`, valued `(url, collection_key)` with `("https://api.digitalocean.com/v2/droplets?per_page=1", "droplets")` as the DigitalOcean row (the only place the word stays, as provider-keyed data); `_check_droplet_scope` to `_check_scope`, reading the key from the table instead of `"droplets"`; four user-facing strings to VM wording (owner question 2).
 - `aiform/ssh.py`, `observability.py`, `references.py`, `compare.py`: comments and docstrings only.
-- `tests/system/conftest.py`: `wait_until_firewall_droplet_ids` to `wait_until_firewall_vm_ids`; the `["droplet_ids"]` read moves into one private `_firewall_vm_ids(firewall)` accessor whose name says it is DigitalOcean's field; docstring neutral. Update the 3 call sites in 2 test files and the two specs.
+- `tests/system/conftest.py`: `wait_until_firewall_droplet_ids` to `wait_until_firewall_vm_ids`; the one `firewall["droplet_ids"]` read (`:844`) moves into a private accessor `_digitalocean_firewall_vm_ids(firewall)`, the issue's "one provider-named accessor per read": the neutral helper name calls an accessor that names DigitalOcean, and the field name `droplet_ids` appears only inside it; docstring neutral. Update the 3 call sites in 2 test files and the two specs.
 - `tests/test_cli.py:787, 829, 973-974`: follow the table rename.
 
 ## Behaviour stays identical: proof
 
 - Proof is the existing offline suite, unchanged in assertions: `env -u DIGITALOCEAN_TOKEN -u ANTHROPIC_API_KEY python -m pytest` from the worktree (the interpreter is the primary checkout's `.venv/bin/python`; `import aiform` from the worktree resolves to the worktree, verified). Baseline 2457 passed; the count after must be 2457 plus the new tests below, with no existing test deleted or weakened. `ruff check .` and `ruff format --check .` also pass (CI runs both).
 - Run under `env -u` always: the direnv token makes credential tests falsely green locally.
-- One test edit is forced, not behavioural: the fake firewall driver in `tests/test_orchestrator.py` (`LOGGING_DRIVER_SOURCE`, around `:4060`) gains a `REFERENCE_FIELDS` declaring the paths `NESTED_RULE_PLACEMENTS` (`:4127`) exercises. The three placements the real driver cannot produce stay covered because the orchestrator is now generic over whatever a driver declares. Every assertion stays.
-- User-visible text changes by exactly: the repair prompt and the live-refusal message print the declared path instead of the literal `droplet_ids` and "sources or destinations"; for the firewall that is `droplet_ids` (prompt) and the nested path (refusal). No test or spec asserts the refusal wording (grep: `leave behind`, `sources or destinations`, `before destroying?` return only `specs/orchestrator.md:1611, 1616`).
+- One test edit is forced, not behavioural: the fake firewall driver in `tests/test_orchestrator.py` (`LOGGING_DRIVER_SOURCE`, `:4052`) gains a `REFERENCE_FIELDS` declaring the paths `NESTED_RULE_PLACEMENTS` (`:4126-4130`, 3 entries) exercises. Two of the three, `inbound_rules`/`sources` and `outbound_rules`/`destinations`, are exactly the paths the real firewall driver declares. Only `inbound_rules`/`destinations` is unproducible by the real driver; it stays covered because the orchestrator is generic over whatever a driver declares, and the fake declares all three. Every assertion stays.
+- User-visible text changes by exactly: the repair prompt and the live-refusal message print the declared path instead of the literal `droplet_ids` and "sources or destinations"; for the firewall that is `droplet_ids` (prompt) and the nested path (refusal). No test or spec asserts the prompt or refusal wording: `grep -rn -E "leave behind|sources or destinations|before destroying\?" aiform/ specs/ tests/ PLAN.md` returns only `aiform/orchestrator.py:1614, 1645, 1646` (3 lines, all code), and 0 lines under `specs/`, `tests/` and `PLAN.md`.
 
 ### New tests (red before green, per `PROCESS.md`)
 
 Each is written first and run against the unchanged code to show it fails for the stated reason.
 
-1. `tests/test_driver.py`: `ResourceDriver.REFERENCE_FIELDS == []`; a subclass that reassigns it does not alter the base (mirrors `:109-121`). Red: attribute missing.
+1. `tests/test_driver.py`: `ResourceDriver.REFERENCE_FIELDS == []`; a subclass that reassigns it does not alter the base (mirrors `TestUnorderedFields`, `:105-121`). Red: attribute missing.
 2. `tests/test_driver.py`: `values_at` on top-level, nested-through-list, missing key, `None` and empty-list inputs. Red: function missing.
 3. `tests/drivers/test_digitalocean_firewall.py`: the declaration equals the set of `droplet_ids` paths found by walking `PARAM_SCHEMA` (guards drift if a rule side is added), and every declared path resolves in `PARAM_SCHEMA`. Red: attribute missing.
 4. `tests/drivers/test_*`: every driver in `drivers/` has every `REFERENCE_FIELDS` path resolving in its own `PARAM_SCHEMA` (compute and domain: vacuous pass). Red: attribute missing.
 5. `tests/test_orchestrator.py`: a fake dependent declaring a differently-named top-level field (`vm_ids`) targeting a fake compute type is repaired; a fake dependent whose driver declares nothing is refused as before. Red: the hard-coded table ignores the fake. This is the test that proves the orchestrator holds no firewall schema.
-6. `tests/test_orchestrator.py`: a dependent whose driver file is missing is refused, not crashed (pins the `PlanBlockedError` catch).
-7. `tests/test_system_conftest.py`: `wait_until_firewall_vm_ids` exists, no parameter of any `wait_until_*` helper contains `droplet`, and the old name is gone. Red: old name present. (This is the machine check of the issue's second "done when" clause.)
+6. `tests/test_orchestrator.py`: a dependent whose driver file is missing, and another whose driver file does not import (syntax error), are each classified not repairable and refused, not crashed (pins the catch decided under Risks). Red: classification raises.
+7. `tests/test_system_conftest.py`: `wait_until_firewall_vm_ids` exists; `wait_until_firewall_droplet_ids` does not; the new helper's name and every one of its parameter names (`inspect.signature`) contain neither `droplet` nor `droplet_ids`. `wait_until_droplet_gone` (`:431`) is not asserted on and stays. Red: old name present, new name absent. (This is the machine check of the issue's second "done when" clause, scoped to the one helper that carries a DigitalOcean field name.)
 
 ## Specs, and the greps that find their siblings
 
@@ -159,7 +160,9 @@ Updated in the same PR, each by editing in place (`specs/README.md`, "Lifecycle"
 - `specs/dependency_detection.md`: build-status rows `REFERENCE_FIELDS` (`:25-26`) change from "not built" to "path and target built, read by the destroy repair; `attribute` not built"; "The declaration contract" notes the two columns now exist.
 - `specs/MULTI_RESOURCE_PRD.md` (`:580`): "Designed but not built" becomes "partly built" with the same split.
 - `specs/system_test_references.md:93`, `specs/system_test_interrupt.md:367`: helper rename.
-- `specs/cli.md:331-359`, `specs/config.md` if it names the table: probe rename and the four strings.
+- `specs/cli.md:331-359` (table name, `(droplet scope unverified)` at `:339` and `:359`) and `specs/cli.md:368-369` ("droplet probe" at `:368`, "without droplet scopes" at `:369`): probe rename and the four strings; `specs/config.md` if it names the table.
+- `specs/system_test_domain.md:258`, and the comment at `tests/system/test_cli_domain.py:212`, both naming `_check_droplet_scope`: renamed with the function. The comment at `tests/test_cli.py:759` ("no droplet scope") is a test-name/comment sibling: reworded to VM terms with the strings (owner question 2).
+- `specs/dependency_detection.md:250-251`: the four `driver.py` line citations (`:62/:73/:94/:112`) are corrected to `:74/:85/:106/:124` in the same edit that updates its build-status rows.
 - `PLAN.md` §4, `CLAUDE.md`: contract flag above; `PLAN.md:809, 845` wording.
 
 Sibling greps the author runs after each correction and lists, with counts printed first, in the PR (never piped through `head`; `grep` here is ugrep, so no `-qv`, use `awk` for inversion):
@@ -168,11 +171,12 @@ Sibling greps the author runs after each correction and lists, with counts print
 - `_rule_names_droplet`: today code only; must reach 0.
 - Nested-rule wording, `sources./.destinations` and `sources/destinations` across `specs PLAN.md CLAUDE.md README.md`: today `specs/digitalocean_firewall.md:22, 25, 64, 130, 416, 433`, `specs/orchestrator.md:1585, 1616, 1629`, `specs/dependency_detection.md:121, 122, 429`, `specs/resource_dependencies.md:1036`, `specs/MULTI_RESOURCE_PRD.md:438, 535`; each is read and either still true (DigitalOcean-specific spec) or fixed.
 - `wait_until_firewall_droplet_ids`: today 2 specs + 3 call sites + def; must reach 0.
-- `PROVIDER_DROPLET_PROBES`: today `config.py`, `cli.py`, `tests/test_cli.py` x4, `specs/cli.md`; must reach 0.
+- `PROVIDER_DROPLET_PROBES`: today `config.py:27`, `cli.py:600`, `tests/test_cli.py:787, 829, 973, 974`, `specs/cli.md:331` (7 lines); must reach 0.
+- `_check_droplet_scope|droplet scope` across `aiform/ specs/ tests/ PLAN.md CLAUDE.md README.md`: today `aiform/cli.py:550, 552, 593, 613, 652`, `specs/cli.md:339, 359, 369`, `specs/system_test_domain.md:258`, `tests/test_cli.py:759`, `tests/system/test_cli_domain.py:212` (11 lines; `cli.py:550` and `:613` read "droplet scopes"/"droplet scope"); must reach 0 for the function name and for user-facing and prose uses of "droplet scope".
 - `droplet's base image`, `same droplet would read`, `drifted droplet`: `PLAN.md:809, 845`, `specs/resource_references.md:471` are siblings of renamed comments.
 - Final: `grep -rn -i droplet aiform/` must return only the allowed set (below).
 
-**Done means:** `grep -rn -i droplet aiform/` returns exactly `cli.py` line 62 (example scaffold) and the DigitalOcean row of `PROVIDER_SCOPE_PROBES` in `config.py` (the URL and `"droplets"` key), both provider-keyed data; and no helper signature in `tests/system/conftest.py` contains a DigitalOcean field name.
+**Done means:** `grep -rn -i droplet aiform/` returns exactly `cli.py` line 62 (example scaffold) and the DigitalOcean row of `PROVIDER_SCOPE_PROBES` in `config.py` (the URL and `"droplets"` key), both provider-keyed data; and the renamed helper `wait_until_firewall_vm_ids` has no DigitalOcean field name in its name or parameters (`wait_until_droplet_gone` stays, as a DigitalOcean droplet helper).
 
 ## Live system run
 
@@ -213,7 +217,8 @@ Required before push: the PR touches `aiform/orchestrator.py` and `drivers/digit
 
 ## Risks
 
-- **Plan-time driver exec is new for destroy planning.** Mitigated: no network or credentials, reserved tags passed, missing driver handled, and tests 5 and 6.
+- **Plan-time driver exec is new for destroy planning.** Mitigated: no network or credentials, reserved tags passed, and tests 5 and 6.
+- **`load_driver` (`orchestrator.py:199-214`) raises `PlanBlockedError` only on `FileNotFoundError`.** An unimportable driver (syntax error, failed import) would raise something else, and today's `_REPAIRABLE_EDGES.get()` classification cannot raise. Decision: the classification site catches `Exception` from `load_driver` and returns "not repairable", which falls into the existing refusal path (the safe direction) and keeps classification non-raising. Test 6 pins both cases. This is the one broad catch the plan adds, and it is scoped to that one call.
 - **User-facing wording moves.** Mitigated: no test asserts the changed strings; `specs/cli.md` updated; live suite exercises the repair prompt.
 - **`REFERENCE_FIELDS` going stale against `PARAM_SCHEMA`.** Mitigated by tests 3 and 4.
 - **Comment-only edits in `.py` files still re-trigger `system-test`.** Accepted; the run is already required.
