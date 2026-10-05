@@ -883,12 +883,12 @@ class TestRejectionsWithNoTranscriptBehindThem:
 
 
 class TestNestedTargetListOrder:
-    """`unordered_equal` is top-level only -- a rule is compared through
-    `canonical_key()`, which serializes any list nested inside it
-    positionally. So `UNORDERED_FIELDS` makes rule *order* free but does
-    nothing for the order of `sources.addresses` inside a rule, and
-    DigitalOcean is under no obligation to return one as written (its
-    Terraform provider models all five target keys as sets)."""
+    """`unordered_equal` compares lists nested inside a rule without regard
+    to order, so `UNORDERED_FIELDS` frees the order of
+    `sources.addresses` inside a rule as well as rule order. DigitalOcean is
+    under no obligation to return one as written (its Terraform provider
+    models all five target keys as sets), and the driver neither sorts nor
+    requires sorting what the user writes."""
 
     def test_a_reordered_nested_list_from_the_api_is_not_a_diff(self, driver, fake_urlopen):
         params = minimal_params()
@@ -903,11 +903,91 @@ class TestNestedTargetListOrder:
 
         assert diff_attributes(current, params, unordered_fields=Driver.UNORDERED_FIELDS) == {}
 
-    def test_an_unsorted_nested_list_is_rejected_naming_the_sorted_spelling(self, driver):
+    def test_an_unsorted_nested_list_is_posted_as_written(self, driver, fake_urlopen):
         params = minimal_params()
         params["inbound_rules"][0]["sources"] = {"addresses": ["10.0.0.0/8", "0.0.0.0/0"]}
-        with pytest.raises(ValueError, match=r"sorted.*'0\.0\.0\.0/0'"):
-            driver.create(NAME, params, CREDENTIALS)
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, created_payload()))
+        script_read(fake_urlopen)
+
+        driver.create(NAME, params, CREDENTIALS)
+
+        posted = fake_urlopen.calls[0]["body"]
+        assert posted["inbound_rules"][0]["sources"]["addresses"] == ["10.0.0.0/8", "0.0.0.0/0"]
+
+
+class TestTwoDropletsAdmittedByReference:
+    """#224: a rule's sources.droplet_ids filled by two references resolves
+    to ids the user could not have sorted when writing the file, in whatever
+    order DigitalOcean assigned them. That must create, update and settle to
+    a no-op re-plan."""
+
+    AVAILABLE = {
+        "digitalocean.compute.zzz": {"id": "900", "provider_id": 900},
+        "digitalocean.compute.aaa": {"id": "800", "provider_id": 800},
+    }
+
+    def _desired(self):
+        params = minimal_params()
+        params["inbound_rules"][0]["sources"] = {
+            "droplet_ids": [
+                "${digitalocean.compute.zzz:provider_id}",
+                "${digitalocean.compute.aaa:provider_id}",
+            ]
+        }
+        resolved, unresolved = resolve(params, self.AVAILABLE)
+        assert unresolved == []
+        assert resolved["inbound_rules"][0]["sources"]["droplet_ids"] == [900, 800]
+        return resolved
+
+    def _live_payload(self):
+        payload = created_payload()
+        payload["firewall"]["inbound_rules"][0]["sources"] = {"droplet_ids": [900, 800]}
+        return payload
+
+    def test_create_posts_the_resolved_list_instead_of_raising(self, driver, fake_urlopen):
+        fake_urlopen.script("POST", firewalls_url(), FakeHTTPResponse(202, self._live_payload()))
+        script_read(fake_urlopen, self._live_payload())
+
+        driver.create(NAME, self._desired(), CREDENTIALS)
+
+        posted = fake_urlopen.calls[0]["body"]
+        assert posted["inbound_rules"][0]["sources"]["droplet_ids"] == [900, 800]
+
+    def test_update_puts_the_resolved_list_instead_of_raising(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "PUT", firewall_url(firewall_id()), FakeHTTPResponse(200, self._live_payload())
+        )
+        script_read(fake_urlopen, self._live_payload())
+
+        driver.update(firewall_id(), driver_current(), self._desired(), CREDENTIALS)
+
+        sent = fake_urlopen.calls[0]["body"]
+        assert sent["inbound_rules"][0]["sources"]["droplet_ids"] == [900, 800]
+
+    def test_the_read_back_does_not_diff_against_the_unsorted_desired(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", firewall_url(firewall_id()), FakeHTTPResponse(200, self._live_payload())
+        )
+
+        current = driver.read(firewall_id(), CREDENTIALS)
+
+        assert current["inbound_rules"][0]["sources"]["droplet_ids"] == [800, 900]
+        assert (
+            diff_attributes(current, self._desired(), unordered_fields=Driver.UNORDERED_FIELDS)
+            == {}
+        )
+
+    def test_a_genuinely_different_set_of_droplets_still_diffs(self, driver, fake_urlopen):
+        fake_urlopen.script(
+            "GET", firewall_url(firewall_id()), FakeHTTPResponse(200, self._live_payload())
+        )
+        current = driver.read(firewall_id(), CREDENTIALS)
+        desired = self._desired()
+        desired["inbound_rules"][0]["sources"]["droplet_ids"] = [900, 700]
+
+        diff = diff_attributes(current, desired, unordered_fields=Driver.UNORDERED_FIELDS)
+
+        assert "inbound_rules" in diff
 
 
 class TestCreateRollsBackAfterTheResourceExists:

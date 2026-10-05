@@ -19,6 +19,7 @@ import time
 import pytest
 
 from aiform import cli, state
+from aiform.driver import reserved_tags
 from drivers.digitalocean import compute as do_compute
 from tests.system.conftest import (
     ALTERNATE_REGION,
@@ -184,9 +185,11 @@ class TestFullLifecycleSequence:
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert str(live["id"]) == droplet_id  # in-place: the droplet survives
-        # The reserved tags survive a tags-only update (#249).
+        # The reserved tags and the per-resource creation marker survive a
+        # tags-only update.
+        marker = do_compute.Driver(reserved_tags=reserved_tags("default"))._creation_marker(name)
         assert sorted(live["tags"]) == sorted(
-            [SYSTEM_TEST_TAG, IN_PLACE_TAG, "aiform-managed", "aiform:default"]
+            [SYSTEM_TEST_TAG, IN_PLACE_TAG, "aiform-managed", "aiform:default", marker]
         )
         assert state.load(state_path, deployment="default").resources[key].id == droplet_id
 

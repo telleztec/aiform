@@ -97,6 +97,10 @@ databases. A firewall and a domain cannot carry a tag (`11`, `13`, `14`, `16`,
     unconditionally, so the tags are attached even when the user's file never
     mentions `tags`. DigitalOcean auto-creates a tag named in a droplet create
     (documented; not probed here, since a droplet bills).
+  - `create()` also adds a per-resource marker tag, `aiform:<deployment>:name:<sha256
+    hex of the name>`, and looks for it before posting (#253); it is a reserved
+    tag by the `aiform:` prefix, so the rules here already cover it.
+    `specs/digitalocean_compute.md` has the encoding and the adoption rule.
   - `_flatten()` returns `"tags": self._tags_for_attributes(...)`. `create()`,
     `read()` and `update()` all build attributes through it, so one change
     covers all three. `update()` must not echo `tags` from `desired`/`current`

@@ -42,7 +42,7 @@ a second vocabulary is not invented.
 | **UC-A — Create in dependency order** | Applying a set of resources produces no error caused by a resource being absent when something that needs it is created. | **P1** | delivered |
 | **UC-C — Know what a change touches** | A plan that will alter a resource others depend on shows that consequence before it is applied. | **P1** | delivered, deliberately over-reports |
 | **UC-E — Recover in dependency order** | After a partial failure, a re-run completes the work rather than compounding the damage. | **P1** | partial |
-| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. Verified live (#239): interrupted after the provider delete, after the state save, and mid multi-resource destroy all converge on re-run. The create-side counterpart does not: an interrupted droplet create is duplicated on retry (#253) |
+| **UC-G — Resume an interrupted delete** | A user removes a resource's reference to another and marks the referenced resource for deletion. If `aiform` is interrupted after the provider has deleted it, re-running completes the work with no error: the provider and `state.json` agree, and both the resource and the reference are gone. | **P1** | believed delivered, by code reading only — each delete is idempotent, state is saved per resource, and the marker file is trashed last, so the four interruption points converge. Verified live (#239): interrupted after the provider delete, after the state save, and mid multi-resource destroy all converge on re-run. The create-side counterpart did not: an interrupted droplet create was duplicated on retry (#253). PR 4b makes the compute driver tag each droplet with a per-name marker and adopt a marked droplet on retry; the live cells that decide it have not run yet |
 | **UC2 — Declare a dependency by hand** | A user can state a relationship `aiform` cannot see, and have it honoured. Uniquely expresses ordering with **no** value flow. | **P1** | delivered |
 | **UC-D — Know what a failure touches** | When a resource fails or degrades, an operator can learn what else is affected without reading the configuration by hand. | **P2** | **not delivered** — no implementation |
 | **UC3 — Parallel execution** | Resources with no dependency between them are applied concurrently, so N independent resources do not take N times as long as one. | **P2** | not delivered — Phase 6 |
@@ -154,7 +154,9 @@ that gap alongside UX2's original graphical scope.
   another resource); Phase 2 delivers *value flow* (reading its
   attributes).
 - **Cycle detection.** A dependency graph needs an explicit plan-time
-  error on a cycle — never a silent wrong-order apply.
+  error on a cycle — never a silent wrong-order apply. The one exception is
+  `plan destroy --all` (#206), where a cycle recorded in state is broken
+  with one warning per dropped edge instead of an error.
 - **Destroy-order semantics.** Destroy runs in reverse dependency order.
   Refusing a destroy that would orphan a still-tracked dependent is a
   separate, harder problem — see Phase 4, **partially delivered** for the
@@ -428,9 +430,9 @@ because neither is implied by "references exist":
   instead gained a second, native-typed key, `provider_id`, so
   `${digitalocean.compute.web-01:provider_id}` resolves to the real `int`.
   The same reference nested inside a rule's `sources`/`destinations`
-  works too, but only one per list — a second one hits a sorted-list
-  requirement a reference can't generally satisfy (#224,
-  `specs/digitalocean_firewall.md`).
+  works too, any number per list since #224 removed the firewall driver's
+  sorted-list requirement and made the comparison order-insensitive
+  (`specs/digitalocean_firewall.md`).
 
 **Phase 3 — Automatic dependency detection (UC1). PAUSED BY DECISION — see
 `specs/dependency_detection.md`.** The mechanism is unchanged from what this
@@ -489,6 +491,31 @@ landing first does not mean the other two are done. See
 `specs/resource_dependencies.md` for the mechanism and its escape hatch,
 and `specs/dependency_detection.md` for whether this changes that spec's
 own destroy-ordering argument (it does not, for reasons recorded there).
+
+**Phase 4, PR 4b (#253, #229, part of #235).** A failed apply or destroy now
+reports what it applied, what failed and what did not run, as a greppable
+block with exit 2 (`specs/cli.md`, `specs/orchestrator.md`). A destroy plan
+that removes a firewall together with the droplet it protects warns about the
+exposure window, when the firewall is destroyed first. `plan destroy --all --yes` retries a transient
+failed delete (429, 5xx, connection or timeout; 4 attempts, 5/15/45 s), and a forced re-run converges. The compute driver's
+`create()` tags each droplet with a per-name marker and adopts a marked
+droplet instead of creating a second (`specs/digitalocean_compute.md`).
+Orphan removal inside `--all`, and modelling the operational direction (#235
+option 3), are not delivered.
+
+**Phase 4, PR 4c (#206, #183, #224, #234).** `plan destroy --all` no longer
+refuses a dependency cycle recorded in state: it names each edge it drops, one
+warning per edge, and destroys in the resulting order. A tracked
+`.aiform.md` missing from its recorded path no longer fails the destroy: the
+plan warns, the destroy proceeds from state, and the trash move is skipped with
+a log warning (`specs/orchestrator.md`). Lists nested inside a declared field
+are compared without regard to order, and the firewall driver no longer
+rejects an unsorted `sources`/`destinations` list, so a rule can admit any
+number of droplets by reference (`specs/digitalocean_firewall.md`). Each state
+entry records which `depends_on` targets a `${...}` reference reaches and
+through which attributes (`reference_edges`); nothing reads it yet, so no plan
+or order changes. The file-driven destroy and `plan create` still refuse a
+cycle.
 
 **Phase 5 — Concurrency-safe state (R1, and the R4 decision).** Make
 state reads/writes safe under concurrent mutation within one process, and

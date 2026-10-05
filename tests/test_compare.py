@@ -49,13 +49,27 @@ class TestUnorderedEqualLists:
     def test_empty_list_and_nonempty_list_are_not_equal(self):
         assert unordered_equal([], ["a"]) is False
 
-    def test_nested_lists_inside_elements_compare_positionally(self):
-        # Only the top level of a declared field is order-insensitive --
-        # a list nested inside an element is still compared in order,
-        # because canonical_key() serializes it positionally.
+    def test_nested_lists_inside_elements_compare_without_regard_to_order(self):
+        # A declared field is unordered all the way down (#224): the firewall's
+        # sources.droplet_ids is filled by references that cannot be sorted
+        # when the file is written.
         a = [{"x": [1, 2]}]
         b = [{"x": [2, 1]}]
-        assert unordered_equal(a, b) is False
+        assert unordered_equal(a, b) is True
+
+    def test_deeply_nested_lists_compare_without_regard_to_order(self):
+        a = [{"sources": {"droplet_ids": [900, 800]}, "ports": "22"}]
+        b = [{"ports": "22", "sources": {"droplet_ids": [800, 900]}}]
+        assert unordered_equal(a, b) is True
+
+    def test_nested_lists_still_compare_as_multisets(self):
+        assert unordered_equal([{"x": [1, 1]}], [{"x": [1]}]) is False
+
+    def test_a_different_nested_member_is_still_a_difference(self):
+        assert unordered_equal([{"x": [1, 2]}], [{"x": [1, 3]}]) is False
+
+    def test_reordering_lists_of_lists_is_equal(self):
+        assert unordered_equal([[1, 2], [3]], [[3], [2, 1]]) is True
 
     def test_nested_lists_inside_elements_same_order_are_equal(self):
         a = [{"x": [1, 2]}]

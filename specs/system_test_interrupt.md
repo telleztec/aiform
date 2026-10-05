@@ -196,12 +196,16 @@ firewalls, which are free, and only the rules change.
 
 ### Expected results
 
-C1 and C2 **fail** today, confirmed live (#253). `create()` has no idempotency
-key and no lookup by name, and state is written only after `create()` returns,
-so a retry cannot know the first droplet exists and POSTs a second. The tests
-assert the desired behaviour (one droplet per declared name) under
-`xfail(strict=True, reason="#253...")`. The other stages converge, confirmed
-live.
+C1 and C2 failed before PR 4b, confirmed live (#253): `create()` had no
+idempotency key and no lookup by name, and state is written only after
+`create()` returns, so a retry could not know the first droplet existed and
+POSTed a second. PR 4b makes `create()` tag each droplet with a per-name marker
+and adopt a marked droplet before posting (`specs/digitalocean_compute.md`,
+"Create marker and adoption"), and removes the `xfail` markers: C1 and C2 now
+assert one droplet per declared name outright. They have not been run live by
+the author of 4b; a failure there falls back to #253's mechanism, and the
+unverified provider behaviours are listed in that spec section. The other
+stages converge, confirmed live.
 
 ### Timeout stages
 
@@ -224,10 +228,10 @@ Every stage asserts, in order:
    provider assertions and of step 3, the provider holds nothing under the name,
    because the request never reached it. State still tracks nothing.
 4. The retry exits 0 and leaves exactly one resource per declared name; the
-   duplicate is raised as `RetryDuplicatesResource`, which is what the
-   `xfail(strict=True, raises=RetryDuplicatesResource, reason="#253")` marker
-   accepts, so any other failed assertion is not hidden by it. T4 carries no
-   marker and must pass outright.
+   duplicate is raised as `RetryDuplicatesResource`. Since PR 4b (#253) T1 and T3
+   carry no marker, like T4, and must pass outright. T2 stops earlier, at step 3
+   (below), and keeps its `xfail(strict=True, raises=ErrorOmitsResourceId)`, now
+   citing #264.
 5. A second run is a no-op with zero Anthropic calls.
 
 | Stage | Where the caller loses | Helper |
@@ -254,16 +258,16 @@ The runner and teardown shared with the interrupt suite live in
 Live results, 2026-10-02 (rerun on head `d38fb35` after review: 3 xfailed, no
 XPASS, no leaks):
 
-- T1, T3: duplicate observed live, `xfail` against #253.
+- T1, T3: duplicate observed live, before PR 4b's fix; the `xfail` against #253
+  is removed there.
 - T2: fails at step 3. The error is
   `digitalocean.compute driver failed during create: timed out` with no
   droplet id: a poll `GET` that times out says only "timed out", and the
   driver holds the id in a local. The retry also duplicates (observed with the
   step 3 assertion relaxed locally). T2 is `xfail(strict=True)` on
   `ErrorOmitsResourceId` alone; once the error carries the id it reaches the
-  duplicate check, raises `RetryDuplicatesResource`, and fails strictly until
-  its marker becomes the #253 one. The issue for the missing id is awaiting
-  owner approval of its text.
+  duplicate check; with #253 fixed it should then pass. The missing id is
+  #264, the issue its marker now cites.
 - T4 (live, 2026-10-02): passes. A create that times out without reaching the
   provider leaves nothing there and nothing in state; the retry makes exactly
   one droplet and the second run is a no-op. Against T1, which differs only in
@@ -294,12 +298,11 @@ order, with these differences:
   the provider holds one resource and the error does not name it.
 - The id is checked against the error for `poll-*` only; no response was read
   for `create-*`.
-- Markers: `create-*` (bar 429) `xfail(strict=True,
-  raises=RetryDuplicatesResource)` against #253; `poll-*`
-  `xfail(strict=True, raises=ErrorOmitsResourceId)`. A `poll-*` cell stops at the
-  id assertion, so whether its retry also duplicates is not observed; once the
-  error carries the id the cell reaches that check and fails strictly until its
-  marker becomes the #253 one.
+- Markers: the `create-*` cells (bar 429) carried `xfail(strict=True,
+  raises=RetryDuplicatesResource)` against #253 until PR 4b removed it; `poll-*`
+  carry `xfail(strict=True, raises=ErrorOmitsResourceId)` against #264. A
+  `poll-*` cell stops at the id assertion, so whether its retry also duplicates
+  is not observed; once the error carries the id the cell reaches that check.
 
 `resize-http503` applies, then changes the declared size and applies with the
 resize request failed. It asserts a non-zero exit naming `driver failed during
@@ -313,7 +316,8 @@ pass live.
 
 Live results, 2026-10-02, head `5eaaa75`: 3 passed (`create-http429`,
 `resize-http503`, `delete-http503`), 7 xfailed (`create-reset`, `create-http500`,
-`create-http503` against #253; the four `poll-*` on the missing id), no XPASS.
+`create-http503` against #253, since fixed by PR 4b; the four `poll-*` on the
+missing id, #264), no XPASS.
 No droplets or firewalls remained and only the `cloudaiform.com` zone.
 
 No cell names a provider in its requests: they come from
@@ -383,7 +387,7 @@ the resized size (`size_slug`) straight from the listing.
   uses it. Using it from a default-run test would be a move, taken when there
   is a second user.
 - **Fixing anything found.** A stage that exposes a real bug is marked
-  `xfail(strict=True)` with its issue number (C1 and C2: #253). No change to
+  `xfail(strict=True)` with its issue number (C1 and C2 were #253, fixed by PR 4b). No change to
   `aiform/` or `drivers/` in this work.
 - **Domains.** They add nothing the firewall update stages do not, and need the
   zone parent.

@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from aiform import cli, config, llm, orchestrator, parser, state
+from aiform.driver import ResourceDriver
 from aiform.models import DriverInfo, KeyCheck, KeyState, StateEntry
 
 
@@ -2019,6 +2020,55 @@ class TestPlanDestroy:
         trash_dir = project_dir / ".aiform" / "trash"
         assert any(trash_dir.iterdir())
 
+    def test_destroy_all_with_the_tracked_file_missing_succeeds_and_names_it(
+        self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        write_driver(drivers_dir, "digitalocean", "compute")
+        missing = project_dir / "moved-away.aiform.md"
+        state_file = project_dir / ".aiform" / "state.json"
+        driver_hash = orchestrator.hashlib.sha256(
+            (drivers_dir / "digitalocean" / "compute.py").read_bytes()
+        ).hexdigest()
+        entry = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name="telleztec-app-01",
+            id="123",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info(driver_hash),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(missing),
+            aiform_md_sha256="abc123",
+        )
+        state.save(
+            state.State(
+                deployment="default", resources={"digitalocean.compute.telleztec-app-01": entry}
+            ),
+            state_file,
+        )
+        patch_client(monkeypatch, [plan_review_response()])
+
+        code = cli.main(
+            [
+                "plan",
+                "destroy",
+                "--all",
+                "--deployment",
+                "default",
+                "--yes",
+                "--state-file",
+                str(state_file),
+            ]
+        )
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert f"tracked file {missing} is missing" in captured.out
+        assert "Error" not in captured.err
+        assert state.load(state_file, deployment="default").resources == {}
+
     def test_destroy_with_yes_prints_auto_approved_marker(
         self, project_dir, drivers_dir, prompts_dir, monkeypatch, capsys
     ):
@@ -2475,3 +2525,305 @@ class TestConfirm:
 
         with pytest.raises(RuntimeError, match="TTY"):
             cli._confirm("Apply this plan?")
+
+
+def _progress(*, applied=(), failed, not_run=()):
+    def entry(key, action=orchestrator.PlanAction.DESTROY, likely_replace=False):
+        return orchestrator.PlanEntry(
+            resource_key=key, action=action, rationale="r", likely_replace=likely_replace
+        )
+
+    return orchestrator.ApplyProgress(
+        applied=[entry(k) for k in applied],
+        failed=failed if not isinstance(failed, str) else entry(failed),
+        not_run=[entry(k) for k in not_run],
+    )
+
+
+def _tracked_state(project_dir: Path, *names: str, chain: bool = False) -> Path:
+    entries = {}
+    previous = None
+    for name in names:
+        md = project_dir / f"{name}.aiform.md"
+        write_aiform_md(md, name=name)
+        entries[f"digitalocean.compute.{name}"] = StateEntry(
+            provider="digitalocean",
+            resource_type="compute",
+            name=name,
+            id=f"id-{name}",
+            attributes={"region": "sfo3", "size": "s-1vcpu-2gb"},
+            driver=make_driver_info("0" * 64),
+            last_applied_at=datetime(2026, 7, 30, 18, 23, 5, tzinfo=UTC),
+            last_refreshed_at=datetime(2026, 7, 31, 9, 10, 0, tzinfo=UTC),
+            aiform_md_path=str(md),
+            aiform_md_sha256="abc123",
+            depends_on=[previous] if chain and previous else [],
+        )
+        previous = f"digitalocean.compute.{name}"
+    state_file = project_dir / ".aiform" / "state.json"
+    state.save(state.State(deployment="default", resources=entries), state_file)
+    return state_file
+
+
+DESTROY_ALL = ["plan", "destroy", "--all", "--deployment", "default", "--yes"]
+
+
+def _printed(err: str) -> list[str]:
+    return [line for line in err.splitlines() if not re.match(r"\d{4}-\d\d-\d\dT", line)]
+
+
+class TestFailureReport:
+    """A failed apply names what ran, what failed and what did not."""
+
+    def _run_with(self, project_dir, monkeypatch, exc, capsys, argv=None):
+        state_file = _tracked_state(project_dir, "a")
+        patch_client(monkeypatch, [plan_review_response()])
+
+        def failing_apply(planned, **kwargs):
+            raise exc
+
+        monkeypatch.setattr(orchestrator, "apply_plan", failing_apply)
+        code = cli.main([*(argv or DESTROY_ALL), "--state-file", str(state_file)])
+        return code, capsys.readouterr()
+
+    def _driver_error(self, operation="delete", progress=None):
+        exc = orchestrator.DriverExecutionError(
+            "digitalocean", "compute", operation, RuntimeError("503 service unavailable")
+        )
+        exc.apply_progress = progress
+        return exc
+
+    def test_the_block_lists_applied_failed_and_not_run_then_the_error(
+        self, project_dir, monkeypatch, capsys
+    ):
+        progress = _progress(
+            applied=["digitalocean.firewall.fw"],
+            failed="digitalocean.compute.web",
+            not_run=["digitalocean.compute.db", "digitalocean.domain.example"],
+        )
+
+        code, captured = self._run_with(
+            project_dir, monkeypatch, self._driver_error(progress=progress), capsys
+        )
+
+        assert code == 2
+        lines = _printed(captured.err)
+        assert lines[0] == "Apply incomplete: 1 applied, 1 failed, 2 not run"
+        assert lines[1:5] == [
+            "applied: digitalocean.firewall.fw (destroy)",
+            "failed: digitalocean.compute.web (destroy)",
+            "not run: digitalocean.compute.db (destroy)",
+            "not run: digitalocean.domain.example (destroy)",
+        ]
+        assert lines[5].startswith("Error: ")
+        assert "503 service unavailable" in lines[5]
+
+    def test_a_failure_with_nothing_applied_still_prints_the_header_and_failed_line(
+        self, project_dir, monkeypatch, capsys
+    ):
+        progress = _progress(failed="digitalocean.compute.web")
+
+        code, captured = self._run_with(
+            project_dir, monkeypatch, self._driver_error(progress=progress), capsys
+        )
+
+        assert code == 2
+        assert _printed(captured.err)[0] == "Apply incomplete: 0 applied, 1 failed, 0 not run"
+        assert "applied: " not in captured.err.replace("Apply incomplete: 0 applied", "")
+        assert "failed: digitalocean.compute.web (destroy)" in captured.err
+
+    def test_a_replace_that_failed_at_create_says_the_old_resource_is_gone(
+        self, project_dir, monkeypatch, capsys
+    ):
+        failed = orchestrator.PlanEntry(
+            resource_key="digitalocean.compute.web",
+            action=orchestrator.PlanAction.UPDATE,
+            rationale="r",
+            likely_replace=True,
+        )
+        progress = _progress(failed=failed)
+
+        code, captured = self._run_with(
+            project_dir,
+            monkeypatch,
+            self._driver_error(operation="create", progress=progress),
+            capsys,
+        )
+
+        assert (
+            "failed: digitalocean.compute.web (update (replaced)) -- the old resource was "
+            "deleted and the new one was not created"
+        ) in captured.err
+
+    def test_an_exception_without_progress_prints_only_the_error(
+        self, project_dir, monkeypatch, capsys
+    ):
+        code, captured = self._run_with(
+            project_dir, monkeypatch, self._driver_error(progress=None), capsys
+        )
+
+        assert code == 2
+        assert "Apply incomplete" not in captured.err
+        assert _printed(captured.err)[0].startswith("Error: ")
+
+    def test_plan_apply_prints_the_block_too(self, project_dir, monkeypatch, capsys):
+        state_file = _tracked_state(project_dir, "a")
+        monkeypatch.setattr(orchestrator, "build_create_plan", lambda *a, **kw: ([], []))
+        progress = _progress(failed="digitalocean.compute.web")
+
+        def failing_apply(planned, **kwargs):
+            raise self._driver_error(operation="create", progress=progress)
+
+        monkeypatch.setattr(orchestrator, "apply_plan", failing_apply)
+
+        code = cli.main(
+            ["plan", "apply", "--deployment", "default", "--yes", "--state-file", str(state_file)]
+        )
+
+        assert code == 2
+        assert "Apply incomplete: 0 applied, 1 failed, 0 not run" in capsys.readouterr().err
+
+
+class TestDestroyAllRetryFlag:
+    def _capture(self, monkeypatch):
+        seen = {}
+
+        def fake_apply(planned, **kwargs):
+            seen.update(kwargs)
+            return orchestrator.ApplyResult(executed=[], review_flags=[], aborted=False)
+
+        monkeypatch.setattr(orchestrator, "apply_plan", fake_apply)
+        return seen
+
+    def test_all_with_yes_retries_failed_deletes(self, project_dir, monkeypatch):
+        state_file = _tracked_state(project_dir, "a")
+        seen = self._capture(monkeypatch)
+
+        cli.main([*DESTROY_ALL, "--state-file", str(state_file)])
+
+        assert seen["retry_destroy"] is True
+
+    def test_all_without_yes_does_not(self, project_dir, monkeypatch):
+        state_file = _tracked_state(project_dir, "a")
+        seen = self._capture(monkeypatch)
+        monkeypatch.setattr(sys, "stdin", FakeStdinTTY())
+        monkeypatch.setattr(orchestrator, "read_answer", lambda prompt: "default")
+        monkeypatch.setattr(cli, "_confirm", lambda prompt: True)
+
+        cli.main(
+            ["plan", "destroy", "--all", "--deployment", "default", "--state-file", str(state_file)]
+        )
+
+        assert seen["retry_destroy"] is False
+
+    def test_destroying_named_files_does_not(self, project_dir, monkeypatch):
+        state_file = _tracked_state(project_dir, "a")
+        seen = self._capture(monkeypatch)
+
+        cli.main(
+            [
+                "plan",
+                "destroy",
+                str(project_dir / "a.aiform.md"),
+                "--yes",
+                "--deployment",
+                "default",
+                "--state-file",
+                str(state_file),
+            ]
+        )
+
+        assert seen["retry_destroy"] is False
+
+    def test_plan_apply_does_not(self, project_dir, monkeypatch):
+        state_file = _tracked_state(project_dir, "a")
+        seen = self._capture(monkeypatch)
+        monkeypatch.setattr(orchestrator, "build_create_plan", lambda *a, **kw: ([], []))
+
+        cli.main(
+            ["plan", "apply", "--yes", "--deployment", "default", "--state-file", str(state_file)]
+        )
+
+        assert seen["retry_destroy"] is False
+
+
+class TestDestroyAllRestartable:
+    """A failed delete is retried; a forced re-run after the final failure converges."""
+
+    def _drive(self, project_dir, monkeypatch, failing_ids):
+        monkeypatch.setenv("DIGITALOCEAN_TOKEN", "dop_v1_test")
+        monkeypatch.setattr(orchestrator.time, "sleep", lambda seconds: None)
+        deleted: list[str] = []
+
+        class Flaky(ResourceDriver):
+            PARAM_SCHEMA = {"type": "object", "properties": {}}
+
+            def create(self, name, params, credentials):
+                return {"id": f"id-{name}"}
+
+            def read(self, id, credentials):
+                return {"id": id}
+
+            def update(self, id, current, desired, credentials):
+                return {"id": id}
+
+            def delete(self, id, credentials):
+                if id in failing_ids:
+                    raise RuntimeError("503 service unavailable")
+                deleted.append(id)
+
+        monkeypatch.setattr(orchestrator, "load_driver", lambda *a, **kw: Flaky())
+        patch_client(
+            monkeypatch,
+            [plan_review_response(), plan_review_response()],
+        )
+        return deleted
+
+    def test_a_forced_rerun_after_a_partial_failure_reports_only_the_remainder(
+        self, project_dir, monkeypatch, capsys
+    ):
+        state_file = _tracked_state(project_dir, "db", "web", chain=True)
+        failing = {"id-web"}
+        deleted = self._drive(project_dir, monkeypatch, failing)
+
+        code = cli.main([*DESTROY_ALL, "--state-file", str(state_file)])
+
+        err = capsys.readouterr().err
+        assert code == 2
+        assert _printed(err)[0] == "Apply incomplete: 0 applied, 1 failed, 1 not run"
+        assert "failed: digitalocean.compute.web (destroy)" in err
+        assert "not run: digitalocean.compute.db (destroy)" in err
+        assert deleted == []
+
+        failing.clear()
+        code = cli.main([*DESTROY_ALL, "--force", "--state-file", str(state_file)])
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "Apply incomplete" not in captured.err
+        assert "digitalocean.compute.web: destroy" in captured.out
+        assert "digitalocean.compute.db: destroy" in captured.out
+        assert deleted == ["id-web", "id-db"]
+        assert state.load(state_file, deployment="default").resources == {}
+
+    def test_the_exposure_warning_is_printed_with_the_plan(self, project_dir, monkeypatch, capsys):
+        state_file = _tracked_state(project_dir, "web")
+        entry = state.load(state_file, deployment="default").resources["digitalocean.compute.web"]
+        firewall = entry.model_copy(
+            update={
+                "resource_type": "firewall",
+                "name": "fw",
+                "id": "fw-1",
+                "depends_on": ["digitalocean.compute.web"],
+            }
+        )
+        loaded = state.load(state_file, deployment="default")
+        loaded.resources["digitalocean.firewall.fw"] = firewall
+        state.save(loaded, state_file)
+        self._drive(project_dir, monkeypatch, set())
+
+        cli.main([*DESTROY_ALL, "--state-file", str(state_file)])
+
+        out = capsys.readouterr().out
+        assert "Warning: digitalocean.firewall.fw protects digitalocean.compute.web" in out
+        assert "unfiltered" in out

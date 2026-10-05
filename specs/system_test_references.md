@@ -16,6 +16,10 @@ actually gave — two cases, one test each:
 2. (#216) A droplet's `provider_id` flowing into a firewall's `droplet_ids`,
    the first **integer**-typed reference target Phase 2's syntax reaches.
 
+(#224) A further test, `TestTwoDropletsInOneRuleLive`, proves that a firewall
+rule admitting **two** droplets by reference inside `sources.droplet_ids`
+applies and re-plans clean.
+
 A third test proves a related but distinct claim against the same real API:
 (#225) that `aiform plan destroy <file>` refuses to destroy a droplet a
 tracked firewall still depends on — via a reference, via a declared
@@ -194,6 +198,28 @@ referencing both:
    cleans up what remains and must succeed — it would instead hit
    the identical refusal a second time, against a droplet the user just
    deliberately destroyed, if the pruning above were only cosmetic.
+
+`TestTwoDropletsInOneRuleLive`'s single test (#224) — skipped outright if the
+token lacks `firewall` scope; two droplets and a firewall:
+
+1. Name the two droplets, sort the names, and write a firewall whose one rule's
+   `sources.droplet_ids` references the **later-keyed** droplet first, then the
+   earlier. Droplets are created in key order and DigitalOcean's ids ascend, so
+   the resolved list is `[higher, lower]`: unsorted, deterministically, which
+   is what the removed sorted-list check refused partway through apply.
+2. `plan create`, then `plan apply --yes`. Assert it succeeds, and that the
+   live firewall's `sources.droplet_ids`, read back from DigitalOcean, holds
+   exactly the two `provider_id`s (compared sorted, since the provider owns
+   the order it returns).
+3. `plan create --verbose` again: `no-op` for all three resources at zero
+   Anthropic calls. This is the half a unit test cannot settle, because it
+   needs DigitalOcean's real read-back to compare equal to the unsorted
+   desired list.
+4. `plan destroy --all --deployment default --yes`.
+
+Written and spec'd in the PR that fixed #224 but **not run** by its author: the
+coordinating session runs live suites serially because they share the
+deployment `default`.
 
 ## Cleanup
 
