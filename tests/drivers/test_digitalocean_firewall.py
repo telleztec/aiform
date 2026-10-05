@@ -884,7 +884,7 @@ class TestRejectionsWithNoTranscriptBehindThem:
 
 class TestNestedTargetListOrder:
     """`unordered_equal` compares lists nested inside a rule without regard
-    to order (#224), so `UNORDERED_FIELDS` frees the order of
+    to order, so `UNORDERED_FIELDS` frees the order of
     `sources.addresses` inside a rule as well as rule order. DigitalOcean is
     under no obligation to return one as written (its Terraform provider
     models all five target keys as sets), and the driver neither sorts nor

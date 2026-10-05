@@ -185,8 +185,8 @@ class TestFullLifecycleSequence:
         live = get_droplet_or_none(token, droplet_id)
         assert live is not None
         assert str(live["id"]) == droplet_id  # in-place: the droplet survives
-        # The reserved tags and the per-resource creation marker (#253) survive
-        # a tags-only update (#249).
+        # The reserved tags and the per-resource creation marker survive a
+        # tags-only update.
         marker = do_compute.Driver(reserved_tags=reserved_tags("default"))._creation_marker(name)
         assert sorted(live["tags"]) == sorted(
             [SYSTEM_TEST_TAG, IN_PLACE_TAG, "aiform-managed", "aiform:default", marker]
