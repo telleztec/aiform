@@ -194,7 +194,9 @@ independent, in its own test function with its own `tmp_path`.
      `aiform-system-test` sweep tag (`write_aiform_md`'s `extra_tags`,
      which never displaces that one). `plan create` must show `update`
      **without** `(likely replace)`, and the apply must leave the
-     droplet's `id` untouched with both tags live on it. This is the
+     droplet's `id` untouched with both tags live on it, alongside the
+     reserved tags and the droplet's creation marker (#249, #253), which an
+     in-place update never removes. This is the
      regression guard for issue #77, where any diff that was not
      exactly `["size"]` destroyed and recreated the droplet — the
      precise Terraform `ForceNew` pathology `README.md` names as the

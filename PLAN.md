@@ -1683,8 +1683,10 @@ config files, or secret managers Tokens rotate automatically and expire in minut
   entry stated it without qualification: detection covers **the edges a
   single run declares.** A target that exists only in state resolves
   with no edge, so a cycle assembled across several runs into
-  `StateEntry.depends_on` is not caught at plan time — and then blocks
-  `plan destroy` for the whole deployment, acyclic resources included.
+  `StateEntry.depends_on` is not caught at plan time of `plan create`/
+  `plan apply`. It no longer blocks `plan destroy --all` (#206): that path
+  breaks the cycle with one warning per dropped edge and proceeds, while
+  the file-driven `plan destroy <file>` still raises `PlanBlockedError`.
 
   And it is cheaper to reach than "several applies" suggests: because
   `plan` persists `depends_on` for an already-tracked resource
@@ -1705,9 +1707,9 @@ config files, or secret managers Tokens rotate automatically and expire in minut
 
   That persistence is itself necessary (without it, adopting
   `depends_on` on an existing resource never reaches state at all), so
-  this is a trade rather than an oversight. Tracked as #206, which owns
-  the refuse-versus-degrade decision and now has a stronger case for
-  refusing at the `plan` that closes the cycle.
+  this is a trade rather than an oversight. Tracked as #206, which decided
+  the refuse-versus-degrade question for `plan destroy --all`: degrade
+  (warn per dropped edge and proceed).
 
   **Delivered (Phase 2, `specs/resource_references.md`):** cross-resource
   attribute references — a DNS record's `data` reading a droplet's

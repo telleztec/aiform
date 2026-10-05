@@ -24,12 +24,10 @@ provider and aiform's state in a condition a plain re-run repairs. A mock cannot
 say, because it encodes the same assumption about call order the orchestrator
 does.
 
-**Stages expected to fail today.** C1 and C2 cut a droplet create off after the
-provider accepted it and before aiform's state recorded it. `create()` carries
-no idempotency key and looks nothing up by name, so the retry has nothing to
-tell it the droplet exists and POSTs a second (#253, confirmed live). Both
-assert the desired behavior -- exactly one droplet per declared name -- under
-`xfail(strict=True)`. Every other stage converges.
+**C1 and C2** cut a droplet create off after the provider accepted it and
+before aiform's state recorded it. `create()` tags the droplet with a
+per-resource marker and adopts a marked droplet on the retry, so both assert
+exactly one droplet per declared name.
 
 Each stage's faulted run is expected to raise `InjectedInterrupt`, a
 `KeyboardInterrupt`, from `cli.main()`. That stands for the non-zero exit
@@ -100,12 +98,6 @@ def droplets_named(token, name: str) -> list[dict]:
     return [d for d in list_droplets_tagged(token, SYSTEM_TEST_TAG) if d.get("name") == name]
 
 
-_RETRY_DUPLICATES_DROPLET = pytest.mark.xfail(
-    strict=True,
-    reason="#253: a retry after an interrupted droplet create makes a second droplet",
-)
-
-
 def firewalls_named(token, name: str) -> list[dict]:
     # #249: a firewall cannot carry a tag, so aiform creates it as
     # `aiform-<deployment>-<name>`; every test here runs in "default".
@@ -150,8 +142,8 @@ class TestInterruptedCreate:
     @pytest.mark.parametrize(
         "stage",
         [
-            pytest.param("C1", marks=_RETRY_DUPLICATES_DROPLET),
-            pytest.param("C2", marks=_RETRY_DUPLICATES_DROPLET),
+            "C1",
+            "C2",
             "C3",
         ],
     )

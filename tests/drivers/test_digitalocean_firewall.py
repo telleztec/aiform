@@ -883,12 +883,12 @@ class TestRejectionsWithNoTranscriptBehindThem:
 
 
 class TestNestedTargetListOrder:
-    """`unordered_equal` is top-level only -- a rule is compared through
-    `canonical_key()`, which serializes any list nested inside it
-    positionally. So `UNORDERED_FIELDS` makes rule *order* free but does
-    nothing for the order of `sources.addresses` inside a rule, and
-    DigitalOcean is under no obligation to return one as written (its
-    Terraform provider models all five target keys as sets)."""
+    """`unordered_equal` compares lists nested inside a rule without regard
+    to order, so `UNORDERED_FIELDS` frees the order of
+    `sources.addresses` inside a rule as well as rule order. DigitalOcean is
+    under no obligation to return one as written (its Terraform provider
+    models all five target keys as sets), and the driver neither sorts nor
+    requires sorting what the user writes."""
 
     def test_a_reordered_nested_list_from_the_api_is_not_a_diff(self, driver, fake_urlopen):
         params = minimal_params()
