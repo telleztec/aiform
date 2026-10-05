@@ -1,0 +1,24 @@
+{
+ "credentials_key": "DIGITALOCEAN_TOKEN",
+ "elapsed_ms": 369,
+ "note": "poll 3: droplet gone yet",
+ "prediction": null,
+ "prediction_matched": null,
+ "probed_at": "2026-10-03T15:01:57.671499+00:00",
+ "request": {
+  "body": null,
+  "headers": {
+   "Authorization": "Bearer <DIGITALOCEAN_TOKEN>"
+  },
+  "method": "GET",
+  "url": "https://api.digitalocean.com/v2/droplets/605827309"
+ },
+ "response": {
+  "body": {
+   "id": "not_found",
+   "message": "The resource you were accessing could not be found."
+  },
+  "status": 404
+ },
+ "seq": 13
+}
