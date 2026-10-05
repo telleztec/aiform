@@ -2729,7 +2729,7 @@ def _printed(err: str) -> list[str]:
 
 
 class TestFailureReport:
-    """#229/#235: a failed apply names what ran, what failed and what did not."""
+    """A failed apply names what ran, what failed and what did not."""
 
     def _run_with(self, project_dir, monkeypatch, exc, capsys, argv=None):
         state_file = _tracked_state(project_dir, "a")

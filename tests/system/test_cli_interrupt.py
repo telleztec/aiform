@@ -25,11 +25,9 @@ say, because it encodes the same assumption about call order the orchestrator
 does.
 
 **C1 and C2** cut a droplet create off after the provider accepted it and
-before aiform's state recorded it. Before PR 4b (#253) the retry had nothing to
-tell it the droplet exists and POSTed a second, confirmed live. `create()` now
-tags the droplet with a per-resource marker and adopts a marked droplet on the
-retry, so both assert the desired behavior -- exactly one droplet per declared
-name -- with no `xfail`. They are written, not yet run live.
+before aiform's state recorded it. `create()` tags the droplet with a
+per-resource marker and adopts a marked droplet on the retry, so both assert
+exactly one droplet per declared name.
 
 Each stage's faulted run is expected to raise `InjectedInterrupt`, a
 `KeyboardInterrupt`, from `cli.main()`. That stands for the non-zero exit

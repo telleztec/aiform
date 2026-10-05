@@ -66,8 +66,8 @@ class ErrorOmitsResourceId(AssertionError):
 # `raises=` keeps the marker honest: only the missing id counts as the expected
 # failure. Any other assertion that fails, a duplicate for one, is a different
 # finding and must not be hidden behind #264. Once the error carries the id, T2
-# reaches the duplicate check, which #253's marker adoption should pass: remove
-# this marker then.
+# reaches the duplicate check, which creation-marker adoption is expected to
+# pass: remove this marker then.
 _ERROR_OMITS_RESOURCE_ID = pytest.mark.xfail(
     strict=True,
     raises=ErrorOmitsResourceId,

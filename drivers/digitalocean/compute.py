@@ -343,27 +343,9 @@ class Driver(ResourceDriver):
         raise AssertionError("unreachable")  # the loop always returns or raises
 
     def _poll_until_created(self, id, credentials):
-        # _poll_until's default budget (75 attempts * 2s = 150s) is tuned for
-        # update()'s power-off/resize/power-on actions against an already-
-        # existing droplet -- full provisioning from scratch commonly takes
-        # longer than that per DO's own docs, so this uses a wider budget
-        # (60 * 3s = 180s) to avoid spuriously timing out a create that
-        # would have converged moments later. The default itself was
-        # raised three times now: 20->30 attempts (40s->60s) after an
-        # earlier live run hit a power-off slowdown at the old edge, then
-        # 30->45 attempts (60s->90s, see issue #152) after three
-        # consecutive live runs all timed out on the same power-off step
-        # within a second of each other (~72-73s), then 45->75 attempts
-        # (90s->150s, see issue #168) after two more consecutive runs both
-        # timed out at ~108.4-108.6s -- tight enough clustering each time
-        # that it reads as DO's power-off latency having shifted again,
-        # not tail-latency noise. create()'s own override is left
-        # untouched by #168: nothing observed suggests create's
-        # provisioning latency has drifted, and 180s remains comfortably
-        # above the new 150s default. Real, observed timing adjustments
-        # per PLAN.md's own "guesses tuned against one CSP's observed
-        # behavior, not a real policy" framing for these two constants,
-        # not a fix for a code defect.
+        # Provisioning from scratch can outlast _poll_until's default 150s budget,
+        # which is sized for actions on an existing droplet, so this waits up to
+        # 180s (60 attempts x 3s).
         return self._poll_until(
             id,
             credentials,

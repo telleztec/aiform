@@ -1,0 +1,5 @@
+2026-10-03T15:01:00Z step=recall provider=digitalocean skipped=0 traps=0 conf=10 msg="knowledge base not built; nothing to recall"
+2026-10-03T15:03:00Z step=probe count=27 contradicted=0 msg="session digitalocean_firewall_dead_id"
+2026-10-03T15:04:12Z step=probe ref=17 verdict=contradicted conf=10 msg="firewall read 42s after droplet DELETE: predicted dead id still listed, droplet_ids was [] (harness graded status only, so its count above is 0)"
+2026-10-03T15:10:13Z step=spec ref=firewall/dead-id-reap cites=14,16,17,18,20 conf=60 msg="dead id listed at 12s after DELETE (14, 16), absent at 42s (17) and 72s (18, 20); firewall succeeded with pending_changes [] throughout; one run, nothing promoted; dead-id PUT not tested because the id had already left"
+2026-10-03T15:12:00Z step=note msg="CORRECTION of count=27 on the step=probe line above: 24 real HTTP calls; 3 sequence numbers have no request behind them because _write_custom bumps _seq on top of the unrecorded call it wraps"

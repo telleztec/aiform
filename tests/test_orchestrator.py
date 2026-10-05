@@ -3712,7 +3712,7 @@ class TestReverseDependentDestroyRefusal:
             [droplet_path, dns_path], state_path=state_path, deployment="default"
         )
 
-        # Only the exposure warning (#235) is expected: no refusal, no dropped-edge warning.
+        # Only the exposure warning is expected: no refusal, no dropped-edge warning.
         assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
@@ -3770,7 +3770,7 @@ class TestReverseDependentDestroyRefusal:
             None, state_path=state_path, deployment="default"
         )
 
-        # Only the exposure warning (#235) is expected: the reverse-dependent check adds none.
+        # Only the exposure warning is expected: the reverse-dependent check adds none.
         assert [w for w in warnings if "unfiltered" not in w] == []
         assert {pr.entry.resource_key for pr in planned} == {
             "digitalocean.compute.droplet-01",
@@ -6606,7 +6606,7 @@ def _create_pr(name: str, *, fails: bool = False):
 
 
 class TestApplyFailureProgress:
-    """#229/#235: the executed prefix survives the raise path."""
+    """The executed prefix survives the raise path."""
 
     def _state(self, tmp_path: Path) -> Path:
         state_path = tmp_path / ".aiform" / "state.json"

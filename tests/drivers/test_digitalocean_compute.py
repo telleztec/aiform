@@ -2768,8 +2768,8 @@ class TestReservedTags:
 
 
 class TestDeleteWaitsForTeardown:
-    """F1 of the #269 review: DELETE is asynchronous, so delete() waits for
-    the by-id GET to 404 before a later process looks the droplet up."""
+    """DELETE is asynchronous, so delete() waits for the by-id GET to 404
+    before a later process looks the droplet up."""
 
     MARKER = marker_for(NAME)
 
@@ -2943,7 +2943,7 @@ class TestAdoptionRefusesNonRunningStatus:
 
 
 class TestCreateMarkerAdoption:
-    """#253: specs/digitalocean_compute.md, "Create marker and adoption"."""
+    """specs/digitalocean_compute.md, "Create marker and adoption"."""
 
     MARKER = marker_for(NAME)
 
