@@ -94,7 +94,10 @@ Orchestrator rules, replacing `_REPAIRABLE_EDGES` and `_rule_names_droplet`:
 
 - A dependent is repairable for target `T` when its driver declares at least one top-level path (no `.`/`[]`) for `T`'s `(provider, resource_type)`, `T`'s id is ASCII digits, and no declared nested path for `T` holds that id (compared as strings, as today).
 - The repair strips the id from each declared top-level path; the prompt and the refusal message print the path from the declaration.
-- A dependent whose driver is missing on disk or declares nothing is not repairable (today's `_REPAIRABLE_EDGES.get(...) is None`), so a failed `load_driver` is treated as "not repairable" at that one call site (what is caught is decided under Risks).
+- A dependent whose driver declares nothing for `T`'s type is not repairable, same verdict as a `(provider, resource_type)` absent from `_REPAIRABLE_EDGES` today.
+- A dependent whose driver cannot be loaded at classification time is classified not repairable. This is **not** today's behaviour: `_REPAIRABLE_EDGES` (`orchestrator.py:944-951`) is keyed on `(provider, resource_type)` and never touches the file, so today a DigitalOcean firewall with no driver file is classified repairable and fails later in `_apply_repair` (`:1634`, `load_driver`, `PlanBlockedError` "no driver found for ...") before that repair's own write. Identical behaviour is impossible through a declaration read from the driver: with the file gone the declaration is unreadable, and "repairable as today" would also flip non-firewall dependents, which today are refused at plan time. Stated as a behaviour change under "Behaviour" and open question 6.
+- Classification checks the target's type and ASCII-digit id first and loads the dependent's driver last, so `test_a_non_ascii_digit_target_id_is_not_repairable_and_does_not_raise` (`tests/test_orchestrator.py:4735`, calls `_is_repairable` with no `drivers_dir`) passes without a driver on disk.
+- `_repair_prompt` (`:1611`, called at `:1328`) and `_apply_repair` (`:1628`) read the field path from the declaration at the point of use. `_apply_repair` already loads the driver (`:1634`); `_repair_prompt` loads it once more. A missing driver there raises the same `PlanBlockedError` "no driver found" as today, but at the prompt instead of after the confirm; reachable only if the file vanishes between classification and the prompt.
 - Plan-time loads pass `reserved_tags=deployment_tags(st.deployment)`, the rule `TestReservedTagsReachDrivers` (`tests/test_orchestrator.py`) enforces.
 - The integer assumption (`int(target.id)`, `_as_int_id`) stays and its comments say "the declared field holds integer ids". It is the one neutral-layer assumption this plan leaves; owner question 3.
 
@@ -131,7 +134,17 @@ Both consumers share the declaration and the walker; neither needs a new schema 
 - `tests/system/conftest.py`: `wait_until_firewall_droplet_ids` to `wait_until_firewall_vm_ids`; the one `firewall["droplet_ids"]` read (`:844`) moves into a private accessor `_digitalocean_firewall_vm_ids(firewall)`, the issue's "one provider-named accessor per read": the neutral helper name calls an accessor that names DigitalOcean, and the field name `droplet_ids` appears only inside it; docstring neutral. Update the 3 call sites in 2 test files and the two specs.
 - `tests/test_cli.py:787, 829, 973-974`: follow the table rename.
 
-## Behaviour stays identical: proof
+## Behaviour: identical except one stated change, and the proof
+
+**One owner-visible behaviour change** (open question 6): a dependent whose driver file is missing or does not import.
+
+| | Today | After this plan |
+|---|---|---|
+| DigitalOcean firewall, driver file missing, its VM destroyed | Classified repairable at plan time; the plan shows a repair entry; apply fails at `_apply_repair` (`:1634`) with `no driver found for (provider='digitalocean', resource_type='firewall') -- expected <path>` before that repair writes | Refused at plan time with the orphaned-dependents message (`_orphaned_dependents_reason`, `:928`; hint `pass --force ...` on the paths route via `_resolve_reverse_dependents` `:1050`, `destroy <file> --force` on the marker route `:1037-1043`); with `--force` on the paths route it becomes a warning that drops the edge, as for any unrepairable dependent |
+| Firewall driver file does not import | Same as above, but apply raises the import error | Same refusal as the row above |
+| Non-firewall dependent, driver file missing | Refused at plan time with the orphaned-dependents message | Unchanged |
+
+Everything else is unchanged for every state the drivers can produce. One further difference exists only for a hand-edited `state.json`: the old scan also checked `inbound_rules[].destinations` and `outbound_rules[].sources`, which the firewall driver rejects on input (`_validate_rule`, `firewall.py:243-254`) and never returns from `read()` (`_project_rule`, `:360`), so the new declaration omits them.
 
 - Proof is the existing offline suite, unchanged in assertions: `env -u DIGITALOCEAN_TOKEN -u ANTHROPIC_API_KEY python -m pytest` from the worktree (the interpreter is the primary checkout's `.venv/bin/python`; `import aiform` from the worktree resolves to the worktree, verified). Baseline 2457 passed; the count after must be 2457 plus the new tests below, with no existing test deleted or weakened. `ruff check .` and `ruff format --check .` also pass (CI runs both).
 - Run under `env -u` always: the direnv token makes credential tests falsely green locally.
@@ -142,12 +155,12 @@ Both consumers share the declaration and the walker; neither needs a new schema 
 
 Each is written first and run against the unchanged code to show it fails for the stated reason.
 
-1. `tests/test_driver.py`: `ResourceDriver.REFERENCE_FIELDS == []`; a subclass that reassigns it does not alter the base (mirrors `TestUnorderedFields`, `:105-121`). Red: attribute missing.
+1. `tests/test_driver.py`: `ResourceDriver.REFERENCE_FIELDS == []`; a subclass that reassigns it does not alter the base (mirrors `TestUnorderedFields`, `:106-121`). Red: attribute missing.
 2. `tests/test_driver.py`: `values_at` on top-level, nested-through-list, missing key, `None` and empty-list inputs. Red: function missing.
 3. `tests/drivers/test_digitalocean_firewall.py`: the declaration equals the set of `droplet_ids` paths found by walking `PARAM_SCHEMA` (guards drift if a rule side is added), and every declared path resolves in `PARAM_SCHEMA`. Red: attribute missing.
 4. `tests/drivers/test_*`: every driver in `drivers/` has every `REFERENCE_FIELDS` path resolving in its own `PARAM_SCHEMA` (compute and domain: vacuous pass). Red: attribute missing.
 5. `tests/test_orchestrator.py`: a fake dependent declaring a differently-named top-level field (`vm_ids`) targeting a fake compute type is repaired; a fake dependent whose driver declares nothing is refused as before. Red: the hard-coded table ignores the fake. This is the test that proves the orchestrator holds no firewall schema.
-6. `tests/test_orchestrator.py`: a dependent whose driver file is missing, and another whose driver file does not import (syntax error), are each classified not repairable and refused, not crashed (pins the catch decided under Risks). Red: classification raises.
+6. `tests/test_orchestrator.py`: pins the stated behaviour change. (a) A firewall dependent whose driver file is missing, and (b) one whose driver file has a syntax error, are each refused at plan time with the orphaned-dependents message, not planned as repairs and not crashed. (c) A non-firewall dependent with a missing driver is refused with the same message as today (green before and after; guards the unchanged row). Red for (a) and (b): the unchanged code plans a repair entry for the firewall.
 7. `tests/test_system_conftest.py`: `wait_until_firewall_vm_ids` exists; `wait_until_firewall_droplet_ids` does not; the new helper's name and every one of its parameter names (`inspect.signature`) contain neither `droplet` nor `droplet_ids`. `wait_until_droplet_gone` (`:431`) is not asserted on and stays. Red: old name present, new name absent. (This is the machine check of the issue's second "done when" clause, scoped to the one helper that carries a DigitalOcean field name.)
 
 ## Specs, and the greps that find their siblings
@@ -218,7 +231,7 @@ Required before push: the PR touches `aiform/orchestrator.py` and `drivers/digit
 ## Risks
 
 - **Plan-time driver exec is new for destroy planning.** Mitigated: no network or credentials, reserved tags passed, and tests 5 and 6.
-- **`load_driver` (`orchestrator.py:199-214`) raises `PlanBlockedError` only on `FileNotFoundError`.** An unimportable driver (syntax error, failed import) would raise something else, and today's `_REPAIRABLE_EDGES.get()` classification cannot raise. Decision: the classification site catches `Exception` from `load_driver` and returns "not repairable", which falls into the existing refusal path (the safe direction) and keeps classification non-raising. Test 6 pins both cases. This is the one broad catch the plan adds, and it is scoped to that one call.
+- **`load_driver` (`orchestrator.py:199-214`) raises `PlanBlockedError` only on `FileNotFoundError`.** An unimportable driver (syntax error, failed import) would raise something else, and today's `_REPAIRABLE_EDGES.get()` classification cannot raise. Decision: the classification site catches `Exception` from `load_driver` and returns "not repairable", which falls into the existing refusal path and keeps classification non-raising. The refusal moves a failure that today surfaces at apply (for a missing file) to plan time; that is the behaviour change in the "Behaviour" section. Test 6 pins it. This is the one broad catch the plan adds, and it is scoped to that one call.
 - **User-facing wording moves.** Mitigated: no test asserts the changed strings; `specs/cli.md` updated; live suite exercises the repair prompt.
 - **`REFERENCE_FIELDS` going stale against `PARAM_SCHEMA`.** Mitigated by tests 3 and 4.
 - **Comment-only edits in `.py` files still re-trigger `system-test`.** Accepted; the run is already required.
@@ -242,3 +255,4 @@ Required before push: the PR touches `aiform/orchestrator.py` and `drivers/digit
 3. **Keep the integer-id assumption in the repair (recommended), or make it schema-driven now?** Schema-driven handles string ids (AWS-shaped) but builds for a provider that does not exist yet.
 4. **Is `write_firewall_aiform_md(droplet_ids=...)` DigitalOcean-specific (stays, recommended), or a "neutral helper signature" the done-when clause covers?**
 5. **`PLAN.md` §4 and `CLAUDE.md`: add `REFERENCE_FIELDS` only (recommended, scope-tight), or also fix #133's missing `UNORDERED_FIELDS` in the same edit?** Also: approve the two-line wording-only edit to `PLAN.md:809, 845`.
+6. **A dependent whose driver file is missing or unimportable: refuse at plan time (recommended) or keep today's apply-time failure?** Today a DigitalOcean firewall with no driver file is planned as a repair and fails at apply (`no driver found ...`); the plan refuses it at plan time with the `--force` message, because a declaration cannot be read from a missing file. Keeping today's timing needs a fallback `(provider, type)` table in the orchestrator, which is alternative C.
