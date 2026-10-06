@@ -136,7 +136,7 @@ Both consumers share the declaration and the walker; neither needs a new schema 
 
 ## Behaviour: identical except one stated change, and the proof
 
-**One owner-visible behaviour change** (open question 6): a dependent whose driver file is missing or does not import.
+**One owner-visible behaviour change** (open question 6): a dependent whose driver file is missing or does not import. One further difference is race-only: if the driver file vanishes between classification and the repair prompt, `_repair_prompt` raises `no driver found` before the confirm instead of after it.
 
 | | Today | After this plan |
 |---|---|---|
