@@ -82,7 +82,7 @@ def ensure_managed_key(ssh_dir: Path) -> tuple[Path, Path]:
 
     if not public_key_path.exists():
         # Re-derived from the existing private key, never regenerated as a
-        # fresh pair -- a fresh pair would silently orphan every droplet
+        # fresh pair -- a fresh pair would silently orphan every VM
         # already carrying the original public key.
         result = subprocess.run(
             ["ssh-keygen", "-y", "-f", str(private_key_path)],
@@ -102,10 +102,10 @@ _BACKUP_SCRIPT_PREAMBLE = """#!/bin/sh
 # secret for you.
 #
 # This key is an aiform-internal operational credential: aiform generated
-# it, uses it to shut droplets down quickly over SSH instead of
+# it, uses it to shut VMs down quickly over SSH instead of
 # DigitalOcean's own slower power_off action, and it is the *only* copy
 # of it that exists once this script has not been run -- losing
-# .aiform/ssh/aiform_managed_key means every droplet aiform created stops
+# .aiform/ssh/aiform_managed_key means every VM aiform created stops
 # being reachable through the fast path (aiform falls back to the normal
 # DigitalOcean power_off action automatically, so this is inconvenient,
 # not catastrophic).
@@ -278,11 +278,11 @@ def shutdown_via_ssh(
 
 
 def forget_host(ip: str, known_hosts_path: Path) -> None:
-    # DigitalOcean recycles IPs across droplets, and shutdown_via_ssh's
+    # DigitalOcean recycles IPs across VMs, and shutdown_via_ssh's
     # StrictHostKeyChecking=accept-new means known_hosts_path gains one
     # entry per IP ever connected to with nothing pruning it -- a stale
-    # entry for a destroyed droplet's IP would otherwise make a future
-    # droplet at that same IP fail SSH with a host-key mismatch instead
+    # entry for a destroyed VM's IP would otherwise make a future
+    # VM at that same IP fail SSH with a host-key mismatch instead
     # of the intended accept-new behavior.
     if not known_hosts_path.exists():
         return

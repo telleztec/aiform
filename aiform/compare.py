@@ -130,7 +130,7 @@ def unordered_equal(a: Any, b: Any) -> bool:
     that is the diff-hiding direction.
 
     Unordered all the way down (#224): a list nested inside an element is
-    compared as a multiset too. A firewall rule's sources.droplet_ids is
+    compared as a multiset too. A list of VM ids inside a rule is
     filled by references whose resolved order nobody can predict when the
     file is written, so requiring the nested order to match is what made
     two references fail the apply. Each level is still a multiset, so a

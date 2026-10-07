@@ -152,8 +152,8 @@ def _will_get_new_attributes(entry: PlanEntry) -> bool:
 # The subset of the above whose CURRENT value says nothing about the value to
 # come, because the resource itself is being made again. It matters for exactly
 # one rule: a reference to an attribute that is currently unset. For a recreate
-# that is fine and expected -- a drifted droplet's ipv4_address is None
-# precisely because the droplet is gone -- while for an in-place update the
+# that is fine and expected -- a drifted VM's ipv4_address is None
+# precisely because the VM is gone -- while for an in-place update the
 # value stays unset, so refusing at plan time beats failing mid-apply.
 def _will_be_recreated(entry: PlanEntry) -> bool:
     return entry.action == PlanAction.CREATE
@@ -1095,8 +1095,8 @@ def _resolve_reverse_dependents(orphaned: list[tuple[str, str]], *, force: bool)
 
 
 # The operational direction the dependency model cannot express (#235): the
-# configuration edge says a firewall depends on its droplet, so a destroy
-# deletes the firewall first, but it is the droplet that depends on the
+# configuration edge says a firewall depends on its VM, so a destroy
+# deletes the firewall first, but it is the VM that depends on the
 # firewall for filtering. Until that direction is modelled, the one known
 # pairing is named here.
 _PROTECTS = {("digitalocean", "firewall"): ({("digitalocean", "compute")}, "unfiltered")}
