@@ -4532,6 +4532,24 @@ class TestRepairReadsTheDependentsDeclaration:
             OTHER_DROPLET_ID
         ]
 
+    def test_a_non_digit_target_id_under_an_integer_declaration_is_refused_at_apply(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(id="web-1"), FIREWALL_KEY: firewall_entry()}
+        )
+        repair_world.set_live((DROPLET_ID,))
+        st = repair_world.reload()
+        pr = orchestrator._repair_planned(FIREWALL_KEY, [DROPLET_KEY], st)
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator._apply_repair(pr, st, state_path=repair_world.state_path)
+
+        assert "'web-1'" in exc_info.value.reason
+        assert "droplet_ids" in exc_info.value.reason
+        assert "None" not in exc_info.value.reason
+        assert repair_world.mutations() == []
+
     def test_a_dependent_declaring_nothing_is_refused_by_name(self, repair_world: RepairWorld):
         repair_world.use_declared_dependent_driver("[]")
         repair_world.save(
@@ -4664,6 +4682,7 @@ class TestAnUnloadableDependentDriverIsRefusedAtPlanTime:
 
         assert FIREWALL_KEY in exc_info.value.reason
         assert "orphaned" in exc_info.value.reason
+        assert "the driver for digitalocean/firewall could not be loaded" in exc_info.value.reason
 
     def test_a_firewall_whose_driver_does_not_import_is_refused(self, repair_world: RepairWorld):
         repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
@@ -4674,6 +4693,35 @@ class TestAnUnloadableDependentDriverIsRefusedAtPlanTime:
 
         assert FIREWALL_KEY in exc_info.value.reason
         assert "orphaned" in exc_info.value.reason
+        assert "the driver for digitalocean/firewall could not be loaded" in exc_info.value.reason
+        assert "SyntaxError" in exc_info.value.reason
+
+    def test_a_loadable_driver_that_declares_nothing_is_not_called_unloadable(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.use_declared_dependent_driver("[]")
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: vm_firewall_entry([DROPLET_ID])}
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert "could not be loaded" not in exc_info.value.reason
+
+    def test_the_marker_route_names_the_unloadable_driver_too(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        write_driver(repair_world.drivers_dir, "digitalocean", "firewall", "def broken(:\n")
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            orchestrator.build_create_plan(
+                [repair_world.droplet_file(marker=True)],
+                state_path=repair_world.state_path,
+                client=FakeClient([]),
+                deployment="default",
+            )
+
+        assert "the driver for digitalocean/firewall could not be loaded" in exc_info.value.reason
 
     def test_a_non_firewall_dependent_with_no_driver_file_is_refused(
         self, repair_world: RepairWorld

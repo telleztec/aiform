@@ -931,14 +931,30 @@ def _reverse_dependents(node_keys: set[str], st: State) -> list[tuple[str, str]]
 _FORCE_HINT = "pass --force to drop these edges and destroy anyway"
 
 
-def _orphaned_dependents_reason(orphaned: list[tuple[str, str]], *, hint: str = _FORCE_HINT) -> str:
+def _orphaned_dependents_reason(
+    orphaned: list[tuple[str, str]],
+    *,
+    hint: str = _FORCE_HINT,
+    load_errors: dict[tuple[str, str], str] | None = None,
+) -> str:
     pairs = "; ".join(
         f"{dependent} depends on {target!r}" for dependent, target in sorted(orphaned)
+    )
+    unloadable = {
+        (provider, resource_type): load_errors[(provider, resource_type)]
+        for dependent, _ in orphaned
+        for provider, resource_type, _name in [dependent.split(".", 2)]
+        if (provider, resource_type) in (load_errors or {})
+    }
+    driver_notes = "".join(
+        f"the driver for {provider}/{resource_type} could not be loaded ({error}), so its "
+        "references are unknown; "
+        for (provider, resource_type), error in sorted(unloadable.items())
     )
     return (
         f"cannot destroy: {pairs} -- each dependent is not in this run and would be "
         f"orphaned (read from recorded state; run `aiform plan` first if this edge is "
-        f"stale); {hint}"
+        f"stale); {driver_notes}{hint}"
     )
 
 
@@ -983,7 +999,12 @@ def _nested_path_naming(
     return None
 
 
-def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
+def _is_repairable(
+    dependent: StateEntry,
+    target_key: str,
+    st: State,
+    load_errors: dict[tuple[str, str], str] | None = None,
+) -> bool:
     target = st.resources.get(target_key)
     if target is None:
         return False
@@ -993,7 +1014,11 @@ def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
             dependent.resource_type,
             reserved_tags=deployment_tags(st.deployment),
         )
-    except Exception:
+    except Exception as exc:
+        if load_errors is not None:
+            load_errors[(dependent.provider, dependent.resource_type)] = (
+                f"{type(exc).__name__}: {exc}"
+            )
         return False
     fields = _declared_fields(
         dependent.provider,
@@ -1010,15 +1035,16 @@ def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
 
 def _split_reverse_dependents(
     orphaned: list[tuple[str, str]], st: State
-) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+) -> tuple[dict[str, list[str]], list[tuple[str, str]], dict[tuple[str, str], str]]:
     repairs: dict[str, list[str]] = {}
     unrepairable: list[tuple[str, str]] = []
+    load_errors: dict[tuple[str, str], str] = {}
     for dependent, target in sorted(orphaned):
-        if _is_repairable(st.resources[dependent], target, st):
+        if _is_repairable(st.resources[dependent], target, st, load_errors):
             repairs.setdefault(dependent, []).append(target)
         else:
             unrepairable.append((dependent, target))
-    return repairs, unrepairable
+    return repairs, unrepairable, load_errors
 
 
 def _repair_planned(dependent_key: str, targets: list[str], st: State) -> PlannedResource:
@@ -1068,12 +1094,13 @@ def _plan_marker_repairs(
         for dependent, target in _reverse_dependents(marked, st)
         if dependent not in run_keys
     ]
-    repairs, unrepairable = _split_reverse_dependents(orphaned, st)
+    repairs, unrepairable, load_errors = _split_reverse_dependents(orphaned, st)
     if unrepairable:
         raise PlanBlockedError(
             _orphaned_dependents_reason(
                 unrepairable,
                 hint="destroy it with `aiform plan destroy <file> --force` to drop these edges",
+                load_errors=load_errors,
             )
         )
     return (
@@ -1082,11 +1109,16 @@ def _plan_marker_repairs(
     )
 
 
-def _resolve_reverse_dependents(orphaned: list[tuple[str, str]], *, force: bool) -> list[str]:
+def _resolve_reverse_dependents(
+    orphaned: list[tuple[str, str]],
+    *,
+    force: bool,
+    load_errors: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
     if not orphaned:
         return []
     if not force:
-        raise PlanBlockedError(_orphaned_dependents_reason(orphaned))
+        raise PlanBlockedError(_orphaned_dependents_reason(orphaned, load_errors=load_errors))
     return [
         f"{dependent}: depends on {target!r}, which is being destroyed in this run -- "
         "dropping the edge (--force)"
@@ -1159,8 +1191,10 @@ def _build_destroy_plan_from_paths(
         raw_edges, node_keys, resolvable_elsewhere=set(st.resources)
     )
     warnings = _resolve_dangling_targets(dangling, force=force)
-    repairs, orphaned = _split_reverse_dependents(_reverse_dependents(node_keys, st), st)
-    warnings += _resolve_reverse_dependents(orphaned, force=force)
+    repairs, orphaned, load_errors = _split_reverse_dependents(
+        _reverse_dependents(node_keys, st), st
+    )
+    warnings += _resolve_reverse_dependents(orphaned, force=force, load_errors=load_errors)
     warnings += [_repair_notice(dependent, targets) for dependent, targets in repairs.items()]
 
     order = _reverse_topological(node_keys, edges)
@@ -1687,10 +1721,17 @@ def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     removals: dict[str, set[str]] = {}
     id_types: dict[str, str] = {}
     for target, fields in declared.items():
+        target_id = _require_tracked(st, target).id
         for field in fields:
+            if _declared_id(target_id, field.id_type) is None:
+                raise PlanBlockedError(
+                    f"cannot destroy: {pr.entry.resource_key} declares {field.path} as "
+                    f"{field.id_type} ids, but {target!r} has id {target_id!r}; destroy it with "
+                    "`aiform plan destroy <file> --force` to drop the edge"
+                )
             if field.top_level:
                 forms = removals.setdefault(field.path, set())
-                forms.add(str(_declared_id(_require_tracked(st, target).id, field.id_type)))
+                forms.add(str(_declared_id(target_id, field.id_type)))
                 id_types[field.path] = field.id_type
     credentials = _credentials_for(pr.provider, {})
 

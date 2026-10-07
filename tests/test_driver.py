@@ -209,7 +209,7 @@ def schema_node_at(schema, path):
 
 
 class TestEveryDriversDeclarationMatchesItsSchema:
-    @pytest.mark.parametrize("module_name", _curated_driver_modules())
+    @pytest.mark.parametrize("module_name", list(_curated_driver_modules()))
     def test_each_declared_path_resolves_to_a_list_of_the_declared_id_type(self, module_name):
         driver_class = importlib.import_module(module_name).Driver
 
