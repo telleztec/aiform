@@ -1436,7 +1436,8 @@ Returns the destination path.
   the graph (it gained only the repair step, Phase 4a).
 - **Orphan repair — Phase 4a, in scope now.** Destroying a resource that a
   tracked dependent outside the run depends on is no longer refused when the
-  dependent is a firewall naming the destroyed droplet in its `droplet_ids`:
+  dependent's driver declares that reference in `REFERENCE_FIELDS` (today a
+  firewall naming the destroyed droplet in its `droplet_ids`):
   the plan gains an UPDATE of that firewall, applied before the delete (see
   `### Repair before destroy (#226, #227)` in the `resource_dependencies`
   addendum below). Every other outside dependent is still refused on the
@@ -1578,16 +1579,30 @@ changed and which deliberately did not.
 - **Repair before destroy (#226, #227).** `_split_reverse_dependents()`
   divides `_reverse_dependents()`'s pairs into *repairable* ones, which become
   repair entries, and the rest, which keep #225's refuse-or-`--force` behaviour
-  (`_resolve_reverse_dependents()`). A pair is repairable when the dependent's
-  `(provider, resource_type)` is a key of `_REPAIRABLE_EDGES`, the destroyed
-  target's `(provider, resource_type)` is the one recorded for it, the target is
-  tracked with an id of ASCII digits only, and no rule of the dependent's recorded
-  attributes names that id under `sources`/`destinations` `droplet_ids` (a
-  nested reference is not repaired -- doing a partial repair would leave the
-  dead id behind silently). This plan-time check reads **recorded** state, so it
-  cannot see a rule added out-of-band since the last refresh; `_apply_repair()`
-  repeats it against the **live** firewall (below). Today the table holds one row: `digitalocean/firewall`
-  -> `digitalocean/compute` via the top-level `droplet_ids` param.
+  (`_resolve_reverse_dependents()`). The orchestrator holds no provider schema:
+  the dependent's own driver declares what it references through
+  `REFERENCE_FIELDS` (`specs/driver.md`), a list of `ReferenceField(path, target,
+  id_type)`. `_declared_fields()` keeps the entries whose `target` is the
+  destroyed target's `(provider, resource_type)` and rejects an `id_type` outside
+  `ID_TYPES` with a `PlanBlockedError` naming the driver, the path and the allowed
+  values. A pair is repairable when the dependent's driver loads, the target is
+  tracked, at least one matching entry is **top-level** (a plain key: no `.`, no
+  `[]`), the target's id is valid under every matching entry's `id_type`
+  (`"integer"`: ASCII digits only, converted with `int()`; `"string"`: any id, used
+  as-is), and no matching **nested** path (`values_at()` over the dependent's
+  recorded attributes) holds that id, compared as strings (a nested reference is
+  not repaired -- doing a partial repair would leave the dead id behind silently).
+  Destroy planning therefore reads the dependent's driver class at plan time
+  (`load_driver()` with the deployment's reserved tags; no network, no
+  credentials), while `PlannedResource.driver` stays `None`. A dependent whose
+  driver file is missing or does not import is not repairable and is refused like
+  any other orphaned dependent. This plan-time check reads **recorded** state, so
+  it cannot see a nested reference added out-of-band since the last refresh;
+  `_apply_repair()` repeats the nested check against the **live** resource
+  (below). Today one driver declares anything: `digitalocean/firewall`, three
+  entries targeting `digitalocean/compute` with `id_type` `"integer"` (the
+  top-level `droplet_ids`, and `droplet_ids` under each inbound rule's
+  `sources` and each outbound rule's `destinations`).
   `build_destroy_plan()` (paths route) and `build_create_plan()` (marker route)
   both call it, so both routes plan identically. A repair is a
   `PlannedResource` with `entry` from `planner.repair_entry()` (action UPDATE,
@@ -1608,29 +1623,30 @@ changed and which deliberately did not.
 - **`apply_plan()` and repairs.** After gate #2 and the `Apply this plan?`
   confirmation, and **before executing anything**, each repair entry is
   confirmed through the same `confirm` callable unless `yes=True`:
-  `Repair <firewall>: remove <target> (id <n>) from its droplet_ids before
-  destroying?` (all targets of that firewall in one prompt). A decline
+  `Repair <dependent>: remove <target> (id <n>) from its <declared top-level
+  path(s)> before destroying?` (all targets of that dependent in one prompt). A decline
   returns `ApplyResult(executed=[], aborted=True)`: nothing was changed or
   destroyed. `_apply_repair()` then, in list order (so before any destroy):
-  reads the firewall live (`refresh_resource()`); if the live firewall has a rule
-  naming a destroyed id under `sources`/`destinations` `droplet_ids`, it raises
+  reads the dependent live (`refresh_resource()`); if the live resource holds a
+  destroyed id at a declared nested path, it raises
   `PlanBlockedError` **before any provider write** (a message naming the
-  firewall, the target and `aiform plan destroy <file> --force`), whatever the
-  top-level list holds, because stripping only the top-level id would leave the
-  dead id behind (the rule check compares ids as strings, so a live read returning them as
-  strings is still caught); if the firewall is gone or no
+  dependent, the target, the nested path and `aiform plan destroy <file> --force`),
+  whatever the top-level list holds, because stripping only the top-level id would
+  leave the dead id behind (the check compares ids as strings, so a live read
+  returning them in another type is still caught); if the dependent is gone or no
   longer lists the id, it only
   prunes the `depends_on` and `reference_edges` entries for the destroyed keys from
   state (the entry stays tracked); otherwise it calls the
   driver's `update(id, live, desired, credentials)` through `_call_driver()`
   where `desired` is the live attributes restricted to `PARAM_SCHEMA` keys with
-  the destroyed ids removed from the repair field (surviving top-level
-  digit-string ids are written back as ints, which the driver requires; ids
-  nested in `inbound_rules`/`outbound_rules` are copied verbatim and **not**
-  coerced, so a live read naming another droplet by a string id there makes the
-  driver's own validation raise `DriverExecutionError` from this `update`,
-  before any destroy and so with no orphan -- DigitalOcean returning string ids
-  is unobserved, and the top-level int round-trip is the only one probed, #216),
+  the destroyed ids removed from each declared top-level path (for an `"integer"`
+  path, surviving digit-string ids are written back as ints, which the driver
+  requires; for a `"string"` path ids are written back as read; ids at nested
+  paths are copied verbatim and **not** coerced, so a live read naming another VM
+  by a string id there makes the driver's own validation raise
+  `DriverExecutionError` from this `update`, before any destroy and so with no
+  orphan -- DigitalOcean returning string ids is unobserved, and the top-level int
+  round-trip is the only one probed, #216),
   and records the returned
   attributes and `last_applied_at`/`last_refreshed_at`, and removes the
   destroyed keys from the dependent's `depends_on` and `reference_edges`. It leaves

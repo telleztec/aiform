@@ -255,7 +255,7 @@ each its own teardown instance and destroy the zone after the first.
    account. Then `init`, asserting `[✓]` for both credentials.
 
    The probe is **not** redundant with that `[✓]`. `aiform/cli.py`'s
-   `_check_droplet_scope` probes `GET /v2/droplets` only, so a
+   `_check_scope` probes `GET /v2/droplets` only, so a
    droplet-scoped token earns a green check and then fails at the first
    domain `apply` — `specs/digitalocean_domain.md` calls this out
    explicitly. The assertion on the DO line must also not expect it to end

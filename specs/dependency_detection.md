@@ -22,8 +22,8 @@ not made in this edit.
 | Piece | State |
 |---|---|
 | The decision to pause | made, recorded here |
-| `REFERENCE_FIELDS` contract (PRD open question #3) | **designed, not built** |
-| `REFERENCE_FIELDS` on any driver | not built |
+| `REFERENCE_FIELDS` contract (PRD open question #3) | **partly built**: `path`, `target` and `id_type` exist and are read by the destroy repair; `attribute` is not built |
+| `REFERENCE_FIELDS` on any driver | built for `digitalocean/firewall` (three entries, `id_type` `"integer"`); no other driver |
 | Edge inference from literal values | not built |
 | The firewall-deletion probe | named here, not run |
 | #216, the named prerequisite | **fixed** (`plans/fix-216-reference-into-integer-field.md`) — prerequisite met, reassessment due |
@@ -244,11 +244,11 @@ qualifies too, and nothing shipped in #225 answers that.
 
 This answers `MULTI_RESOURCE_PRD.md`'s open question #3 — *what does a driver
 declare so Phase 3 can infer edges, a new class attribute alongside
-`PARAM_SCHEMA` or metadata inside it?* Designed, not built.
+`PARAM_SCHEMA` or metadata inside it?* Partly built, see the status table above.
 
 **A fifth declarative class attribute, `REFERENCE_FIELDS`**, alongside the
-four in `aiform/driver.py` (`PARAM_SCHEMA` `:62`, `LIKELY_REPLACE_FIELDS`
-`:73`, `NON_DIFFABLE_FIELDS` `:94`, `UNORDERED_FIELDS` `:112`) — not metadata
+four in `aiform/driver.py` (`PARAM_SCHEMA`, `LIKELY_REPLACE_FIELDS`,
+`NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS`) — not metadata
 inside `PARAM_SCHEMA`. Three reasons:
 
 - **`PARAM_SCHEMA` is a prompt payload.** It is passed verbatim to the
@@ -274,6 +274,13 @@ which value inside that object the provider wants:
   here would have come from*. Both need the attribute to exist with the right
   type, which is why #216 was upstream of this design and not merely adjacent
   to it — for `droplet_ids`, that attribute is now `provider_id`.
+
+`path`, `target` and `id_type` are built (`ReferenceField` in
+`aiform/driver.py`, `specs/driver.md`) because the destroy repair reads exactly
+those: it needs to know where a driver names another resource's id, which
+resource that is, and how the id is typed (`"integer"` or `"string"`, the
+JSON-schema type of one id). `attribute` is not built, because nothing would
+read it until detection exists.
 
 Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
 list (#133). A fifth attribute inherits that debt — fix #133 first or the gap

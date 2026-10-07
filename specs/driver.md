@@ -231,6 +231,37 @@ ordered sequences. Defaults to empty (no driver is affected unless it opts in),
 and follows the same reassign-don't-mutate rule as the other two. Full design,
 rationale, and edge cases: `specs/unordered_fields.md`.
 
+## Addendum: `REFERENCE_FIELDS`
+
+`ResourceDriver` carries a fifth declaration, naming every place a driver's
+resources hold another resource's native id:
+
+```python
+class ReferenceField(NamedTuple):
+    path: str
+    target: tuple[str, str]  # (provider, resource_type)
+    id_type: str  # a member of ID_TYPES: "integer" or "string"
+
+
+REFERENCE_FIELDS: list[ReferenceField] = []
+```
+
+- `path`: `.` descends a key, `[]` fans out a list, and the path ends at the
+  list of ids (`inbound_rules[].sources.droplet_ids`). A path with neither `.`
+  nor `[]` is `top_level`.
+- `id_type` is the JSON-schema type of one id, declared by the driver. A
+  declaration whose `id_type` differs from the `items.type` of that path in
+  `PARAM_SCHEMA`, or whose path does not resolve to an array there, is a bug
+  that `tests/test_driver.py` finds for every driver under `drivers/`.
+- `values_at(attributes, path)` yields the elements of the id list at `path`
+  (missing, `None` and empty give nothing); the orchestrator uses it for the
+  recorded and the live read.
+- Defaults to empty; a subclass reassigns it, never mutates it in place.
+- Read by `orchestrator.py` when destroying a target that a tracked dependent
+  names (`specs/orchestrator.md`, "Repair before destroy"). Edge detection from
+  a literal (`specs/dependency_detection.md`) would add a fourth column,
+  `attribute`, which nothing reads yet and so is not built.
+
 ## Addendum: one writable spelling per value
 
 A constraint on every driver, discovered while building

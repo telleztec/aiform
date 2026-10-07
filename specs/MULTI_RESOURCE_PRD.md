@@ -580,5 +580,6 @@ a new class attribute alongside `PARAM_SCHEMA`, or metadata inside it?* A
 fifth declarative class attribute, `REFERENCE_FIELDS`, not metadata inside
 `PARAM_SCHEMA` — because `PARAM_SCHEMA` is passed verbatim to the
 intent-orchestration model and aiform-private keys inside it change a prompt
-payload for no model benefit. Designed but not built, since Phase 3 is
-deferred: see `specs/dependency_detection.md`'s "The declaration contract".
+payload for no model benefit. Partly built: `path`, `target` and `id_type` exist and the
+destroy repair reads them; `attribute` is not built, since Phase 3 is
+deferred. See `specs/dependency_detection.md`'s "The declaration contract".

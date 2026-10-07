@@ -320,6 +320,20 @@ Every edge that was probed requires its referent to already exist, which
 makes a firewall a pure *consumer* of other resources — it is a leaf in
 any future dependency graph, never a thing others point at.
 
+**The edge the destroy repair reads.** The driver declares the droplet edge as
+`REFERENCE_FIELDS` (`specs/driver.md`), one entry per path, all targeting
+`digitalocean/compute` with `id_type` `"integer"`:
+
+| Path | Role in the destroy repair |
+|---|---|
+| `droplet_ids` | top-level: the target's id is stripped from it |
+| `inbound_rules[].sources.droplet_ids` | nested: naming the target blocks the repair |
+| `outbound_rules[].destinations.droplet_ids` | nested: naming the target blocks the repair |
+
+The orchestrator holds no firewall knowledge; it reads this table
+(`specs/orchestrator.md`, "Repair before destroy"). The other edges above are
+not declared: nothing reads them yet.
+
 Whether a reference silently shrinks when its referent is deleted was probed,
 and the honest answer is narrower than the first reading of it
 (`knowledge/drivers/digitalocean_vpc/FINDINGS.md`, transcript `13`). **Twelve
