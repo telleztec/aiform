@@ -1,15 +1,20 @@
 # SPDX-FileCopyrightText: 2026 Juan Tellez
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
+from pathlib import Path
+
 import pytest
 
 from aiform.driver import (
     AIFORM_MANAGED_TAG,
     CapabilityNotSupported,
     DriverUpdateNotSupported,
+    ReferenceField,
     ResourceDriver,
     is_reserved_tag,
     reserved_tags,
+    values_at,
 )
 from aiform.models import HealthReport, HealthStatus, MetricKind, Sample
 
@@ -119,6 +124,99 @@ class TestUnorderedFields:
         # on the base class's empty default.
         UnorderedFieldsDriver()
         assert FullDriver().UNORDERED_FIELDS == []
+
+
+class ReferenceFieldsDriver(FullDriver):
+    REFERENCE_FIELDS = [ReferenceField("vm_ids", ("acme", "vm"), "integer")]
+
+
+class TestReferenceFields:
+    def test_defaults_to_empty_list_when_not_overridden(self):
+        assert FullDriver().REFERENCE_FIELDS == []
+
+    def test_subclass_can_override(self):
+        assert ReferenceFieldsDriver().REFERENCE_FIELDS == [
+            ReferenceField("vm_ids", ("acme", "vm"), "integer")
+        ]
+
+    def test_overriding_one_driver_does_not_affect_another_sharing_the_base_default(self):
+        ReferenceFieldsDriver()
+        assert FullDriver().REFERENCE_FIELDS == []
+        assert ResourceDriver.REFERENCE_FIELDS == []
+
+    def test_a_declaration_carries_path_target_and_id_type(self):
+        field = ReferenceField("rules[].sources.vm_ids", ("acme", "vm"), "string")
+
+        assert field.path == "rules[].sources.vm_ids"
+        assert field.target == ("acme", "vm")
+        assert field.id_type == "string"
+
+    @pytest.mark.parametrize(
+        ("path", "top_level"),
+        [("vm_ids", True), ("rules[].vm_ids", False), ("sources.vm_ids", False)],
+    )
+    def test_only_a_plain_key_is_top_level(self, path, top_level):
+        assert ReferenceField(path, ("acme", "vm"), "integer").top_level is top_level
+
+
+class TestValuesAt:
+    def test_yields_the_ids_of_a_top_level_list(self):
+        assert list(values_at({"vm_ids": [1, 2]}, "vm_ids")) == [1, 2]
+
+    def test_descends_keys_and_fans_out_lists(self):
+        attributes = {
+            "rules": [
+                {"sources": {"vm_ids": [1, 2]}},
+                {"sources": {"vm_ids": [3]}},
+                {"sources": {"addresses": ["10.0.0.0/8"]}},
+            ]
+        }
+
+        assert list(values_at(attributes, "rules[].sources.vm_ids")) == [1, 2, 3]
+
+    @pytest.mark.parametrize(
+        "attributes",
+        [
+            {},
+            {"vm_ids": None},
+            {"vm_ids": []},
+            {"rules": None},
+            {"rules": []},
+            {"rules": [None, {"sources": None}, {}]},
+        ],
+    )
+    def test_yields_nothing_for_missing_none_or_empty(self, attributes):
+        assert list(values_at(attributes, "vm_ids")) == []
+        assert list(values_at(attributes, "rules[].sources.vm_ids")) == []
+
+
+def _curated_driver_modules():
+    drivers_root = Path(__file__).resolve().parent.parent / "drivers"
+    for path in sorted(drivers_root.glob("*/*.py")):
+        if not path.name.startswith("_"):
+            yield pytest.param(
+                f"drivers.{path.parent.name}.{path.stem}", id=f"{path.parent.name}.{path.stem}"
+            )
+
+
+def schema_node_at(schema, path):
+    node = schema
+    for segment in path.split("."):
+        node = node["properties"][segment.removesuffix("[]")]
+        if segment.endswith("[]"):
+            node = node["items"]
+    return node
+
+
+class TestEveryDriversDeclarationMatchesItsSchema:
+    @pytest.mark.parametrize("module_name", _curated_driver_modules())
+    def test_each_declared_path_resolves_to_a_list_of_the_declared_id_type(self, module_name):
+        driver_class = importlib.import_module(module_name).Driver
+
+        for field in driver_class.REFERENCE_FIELDS:
+            node = schema_node_at(driver_class.PARAM_SCHEMA, field.path)
+            assert node["type"] == "array", field
+            assert node["items"]["type"] == field.id_type, field
 
 
 class TestParamSchema:

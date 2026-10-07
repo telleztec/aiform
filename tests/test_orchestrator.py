@@ -4053,13 +4053,14 @@ LOGGING_DRIVER_SOURCE = """\
 import json
 import os
 
-from aiform.driver import ResourceDriver
+from aiform.driver import ReferenceField, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 LOG = {log!r}
 LIVE = {live!r}
 KIND = {kind!r}
 FAIL_DELETE = {fail_delete!r}
+COMPUTE = ("digitalocean", "compute")
 
 
 def _log(*entry):
@@ -4078,6 +4079,12 @@ class Driver(ResourceDriver):
         }},
     }}
     LIKELY_REPLACE_FIELDS = []
+    REFERENCE_FIELDS = [
+        ReferenceField("droplet_ids", COMPUTE, "integer"),
+        ReferenceField("inbound_rules[].sources.droplet_ids", COMPUTE, "integer"),
+        ReferenceField("inbound_rules[].destinations.droplet_ids", COMPUTE, "integer"),
+        ReferenceField("outbound_rules[].destinations.droplet_ids", COMPUTE, "integer"),
+    ]
 
     def create(self, name, params, credentials):
         raise AssertionError("not reached")
@@ -4106,6 +4113,42 @@ class Driver(ResourceDriver):
         _log("delete", KIND, id)
         if os.path.exists(FAIL_DELETE):
             raise RuntimeError("simulated CSP delete failure")
+"""
+
+DECLARED_DEPENDENT_DRIVER_SOURCE = """\
+import json
+
+from aiform.driver import ReferenceField, ResourceDriver
+
+LOG = {log!r}
+LIVE = {live!r}
+
+
+def _log(*entry):
+    with open(LOG, "a") as handle:
+        handle.write(json.dumps(entry) + "\\n")
+
+
+class Driver(ResourceDriver):
+    PARAM_SCHEMA = {{"type": "object", "properties": {{"vm_ids": {{}}, "tags": {{}}}}}}
+    REFERENCE_FIELDS = {declared}
+
+    def create(self, name, params, credentials):
+        raise AssertionError("not reached")
+
+    def read(self, id, credentials):
+        _log("read", "firewall", id)
+        with open(LIVE) as handle:
+            return {{"id": id, "name": "fw-01", **json.load(handle)}}
+
+    def update(self, id, current, desired, credentials):
+        _log("update", "firewall", id, current, desired)
+        with open(LIVE, "w") as handle:
+            json.dump(desired, handle)
+        return {{"id": id, "name": current["name"], **desired}}
+
+    def delete(self, id, credentials):
+        _log("delete", "firewall", id)
 """
 
 DROPLET_ID = 123456789
@@ -4170,6 +4213,7 @@ class RepairWorld:
 
     def __init__(self, tmp_path: Path, drivers_dir: Path):
         self.tmp_path = tmp_path
+        self.drivers_dir = drivers_dir
         self.log_path = tmp_path / "calls.jsonl"
         self.live_path = tmp_path / "live-firewall.json"
         self.fail_delete_path = tmp_path / "fail-delete"
@@ -4189,6 +4233,22 @@ class RepairWorld:
                     fail_delete=str(self.fail_delete_path),
                 ),
             )
+
+    def use_declared_dependent_driver(self, declared: str) -> None:
+        """Replace the firewall driver with one whose `REFERENCE_FIELDS` is
+        the given Python expression and whose id list is named `vm_ids`."""
+        self.live_path.write_text(json.dumps({"vm_ids": [], "tags": []}))
+        write_driver(
+            self.drivers_dir,
+            "digitalocean",
+            "firewall",
+            DECLARED_DEPENDENT_DRIVER_SOURCE.format(
+                log=str(self.log_path), live=str(self.live_path), declared=declared
+            ),
+        )
+
+    def set_live_vm_ids(self, vm_ids) -> None:
+        self.live_path.write_text(json.dumps({"vm_ids": list(vm_ids), "tags": []}))
 
     def fail_deletes(self, failing: bool = True) -> None:
         if failing:
@@ -4423,6 +4483,215 @@ class TestRepairInsteadOfRefusingOnThePathsRoute:
                 state_path=repair_world.state_path,
                 deployment="default",
             )
+
+
+COMPUTE_TARGET = '("digitalocean", "compute")'
+
+
+def vm_firewall_entry(vm_ids, *, depends_on=None) -> state.StateEntry:
+    return make_state_entry(
+        resource_type="firewall",
+        name="fw-01",
+        id="fw-id-1",
+        attributes={"name": "fw-01", "vm_ids": list(vm_ids), "tags": []},
+        aiform_md_path="fw.aiform.md",
+        aiform_md_sha256="firewall-sha",
+        depends_on=[DROPLET_KEY] if depends_on is None else depends_on,
+    )
+
+
+class TestRepairReadsTheDependentsDeclaration:
+    """The orchestrator knows no field name and no id type: both come from
+    the dependent driver's `REFERENCE_FIELDS`."""
+
+    def build(self, world: RepairWorld):
+        return orchestrator.build_destroy_plan(
+            [world.droplet_file()], state_path=world.state_path, deployment="default"
+        )
+
+    def test_a_differently_named_top_level_field_is_repaired(self, repair_world: RepairWorld):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "integer")]'
+        )
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                FIREWALL_KEY: vm_firewall_entry([DROPLET_ID, OTHER_DROPLET_ID]),
+            }
+        )
+        repair_world.set_live_vm_ids([DROPLET_ID, OTHER_DROPLET_ID])
+
+        planned, _warnings = self.build(repair_world)
+        _result, prompts = apply_with_confirms(planned, repair_world, [True, True])
+
+        assert planned[0].repairs == [DROPLET_KEY]
+        assert "vm_ids" in prompts[1]
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["vm_ids"] == [OTHER_DROPLET_ID]
+        assert repair_world.reload().resources[FIREWALL_KEY].attributes["vm_ids"] == [
+            OTHER_DROPLET_ID
+        ]
+
+    def test_a_dependent_declaring_nothing_is_refused_by_name(self, repair_world: RepairWorld):
+        repair_world.use_declared_dependent_driver("[]")
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: vm_firewall_entry([DROPLET_ID])}
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+
+    def test_a_declaration_for_another_target_type_is_refused(self, repair_world: RepairWorld):
+        repair_world.use_declared_dependent_driver(
+            '[ReferenceField("vm_ids", ("digitalocean", "domain"), "integer")]'
+        )
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: vm_firewall_entry([DROPLET_ID])}
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+
+    def test_a_string_id_that_is_not_digits_is_repaired_and_stays_a_string(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "string")]'
+        )
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(id="vm-abc"),
+                FIREWALL_KEY: vm_firewall_entry(["vm-abc", "vm-other"]),
+            }
+        )
+        repair_world.set_live_vm_ids(["vm-abc", "vm-other"])
+
+        planned, _warnings = self.build(repair_world)
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        assert planned[0].repairs == [DROPLET_KEY]
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["vm_ids"] == ["vm-other"]
+        assert repair_world.reload().resources[FIREWALL_KEY].attributes["vm_ids"] == ["vm-other"]
+
+    def test_a_string_id_of_digits_is_not_converted_to_an_int(self, repair_world: RepairWorld):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "string")]'
+        )
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(id="42"),
+                FIREWALL_KEY: vm_firewall_entry(["42", "007"]),
+            }
+        )
+        repair_world.set_live_vm_ids(["42", "007"])
+
+        planned, _warnings = self.build(repair_world)
+        apply_with_confirms(planned, repair_world, yes=True)
+
+        update_call = next(c for c in repair_world.calls() if c[0] == "update")
+        assert update_call[4]["vm_ids"] == ["007"]
+
+    def test_an_integer_id_that_is_not_digits_is_not_repairable(self, repair_world: RepairWorld):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "integer")]'
+        )
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(id="vm-abc"),
+                FIREWALL_KEY: vm_firewall_entry(["vm-abc"]),
+            }
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+
+    def test_a_string_declared_nested_path_naming_the_target_still_blocks_the_repair(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "string"), '
+            f'ReferenceField("rules[].vm_ids", {COMPUTE_TARGET}, "string")]'
+        )
+        entry = vm_firewall_entry(["42"])
+        entry.attributes["rules"] = [{"vm_ids": ["42"]}]
+        repair_world.save(**{DROPLET_KEY: droplet_entry(id="42"), FIREWALL_KEY: entry})
+
+        with pytest.raises(PlanBlockedError):
+            self.build(repair_world)
+
+    def test_an_unknown_id_type_is_rejected_with_the_allowed_values(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.use_declared_dependent_driver(
+            f'[ReferenceField("vm_ids", {COMPUTE_TARGET}, "uuid")]'
+        )
+        repair_world.save(
+            **{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: vm_firewall_entry([DROPLET_ID])}
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        reason = exc_info.value.reason
+        assert "id_type" in reason
+        assert "'uuid'" in reason
+        assert "integer" in reason and "string" in reason
+
+
+class TestAnUnloadableDependentDriverIsRefusedAtPlanTime:
+    """The declaration is read from the dependent's driver, so a dependent
+    whose driver cannot be loaded is not repairable and falls into the
+    orphaned-dependents refusal."""
+
+    def build(self, world: RepairWorld):
+        return orchestrator.build_destroy_plan(
+            [world.droplet_file()], state_path=world.state_path, deployment="default"
+        )
+
+    def test_a_firewall_whose_driver_file_is_missing_is_refused(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        (repair_world.drivers_dir / "digitalocean" / "firewall.py").unlink()
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+        assert "orphaned" in exc_info.value.reason
+
+    def test_a_firewall_whose_driver_does_not_import_is_refused(self, repair_world: RepairWorld):
+        repair_world.save(**{DROPLET_KEY: droplet_entry(), FIREWALL_KEY: firewall_entry()})
+        write_driver(repair_world.drivers_dir, "digitalocean", "firewall", "def broken(:\n")
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert FIREWALL_KEY in exc_info.value.reason
+        assert "orphaned" in exc_info.value.reason
+
+    def test_a_non_firewall_dependent_with_no_driver_file_is_refused(
+        self, repair_world: RepairWorld
+    ):
+        repair_world.save(
+            **{
+                DROPLET_KEY: droplet_entry(),
+                "digitalocean.domain.dns-01": make_state_entry(
+                    resource_type="domain", name="dns-01", depends_on=[DROPLET_KEY]
+                ),
+            }
+        )
+
+        with pytest.raises(PlanBlockedError) as exc_info:
+            self.build(repair_world)
+
+        assert "digitalocean.domain.dns-01" in exc_info.value.reason
+        assert "orphaned" in exc_info.value.reason
 
 
 class TestRepairInsteadOfRefusingOnTheMarkerRoute:

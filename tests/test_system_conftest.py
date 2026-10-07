@@ -14,6 +14,7 @@ Mirrors specs/conftest.md's reasoning for extracting
 `find_leaked_credential()` as a pure, separately-tested matcher.
 """
 
+import inspect
 import urllib.error
 from datetime import UTC, datetime, timedelta
 
@@ -337,3 +338,15 @@ class TestListingDropletsByTag:
         )
         list_droplets_tagged("tok", "a&b=c")
         assert urls[0].endswith("&tag_name=a%26b%3Dc")
+
+
+class TestFirewallWaitHelperNamesNoProviderField:
+    def test_the_helper_is_named_for_vms(self):
+        assert hasattr(conftest, "wait_until_firewall_vm_ids")
+        assert not hasattr(conftest, "wait_until_firewall_droplet_ids")
+
+    def test_neither_the_name_nor_a_parameter_carries_the_provider_field(self):
+        helper = conftest.wait_until_firewall_vm_ids
+
+        names = [helper.__name__, *inspect.signature(helper).parameters]
+        assert [name for name in names if "droplet" in name] == []
