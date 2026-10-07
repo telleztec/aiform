@@ -64,7 +64,7 @@ from tests.system.conftest import (
     verbose_call_count,
     wait_until_domain_gone,
     wait_until_droplet_gone,
-    wait_until_firewall_droplet_ids,
+    wait_until_firewall_vm_ids,
     write_aiform_md,
     write_domain_aiform_md,
     write_firewall_aiform_md,
@@ -414,7 +414,7 @@ class TestDestroyRepairsFirewallLive:
         assert destroyed_key not in tracked.resources
         assert firewall_key in tracked.resources
         assert tracked.resources[firewall_key].depends_on == remaining
-        live = wait_until_firewall_droplet_ids(token, firewall_id, [ids[key] for key in remaining])
+        live = wait_until_firewall_vm_ids(token, firewall_id, [ids[key] for key in remaining])
         assert live is not None
         assert sorted(live["droplet_ids"]) == sorted(ids[key] for key in remaining)
         leftover = wait_until_droplet_gone(token, str(ids[destroyed_key]))

@@ -809,7 +809,11 @@ def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
     return (payload or {}).get("firewall")
 
 
-def wait_until_firewall_droplet_ids(
+def _digitalocean_firewall_vm_ids(firewall: dict) -> list:
+    return firewall["droplet_ids"]
+
+
+def wait_until_firewall_vm_ids(
     token: str,
     firewall_id: str,
     expected: list,
@@ -817,7 +821,7 @@ def wait_until_firewall_droplet_ids(
     timeout_seconds: int = 120,
     poll_seconds: int = 3,
 ) -> dict | None:
-    """Poll until the firewall's `droplet_ids` equals `expected` (order
+    """Poll until the VM ids the firewall lists equal `expected` (order
     ignored). Returns the last firewall read, or None if it 404s, so the
     caller asserts on it and `token` stays out of assertion output.
 
@@ -841,7 +845,9 @@ def wait_until_firewall_droplet_ids(
         ) as exc:
             last_error = exc
         else:
-            if firewall is None or sorted(firewall["droplet_ids"]) == sorted(expected):
+            if firewall is None or sorted(_digitalocean_firewall_vm_ids(firewall)) == sorted(
+                expected
+            ):
                 return firewall
             last_firewall, last_error = firewall, None
 
