@@ -754,9 +754,9 @@ class TestCheckProviderToken:
         assert check.state is KeyState.OK
         assert check.detail == "juan@example.com"
 
-    def test_account_read_without_droplet_scope_is_rejected(self, token, monkeypatch):
+    def test_account_read_without_vm_scope_is_rejected(self, token, monkeypatch):
         # The false green reached by the success path: a token granted
-        # account:read but no droplet scope answers 200 on /v2/account and
+        # account:read but no VM scope answers 200 on /v2/account and
         # then 403s on every apply.
         self._urlopen_sequence(
             monkeypatch,
@@ -769,9 +769,9 @@ class TestCheckProviderToken:
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.REJECTED
-        assert "droplets" in check.detail
+        assert "VMs" in check.detail
 
-    def test_droplet_scope_is_checked_even_when_the_account_reads_fine(self, token, monkeypatch):
+    def test_vm_scope_is_checked_even_when_the_account_reads_fine(self, token, monkeypatch):
         urls = self._urlopen_sequence(
             monkeypatch,
             [
@@ -784,7 +784,7 @@ class TestCheckProviderToken:
 
         assert urls == [
             config.PROVIDER_ACCOUNT_PROBES["digitalocean"],
-            config.PROVIDER_DROPLET_PROBES["digitalocean"],
+            config.PROVIDER_SCOPE_PROBES["digitalocean"][0],
         ]
 
     def test_revoked_token_401_is_rejected(self, token, monkeypatch):
@@ -797,7 +797,7 @@ class TestCheckProviderToken:
 
     def _urlopen_sequence(self, monkeypatch, results):
         """Answer successive probes with successive results -- the account
-        probe first, then the droplet-scope fallback."""
+        probe first, then the VM-scope fallback."""
         remaining = list(results)
         urls = []
 
@@ -826,10 +826,10 @@ class TestCheckProviderToken:
         assert "scoped" in check.detail
         assert urls == [
             config.PROVIDER_ACCOUNT_PROBES["digitalocean"],
-            config.PROVIDER_DROPLET_PROBES["digitalocean"],
+            config.PROVIDER_SCOPE_PROBES["digitalocean"][0],
         ]
 
-    def test_token_without_droplet_scope_is_rejected(self, token, monkeypatch):
+    def test_token_without_vm_scope_is_rejected(self, token, monkeypatch):
         # "Real token somewhere" is not the question. A token scoped without
         # droplet access is 403 on both probes and fails every apply.
         forbidden = fake_http_error(403, {"message": "You are not authorized"})
@@ -838,7 +838,7 @@ class TestCheckProviderToken:
         check = _REAL_CHECK_PROVIDER_TOKEN("digitalocean")
 
         assert check.state is KeyState.REJECTED
-        assert "droplets" in check.detail
+        assert "VMs" in check.detail
 
     def test_transient_droplet_failure_keeps_the_proven_account_result(self, token, monkeypatch):
         # The account probe already authenticated the token one request
@@ -970,8 +970,8 @@ class TestCheckProviderToken:
     def test_forbidden_account_with_no_scope_probe_is_not_a_pass(self, token, monkeypatch):
         # A provider configured with an account probe but no scope probe:
         # a 403 proved nothing, so it must not read as a green check.
-        monkeypatch.setitem(config.PROVIDER_DROPLET_PROBES, "digitalocean", None)
-        monkeypatch.delitem(config.PROVIDER_DROPLET_PROBES, "digitalocean")
+        monkeypatch.setitem(config.PROVIDER_SCOPE_PROBES, "digitalocean", None)
+        monkeypatch.delitem(config.PROVIDER_SCOPE_PROBES, "digitalocean")
         self._urlopen(monkeypatch, fake_http_error(403, {"message": "You are not authorized"}))
 
         assert _REAL_CHECK_PROVIDER_TOKEN("digitalocean").state is KeyState.UNVERIFIED

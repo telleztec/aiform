@@ -451,8 +451,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if key_generated:
         print(f"Generated an aiform-managed SSH key at {private_key_path}")
         print(
-            "aiform injects it into every droplet it creates by default, so it can "
-            "connect to droplets for maintenance."
+            "aiform injects it into every VM it creates by default, so it can "
+            "connect to VMs for maintenance."
         )
         print("This is the only copy of that key. Back it up now:")
         print(f"  {keychain_backup_script_path}")
@@ -464,7 +464,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
     # The scaffold is deliberately somewhere discover_files() cannot see
     # (specs/cli.md): init must never produce config that would make a
-    # first `plan create` propose a real droplet. That makes this
+    # first `plan create` propose a real VM. That makes this
     # instruction the only thing connecting the example to a usable plan.
     print()
     print("Next: copy an example here and edit it --")
@@ -547,9 +547,9 @@ def _check_provider_token(provider: str, *, timeout: float = _PROBE_TIMEOUT) -> 
         return account.check
 
     # Always, not only after a 403 on the account endpoint: a token granted
-    # account:read without droplet scopes answers 200 above and then fails
+    # account:read without VM scopes answers 200 above and then fails
     # every apply, which is the same false green reached by the other path.
-    return _check_droplet_scope(provider, token, timeout, account)
+    return _check_scope(provider, token, timeout, account)
 
 
 class _AccountResult(NamedTuple):
@@ -590,31 +590,30 @@ def _probe_account(url: str, token: str, timeout: float) -> _AccountResult:
     return _AccountResult(authenticated=True, email=account.get("email"), check=None)
 
 
-def _check_droplet_scope(
-    provider: str, token: str, timeout: float, account: _AccountResult
-) -> KeyCheck:
-    """Confirm the token can read droplets.
+def _check_scope(provider: str, token: str, timeout: float, account: _AccountResult) -> KeyCheck:
+    """Confirm the token can read VMs.
 
     Read scope only -- it does not prove the token can create or destroy
     one, which no free probe can establish."""
-    url = config.PROVIDER_DROPLET_PROBES.get(provider)
-    if url is None:
+    probe = config.PROVIDER_SCOPE_PROBES.get(provider)
+    if probe is None:
         # A forbidden account probe proved nothing, and with no scope probe
         # to fall back on there is nothing left to call a pass.
         if not account.authenticated:
             return KeyCheck(state=KeyState.UNVERIFIED, detail="no scope probe for this provider")
         return KeyCheck(state=KeyState.OK, detail=account.email)
 
+    url, collection_key = probe
     body, failure = _probe(url, token, timeout)
     if failure is not None:
         if failure.code == 403:
             # Only claim the token is valid when the account probe actually
             # established that; on the 403/403 path nothing did, and telling
-            # the user to add droplet scope points at the wrong fix.
+            # the user to add VM scope points at the wrong fix.
             detail = (
-                "token is valid but cannot read droplets"
+                "token is valid but cannot read VMs"
                 if account.authenticated
-                else "token cannot read the account or droplets"
+                else "token cannot read the account or VMs"
             )
             return KeyCheck(state=KeyState.REJECTED, detail=detail)
         # A 401 here is unambiguous -- the token was not accepted at all,
@@ -632,7 +631,7 @@ def _check_droplet_scope(
             return KeyCheck(state=KeyState.OK, detail=_unverified_scope_detail(account))
         return failure.check
 
-    if not isinstance(body, dict) or "droplets" not in body:
+    if not isinstance(body, dict) or collection_key not in body:
         # Same rule as the failure branch above: a malformed second response
         # is not evidence against a token the first response authenticated.
         if account.authenticated:
@@ -649,7 +648,7 @@ def _check_droplet_scope(
 
 
 def _unverified_scope_detail(account: _AccountResult) -> str:
-    return f"{account.email or 'authenticated'} (droplet scope unverified)"
+    return f"{account.email or 'authenticated'} (VM scope unverified)"
 
 
 class _ProbeFailure(NamedTuple):
@@ -1155,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     code = _dispatch(args)
     # Keyed on the command, not on the integer. `resource check` exit 1
-    # is an unhealthy verdict -- a powered-off droplet, not an aiform
+    # is an unhealthy verdict -- a powered-off VM, not an aiform
     # failure -- but `plan apply`/`destroy` also return 1, for a declined
     # confirmation or a blocked gate #2 review. Mapping the bare integer
     # logged those at INFO with outcome=unhealthy, which dropped them out
