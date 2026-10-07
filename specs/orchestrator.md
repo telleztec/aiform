@@ -1596,7 +1596,10 @@ changed and which deliberately did not.
   (`load_driver()` with the deployment's reserved tags; no network, no
   credentials), while `PlannedResource.driver` stays `None`. A dependent whose
   driver file is missing or does not import is not repairable and is refused like
-  any other orphaned dependent. This plan-time check reads **recorded** state, so
+  any other orphaned dependent; the refusal also says that the driver for that
+  `provider/resource_type` could not be loaded and gives the exception type and
+  message, so `--force` is not the only hint. A driver that loads but declares
+  nothing for the target gets the plain orphaned-dependents refusal. This plan-time check reads **recorded** state, so
   it cannot see a nested reference added out-of-band since the last refresh;
   `_apply_repair()` repeats the nested check against the **live** resource
   (below). Today one driver declares anything: `digitalocean/firewall`, three
@@ -1627,6 +1630,8 @@ changed and which deliberately did not.
   path(s)> before destroying?` (all targets of that dependent in one prompt). A decline
   returns `ApplyResult(executed=[], aborted=True)`: nothing was changed or
   destroyed. `_apply_repair()` then, in list order (so before any destroy):
+  first refuses (`PlanBlockedError`, no provider write) when a declared
+  `id_type` cannot hold a target's id, which plan time already rules out, then
   reads the dependent live (`refresh_resource()`); if the live resource holds a
   destroyed id at a declared nested path, it raises
   `PlanBlockedError` **before any provider write** (a message naming the

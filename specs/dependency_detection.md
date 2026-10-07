@@ -11,9 +11,12 @@ design decisions for the implementation of automatic dependency detection.
 
 **Build status.** **Not built, and paused by decision** — not pending, not in
 progress, not next. This file is the decision record and the contract a
-future Phase 3 starts from. Nothing here is implemented: no driver declares
-reference metadata, `aiform/driver.py` has four declarative class attributes
-and not five, and no code path infers an edge from a literal value. The
+future Phase 3 starts from. Detection is not implemented: no code path infers
+an edge from a literal value. The contract is partly built:
+`aiform/driver.py` has the fifth declarative class attribute,
+`REFERENCE_FIELDS`, with `path`, `target` and `id_type` (the destroy repair
+reads them); the `attribute` column is not built, and only
+`digitalocean/firewall` declares anything. The
 named prerequisite, #216, **is fixed** — the pause itself is unchanged by
 that alone; reassessing whether Phase 3 is still worth building is what
 #216 being fixed makes due, and that reassessment is the repo owner's call,
@@ -283,8 +286,8 @@ JSON-schema type of one id). `attribute` is not built, because nothing would
 read it until detection exists.
 
 Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
-list (#133). A fifth attribute inherits that debt — fix #133 first or the gap
-doubles.
+list (#133), though §4 now lists `REFERENCE_FIELDS`. The gap is that one
+missing attribute.
 
 ### The declaration has three uses, and generation is the most expensive
 

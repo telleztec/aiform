@@ -340,8 +340,8 @@ question is exactly this one, not "does every driver need this."
 `UNORDERED_FIELDS` from its declarative-attribute list, and this file's own
 Interface code block above deliberately doesn't restate §4's docstrings
 either way. `provider_id` is a returned-*attributes* convention, not a
-fifth declarative class attribute like `PARAM_SCHEMA`/`LIKELY_REPLACE_FIELDS`/
-`NON_DIFFABLE_FIELDS`/`UNORDERED_FIELDS`, so it doesn't touch that list —
+declarative class attribute like `PARAM_SCHEMA`/`LIKELY_REPLACE_FIELDS`/
+`NON_DIFFABLE_FIELDS`/`UNORDERED_FIELDS`/`REFERENCE_FIELDS`, so it doesn't touch that list —
 noted here only so the adjacency is visible, not to widen or close #133.
 
 ## Addendum: `health()`/`metrics()` (`specs/driver_observability.md`)
