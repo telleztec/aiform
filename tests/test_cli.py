@@ -2407,7 +2407,7 @@ FAKE_FIREWALL_SOURCE = """\
 import json
 from pathlib import Path
 
-from aiform.driver import ResourceDriver
+from aiform.driver import ReferenceField, ResourceDriver
 
 
 LIVE = Path({live!r})
@@ -2416,6 +2416,7 @@ LIVE = Path({live!r})
 class Driver(ResourceDriver):
     PARAM_SCHEMA = {{"type": "object", "properties": {{"droplet_ids": {{"type": "array"}}}}}}
     LIKELY_REPLACE_FIELDS = []
+    REFERENCE_FIELDS = [ReferenceField("droplet_ids", ("digitalocean", "compute"), "integer")]
 
     def create(self, name, params, credentials):
         raise AssertionError("create is not part of a repair")

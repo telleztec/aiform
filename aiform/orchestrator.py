@@ -22,7 +22,13 @@ from typing import Any
 import anthropic
 
 from aiform import config, graph, llm, log, parser, planner, references, state
-from aiform.driver import DriverUpdateNotSupported, ResourceDriver
+from aiform.driver import (
+    ID_TYPES,
+    DriverUpdateNotSupported,
+    ReferenceField,
+    ResourceDriver,
+    values_at,
+)
 from aiform.driver import reserved_tags as deployment_tags
 from aiform.exceptions import DriverExecutionError, PlanBlockedError, ResourceNotFoundError
 from aiform.models import (
@@ -936,41 +942,70 @@ def _orphaned_dependents_reason(orphaned: list[tuple[str, str]], *, hint: str = 
     )
 
 
-# Dependents repaired, not refused, when their target is destroyed: their own
-# driver can drop the target's id from a live field. Dependent (provider,
-# type) -> (target (provider, type), the dependent's top-level param holding
-# the target's native id). DigitalOcean leaves a firewall intact when a droplet
-# in it is removed.
-_REPAIRABLE_EDGES: dict[tuple[str, str], tuple[tuple[str, str], str]] = {
-    ("digitalocean", "firewall"): (("digitalocean", "compute"), "droplet_ids"),
-}
+# Dependents repaired, not refused, when their target is destroyed: the
+# dependent's own driver declares (REFERENCE_FIELDS) a top-level list holding
+# the target's native id, and its driver can drop that id from the live
+# resource. A declared nested path that still names the target blocks the
+# repair, because stripping only the top-level list would leave that id
+# behind. Ids compare as strings because a live read need not return them in
+# the declared type.
+def _declared_fields(
+    provider: str, resource_type: str, driver: ResourceDriver, target_type: tuple[str, str]
+) -> list[ReferenceField]:
+    for field in driver.REFERENCE_FIELDS:
+        if field.id_type not in ID_TYPES:
+            raise PlanBlockedError(
+                f"cannot plan: the driver for (provider={provider!r}, "
+                f"resource_type={resource_type!r}) declares id_type {field.id_type!r} for "
+                f"REFERENCE_FIELDS path {field.path!r}, expected one of "
+                f"{', '.join(map(repr, ID_TYPES))}; fix the declaration in that driver"
+            )
+    return [field for field in driver.REFERENCE_FIELDS if field.target == target_type]
+
+
+def _declared_id(target_id: str, id_type: str) -> int | str | None:
+    if id_type == "string":
+        return target_id
+    if target_id.isascii() and target_id.isdigit():
+        return int(target_id)
+    return None
+
+
+def _nested_path_naming(
+    attributes: dict[str, Any], fields: list[ReferenceField], target_id: str
+) -> str | None:
+    for field in fields:
+        if field.top_level:
+            continue
+        form = str(_declared_id(target_id, field.id_type))
+        if any(str(listed) == form for listed in values_at(attributes, field.path)):
+            return field.path
+    return None
 
 
 def _is_repairable(dependent: StateEntry, target_key: str, st: State) -> bool:
-    edge = _REPAIRABLE_EDGES.get((dependent.provider, dependent.resource_type))
     target = st.resources.get(target_key)
-    if edge is None or target is None:
+    if target is None:
         return False
-    target_type, _field = edge
-    if (target.provider, target.resource_type) != target_type or not (
-        target.id.isascii() and target.id.isdigit()
-    ):
+    try:
+        driver = load_driver(
+            dependent.provider,
+            dependent.resource_type,
+            reserved_tags=deployment_tags(st.deployment),
+        )
+    except Exception:
         return False
-    return not _rule_names_droplet(dependent.attributes, int(target.id))
-
-
-# A rule's own sources/destinations can name a droplet too. Dropping the id from
-# the top-level list alone would leave that one behind, so such a firewall is not
-# repaired at all. Ids compare as strings because a live read need not
-# return them as ints.
-def _rule_names_droplet(attributes: dict[str, Any], droplet_id: int) -> bool:
-    for rules_key in ("inbound_rules", "outbound_rules"):
-        for rule in attributes.get(rules_key) or []:
-            for side in ("sources", "destinations"):
-                listed = (rule.get(side) or {}).get("droplet_ids", [])
-                if str(droplet_id) in map(str, listed):
-                    return True
-    return False
+    fields = _declared_fields(
+        dependent.provider,
+        dependent.resource_type,
+        driver,
+        (target.provider, target.resource_type),
+    )
+    if not any(field.top_level for field in fields):
+        return False
+    if any(_declared_id(target.id, field.id_type) is None for field in fields):
+        return False
+    return _nested_path_naming(dependent.attributes, fields, target.id) is None
 
 
 def _split_reverse_dependents(
@@ -1609,14 +1644,27 @@ def _prune_dependents_on(st: State, destroyed_key: str, dependents: list[str]) -
 
 
 def _repair_prompt(pr: PlannedResource, st: State) -> str:
-    _target_type, field = _REPAIRABLE_EDGES[(pr.provider, pr.resource_type)]
+    driver = load_driver(
+        pr.provider, pr.resource_type, reserved_tags=deployment_tags(st.deployment)
+    )
+    paths: list[str] = []
+    for target in pr.repairs:
+        tracked = _require_tracked(st, target)
+        for field in _declared_fields(
+            pr.provider, pr.resource_type, driver, (tracked.provider, tracked.resource_type)
+        ):
+            if field.top_level and field.path not in paths:
+                paths.append(field.path)
     removed = ", ".join(f"{target} (id {_require_tracked(st, target).id})" for target in pr.repairs)
-    return f"Repair {pr.entry.resource_key}: remove {removed} from its {field} before destroying?"
+    return (
+        f"Repair {pr.entry.resource_key}: remove {removed} from its "
+        f"{', '.join(paths)} before destroying?"
+    )
 
 
-def _as_int_id(listed: Any) -> Any:
-    # The driver validates droplet_ids as ints, but a live read may return digit strings.
-    if isinstance(listed, str) and listed.isascii() and listed.isdigit():
+def _coerce_listed_id(listed: Any, id_type: str) -> Any:
+    # A live read may return an integer id as a digit string.
+    if id_type == "integer" and isinstance(listed, str) and listed.isascii() and listed.isdigit():
         return int(listed)
     return listed
 
@@ -1627,31 +1675,52 @@ def _as_int_id(listed: Any) -> Any:
 # already applied.
 def _apply_repair(pr: PlannedResource, st: State, *, state_path: Path) -> None:
     dependent = _require_tracked(st, pr.entry.resource_key)
-    _target_type, field = _REPAIRABLE_EDGES[(pr.provider, pr.resource_type)]
-    destroyed_ids = [int(_require_tracked(st, target).id) for target in pr.repairs]
     driver = load_driver(
         pr.provider, pr.resource_type, reserved_tags=deployment_tags(st.deployment)
     )
+    declared: dict[str, list[ReferenceField]] = {}
+    for target in pr.repairs:
+        tracked = _require_tracked(st, target)
+        declared[target] = _declared_fields(
+            pr.provider, pr.resource_type, driver, (tracked.provider, tracked.resource_type)
+        )
+    removals: dict[str, set[str]] = {}
+    id_types: dict[str, str] = {}
+    for target, fields in declared.items():
+        for field in fields:
+            if field.top_level:
+                forms = removals.setdefault(field.path, set())
+                forms.add(str(_declared_id(_require_tracked(st, target).id, field.id_type)))
+                id_types[field.path] = field.id_type
     credentials = _credentials_for(pr.provider, {})
 
     live, gone = refresh_resource(driver, dependent, credentials)
     attributes = live
     now = datetime.now(UTC)
     if not gone:
-        for target, droplet_id in zip(pr.repairs, destroyed_ids, strict=True):
-            if _rule_names_droplet(live, droplet_id):
+        for target, fields in declared.items():
+            target_id = _require_tracked(st, target).id
+            nested = _nested_path_naming(live, fields, target_id)
+            if nested is not None:
                 raise PlanBlockedError(
-                    f"cannot destroy: {pr.entry.resource_key} has a rule naming {target!r} "
-                    f"(id {droplet_id}) in its sources or destinations, which removing it "
-                    "from droplet_ids would leave behind (read live just now; the plan was "
-                    "made from recorded state); destroy it with `aiform plan destroy <file> "
-                    "--force` to drop the edge"
+                    f"cannot destroy: {pr.entry.resource_key} names {target!r} "
+                    f"(id {target_id}) at {nested}, which removing it from "
+                    f"{', '.join(removals)} would leave behind (read live just now; the plan "
+                    "was made from recorded state); destroy it with `aiform plan destroy "
+                    "<file> --force` to drop the edge"
                 )
-    destroyed_forms = {str(droplet_id) for droplet_id in destroyed_ids}
-    if not gone and any(str(listed) in destroyed_forms for listed in live.get(field, [])):
+    if not gone and any(
+        str(listed) in forms for path, forms in removals.items() for listed in live.get(path) or []
+    ):
         properties = driver.PARAM_SCHEMA.get("properties", {})
         desired = {key: value for key, value in live.items() if key in properties}
-        desired[field] = [_as_int_id(i) for i in live[field] if str(i) not in destroyed_forms]
+        for path, forms in removals.items():
+            if path in live:
+                desired[path] = [
+                    _coerce_listed_id(listed, id_types[path])
+                    for listed in live[path] or []
+                    if str(listed) not in forms
+                ]
         raw = _call_driver(
             driver.update,
             pr.provider,
