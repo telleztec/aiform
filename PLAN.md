@@ -992,7 +992,7 @@ attribute-name list in a reference error) are `specs/driver.md`'s and
 `specs/digitalocean_compute.md`'s.
 
 This addendum sits next to a still-open gap: this section's own code block
-omits `UNORDERED_FIELDS` from the four declarative class attributes (#133,
+omits `UNORDERED_FIELDS` from the five declarative class attributes (#133,
 `specs/driver.md`). `provider_id` doesn't touch that list — it's a
 returned-attributes convention, not a class attribute — so it doesn't
 widen the gap, but it doesn't close it either.
