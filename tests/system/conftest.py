@@ -189,7 +189,7 @@ def pytest_runtest_makereport(item, call):
 
 
 SYSTEM_TEST_TAG = "aiform-system-test"
-REGION = "sfo3"
+REGION = "sfo2"
 ALTERNATE_REGION = "nyc3"
 IMAGE = "ubuntu-24-04-x64"
 SIZE = "s-1vcpu-512mb-10gb"
