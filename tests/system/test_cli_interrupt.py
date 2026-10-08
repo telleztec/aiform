@@ -52,7 +52,7 @@ from tests.system.conftest import (
     unique_droplet_name,
     unique_firewall_name,
     wait_until_droplet_gone,
-    wait_until_firewall_droplet_ids,
+    wait_until_firewall_vm_ids,
     write_aiform_md,
     write_firewall_aiform_md,
 )
@@ -171,7 +171,7 @@ class TestInterruptedCreate:
                 project_dir,
                 name=firewall_name,
                 inbound_rules=[SSH_RULE],
-                droplet_ids=[droplet_ref(droplet_name)],
+                vm_ids=[droplet_ref(droplet_name)],
             )
 
         if stage == "C1":
@@ -318,7 +318,7 @@ class TestInterruptedDelete:
                 project_dir,
                 name=fw_name,
                 inbound_rules=[SSH_RULE],
-                droplet_ids=[droplet_ref(droplet_name)],
+                vm_ids=[droplet_ref(droplet_name)],
             )
 
         runner.ok(APPLY, "initial plan apply")
@@ -392,7 +392,7 @@ def apply_droplet_and_dependent_firewall(
         project_dir,
         name=firewall_name,
         inbound_rules=[SSH_RULE],
-        droplet_ids=[droplet_ref(droplet_name)],
+        vm_ids=[droplet_ref(droplet_name)],
     )
     runner.ok(APPLY, "initial plan apply")
     tracked = runner.tracked()
@@ -455,7 +455,7 @@ class TestRefuseToOrphanADependent:
         runner.ok(["plan", "apply", str(marker), "--yes"], "plan apply <marker> (repairs)")
         leftover = wait_until_droplet_gone(token, pair.droplet_id)
         assert leftover is None, f"droplet {pair.droplet_id} is still live"
-        repaired = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
+        repaired = wait_until_firewall_vm_ids(token, pair.firewall_id, [])
         assert repaired is not None
         assert repaired["droplet_ids"] == []
 
@@ -471,7 +471,7 @@ class TestRefuseToOrphanADependent:
         )
         runner.ok(APPLY, "plan apply after dropping the dead reference")
 
-        firewall = wait_until_firewall_droplet_ids(token, pair.firewall_id, [])
+        firewall = wait_until_firewall_vm_ids(token, pair.firewall_id, [])
         assert firewall is not None
         assert firewall["droplet_ids"] == []
         assert len(firewalls_named(token, pair.firewall_name)) == 1

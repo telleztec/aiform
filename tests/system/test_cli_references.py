@@ -64,7 +64,7 @@ from tests.system.conftest import (
     verbose_call_count,
     wait_until_domain_gone,
     wait_until_droplet_gone,
-    wait_until_firewall_droplet_ids,
+    wait_until_firewall_vm_ids,
     write_aiform_md,
     write_domain_aiform_md,
     write_firewall_aiform_md,
@@ -250,7 +250,7 @@ class TestCrossResourceReferenceLive:
             # own type hint says list[int], but nothing at the YAML layer
             # enforces it, and this is exactly the value #216 is about: it
             # must resolve to a real int before DigitalOcean ever sees it.
-            droplet_ids=[f"${{digitalocean.compute.{droplet_name}:provider_id}}"],
+            vm_ids=[f"${{digitalocean.compute.{droplet_name}:provider_id}}"],
         )
 
         # Step 1: one plan, one apply, for both resources together. The
@@ -384,7 +384,7 @@ class TestDestroyRepairsFirewallLive:
             project_dir,
             name=firewall_name,
             inbound_rules=[SSH_RULE],
-            droplet_ids=[
+            vm_ids=[
                 f"${{digitalocean.compute.{droplet_a}:provider_id}}",
                 f"${{digitalocean.compute.{droplet_b}:provider_id}}",
             ],
@@ -414,7 +414,7 @@ class TestDestroyRepairsFirewallLive:
         assert destroyed_key not in tracked.resources
         assert firewall_key in tracked.resources
         assert tracked.resources[firewall_key].depends_on == remaining
-        live = wait_until_firewall_droplet_ids(token, firewall_id, [ids[key] for key in remaining])
+        live = wait_until_firewall_vm_ids(token, firewall_id, [ids[key] for key in remaining])
         assert live is not None
         assert sorted(live["droplet_ids"]) == sorted(ids[key] for key in remaining)
         leftover = wait_until_droplet_gone(token, str(ids[destroyed_key]))

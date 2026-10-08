@@ -749,6 +749,14 @@ class ResourceDriver(ABC):
     # rule as LIKELY_REPLACE_FIELDS (reassign, never mutate in place).
     NON_DIFFABLE_FIELDS: list[str] = []
 
+    # Every place this driver's resources name another resource's native
+    # id: ReferenceField(path, target=(provider, resource_type), id_type),
+    # id_type a JSON-schema type name ("integer" or "string") equal to the
+    # items.type of that path in PARAM_SCHEMA. The orchestrator reads it to
+    # repair a dependent instead of refusing to destroy its target. Same
+    # sharing rule as LIKELY_REPLACE_FIELDS. specs/driver.md.
+    REFERENCE_FIELDS: list[ReferenceField] = []
+
     # Concrete, not abstract. The orchestrator passes the reserved tags in;
     # a driver calls the helpers from its own create()/read()/update().
     # specs/resource_tagging.md.
@@ -806,7 +814,7 @@ class ResourceDriver(ABC):
         for a compute resource: resizing UP may be a live resize
         action; resizing DOWN may require powering off first (the
         driver may do this automatically within the call); some fields
-        (e.g. a droplet's base image) are never in-place-updatable.
+        (e.g. a VM's base image) are never in-place-updatable.
 
         Returns: dict of attributes after the update (same shape as
             create()).
@@ -842,7 +850,7 @@ class ResourceDriver(ABC):
         TCP connect, no DNS resolution against a record this driver
         manages). A data-plane check would make the verdict a property of
         where aiform happens to be running rather than of the resource —
-        the same droplet would read `failing` from a laptop behind a
+        the same VM would read `failing` from a laptop behind a
         firewall and `ok` from inside the VPC. The honest cost of that
         choice: this cannot tell you sshd is up, only that the CSP has
         not noticed anything wrong.
@@ -984,7 +992,7 @@ attribute-name list in a reference error) are `specs/driver.md`'s and
 `specs/digitalocean_compute.md`'s.
 
 This addendum sits next to a still-open gap: this section's own code block
-omits `UNORDERED_FIELDS` from the four declarative class attributes (#133,
+omits `UNORDERED_FIELDS` from the five declarative class attributes (#133,
 `specs/driver.md`). `provider_id` doesn't touch that list — it's a
 returned-attributes convention, not a class attribute — so it doesn't
 widen the gap, but it doesn't close it either.

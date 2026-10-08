@@ -67,7 +67,7 @@ def _looks_like_a_key(content: str) -> bool:
 
     An earlier version tested the text left of the last colon, which for those
     is `BIND:-0.0.0.0` -- dotted -- so every one of them raised and blocked
-    `plan` outright on a droplet whose `user_data` contained ordinary
+    `plan` outright on a VM whose `user_data` contained ordinary
     cloud-init. A shell *variable name* cannot contain a dot; a shell default
     very much can.
 
@@ -257,7 +257,7 @@ def _resolve_text(
                 # A target merely being updated in place keeps whatever it has,
                 # so a currently-unset value is still unset after the apply and
                 # is worth refusing now. A target being *replaced* is different:
-                # a drifted droplet's ipv4_address is None precisely because it
+                # a drifted VM's ipv4_address is None precisely because it
                 # is gone, and the recreate is what supplies the real one.
                 _refuse_unset(reference, path)
             deferred = True
