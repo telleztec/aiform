@@ -47,6 +47,9 @@ from tests.system.conftest import (
 # for the identical wait.
 _POWER_OFF_POLL_MAX_ATTEMPTS = 30
 _POWER_OFF_POLL_DELAY_SECONDS = 2  # 60s total
+# DigitalOcean's power_off action took 303s on a 512MB droplet (action
+# 3456480382), past the driver's default 150s poll.
+_POWER_OFF_API_POLL_MAX_ATTEMPTS = 210  # 420s total
 # Budgeted past the 8.7-23.3s SSH *login* times the same diagnostic
 # observed (a different measurement from the shutdown-convergence one
 # above) -- matches compute.py's own _SSH_CONNECT_TIMEOUT_BUDGET_SECONDS.
@@ -348,12 +351,14 @@ def _power_off(token, droplet_id: str) -> None:
     # switch exists to avoid for a new, unconditional flake class of its
     # own. Still fully out-of-band: neither branch goes through aiform's
     # own update()/_power_off_droplet().
-    driver._do_action_and_wait(
+    driver._action(droplet_id, credentials, {"type": "power_off"})
+    driver._poll_until(
         droplet_id,
         credentials,
-        {"type": "power_off"},
         lambda d: d["status"] == "off",
         "system-test-power-off-api-fallback",
+        max_attempts=_POWER_OFF_API_POLL_MAX_ATTEMPTS,
+        delay_seconds=_POWER_OFF_POLL_DELAY_SECONDS,
     )
 
 
