@@ -171,7 +171,7 @@ class TestInterruptedCreate:
                 project_dir,
                 name=firewall_name,
                 inbound_rules=[SSH_RULE],
-                droplet_ids=[droplet_ref(droplet_name)],
+                vm_ids=[droplet_ref(droplet_name)],
             )
 
         if stage == "C1":
@@ -318,7 +318,7 @@ class TestInterruptedDelete:
                 project_dir,
                 name=fw_name,
                 inbound_rules=[SSH_RULE],
-                droplet_ids=[droplet_ref(droplet_name)],
+                vm_ids=[droplet_ref(droplet_name)],
             )
 
         runner.ok(APPLY, "initial plan apply")
@@ -392,7 +392,7 @@ def apply_droplet_and_dependent_firewall(
         project_dir,
         name=firewall_name,
         inbound_rules=[SSH_RULE],
-        droplet_ids=[droplet_ref(droplet_name)],
+        vm_ids=[droplet_ref(droplet_name)],
     )
     runner.ok(APPLY, "initial plan apply")
     tracked = runner.tracked()

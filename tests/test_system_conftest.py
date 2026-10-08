@@ -33,6 +33,7 @@ from tests.system.conftest import (
     list_droplets_tagged,
     unique_zone_name,
     write_domain_aiform_md,
+    write_firewall_aiform_md,
     zone_created_at,
 )
 
@@ -350,3 +351,19 @@ class TestFirewallWaitHelperNamesNoProviderField:
 
         names = [helper.__name__, *inspect.signature(helper).parameters]
         assert [name for name in names if "droplet" in name] == []
+
+
+class TestFirewallWriterNamesNoProviderField:
+    def test_no_parameter_carries_the_provider_field(self):
+        names = inspect.signature(write_firewall_aiform_md).parameters
+        assert [name for name in names if "droplet" in name] == []
+
+    def test_vm_ids_land_in_the_providers_own_frontmatter_key(self, tmp_path):
+        path = write_firewall_aiform_md(tmp_path, name="fw", inbound_rules=[], vm_ids=[7, 9])
+        frontmatter = yaml.safe_load(path.read_text().split("---")[1])
+        assert frontmatter["params"]["droplet_ids"] == [7, 9]
+
+    def test_omitting_vm_ids_writes_an_empty_list(self, tmp_path):
+        path = write_firewall_aiform_md(tmp_path, name="fw", inbound_rules=[])
+        frontmatter = yaml.safe_load(path.read_text().split("---")[1])
+        assert frontmatter["params"]["droplet_ids"] == []

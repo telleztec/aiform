@@ -1047,13 +1047,13 @@ def write_firewall_aiform_md(
     name: str,
     inbound_rules: list[dict],
     outbound_rules: list[dict] | None = None,
-    droplet_ids: list[int] | None = None,
+    vm_ids: list[int] | None = None,
     depends_on: list[str] | None = None,
     filename: str = "firewall.aiform.md",
 ) -> Path:
     """Write a firewall .aiform.md.
 
-    droplet_ids defaults to empty, which is what makes most of this suite
+    vm_ids defaults to empty, which is what makes most of this suite
     free and zero-blast-radius. The attach case passes a real id
     deliberately, and pays for one throwaway droplet to do it (see
     throwaway_droplet). tags always carries SYSTEM_TEST_TAG so the sweeps
@@ -1061,15 +1061,15 @@ def write_firewall_aiform_md(
 
     depends_on defaults to omitted (mirrors write_aiform_md's own
     optional frontmatter fields): a declared edge is independent of
-    whatever droplet_ids resolves to, since _dependency_targets() unions
+    whatever vm_ids resolves to, since _dependency_targets() unions
     the two -- a firewall that depends_on a droplet without referencing
     it at all (a tag-targeted one, say) is a real shape, not just the
-    reference-implies-the-edge one droplet_ids alone exercises.
+    reference-implies-the-edge one vm_ids alone exercises.
     """
     body = {
         "inbound_rules": inbound_rules,
         "outbound_rules": outbound_rules or [],
-        "droplet_ids": list(droplet_ids or []),
+        "droplet_ids": list(vm_ids or []),
         "tags": [SYSTEM_TEST_TAG],
     }
     # safe_dump, not hand-built YAML or indented JSON: aiform/parser.py

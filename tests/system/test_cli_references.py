@@ -250,7 +250,7 @@ class TestCrossResourceReferenceLive:
             # own type hint says list[int], but nothing at the YAML layer
             # enforces it, and this is exactly the value #216 is about: it
             # must resolve to a real int before DigitalOcean ever sees it.
-            droplet_ids=[f"${{digitalocean.compute.{droplet_name}:provider_id}}"],
+            vm_ids=[f"${{digitalocean.compute.{droplet_name}:provider_id}}"],
         )
 
         # Step 1: one plan, one apply, for both resources together. The
@@ -384,7 +384,7 @@ class TestDestroyRepairsFirewallLive:
             project_dir,
             name=firewall_name,
             inbound_rules=[SSH_RULE],
-            droplet_ids=[
+            vm_ids=[
                 f"${{digitalocean.compute.{droplet_a}:provider_id}}",
                 f"${{digitalocean.compute.{droplet_b}:provider_id}}",
             ],
