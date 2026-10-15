@@ -209,7 +209,7 @@ class TestDomainLifecycleSequence:
         # Case 1: domain-scope preflight, then `aiform init`.
         #
         # The probe is not redundant with init's [✓]: cli.py's
-        # _check_droplet_scope probes GET /v2/droplets only, so a
+        # _check_scope probes GET /v2/droplets only, so a
         # droplet-scoped token earns a green check here and then fails at
         # the first domain apply.
         if not token_has_domain_scope(token):

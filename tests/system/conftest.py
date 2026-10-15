@@ -189,8 +189,8 @@ def pytest_runtest_makereport(item, call):
 
 
 SYSTEM_TEST_TAG = "aiform-system-test"
-REGION = "sfo3"
-ALTERNATE_REGION = "nyc3"
+REGION = "sfo2"
+ALTERNATE_REGION = "ams3"
 IMAGE = "ubuntu-24-04-x64"
 SIZE = "s-1vcpu-512mb-10gb"
 ALTERNATE_SIZE = "s-1vcpu-1gb"
@@ -809,7 +809,11 @@ def get_firewall_or_none(token: str, firewall_id: str) -> dict | None:
     return (payload or {}).get("firewall")
 
 
-def wait_until_firewall_droplet_ids(
+def _digitalocean_firewall_vm_ids(firewall: dict) -> list:
+    return firewall["droplet_ids"]
+
+
+def wait_until_firewall_vm_ids(
     token: str,
     firewall_id: str,
     expected: list,
@@ -817,7 +821,7 @@ def wait_until_firewall_droplet_ids(
     timeout_seconds: int = 120,
     poll_seconds: int = 3,
 ) -> dict | None:
-    """Poll until the firewall's `droplet_ids` equals `expected` (order
+    """Poll until the VM ids the firewall lists equal `expected` (order
     ignored). Returns the last firewall read, or None if it 404s, so the
     caller asserts on it and `token` stays out of assertion output.
 
@@ -841,7 +845,9 @@ def wait_until_firewall_droplet_ids(
         ) as exc:
             last_error = exc
         else:
-            if firewall is None or sorted(firewall["droplet_ids"]) == sorted(expected):
+            if firewall is None or sorted(_digitalocean_firewall_vm_ids(firewall)) == sorted(
+                expected
+            ):
                 return firewall
             last_firewall, last_error = firewall, None
 
@@ -1041,13 +1047,13 @@ def write_firewall_aiform_md(
     name: str,
     inbound_rules: list[dict],
     outbound_rules: list[dict] | None = None,
-    droplet_ids: list[int] | None = None,
+    vm_ids: list[int] | None = None,
     depends_on: list[str] | None = None,
     filename: str = "firewall.aiform.md",
 ) -> Path:
     """Write a firewall .aiform.md.
 
-    droplet_ids defaults to empty, which is what makes most of this suite
+    vm_ids defaults to empty, which is what makes most of this suite
     free and zero-blast-radius. The attach case passes a real id
     deliberately, and pays for one throwaway droplet to do it (see
     throwaway_droplet). tags always carries SYSTEM_TEST_TAG so the sweeps
@@ -1055,15 +1061,15 @@ def write_firewall_aiform_md(
 
     depends_on defaults to omitted (mirrors write_aiform_md's own
     optional frontmatter fields): a declared edge is independent of
-    whatever droplet_ids resolves to, since _dependency_targets() unions
+    whatever vm_ids resolves to, since _dependency_targets() unions
     the two -- a firewall that depends_on a droplet without referencing
     it at all (a tag-targeted one, say) is a real shape, not just the
-    reference-implies-the-edge one droplet_ids alone exercises.
+    reference-implies-the-edge one vm_ids alone exercises.
     """
     body = {
         "inbound_rules": inbound_rules,
         "outbound_rules": outbound_rules or [],
-        "droplet_ids": list(droplet_ids or []),
+        "droplet_ids": list(vm_ids or []),
         "tags": [SYSTEM_TEST_TAG],
     }
     # safe_dump, not hand-built YAML or indented JSON: aiform/parser.py

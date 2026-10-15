@@ -468,7 +468,7 @@ Three properties worth stating:
 - **The unset-value rule splits on whether the target is being remade.**
   `resolve()` also takes `replaced`, the subset of `volatile` whose action is
   `CREATE`. For those, a currently-`None` attribute is accepted, because a
-  drifted droplet's `ipv4_address` is `None` precisely *because* the droplet is
+  drifted VM's `ipv4_address` is `None` precisely *because* the VM is
   gone and the recreate supplies the real one. For a target merely updated in
   place the value stays unset, so it is refused at plan time — otherwise the
   target would be updated and then its dependent would fail with the apply

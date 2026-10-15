@@ -203,8 +203,9 @@ to make something easier to build.
   `CapabilityNotSupported`'s `capability`/`reason`), and the four
   declarative class attributes (`PARAM_SCHEMA`, `LIKELY_REPLACE_FIELDS`,
   `NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS` — the last of which §4 still
-  omits, see #133). Every future driver depends on this contract being
-  stable.
+  omits, see #133), plus the fifth, `REFERENCE_FIELDS` (a list of
+  `ReferenceField`, `specs/driver.md`). Every future driver depends on this
+  contract being stable.
 - Four of the contract's methods are required (`create`/`read`/`update`/
   `delete`); `health()`/`metrics()` are **optional** and reached only from
   the `aiform resource` commands, never from `plan`/`apply`.

@@ -345,7 +345,7 @@ class TestAttachedToARealDroplet:
         key = _resource_key(name)
 
         write_firewall_aiform_md(
-            project_dir, name=name, inbound_rules=[SSH_RULE], droplet_ids=[throwaway_droplet]
+            project_dir, name=name, inbound_rules=[SSH_RULE], vm_ids=[throwaway_droplet]
         )
 
         code = cli.main(["plan", "create", "--state-file", str(state_path)])
@@ -384,7 +384,7 @@ class TestAttachedToARealDroplet:
         # Detach through update(), which is the whole-object PUT dropping
         # the id from droplet_ids -- the path specs/digitalocean_firewall.md
         # warns silently clears a field when it is omitted.
-        write_firewall_aiform_md(project_dir, name=name, inbound_rules=[SSH_RULE], droplet_ids=[])
+        write_firewall_aiform_md(project_dir, name=name, inbound_rules=[SSH_RULE], vm_ids=[])
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         captured = capsys.readouterr()
         assert_cli_ok(code, captured, "plan apply (detach)")

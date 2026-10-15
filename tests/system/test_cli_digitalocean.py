@@ -444,7 +444,7 @@ class TestSshFirstPowerOffLive:
             name=firewall_name,
             inbound_rules=[],
             outbound_rules=[_DNS_OUT_RULE],
-            droplet_ids=[int(droplet_id)],
+            vm_ids=[int(droplet_id)],
         )
         code = cli.main(["plan", "apply", "--yes", "--state-file", str(state_path)])
         assert_cli_ok(code, capsys.readouterr(), "ssh fallback: attach a port-22-blocking firewall")

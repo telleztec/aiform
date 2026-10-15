@@ -24,8 +24,9 @@ PROVIDER_ACCOUNT_PROBES: dict[str, str] = {
 
 # Fallback probe for a scoped token that cannot read the account. Verifies the
 # scope aiform actually needs rather than merely that the token is real.
-PROVIDER_DROPLET_PROBES: dict[str, str] = {
-    "digitalocean": "https://api.digitalocean.com/v2/droplets?per_page=1",
+# Value: (URL listing VMs, the response key holding that list).
+PROVIDER_SCOPE_PROBES: dict[str, tuple[str, str]] = {
+    "digitalocean": ("https://api.digitalocean.com/v2/droplets?per_page=1", "droplets"),
 }
 
 # Only these statuses are a verdict on the Anthropic key; every other one

@@ -326,23 +326,24 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   token itself was not accepted.
 
   But "the token is real" is not the question worth answering — a token
-  scoped *without* droplet access fails every `apply`. So the account
+  scoped *without* VM access fails every `apply`. So the account
   probe is always followed by `GET /v2/droplets?per_page=1`
-  (`config.PROVIDER_DROPLET_PROBES`):
+  (`config.PROVIDER_SCOPE_PROBES`, mapping a provider to the probe URL and the
+  response key that holds its VMs):
 
   | `/v2/account` | `/v2/droplets` | Result |
   |---|---|---|
   | 2xx | 2xx | `✓`, detail is the account email |
-  | 2xx | 403 | `✗` "token is valid but cannot read droplets" |
+  | 2xx | 403 | `✗` "token is valid but cannot read VMs" |
   | 2xx | 401 | `✗`, rejected |
   | 2xx | 3xx | `?` — a redirect is distrusted, never shrugged off |
-  | 2xx | 408/429/5xx/malformed | `✓` "&lt;email&gt; (droplet scope unverified)" |
+  | 2xx | 408/429/5xx/malformed | `✓` "&lt;email&gt; (VM scope unverified)" |
   | 403 | 2xx | `✓` "authenticated (scoped token)" |
-  | 403 | 403 | `✗` "token is valid but cannot read droplets" |
+  | 403 | 403 | `✗` "token is valid but cannot read VMs" |
   | 403 | 408/429/5xx/other | `?` |
   | 401 | — | `✗`, rejected |
 
-  A **401 on the droplet probe outranks a 2xx on the account probe**: the
+  A **401 on the VM probe outranks a 2xx on the account probe**: the
   token was not accepted at all, whatever the first endpoint said moments
   earlier (it may have been revoked in between, or served from a proxy
   cache). Only an *inconclusive* second result defers to the first.
@@ -354,9 +355,9 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   `"authenticated"`, **not** `"authenticated (scoped token)"` — that label
   is reserved for the token that could not read the account at all.
 
-  A **malformed** droplet response is treated like a transient failure, not
+  A **malformed** VM response is treated like a transient failure, not
   like a bad token: if the account probe already authenticated, the result
-  stays `✓ (droplet scope unverified)`. Only a 3xx breaks that rule, since a
+  stays `✓ (VM scope unverified)`. Only a 3xx breaks that rule, since a
   redirect on a token-bearing request is exactly what the no-redirect opener
   exists to distrust.
 
@@ -365,16 +366,16 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   authenticated; only the scope check is missing, and the result says
   exactly that rather than reporting a working token as unverifiable.
 
-  **The droplet probe runs unconditionally, not only after a 403.** A
-  token granted `account:read` without droplet scopes answers 2xx on the
+  **The VM probe runs unconditionally, not only after a 403.** A
+  token granted `account:read` without VM scopes answers 2xx on the
   first probe, so gating the second on a 403 would let that token print a
   green check and fail on the first `apply` — the same false green
   reached by the other path.
 
   Note what the second probe does and does not establish: **read** scope
-  on droplets. It cannot prove the token may create or destroy one, and
+  on VMs. It cannot prove the token may create or destroy one, and
   no free probe can. `✓` means "this token can talk to DigitalOcean and
-  see droplets", not "every `apply` will succeed".
+  see VMs", not "every `apply` will succeed".
 
 - **A redirect is refused, not followed.** `urllib` re-sends the
   `Authorization` header verbatim to a redirect target, including a
@@ -414,8 +415,8 @@ unchanged and stays in `state.load(path, deployment=...)`: a state file named
   message and forces the decision to be made from the token itself.
 - **A 2xx of the wrong shape is `?`, not `✓`.** A proxy or captive portal
   answering 200 with arbitrary JSON is not evidence the token works, so
-  the account probe requires an `account` object and the droplet probe a
-  `droplets` key before either counts as a pass.
+  the account probe requires an `account` object and the VM probe the
+  collection key from `PROVIDER_SCOPE_PROBES` (`droplets` for DigitalOcean) before either counts as a pass.
 - **Both probes name the statuses that are a verdict; everything else is
   `?`.** The provider token's set is `{401, 403}`
   (`config.PROVIDER_TOKEN_VERDICT_STATUSES`), the Anthropic key's is

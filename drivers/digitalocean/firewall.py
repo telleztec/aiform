@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 from aiform import log
-from aiform.driver import DEPLOYMENT_TAG_PREFIX, ResourceDriver
+from aiform.driver import DEPLOYMENT_TAG_PREFIX, ReferenceField, ResourceDriver
 from aiform.exceptions import ResourceNotFoundError
 
 BASE_URL = "https://api.digitalocean.com/v2"
@@ -115,6 +115,18 @@ class Driver(ResourceDriver):
     # nested inside a rule as well, so a target list's written order never
     # diffs against the sorted read-back _project_rule() produces (#224).
     UNORDERED_FIELDS: list[str] = ["inbound_rules", "outbound_rules", "droplet_ids", "tags"]
+
+    # Every place a droplet's id can sit: the firewall's own list, and the
+    # one side of each rule that _TARGET_KEY_FOR keeps.
+    REFERENCE_FIELDS: list[ReferenceField] = [
+        ReferenceField("droplet_ids", ("digitalocean", "compute"), "integer"),
+        ReferenceField(
+            "inbound_rules[].sources.droplet_ids", ("digitalocean", "compute"), "integer"
+        ),
+        ReferenceField(
+            "outbound_rules[].destinations.droplet_ids", ("digitalocean", "compute"), "integer"
+        ),
+    ]
 
     # --- HTTP -------------------------------------------------------
 

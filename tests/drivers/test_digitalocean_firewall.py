@@ -22,7 +22,7 @@ from email.message import Message
 
 import pytest
 
-from aiform.driver import CapabilityNotSupported
+from aiform.driver import CapabilityNotSupported, ReferenceField
 from aiform.exceptions import ResourceNotFoundError
 from aiform.planner import diff_attributes
 from aiform.references import resolve
@@ -1112,3 +1112,37 @@ class TestDeploymentNameInTheFirewallName:
         )
 
         assert result["name"] == created_payload()["firewall"]["name"]
+
+
+def _paths_to_key(schema: dict, key: str, prefix: str = "") -> list[str]:
+    found = []
+    for name, child in schema.get("properties", {}).items():
+        path = f"{prefix}{name}"
+        if name == key:
+            found.append(path)
+        if child.get("type") == "array" and "properties" in child.get("items", {}):
+            found += _paths_to_key(child["items"], key, f"{path}[].")
+        elif "properties" in child:
+            found += _paths_to_key(child, key, f"{path}.")
+    return found
+
+
+class TestReferenceFields:
+    def test_declares_exactly_the_places_the_schema_accepts_a_vm_id(self):
+        accepted = set(_paths_to_key(Driver.PARAM_SCHEMA, "droplet_ids"))
+
+        assert accepted == {
+            "droplet_ids",
+            "inbound_rules[].sources.droplet_ids",
+            "outbound_rules[].destinations.droplet_ids",
+        }
+        assert {field.path for field in Driver.REFERENCE_FIELDS} == accepted
+
+    def test_every_declaration_targets_a_compute_resource_by_integer_id(self):
+        assert len(Driver.REFERENCE_FIELDS) == 3
+        assert all(
+            isinstance(field, ReferenceField)
+            and field.target == ("digitalocean", "compute")
+            and field.id_type == "integer"
+            for field in Driver.REFERENCE_FIELDS
+        )

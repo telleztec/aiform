@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterator, Sequence
+from typing import Any, NamedTuple
 
 from aiform.models import HealthReport, Sample
 
@@ -17,6 +17,39 @@ def reserved_tags(deployment: str) -> tuple[str, str]:
 
 def is_reserved_tag(tag: str) -> bool:
     return tag == AIFORM_MANAGED_TAG or tag.startswith(DEPLOYMENT_TAG_PREFIX)
+
+
+ID_TYPES = ("integer", "string")
+
+
+class ReferenceField(NamedTuple):
+    """One place a driver's params or attributes name another resource's
+    native id. `path`: `.` descends a key, `[]` fans out a list, and the
+    path ends at the list of ids. `target`: (provider, resource_type) of
+    the resource named. `id_type`: the JSON-schema type of one id, one of
+    ID_TYPES."""
+
+    path: str
+    target: tuple[str, str]
+    id_type: str
+
+    @property
+    def top_level(self) -> bool:
+        return "." not in self.path and "[]" not in self.path
+
+
+def values_at(attributes: dict[str, Any], path: str) -> Iterator[Any]:
+    nodes: list[Any] = [attributes]
+    for segment in path.split("."):
+        key = segment.removesuffix("[]")
+        fan_out = segment.endswith("[]")
+        children = (node.get(key) for node in nodes if isinstance(node, dict))
+        nodes = [child for child in children if child is not None]
+        if fan_out:
+            nodes = [item for child in nodes if isinstance(child, list) for item in child]
+    for node in nodes:
+        if isinstance(node, list):
+            yield from node
 
 
 class DriverUpdateNotSupported(Exception):
@@ -123,6 +156,16 @@ class ResourceDriver(ABC):
     # base's empty list.
     UNORDERED_FIELDS: list[str] = []
 
+    # Every place this driver's resources name another resource's native
+    # id. Read by orchestrator.py to repair a dependent instead of
+    # refusing to destroy its target: the target's id is stripped from each
+    # top-level path, and a target still named at a nested path blocks the
+    # repair. Each path must resolve in PARAM_SCHEMA to an array whose
+    # items have the declared id_type. Same shared-class-attribute rule as
+    # LIKELY_REPLACE_FIELDS: a subclass reassigns it, never mutates it in
+    # place.
+    REFERENCE_FIELDS: list[ReferenceField] = []
+
     # specs/resource_tagging.md. Stripping and rejecting depend only on
     # is_reserved_tag(), not on what this instance was given, so a driver
     # built without tags (observability, a test) still never leaks one
@@ -158,7 +201,7 @@ class ResourceDriver(ABC):
         name: the resource's `name:` field from aiform.md -- the primary
             key in state ("<provider>.<resource>.<name>"), and typically
             also the identifying label/hostname the CSP itself wants at
-            creation time (e.g. a DigitalOcean droplet's "name"). Passed
+            creation time (e.g. a VM's "name"). Passed
             separately from `params` because it is a distinct top-level
             frontmatter field, never nested inside `params:`.
         params: the resource's `params` block from aiform.md, already
@@ -195,7 +238,7 @@ class ResourceDriver(ABC):
         for a compute resource: resizing UP may be a live resize
         action; resizing DOWN may require powering off first (the
         driver may do this automatically within the call); some fields
-        (e.g. a droplet's base image) are never in-place-updatable.
+        (e.g. a VM's base image) are never in-place-updatable.
 
         Returns: dict of attributes after the update (same shape as
             create()).
@@ -257,7 +300,7 @@ class ResourceDriver(ABC):
         TCP connect, no DNS resolution against a record this driver
         manages). A data-plane check would make the verdict a property of
         where aiform happens to be running rather than of the resource —
-        the same droplet would read `failing` from a laptop behind a
+        the same VM would read `failing` from a laptop behind a
         firewall and `ok` from inside the VPC. The honest cost of that
         choice: this cannot tell you sshd is up, only that the CSP has
         not noticed anything wrong.

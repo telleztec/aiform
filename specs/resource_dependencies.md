@@ -1031,24 +1031,32 @@ repairs in one plan the guarantee is per firewall, not per plan: an earlier
 firewall is already repaired when a later one is refused at apply time (the
 live check below), and no destroy has run by then.
 
-Repairable at plan time means the dependent is a `digitalocean/firewall`, the
-target a `digitalocean/compute`, the target's id is ASCII digits only, and the id is
-not named in a rule's `sources`/`destinations` `droplet_ids` in the firewall's
-**recorded** attributes. The last condition keeps a half-repair from happening
-silently; nested references (#224) stay a refusal. Recorded state can be stale,
-so `_apply_repair()` repeats the rule check against the firewall read **live**
-just before the update, ahead of any provider write: a rule added out-of-band
-since the last refresh is refused there (`PlanBlockedError` pointing at
-`aiform plan destroy <file> --force`) rather than half-repaired. A firewall that
-is gone, or no longer lists the id, needs no update: only its state edges
-(`depends_on` and `reference_edges`) are pruned.
+Repairable at plan time is read from the dependent's own driver, not from a
+table in the orchestrator: its `REFERENCE_FIELDS` (`specs/driver.md`) must
+declare at least one top-level path for the target's `(provider, resource_type)`;
+the target's id must be valid for each declared `id_type` (`"integer"`: ASCII
+digits only; `"string"`: any id); and no declared nested path (for the firewall,
+a rule's `sources`/`destinations` `droplet_ids`) may name the id in the
+dependent's **recorded** attributes, compared as strings. The last condition
+keeps a half-repair from happening silently; nested references (#224) stay a
+refusal. Deciding this loads the dependent's driver class at plan time (no
+network, no credentials). A dependent whose driver is missing or does not import
+is not repairable: the plan is refused with the orphaned-dependents message, and
+that message names the driver that could not be loaded and the exception.
+Recorded state can be stale, so `_apply_repair()` repeats the nested-path check
+against the dependent read **live** just before the update, ahead of any
+provider write: a nested reference added out-of-band since the last refresh is
+refused there (`PlanBlockedError` pointing at `aiform plan destroy <file>
+--force`) rather than half-repaired. A dependent that is gone, or no longer
+lists the id, needs no update: only its state edges (`depends_on` and
+`reference_edges`) are pruned.
 
-The repair's `update` coerces only the top-level `droplet_ids` of the live read
-(a digit string becomes an int); rules are copied verbatim. A surviving droplet
-named by a string id inside a rule would fail the driver's own validation with
-`DriverExecutionError`, before any destroy, so nothing is orphaned. DigitalOcean
-returning string ids is unobserved (the #216 probe covers the top-level int
-round-trip only), so this is a defensive case.
+The repair's `update` coerces only the declared top-level paths of the live read
+(for an `"integer"` path a digit string becomes an int); nested paths are copied
+verbatim. A surviving VM named by a string id at a nested path would fail the
+driver's own validation with `DriverExecutionError`, before any destroy, so
+nothing is orphaned. DigitalOcean returning string ids is unobserved (the #216
+probe covers the top-level int round-trip only), so this is a defensive case.
 
 **The dependent's `.aiform.md` is not edited.** The plan prints a notice that
 the file still names the destroyed droplet; the next `plan` that reads it hits

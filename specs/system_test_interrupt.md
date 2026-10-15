@@ -364,7 +364,7 @@ the resized size (`size_slug`) straight from the listing.
   leaves the firewall's file out of the run, so the destroy is not refused: it
   repairs the firewall first (#226/#227, `specs/resource_dependencies.md`).
   The test applies the marker alone and asserts the droplet is gone and the live
-  firewall's `droplet_ids` is `[]` (polled with `wait_until_firewall_droplet_ids()`); `plan create` then refuses and names both keys,
+  firewall's `droplet_ids` is `[]` (polled with `wait_until_firewall_vm_ids()`); `plan create` then refuses and names both keys,
   because the firewall's file still names the dead droplet; removing the dead
   reference from the firewall's file lets `plan apply` converge; and a following
   run is a no-op. The old `xfail(strict=True, reason="#226")` test of a refusal

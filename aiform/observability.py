@@ -144,7 +144,7 @@ def resolve_name(name: str, st: State) -> str:
     if not matches:
         tracked = ", ".join(sorted(entry.name for entry in st.resources.values())) or "nothing"
         raise ValueError(f"no tracked resource is named {name!r}; tracked: {tracked}")
-    # Never a guess: the two could be a droplet and the firewall in front
+    # Never a guess: the two could be a VM and the firewall in front
     # of it, and checking the wrong one answers confidently about the
     # thing you did not ask about.
     raise ValueError(
@@ -443,7 +443,7 @@ def status_reports(
 
     Exists because the fleet form is N resources, not one: calling
     status_for() in a loop loads state once per resource and hands each
-    call throwaway caches, so twenty droplets meant twenty
+    call throwaway caches, so twenty VMs meant twenty
     exec_module()s, twenty credential resolutions and twenty-one state
     reads -- and a missing token reported twenty times. One State and one
     pair of caches here, the shape collect() already uses."""
@@ -618,7 +618,7 @@ def _config_for(
         # The plan path matches by frontmatter, not by the recorded path
         # (orchestrator.build_create_plan), so a file since repurposed to
         # another resource would have `status` and `plan` disagreeing --
-        # `status` diffing this droplet against, say, a firewall's params.
+        # `status` diffing this VM against, say, a firewall's params.
         return _undetermined(
             entry,
             f"{entry.aiform_md_path} now declares "

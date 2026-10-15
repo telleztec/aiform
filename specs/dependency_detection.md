@@ -11,9 +11,12 @@ design decisions for the implementation of automatic dependency detection.
 
 **Build status.** **Not built, and paused by decision** — not pending, not in
 progress, not next. This file is the decision record and the contract a
-future Phase 3 starts from. Nothing here is implemented: no driver declares
-reference metadata, `aiform/driver.py` has four declarative class attributes
-and not five, and no code path infers an edge from a literal value. The
+future Phase 3 starts from. Detection is not implemented: no code path infers
+an edge from a literal value. The contract is partly built:
+`aiform/driver.py` has the fifth declarative class attribute,
+`REFERENCE_FIELDS`, with `path`, `target` and `id_type` (the destroy repair
+reads them); the `attribute` column is not built, and only
+`digitalocean/firewall` declares anything. The
 named prerequisite, #216, **is fixed** — the pause itself is unchanged by
 that alone; reassessing whether Phase 3 is still worth building is what
 #216 being fixed makes due, and that reassessment is the repo owner's call,
@@ -22,8 +25,8 @@ not made in this edit.
 | Piece | State |
 |---|---|
 | The decision to pause | made, recorded here |
-| `REFERENCE_FIELDS` contract (PRD open question #3) | **designed, not built** |
-| `REFERENCE_FIELDS` on any driver | not built |
+| `REFERENCE_FIELDS` contract (PRD open question #3) | **partly built**: `path`, `target` and `id_type` exist and are read by the destroy repair; `attribute` is not built |
+| `REFERENCE_FIELDS` on any driver | built for `digitalocean/firewall` (three entries, `id_type` `"integer"`); no other driver |
 | Edge inference from literal values | not built |
 | The firewall-deletion probe | named here, not run |
 | #216, the named prerequisite | **fixed** (`plans/fix-216-reference-into-integer-field.md`) — prerequisite met, reassessment due |
@@ -244,11 +247,11 @@ qualifies too, and nothing shipped in #225 answers that.
 
 This answers `MULTI_RESOURCE_PRD.md`'s open question #3 — *what does a driver
 declare so Phase 3 can infer edges, a new class attribute alongside
-`PARAM_SCHEMA` or metadata inside it?* Designed, not built.
+`PARAM_SCHEMA` or metadata inside it?* Partly built, see the status table above.
 
 **A fifth declarative class attribute, `REFERENCE_FIELDS`**, alongside the
-four in `aiform/driver.py` (`PARAM_SCHEMA` `:62`, `LIKELY_REPLACE_FIELDS`
-`:73`, `NON_DIFFABLE_FIELDS` `:94`, `UNORDERED_FIELDS` `:112`) — not metadata
+four in `aiform/driver.py` (`PARAM_SCHEMA`, `LIKELY_REPLACE_FIELDS`,
+`NON_DIFFABLE_FIELDS`, `UNORDERED_FIELDS`) — not metadata
 inside `PARAM_SCHEMA`. Three reasons:
 
 - **`PARAM_SCHEMA` is a prompt payload.** It is passed verbatim to the
@@ -275,9 +278,16 @@ which value inside that object the provider wants:
   type, which is why #216 was upstream of this design and not merely adjacent
   to it — for `droplet_ids`, that attribute is now `provider_id`.
 
+`path`, `target` and `id_type` are built (`ReferenceField` in
+`aiform/driver.py`, `specs/driver.md`) because the destroy repair reads exactly
+those: it needs to know where a driver names another resource's id, which
+resource that is, and how the id is typed (`"integer"` or `"string"`, the
+JSON-schema type of one id). `attribute` is not built, because nothing would
+read it until detection exists.
+
 Note `PLAN.md` §4 still omits `UNORDERED_FIELDS` from its declarative-attribute
-list (#133). A fifth attribute inherits that debt — fix #133 first or the gap
-doubles.
+list (#133), though §4 now lists `REFERENCE_FIELDS`. The gap is that one
+missing attribute.
 
 ### The declaration has three uses, and generation is the most expensive
 
